@@ -51,7 +51,14 @@ static void dump_init(void){
         while (*p && *p != ',') p++;
     }
 }
+/* YAKALAMA KISAYOLU: oyun ondeyken Cmd+Shift+D -> bir sonraki kare PNG +
+ * DRAWLIST + DRAWSUM olarak yazilir (PERFLOG dizinine, yoksa
+ * ~/Library/Logs/NFSU2/).  Kullanicinin ulastigi ama otomatik testle
+ * uretilemeyen sahneler icin (or. kariyer yaris sonu). */
+static _Atomic int g_dump_req;
+static long g_dump_req_f = -1;
 static int dump_wanted(long f){
+    if (f == g_dump_req_f) return 1;
     for (int i = 0; i < g_dump_n; i++) if (g_dump_want[i] == (int)f) return 1;
     return 0;
 }
@@ -5965,6 +5972,10 @@ void metal_run_main_loop(void){
                                 [g_win toggleFullScreen:nil];
                             continue; }
                         if ([ev modifierFlags] & NSEventModifierFlagCommand){
+                            /* bkz. YAKALAMA KISAYOLU */
+                            if ([ev keyCode] == 0x02 && ([ev modifierFlags] & NSEventModifierFlagShift)){
+                                if (et == NSEventTypeKeyDown && ![ev isARepeat]) atomic_store(&g_dump_req, 1);
+                                continue; }
                             [NSApp sendEvent:ev]; continue; }
                         unsigned char dik = mac_to_dik([ev keyCode]);
                         if (dik) atomic_store(&g_keys[dik], et == NSEventTypeKeyDown ? 1 : 0);
@@ -6230,7 +6241,16 @@ void metal_run_main_loop(void){
                         if (ENVC("FRAMELOG") && rb >= 0 && (fno_pre % 10) == 0)
                             fprintf(stderr,"  [kare %3ld] cizim=%u kose=%u\n",
                                     fno_pre, g_dn[rb], g_vn[rb]);
-                        int  dumpnow = g_dump_n && dump_wanted(fno_pre);
+                        { static long yk = -2; if (yk == -2){ const char *e = ENVC("YAKALAKARE"); yk = e ? atol(e) : -1; }
+                          if (fno_pre == yk) atomic_store(&g_dump_req, 1); }   /* kisayolun testi */
+                        if (atomic_exchange(&g_dump_req, 0)){
+                            g_dump_req_f = fno_pre;
+                            if (!g_dump_n){ const char *pl = getenv("PERFLOG"), *h = getenv("HOME");
+                                if (pl && *pl) snprintf(g_dump_dir, sizeof g_dump_dir, "%s", pl);
+                                else snprintf(g_dump_dir, sizeof g_dump_dir, "%s/Library/Logs/NFSU2", h ? h : "/tmp"); }
+                            fprintf(stderr, "yakalama: kare %ld (Cmd+Shift+D) -> %s\n", fno_pre, g_dump_dir);
+                        }
+                        int  dumpnow = (g_dump_n || g_dump_req_f == fno_pre) && dump_wanted(fno_pre);
                         /* GLYPHDUMP: her dortgenin ekran kutusu + UV'si.
                          * Amac: oyunun yazdigi METNI cozup durumunu okumak. */
                         if (ENVC("GLYPHDUMP") && dumpnow && rb >= 0){
@@ -6302,7 +6322,7 @@ void metal_run_main_loop(void){
                         /* DRAWSUM: karenin cizimlerini (hedef,doku,ps,karisim)
                          * anahtarina gore topla.  Binlerce satir yerine yapiyi
                          * bir bakista gostersin. */
-                        if (rb >= 0 && ENVC("DRAWSUM") && dump_wanted(fno_pre)){
+                        if (rb >= 0 && (ENVC("DRAWSUM") || g_dump_req_f == fno_pre) && dump_wanted(fno_pre)){
                             typedef struct { unsigned tg,tx,t1,t2,bl,sm; int ps;
                                              unsigned nd,nv; float x0,x1,y0,y1; } Grp;
                             static Grp gp[192]; int gn = 0;
@@ -6355,7 +6375,7 @@ void metal_run_main_loop(void){
                         }
                         /* DRAWLIST=1 (DUMPFRAME ile): her cizimin tam durumu +
                          * sabit ozetleri; iki kosunun ilk farkli cizimini bulmak icin. */
-                        if (rb >= 0 && ENVC("DRAWLIST") && dump_wanted(fno_pre)){
+                        if (rb >= 0 && (ENVC("DRAWLIST") || g_dump_req_f == fno_pre) && dump_wanted(fno_pre)){
                             for (unsigned di = 0; di < g_dn[rb]; di++){
                                 MDraw *dr = &g_dbuf[rb][di];
                                 uint64_t hp = 1469598103934665603ull, hk = 1469598103934665603ull;
