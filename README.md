@@ -12,9 +12,10 @@ time. On an M1 Pro, races run at **119 fps** (the display's limit), against
 **10–15 fps** for the same game under Wine.
 
 > **This repository contains no game code and no game assets.** It contains the
-> recompiler and the runtime only. You need your own copy of the game; the C
-> code generated from its executable and the resulting binaries are derived
-> from the game and are not, and must not be, distributed here.
+> recompiler and the runtime only. You need your own copy of the game. The C
+> code generated from its executable is never committed. The prebuilt apps on
+> the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) contain the recompiled program but no game files:
+> on first launch you point them at your own installation.
 
 ![Race, native ARM64 build](sunum_ss/secme/27_20260924_guncel-yaris.jpg)
 
@@ -194,8 +195,9 @@ a report.
 
 **Can I play Need for Speed: Underground 2 on a Mac?**
 Yes, on an Apple Silicon Mac (M1 or later) with your own copy of the PC game.
-Build the port as described above; `./pack.sh` produces a double-clickable
-`NFSU2.app`. Menus, races and sound work.
+Download `NFSU2.zip` from the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest), or build the port as
+described above (`./pack.sh` produces a double-clickable `NFSU2.app`). Menus,
+races, career saves and sound work.
 
 **Do I need Wine, CrossOver, Whisky, Parallels or a virtual machine?**
 No. The game's code is recompiled to native ARM64 and runs directly on macOS.
@@ -207,8 +209,11 @@ against 10–15 fps under Wine 11.18 with Rosetta 2, and 119 fps against 45 fps
 in the 3D menus. Method and raw numbers are in `WINE_KIYAS.md`.
 
 **Is there a ready-made download?**
-No. The recompiled program is derived from EA's executable, so it is built on
-your own Mac from your own copy of the game and is not distributed.
+Yes: the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) has `NFSU2.zip` (standard build) and
+`NFSU2.HD.zip` (MSAA, ray-traced reflections). Neither contains game files; on
+first launch the app asks for the folder that holds your own `SPEED2.EXE`. The
+app is not notarized, so after moving it to Applications run once:
+`xattr -dr com.apple.quarantine /Applications/NFSU2.app`
 
 **Which version of the game does it need?**
 The Windows PC version, with the exact `SPEED2.EXE` listed under
