@@ -13,9 +13,15 @@ fi
 #   NFSHD=1 ./run.sh [mod]  HD        (out/nfsu2_hd_boot) -- grafik iyilestirmeleri
 #   ./run.sh hd | hd1080p   HD'nin kisayollari
 # HD ayarlari (yalnizca HD build okur): HDREFL=0 (yansima iyilestirmesi kapali),
-#   HD_ROAD=1.0, HD_BLUR=0.5, HD_MIRROR=1024, HD_CUBE=512, HD_MSAA=4 (0 kapali),
-#   HD_SSR=1 (0 kapali), HD_SSR_CAR=1 (araba boyasi), HD_SSR_DEBUG=1|2|3.
-#   Ayrinti: runtime/enhance.c
+#   HD_ROAD (yol yansimasi olcegi; varsayilan isin izleme acikken 1/3, kapaliyken 0.5),
+#   HD_BLUR=0.5, HD_MIRROR=1024, HD_CUBE=512,
+#   HD_MSAA (varsayilan otomatik: 1440 satir ve ustu 2x, alti 4x; 1 = kapali),
+#   HD_SSR=1 (0 kapali), HD_SSR_CAR=1 (araba boyasi), HD_RT=1 (isin izlemeli yansima; 0 = SSR),
+#   HD_GSEP=1 (G-tamponu ayri tek ornekli geciste), HD_MBFIX=1 (hareket bulanikliginda
+#   sahne cok ornekli devam eder), HD_RT_FAR / HD_RT_BMIN (isin sinirlari; varsayilan kapali).
+#   Ayrinti: runtime/enhance.c, runtime/metal.m (ayni adli bolumler)
+# Oyun icinde Cmd+Shift+D: o karenin PNG'si + cizim listesi (~/Library/Logs/NFSU2/
+#   ya da PERFLOG dizini).  Oynarken olcum kaydi: tools/oturum.sh [hd].
 MODE="${1:-window}"
 case "$MODE" in
   hd)      NFSHD=1; MODE=window ;;
@@ -43,16 +49,19 @@ unset AUTOKEY AUTOCLICK FORCESWITCH FETICK GAMELOG DUMPFRAME BOOTFLOW \
       SKIPDRAW CLEARCOL MIPOFF DRAWV SLIVER PSDUMP DUMPMIP DUMPTEX SMPLOG LOCKLOG RTLOG \
       DRAWSUM PSISO SKIPPS PSINFO BLITLOG SNDCSV SNDDUMP SNDBACKEND \
       FPSCSV AUTOKEYSTOP VCLOCK VCLOCK_MAXD DECLLOG CULLWIND RSLOG NOFOG BLITQUAD RESSCAN ASPFIX ASPLOG PSHIST MIPLIN NOANISO LODMAX \
-      RTIDLOG DRAWVPS ZSHARELOG XFORMAT CAMLOG HD_SSR_DEBUG VIEWLOG HD_RTPROBE HD_RTPROBE2 HD_RT_STAGE HD_RT_NOTEX HD_RT_PLAIN HD_RT_ONLYCX HD_RT_SLOWBUILD HD_RT_LOG HD_RT_DUMPTAB HD_RT_STRESS HD_COMP HD_MSLAZY HD_REORDER HD_RT_AB HD_RT_FIX HD_RT_POISON FORCERAIN FORCETOD FORCETOD_STATE GPUWIN PASSPROF PASSPROF_MODE GPUVSDUMP
+      RTIDLOG DRAWVPS ZSHARELOG XFORMAT CAMLOG HD_SSR_DEBUG VIEWLOG HD_RTPROBE HD_RTPROBE2 HD_RT_STAGE HD_RT_NOTEX HD_RT_PLAIN HD_RT_ONLYCX HD_RT_SLOWBUILD HD_RT_LOG HD_RT_DUMPTAB HD_RT_STRESS HD_COMP HD_MSLAZY HD_REORDER HD_RT_AB HD_RT_FIX HD_RT_POISON FORCERAIN FORCETOD FORCETOD_STATE GPUWIN PASSPROF PASSPROF_MODE GPUVSDUMP \
+      SNDMUTE YAKALAKARE DRAWLIST NODRAW LIMFREE ABTEST PASSPROF_CSV HD_MBLOG HD_RT_DLOG HD_RT_ONLY HD_RTPROBE2_HER
 
 export FIXMAT="${FIXMAT:-1}"
 export NOMOVIES="${NOMOVIES:-1}"
 export FIXMAT_MODE="${FIXMAT_MODE:-3}"
-# SNDSYNC : oyun sesi kendi SANAL zamaninda uretiyor (kare basina 16.67 ms).
-#           Emulator 60 fps'in altinda kalinca uretim gercek zamanin ~%75'i
-#           olur ve her tampon turunda yazilmamis bolge kalir -> ses kesilir.
-#           1 = oynatmayi oyun hizina bagla (kesinti yok, ses hafif kalinlasir)
-#           0 = gercek zamanda cal (dogru perde, arada kesinti)
+# SNDSYNC : oynatma hizini oyunun sanal saatinin gercek zamana oranina bagla.
+#           Saat artik gercek gecen sureyle ilerledigi icin oran normalde 1.000;
+#           yalnizca uzun bir takilmada kisa sure duser (yazilmamis bolgeyi
+#           calmamak icin).  0 = hep gercek zamanda cal.
+# SNDPLL  : eski yazma-imleci servosu (varsayilan KAPALI).  Oyun yazdigi yeri
+#           bizim oynatma imlecimize gore sectigi icin servo hatayi kapatamiyor,
+#           muzigi 40-50 sn %3 yavas/hizli caldiriyordu (bkz. runtime/audio.m).
 export SNDSYNC="${SNDSYNC:-1}"
 # GPUVS : kose gölgelendiricisini GPU'da calistir (oyunun kendi bytecode'u
 #         MSL'ye cevrilir).  Olculdu: cizim yolu 34.6 sn -> 2.2 sn,

@@ -1,7 +1,7 @@
 #!/bin/bash
 # out/NFSU2.app (ya da --hd ile out/NFSU2 HD.app) paketini kur.
 #
-#   ./pack.sh                 sadece port (~46 MB) -- oyun verisi kullanicinin
+#   ./pack.sh                 sadece port (~35 MB) -- oyun verisi kullanicinin
 #   ./pack.sh --with-data     oyun verisini de yanina kopyala (~1.5 GB)
 #   ./pack.sh --zip           dagitim icin NFSU2.zip da uret
 #   ./pack.sh --embed         KISISEL tek parca uygulama: oyun verisi paketin

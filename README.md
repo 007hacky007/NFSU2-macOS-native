@@ -24,13 +24,14 @@ The game boots, reaches the menus, and races are playable with sound.
 
 | Area | State |
 |---|---|
-| x86-32 → C lifter (integer, x87, MMX, SSE/SSE2, 3DNow!, string ops) | 23,278 functions, 132.5 MB of generated C |
+| x86-32 → C lifter (integer, x87, MMX, SSE/SSE2, 3DNow!, string ops) | 23,278 functions, 137 MB of generated C |
 | Win32 layer (CRT startup, heap, TLS, threads, files, registry, window) | working |
 | Direct3D 9 → Metal, shader bytecode (vs/ps 1.x–2.x) → MSL | working |
 | DirectSound → CoreAudio, DirectInput (keyboard, mouse) | working |
 | Windowed, fullscreen, Retina-native and 1080p widescreen | working |
+| Career mode: profile creation (name entry), save and load | working |
 | Double-clickable `.app` (`./pack.sh`) | working |
-| Optional "HD" build: 4× MSAA, SSR, ray-traced reflections | working, see `GRAFIK_ARASTIRMA.md` |
+| Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAFIK_ARASTIRMA.md` |
 
 ### Known limitations
 
@@ -48,7 +49,10 @@ The game boots, reaches the menus, and races are playable with sound.
 - 400 instructions in rarely used opcodes are still emitted as traps. None are
   hit in the measured race scene.
 - Some visuals are unverified against a Windows reference (crowds / skinned
-  meshes, HUD seams). See "Kalan grafik maddeleri" in `PROJECT.md`.
+  meshes). See "Kalan grafik maddeleri" in `PROJECT.md`.
+- Under investigation: in career mode, the scene behind the post-race results
+  panel (car pulling up, crowd) can stay black; the same scene renders
+  correctly after a Quick Race drag.
 
 ## How it works
 
@@ -63,7 +67,7 @@ gen/all/shard_*.c  (128 files) + fntab.c (guest address → native function)
 runtime/  (hand-written)  CPU state, guest memory, Win32, D3D9→Metal, audio
    │  link.sh
    ▼
-out/nfsu2_boot            46 MB arm64 Mach-O
+out/nfsu2_boot            ~35 MB arm64 Mach-O
 ```
 
 - **Pointers vs. constants.** The hard problem of x86 static recompilation is
@@ -113,6 +117,13 @@ out/nfsu2_boot            46 MB arm64 Mach-O
 
 `./run.sh test` runs the first and third.
 
+- **Integrity run:** `tools/kontrol.sh` plays both builds invisibly and silently
+  from the menus into a Quick Race (~1.5 min each) and checks the end-of-run
+  report: no unsupported instructions, no unresolved indirect calls, no broken
+  matrices, no GPU command buffer errors, no missing mip levels, the race was
+  actually reached, and in the HD build that ray tracing and the separate
+  G-buffer pass ran.  Settings are restored and saves go to a temporary folder.
+
 ## Performance
 
 Measured on an M1 Pro at 1280×960, same scene and settings, alternating runs
@@ -123,6 +134,11 @@ Measured on an M1 Pro at 1280×960, same scene and settings, alternating runs
 | Race | 119 fps (capped by the 120 Hz display) | 10–15 fps |
 | 3D menus | 119 fps | 45 fps |
 | CPU time per frame | ~12.6 ms | ~105 ms |
+
+Power while racing at the display's native resolution (3024×1964, 120 fps,
+M1 Pro, `powermetrics`, a real play session): the standard build draws about
+**6.5 W** for CPU + GPU, stays at or below 70 °C and never spins the fans; the
+HD build draws about 18 W.
 
 ## Requirements
 
@@ -149,19 +165,13 @@ EXE="$NFSU2_DATA/SPEED2.EXE"
 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-# 1) relocation table -> out/relocs.txt
-.venv/bin/python tools/reloc2.py "$EXE"
+# 1) relocation table, cross-function flag liveness, lifting every function
+#    to C, import argument table -> gen/all/   (~1 min on an M1 Pro)
+#    The script holds the OVERRIDE list (functions that runtime/overrides.c and
+#    runtime/d3dx_hle.c replace); it must match them or the link fails.
+tools/uret_v2.sh "$EXE"
 
-# 2) lift every function to C -> gen/all/   (~20 s)
-#    OVERRIDE lists the functions that runtime/overrides.c and
-#    runtime/d3dx_hle.c wrap; it must match them or the link fails.
-OVERRIDE=60fab0,61e390,61f130,5c7ed0,50d510,65ae35,6623ea,66aa3f,66ace2,6691b1,669296,664a2f,663a42,688e89,663275,662edc,660a52,668e0d,664792,66ac27,65addb,65acf5,66d13a,66d303,66d7e9,66e8a9,66f501,66ca38,65ab24 \
-  .venv/bin/python tools/genall.py "$EXE" 128
-
-# 3) import argument table -> gen/all/impargs.c
-.venv/bin/python tools/argcount.py "$EXE"
-
-# 4) compile the shards, then build the runtime and link
+# 2) compile the shards, then build the runtime and link   (~1.5 min)
 ./build.sh && ./link.sh
 
 ./run.sh test        # ISA + function tests
@@ -169,9 +179,16 @@ OVERRIDE=60fab0,61e390,61f130,5c7ed0,50d510,65ae35,6623ea,66aa3f,66ace2,6691b1,6
 ./run.sh 1080p       # 1920x1080, widescreen-corrected
 ./run.sh hd          # HD build
 ./pack.sh            # out/NFSU2.app
+./pack.sh --hd       # out/NFSU2 HD.app
 ```
 
 `run.sh` documents the environment switches; most are diagnostics.
+
+While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
+draw list (to `~/Library/Logs/NFSU2/`), for reporting rendering problems.
+`tools/oturum.sh [hd]` records a play session (frame times, CPU/GPU power,
+temperature, fan speed, screenshots) and `tools/oturum_analiz.py` turns it into
+a report.
 
 ## FAQ
 

@@ -1602,6 +1602,7 @@ Betik powermetrics'i (CPU/GPU watt, termal basınç; parola bir kez) ve oyunu
 | `thread.csv` | saniyede bir thread başına kullanıcı/sistem süresi |
 | `ornek.bin` | 1 ms'de bir konuk, 4 ms'de bir ana thread: PC + çerçeve zinciri (`thread_suspend` → durum → `resume`; askıdayken kilit/malloc yok) |
 | `ekran/` | 2 sn'de bir ~480 px JPEG (GPU kopyası, arka planda yazılır) |
+| `sicaklik.csv` | saniyede bir CPU/GPU sıcaklığı, iki fan devri, SMC sistem gücü (`tools/smcoku.c`, sudo gerekmez; `oturum.sh` derler) |
 
 Ek yük (120 fps yarış, `ps -M`): konuk thread +%1.6, süreç +%5 (çoğu
 örnekleyicinin kendisi); fps, en uzun kare ve sapma değişmiyor.
@@ -1837,3 +1838,116 @@ Yeni anahtarlar:
 | `FBZINCIR=0/2` | son işlem zinciri birleştirmesini kapat / birebirlik doğrulaması |
 | `FBZCTRL=1/2` | (`FBZINCIR=2` ile) yardımcıyı normal boru hattıyla çalıştır / kendisiyle karşılaştır |
 | `SKIPPS=…` + `ABTEST=SKIPPS` | o ps'lerin bedelini koşu içinde ölç (yalnız KAPALI dilimlerde atlar) |
+
+
+## 2026-10-20 – 10-24: ısınma, ses perdesi, kariyer kaydı
+
+### Kapasite ölçümü: GPU'nun gerçek payı
+
+Oturumlarda GPU "%98 dolu" görünüyordu, ama bu sınırlı (120 fps) koşuda DVFS
+saatini de içeren bir doluluk.  Deterministik ölçüm için yeni üç anahtar:
+`VCLOCK=8333` (oyun saati kare başına sabit 8.333 ms), `NODRAW=1` (ekrana sunmaz,
+vsync beklemez), `LIMFREE=<kare>` (o kareden sonra oyunun 120 fps sınırlayıcısı
+kapalı; menüde kullanmayın).  GPU en yüksek saatte %100 çalışır, kare başına
+meşgul süre tekrarda ±%0.2.  `PENCERE` satırı IOReport'tan GPU doluluğunu ve
+"ms/kare @1296 MHz" değerini yazar; `PASSPROF_CSV=<yol>` kare başına geçiş
+süreleri.  Özellik bedeli aynı koşu içinde `ABTEST=<AD>,32,4` ile (komşu dilim
+çiftleri).  Tuzak: Quick Race kapasite koşularının ~1/3'ünde araba yavaş kalıyor
+(`sahne arasi kopya` sayısı ~1700 yerine ~5500 olmalı) — o koşular geçersiz.
+
+### HD: neden hep sıcak (86 °C)
+
+Sıcaklık ve fan artık ölçülüyor (`sicaklik.csv`).  Bulgu: yükte fanlar
+~2300/2500 dev/dk'da sabit kalıyor, sıcaklık saniyeler içinde GPU gücünü
+izliyor; GPU sürüşün %50-80'inde en yüksek saatte olduğu sürece 86-90 °C.
+Quick Race kapasite dökümü (en yüksek saatte 8.40 ms/kare, sınır 8.33):
+
+| kalem | ms/kare |
+|---|---|
+| MSAA 2x (G-tamponsuz bedeli 0.9) | ~3.0 |
+| ↳ hareket bulanıklığı bölünmesi (MS renk+Z+G sakla/yükle, +176 MB/kare) | ~1.7 |
+| ışın izleme (çekirdek 2.0) | ~2.7 |
+| oyunun kendi tam çözünürlük son işlemi (normal sürümde de var) | ~2.3 |
+
+Normal sürüm aynı sahnede 3.0 ms/kare; gerçek oturumda yarışta CPU 2.82 +
+GPU 3.62 = **6.45 W** (16 Ekim v1: 9.17 W), en yüksek 70 °C, fanlar hiç dönmedi.
+Isınma HD'nin eklediği MSAA + ışın izlemenin bedeli; kullanıcı görüntüden
+vermemeyi seçti (MSAA yerine son işlem kenar yumuşatma reddedildi).
+
+### HD: ışın izleme sabit deposu, mekânsal gruplar
+
+Sabit depo tek yapıdan (30 karede bir +5 ms sıçrama) önce 8 zaman sıralı yuvaya
+geçmişti: yuvalar aynı bölgede üst üste biniyor, ışın çekirdeği +%48, oturumda
+12 ms üstü kare %1.5 → %5.1 (regresyon).  Şimdi (`metal.m` "SABIT DEPO:
+MEKANSAL GRUPLAR + YENI"): depo iki yarı (ping-pong), canlılar en fazla 12
+mekânsal gruba (~16K üçgen) bölünür; birleşmede GPU kopyası + kare başına BİR
+grup kurulumu, hepsi bitince tek karede değişim.  Birleşme sıçraması yok.
+Ayrıca **konum denetimi**: aynı modelin kopyaları (direk, palmiye) başka sırayla
+çizilince anlık yapının refit'i ağacı bozuyordu (çekirdek 1.5 → 15-25 ms);
+çizimin VS matrisinden dünya ötelemesi son tam kurulumla karşılaştırılır,
+4 birimden fazla kayarsa baştan kurulum (`HD_RT_REFIT_MOVE`).
+
+### HD: hareket bulanıklığında arabalar MSAA'sız kalıyordu
+
+Hızlı sürerken oyun uzak sahneyi çizip ekranı kopyalıyor, bulanıklaştırıp
+harmanlıyor, SONRA arabaları ve yakın sahneyi çiziyor.  HD bu ilk kopyayı sahne
+sonu sayıyordu: arabalar MSAA'sız ve ışın izlemesiz.  `metal.m` "SAHNE ARASI
+KOPYA": böyle bir kopyada sahne çok örnekli devam eder (`HD_MBFIX=0` eski).
+Bedeli hızlı sürüşte ~+1.5-2 W GPU; kullanıcı düzeltmeyi korumayı seçti.
+Denenip reddedilen: bölünmede yansımaları erken birleştirip G'yi taşımamak
+(`ABTEST`: +%7.5 iş).
+
+### HD: ayrı G-tamponu geçişi (`HD_GSEP`)
+
+Sahne MSAA geçişi artık G-tamponsuz; yansıyan çizimler orada oyunun kendi
+gölgelendiricisiyle (varyantın c0'ı ile birebir aynı).  Sahne bitince tek
+örnekli bir G geçişi yalnız opak yansıma varyantlarını yeniden çizer (Z ikizi,
+`<=` testi, eğim sapması -1).  `ABTEST=GSEP`: GPU işi -%5.5, enerji -%5.9, DRAM
+-28 MB/kare; doğrulama katmanı temiz, menüde fark ≤ 4/255.  Tek fark: yol üstü
+çıkartmalara (başlangıç çizgisi) artık ışın yansıması eklenmiyor.  Ölçülüp
+varsayılan KAPALI bırakılanlar: `HD_RT_FAR` (ışın mesafe sınırı, -0.1 ms) ve
+`HD_RT_BMIN` (yansıma ağırlığı eşiği, görünmez eşikte -%0.8).
+
+### Ses: müzik 40-50 sn %3 yavaş/hızlı çalıyordu (2026-10-22)
+
+Kullanıcı: "arada bir şey oluyor, o andan itibaren müzik daha ağır akıyor"
+(hoparlörde de).  `SNDMUTE=1` (yeni: karıştırma ve servo çalışır, aygıta
+sessizlik gider) + `SNDCSV` ile Quick Race 3 dk: her yükleme/takılmada oyunun
+yazma payı yeni bir düzeye oturuyor, `audio.m`'deki yazma imleci servosu bunu
+hata sanıp hızı kelepçeye (±%3) itiyor ve 40-50 sn orada kalıyordu; çağrıların
+%95'inde hız ±%1'den fazla sapıyordu.  Neden kapanmıyordu: oyun yazdığı yeri
+bizim bildirdiğimiz GERÇEK oynatma imlecine göre seçiyor (`GetCurrentPosition`
+→ `audio_cursors`), çalma hızı değişince üretim de değişir.  Servo varsayılan
+KAPALI (`SNDPLL=1` eski): sapma %0.56 (yalnız takılma anları), sessiz okuma
+aynı, imleç aşımı 4 → 0.
+
+### Kariyer: profil adı ve kayıt (2026-10-24)
+
+O güne kadar hiç profil kaydedilemiyordu; zincir beş ayrı Win32 eksiğiydi:
+metin girişi `WM_CHAR` ile geliyor (üretmiyorduk; `metal.m` karakter halkası →
+`PeekMessageA`), `GetFullPathNameA` yoktu, `FindFirstFile` özniteliği hep dosya
+diyordu (profiller KLASÖR olarak aranıyor; joker deseni de yok sayılıyordu),
+`FileTimeToLocalFileTime`/`FileTimeToSystemTime` yoktu (kayıt varken çökme),
+`RemoveDirectoryA`/`GetTimeZoneInformation` eklendi.  Kayıtlar her pakette
+`~/Library/Application Support/NFSU2 Kayitlar`; testlerde MUTLAKA
+`NFSU2_SAVEDIR=<karalama>`.  Test: `AUTOTEXT='1650:\b\b\b\bTalha\n'` ile isim
+yazma, `FILEOPLOG=1` dosya işlemleri.
+
+### Sistem kısayolları ve Space geçişi donması
+
+0.54 sn'lik tek tük donmalar oyunun değil: Ctrl+ok macOS masaüstü değiştiriyor
+(`FullscreenGameMode=0`, sistem günlüğünde görünür).  Oyun öndeyken Space /
+Mission Control kısayolları kapatılır (`SLSSetSymbolicHotKeyEnabled`), arkaya
+geçince ve çıkışta açılır; küresel ve SIGKILL'den sonra kapalı kaldığı için
+aynı ikiliden doğan bir bekçi süreç çökmede geri açar (`tests/boot.c`).
+Cmd+Tab, Spotlight, ekran görüntüsü kısayollarına dokunulmaz.  `NFSKISAYOL=0`
+kapatır.
+
+### Yakalama kısayolu
+
+Oyun içinde **Cmd+Shift+D**: sonraki kare PNG + `DRAWLIST` + `DRAWSUM`
+(`PERFLOG` dizinine, yoksa `~/Library/Logs/NFSU2/`).  Otomatik testle
+üretilemeyen sahneler (kariyer yarış sonu) için.  Test kancası
+`YAKALAKARE=<kare>`.  Açık madde: kariyerde yarış sonu sahnesi (sonuç panelinin
+arkası) kullanıcıda siyah kalıyor; Quick Race drag kaybında aynı sahne doğru.
+

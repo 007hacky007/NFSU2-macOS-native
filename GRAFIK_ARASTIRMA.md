@@ -651,6 +651,25 @@ vardı).
 * Ayar değişkenleri: `g_RainEnable` = `0x870D10` (yalnızca seçenek),
   tablo `0x870ccc…0x870d24`.
 
+## 12. Güncel durum ve GPU dökümü (2026-10-21)
+
+Ayrıntı ve ölçümler `PROJECT.md` "2026-10-20 – 10-24" bölümünde; burada özet.
+
+* **MSAA artık çözünürlüğe göre:** 1440 satır ve üstü 2x, altı 4x (`HD_MSAA`
+  ile zorlanır).  Yerel Retina çözünürlüğünde 2x.
+* **Işın izleme sabit deposu mekânsal gruplarda**, anlık yapı refit'inde
+  konum denetimi (aynı modelin kopyaları yer değiştirince baştan kurulum).
+* **Hareket bulanıklığı:** hızlı sürüşte oyunun sahne arası ekran kopyası
+  artık sahne sonu sayılmıyor; arabalar MSAA'lı ve yansımalı (`HD_MBFIX`).
+* **Ayrı G-tamponu geçişi:** sahne MSAA geçişi G'siz, G tek örnekli ayrı
+  geçişte (`HD_GSEP`); GPU işi -%5.5.
+* **Kapasite dökümü** (Quick Race, en yüksek saatte 8.40 ms/kare, 120 fps sınırı
+  8.33): MSAA ~3.0 ms (G'siz bedeli 0.9; bunun ~1.7'si hareket bulanıklığı
+  bölünmesi), ışın izleme ~2.7 (çekirdek 2.0), oyunun kendi tam çözünürlük son
+  işlemi ~2.3.  Normal sürüm aynı sahnede 3.0 ms.  HD'nin ısısı (86 °C,
+  ~18 W) bu özelliklerin doğal bedeli; görüntüden verecek seçenekler (son işlem
+  kenar yumuşatma, ışın mesafe sınırı) kullanıcı kararıyla uygulanmadı.
+
 ## Kaynaklar
 
 * AeroWidescreen/NFSHDReflections: https://github.com/AeroWidescreen/NFSHDReflections (`SOURCE/NFSU2/dllmain.cpp`, `assembly.h`)

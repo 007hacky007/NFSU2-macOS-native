@@ -3748,6 +3748,9 @@ void metal_miplevel_report(void){
         if (!g_tex[i]) continue;
         unsigned lv = (unsigned)g_tex[i].mipmapLevelCount;
         if (lv <= 1) continue;
+        /* cizim hedefi: seviyeleri GPU uretir (HD yol yansimasi, generateMipmaps),
+         * yuklenmez -- sayilirsa her HD oturumunda yanlis "EKSIK" cikiyordu */
+        if (g_tex[i].usage & MTLTextureUsageRenderTarget) continue;
         tot++;
         unsigned want = (lv >= 16u) ? 0xFFFFu : ((1u << lv) - 1u);
         if ((g_tex_lvlmask[i] & want) != want){
