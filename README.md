@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/f58f98bd-ca90-48fa-9a7d-5d056cf0cbbb
+
 # Need for Speed: Underground 2 on Mac — native Apple Silicon port, no Wine
 
 **Play *Need for Speed: Underground 2* (NFSU2, 2004) natively on Apple Silicon
