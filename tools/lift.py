@@ -1359,12 +1359,22 @@ class Lifter:
                     f" c->xmm[{di}].f[0]=sse_r2f(_a,_b,_a {op_c} _b); }}"]
         if m=='shufps' and is_xm(0) and o[2].type==X86_OP_IMM:
             di=XM[o[0].reg]; imm=o[2].imm & 0xff
-            src = (f"c->xmm[{XM[o[1].reg]}]" if is_xm(1) else None)
-            if src is None: raise Unsupported(m)
             sel=[(imm>>0)&3,(imm>>2)&3,(imm>>4)&3,(imm>>6)&3]
-            return [f"{{ float _t[4]; _t[0]=c->xmm[{di}].f[{sel[0]}]; _t[1]=c->xmm[{di}].f[{sel[1]}];"
-                    f" _t[2]={src}.f[{sel[2]}]; _t[3]={src}.f[{sel[3]}];"
+            if is_xm(1): src = f"c->xmm[{XM[o[1].reg]}].f"; pre = ""
+            elif is_mem(1):   # 16-byte memory source: read it before the destination changes
+                src = "_s"; pre = f" float _s[4]; memcpy(_s, g_mem + (uint32_t){self.ea(o[1].mem)}, 16);"
+            else: raise Unsupported(m)
+            return [f"{{{pre} float _t[4]; _t[0]=c->xmm[{di}].f[{sel[0]}]; _t[1]=c->xmm[{di}].f[{sel[1]}];"
+                    f" _t[2]={src}[{sel[2]}]; _t[3]={src}[{sel[3]}];"
                     f" for(int _k=0;_k<4;_k++) c->xmm[{di}].f[_k]=_t[_k]; }}"]
+        if m=='cvtpi2ps' and is_xm(0):
+            # two int32 (MMX register or m64) -> the low two floats; the high two are kept
+            di=XM[o[0].reg]
+            if is_mm(1): src = f"c->mm[{MM[o[1].reg]}]"
+            elif is_mem(1): src = "MR64" + self.ea(o[1].mem)
+            else: raise Unsupported(m)
+            return [f"{{ uint64_t _q={src}; c->xmm[{di}].f[0]=(float)(int32_t)(uint32_t)_q;"
+                    f" c->xmm[{di}].f[1]=(float)(int32_t)(uint32_t)(_q>>32); }}"]
         if m in ('sqrtps','rcpps','rsqrtps','maxps','minps') and is_xm(0):
             di=XM[o[0].reg]
             if m in ('sqrtps','rcpps','rsqrtps'):

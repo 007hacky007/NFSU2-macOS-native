@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <time.h>
 #include <setjmp.h>
+#include <pthread.h>
+#include <unistd.h>
 
 /* getenv() SCANS the environment array and takes a lock on every call.  On
  * per-draw paths (for example the "PDLIST" check in SetVertexShaderConstantF
@@ -19,6 +21,17 @@
 jmp_buf g_exit_jmp;
 int g_exit_code = 0;
 int g_exit_armed = 0;
+pthread_t g_guest_main_th;           /* set by tests/boot.c: the thread that owns g_exit_jmp */
+/* ExitProcess / TerminateProcess.  Before: only longjmp'd out of the guest main
+ * thread; the window's main loop kept running, so "Quit Game" left a frozen
+ * window that had to be force-quit.  Now the main loop is told to quit too, and
+ * a call from any other guest thread (whose stack g_exit_jmp does not belong to)
+ * just parks that thread instead of jumping across threads. */
+static void guest_exit_now(void){
+    void metal_request_quit(void); metal_request_quit();
+    if (g_exit_armed && pthread_equal(pthread_self(), g_guest_main_th)) longjmp(g_exit_jmp, 1);
+    for (;;) pause();                /* the process ends when main() returns */
+}
 
 typedef struct { uint32_t iat; const char*dll; const char*name; int nargs; } ImpEnt;
 extern const ImpEnt g_imp[]; extern const uint32_t g_imp_count;
@@ -428,7 +441,7 @@ int win32_call(CPU *c, uint32_t idx){
         if(p&&sz){ if(l>=sz) l=sz-1; memcpy(g_mem+p,s,l); MR8(p+l)=0; } r=l; }
     else if (!strcmp(n,"ExitProcess")){ g_exit_code=(int)ARG(c,0);
         fprintf(stderr,"\n*** guest ExitProcess(%u) - terminating\n",ARG(c,0));
-        if(g_exit_armed) longjmp(g_exit_jmp,1); return -1; }
+        guest_exit_now(); }
     else if (!strcmp(n,"LoadLibraryA")||!strcmp(n,"LoadLibraryW")){
         r = 0x20000000u;
         { static int sh=0; uint32_t p2=ARG(c,0);
@@ -536,7 +549,7 @@ int win32_call(CPU *c, uint32_t idx){
     else if (!strcmp(n,"RtlUnwind"))             r = 0;
     else if (!strcmp(n,"TerminateProcess")){ g_exit_code=(int)ARG(c,1);
         fprintf(stderr,"\n*** guest TerminateProcess(%u) - terminating\n",ARG(c,1));
-        if(g_exit_armed) longjmp(g_exit_jmp,1); return -1; }
+        guest_exit_now(); }
     else if (fileio_call(c, n, &r)) { /* file I/O */ }
     else if (win32_ext_call(c, n, &r)) { /* second-round layer */ }
     else { handled = 0; g_win32_unimpl++; stat_[idx].unimpl++;

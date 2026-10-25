@@ -74,7 +74,14 @@ typedef struct {
     double   freq;            /* SetFrequency ratio (1.0 = original rate) */
     uint64_t plays, stops, wr_bytes, wr_calls, wr_nonzero;
     uint64_t over;            /* number of callbacks where we passed the writer */
+    /* STALE DATA GUARD (see audio_note_region): which 256-byte blocks hold data
+     * the game wrote and we have not played yet.  Only on streaming buffers. */
+    uint8_t *fresh;
+    uint32_t wr_play;         /* writes since this Play started (>= 8: a streaming buffer) */
+    uint64_t muted;           /* output frames muted because the data was stale */
+    uint32_t lastblk;         /* block the cursor was in at the end of the last callback */
 } SndBuf;
+#define FRESH_SH 8u           /* block = 256 bytes (~1.5 ms of 44.1 kHz stereo 16-bit) */
 
 static SndBuf g_snd[MAXSND];
 static int    g_sndn = 1;                    /* 0 = invalid id */
@@ -111,6 +118,7 @@ int audio_register(uint32_t data, uint32_t bytes, uint32_t rate,
         b->wpos = 0; b->wseen = 0; b->trim = 1.0; b->target = 0.0; b->over = 0;
         b->freq = 1.0; b->plays = b->stops = 0;
         b->wr_bytes = b->wr_calls = b->wr_nonzero = 0;
+        b->fresh = calloc((bytes >> FRESH_SH) + 1u, 1); b->wr_play = 0; b->muted = 0; b->lastblk = 0xFFFFFFFFu;
         fprintf(stderr, "  [sound] buffer #%d: %u Hz, %u channels, %u bits, %u bytes (%.2f s)\n",
                 id, rate, chans, bits, bytes,
                 (double)bytes / (double)(rate * chans * (bits/8u)));
@@ -125,7 +133,7 @@ void audio_play(int id, int loop){
         /* CAUTION: DON'T RESET the cursor on a buffer that is already playing.  The game
          * calls Play over and over on its streaming buffers; going back to the
          * start on every call made the song stutter "stop-start". */
-        if (!g_snd[id].playing){ g_snd[id].cursor = 0.0; g_replay++; }
+        if (!g_snd[id].playing){ g_snd[id].cursor = 0.0; g_snd[id].wr_play = 0; g_replay++; }
         else g_reissue++;
         g_snd[id].playing = 1;
         g_snd[id].loop = loop;
@@ -142,6 +150,37 @@ void audio_note_write(int id, uint32_t end_off){
     if (g_snd[id].used && g_snd[id].bytes){
         g_snd[id].wpos = end_off % g_snd[id].bytes;
         g_snd[id].wseen = 1;
+    }
+    pthread_mutex_unlock(&g_slock);
+}
+/* ---- STALE DATA GUARD --------------------------------------------------------
+ * The game streams music (and the mixed sound) into a looping 0.5 s buffer,
+ * writing what we consumed and keeping ~180 ms ahead (measured).  If it stops
+ * writing for a while (a stall: slow disk, a long frame), the play cursor -- which
+ * has to keep moving, the game picks where to write from it -- goes round the ring
+ * and plays the SAME old half second again and again: the "broken record, it
+ * jumps back for two seconds" glitch reported from menus.  Windows does the same
+ * with a looping buffer, the game just never stalls there.  Now every written
+ * region is marked fresh, a block is unmarked once played, and an unmarked block
+ * of a streaming buffer plays as silence: a stall becomes a short gap instead of
+ * a repeat.  The cursor keeps moving exactly as before (no change for the game).
+ * Static buffers (written once, then looped: engine sounds) are not streaming
+ * (fewer than 8 writes since Play) and loop as before.  SNDSTALE=0 disables. */
+static int stale_guard_on(void){
+    static int v = -1; if (v < 0){ const char *e = getenv("SNDSTALE"); v = !(e && *e == '0'); }
+    return v;
+}
+void audio_note_region(int id, uint32_t off, uint32_t n){
+    if (id <= 0 || id >= MAXSND || !n) return;
+    pthread_mutex_lock(&g_slock);
+    SndBuf *b = &g_snd[id];
+    if (b->used && b->bytes && b->fresh){
+        if (off >= b->bytes) off %= b->bytes;
+        if (n > b->bytes) n = b->bytes;
+        uint32_t end = off + n;                           /* may run past the end: wrap */
+        for (uint32_t q = off >> FRESH_SH; (q << FRESH_SH) < end; q++)
+            b->fresh[q % ((b->bytes >> FRESH_SH) + 1u)] = 1;
+        if (b->playing) b->wr_play++;
     }
     pthread_mutex_unlock(&g_slock);
 }
@@ -321,6 +360,9 @@ static void mix_into(int16_t *out, unsigned frames){
         }
         double step = (double)b->rate / (double)OUT_RATE * g_rate_ratio * b->trim * b->freq;
         active++;
+        /* see STALE DATA GUARD */
+        int guard = b->fresh && b->loop && b->wr_play >= 8u && stale_guard_on();
+        uint32_t nblk = (b->bytes >> FRESH_SH) + 1u, lastblk = b->lastblk;
         for (unsigned f = 0; f < frames; f++){
             double sp = b->cursor + step * (double)f;
             if (sp >= (double)nsrc){
@@ -328,6 +370,13 @@ static void mix_into(int16_t *out, unsigned frames){
                 else { b->playing = 0; break; }
             }
             uint32_t si = (uint32_t)sp;
+            if (guard){
+                uint32_t blk = (si * bpf) >> FRESH_SH;
+                if (blk != lastblk){                       /* leaving a block: it is played */
+                    if (lastblk != 0xFFFFFFFFu) b->fresh[lastblk % nblk] = 0;
+                    lastblk = blk; }
+                if (!b->fresh[blk % nblk]){ b->muted++; continue; }   /* stale: silence */
+            }
             for (int c = 0; c < OUT_CH; c++){
                 uint32_t sc = (b->chans == 2u) ? (uint32_t)c : 0u;
                 uint32_t off = b->data + si*bpf + sc*bps;
@@ -353,6 +402,7 @@ static void mix_into(int16_t *out, unsigned frames){
             fprintf(g_csv, "%.4f\n", nby ? (double)z/(double)nby : 0.0);
         }
         b->cursor += step * (double)frames;
+        b->lastblk = guard ? lastblk : 0xFFFFFFFFu;
         if (nsrc){
             if (b->cursor >= (double)nsrc){
                 if (b->loop) b->cursor = fmod(b->cursor, (double)nsrc);
@@ -567,6 +617,9 @@ void audio_report(void){
                 (unsigned long long)b->wr_calls, (unsigned long long)b->wr_nonzero,
                 b->wr_bytes/1024.0, b->playing ? "PLAYING" : "stopped");
     }
+    { uint64_t mu = 0; for (int i = 1; i < g_sndn; i++) mu += g_snd[i].muted;
+      fprintf(stderr, "  sound stale guard : %s, %.1f ms of not-yet-rewritten data muted instead of replayed\n",
+              stale_guard_on() ? "on" : "off (SNDSTALE=0)", (double)mu * 1000.0 / (double)OUT_RATE); }
     { uint64_t ov = 0; for (int i = 1; i < g_sndn; i++) ov += g_snd[i].over;
       fprintf(stderr, "  sound cursor overrun: %llu callbacks where playback passed the writer\n",
               (unsigned long long)ov); }

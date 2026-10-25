@@ -222,6 +222,12 @@ def _(rng):
                      "unpcklps %xmm1, %xmm0", "unpckhps %xmm1, %xmm0",
                      "movlhps %xmm1, %xmm0", "movhlps %xmm1, %xmm0"])
     return f"movups 0(%rdi), %xmm0\n\tmovups 16(%rdi), %xmm1\n\t{op}\n\tmovups %xmm0, 64(%rdi)"
+@tmpl("sse shufps m128 / cvtpi2ps")
+def _(rng):
+    op = rng.choice([f"shufps ${rng.getrandbits(8)}, 16(%rdi), %xmm0",
+                     "cvtpi2ps 16(%rdi), %xmm0",
+                     "movq 24(%rdi), %mm1\n\tcvtpi2ps %mm1, %xmm0\n\temms"])
+    return f"movups 0(%rdi), %xmm0\n\t{op}\n\tmovups %xmm0, 64(%rdi)"
 @tmpl("sse2 packed int")
 def _(rng):
     op = rng.choice(['paddd','psubd','paddw','psubw','paddb','psubb','pand','por','pxor',

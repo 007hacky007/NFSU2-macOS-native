@@ -173,13 +173,20 @@ static inline void fcompare_bl(struct CPU *c, double a, double b){
     else { c->pf=0; c->zf=(_x==_y); c->cf=(_x<_y); } c->of=c->sf=c->af=0; }while(0)
 
 /* ---- EFLAGS packing/unpacking (pushfd/popfd/sahf) --------------------- */
+/* AC (bit 18) and ID (bit 21) are not kept in CPU: they only matter to the
+ * "does this CPU have CPUID" test (pushfd, flip bit 21, popfd, pushfd, compare).
+ * Dropping them made every such test fail, so the game's first-run hardware
+ * detection measured 0 MHz and set every graphics option to its minimum. */
+extern uint32_t g_eflags_hi;
+#define EFLAGS_HI_MASK 0x00240000u
 static inline uint32_t eflags_get(const struct CPU *c){
-    return 0x00000202u | (c->cf&1u) | ((c->pf&1u)<<2) | ((c->af&1u)<<4)
+    return 0x00000202u | g_eflags_hi | (c->cf&1u) | ((c->pf&1u)<<2) | ((c->af&1u)<<4)
          | ((c->zf&1u)<<6) | ((c->sf&1u)<<7) | ((c->df&1u)<<10) | ((c->of&1u)<<11);
 }
 static inline void eflags_set(struct CPU *c, uint32_t f){
     c->cf=f&1u; c->pf=(f>>2)&1u; c->af=(f>>4)&1u;
     c->zf=(f>>6)&1u; c->sf=(f>>7)&1u; c->df=(f>>10)&1u; c->of=(f>>11)&1u;
+    g_eflags_hi = f & EFLAGS_HI_MASK;
 }
 
 /* ---- string instructions ---------------------------------------------- */

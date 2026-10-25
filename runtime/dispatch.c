@@ -156,8 +156,24 @@ void cpuid_shim(CPU *c){
     default: c->eax=c->ebx=c->ecx=c->edx=0; break;
     }
 }
+/* RDTSC: a real time stamp counter at a nominal 3.0 GHz.  It used to add a fixed
+ * 3000 per call, so anything that times rdtsc against the clock measured an
+ * absurdly slow CPU: the game's first-run hardware detection (sub_005c0ae0: TSC
+ * over 50 ms -> MHz, then sub_005cde50 scores CPU MHz + GPU) read ~0 MHz and put
+ * EVERY graphics setting at its minimum (world detail 0 -> visible pop-in, no
+ * crowds, reflections, shadows, fog...).  The other users are profiling counters
+ * and the audio library's CPU calibration; nothing drives game time with it (that
+ * is QueryPerformanceCounter, our virtual clock).  RDTSC=fixed: old behaviour. */
+#include <mach/mach_time.h>
 uint64_t rdtsc_shim(void){
-    static uint64_t t = 0; return (t += 3000);
+    static int mode = -1;
+    if (mode < 0){ const char *e = getenv("RDTSC"); mode = (e && !strcmp(e, "fixed")) ? 0 : 1; }
+    if (!mode){ static uint64_t t = 0; return (t += 3000); }
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    uint64_t ticks = mach_absolute_time();
+    /* ns * 3: split to keep ticks * numer from overflowing on long runs */
+    return (ticks / tb.denom) * tb.numer * 3u + (ticks % tb.denom) * tb.numer * 3u / tb.denom;
 }
 
 void dispatch_report(void){

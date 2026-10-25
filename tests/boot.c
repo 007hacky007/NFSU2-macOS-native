@@ -18,7 +18,7 @@ void fileio_set_root(const char*);
 void fileio_set_write_root(const char*); const char *app_save_dir(void);
 /* .app bundle support (runtime/bundle.m) */
 int app_is_bundled(void); void app_set_defaults(void); void app_open_log(void);
-const char *app_find_game(void); void app_no_game(void);
+const char *app_find_game(void); void app_no_game(void); int app_check_exe(const char *exe);
 void guest_lock(CPU*); void guest_unlock(void);
 void watch_arm(uint32_t); void watch_dump(const char*,int);
 extern uint64_t g_hook_hits, g_gs_fail;
@@ -110,6 +110,7 @@ void sampler_report(void){
 static void *guest_main_thread(void *unused){
     (void)unused;
     pthread_setname_np("guest main");
+    { extern pthread_t g_guest_main_th; g_guest_main_th = pthread_self(); }
     mem_altstack_install();
     if (setjmp(g_exit_jmp)==0){
         g_exit_armed = 1;
@@ -139,6 +140,7 @@ int main(int argc,char**argv){
         }
     }
     if (!exe) exe = "SPEED2.EXE";
+    if (!app_check_exe(exe)) return 1;
 
     mem_init(); mem_fault_handler_install();
     if(mem_load_pe(exe)) return 1;
@@ -220,6 +222,14 @@ int main(int argc,char**argv){
     fprintf(stderr,"\n  hook hits: %llu   /GS failures: %llu\n",
             (unsigned long long)g_hook_hits,(unsigned long long)g_gs_fail);
     if (getenv("WATCH_ADDR")) watch_dump("end of run", 20);
+    /* MEMDUMP=0xADDR[,0xADDR...] (diagnostic): guest dwords at exit */
+    { const char *md = getenv("MEMDUMP");
+      for (const char *q = md; q && *q; ){
+          uint32_t a = (uint32_t)strtoul(q, NULL, 0);
+          if (a && mem_is_committed(a + 3))
+              fprintf(stderr, "  [memdump] 0x%08x = 0x%08x (%d, %.6g f)\n", a, MR32(a), (int)MR32(a),
+                      (double)*(float *)(g_mem + a));
+          q = strchr(q, ','); if (q) q++; } }
     all_reports();
     return 0;
 }

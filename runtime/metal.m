@@ -338,6 +338,10 @@ long metal_tris(void){ return atomic_load(&g_tris_drawn); }
 long metal_tex_created(void){ return atomic_load(&g_tex_created); }
 long metal_tex_uploaded(void){ return atomic_load(&g_tex_uploaded); }
 int  metal_quit_requested(void){ return atomic_load(&g_should_quit); }
+/* The guest ended (ExitProcess / TerminateProcess, e.g. "Quit Game"): the main
+ * loop must close the window too, otherwise the app stays open with a frozen
+ * window and has to be force-quit. */
+void metal_request_quit(void){ atomic_store(&g_should_quit, 1); }
 
 /* ---------------- draw command queue ----------------
  * The guest thread accumulates draws here; the main thread encodes them at Present. */

@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <unistd.h>
 
 /* getenv() SCANS the environment array and takes a lock on every call.  On
  * per-draw paths (for example the "PDLIST" check in SetVertexShaderConstantF
@@ -1050,7 +1051,37 @@ static void vsk_copy_used(VSConst *dst, const VSConst *src, const VSProg *prog){
  * it once and keep it (-2 = not looked at yet). */
 static int8_t g_pos_cx[MAXVS], g_pos_cw[MAXVS]; static uint8_t g_pos_seen[MAXVS];
 static unsigned long g_asp_np[MAXVS], g_asp_no[MAXVS]; static float g_asp_cw3[MAXVS];
-static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog){
+/* Is this orthographic draw a full-width bar (clip x -1..1, part of the height)?
+ * The cinematic letterbox bars are.  With HUDFIX they were narrowed to the centre
+ * like the HUD, so in a cinematic the bars stopped at the old 4:3 edges and the
+ * scene showed through at the sides.  Such bars are left at full width.  Only
+ * small draws (<= 64 vertices, float3/float4 position) are looked at.
+ * HUDWIDE=0: old behaviour. */
+typedef struct { uint32_t vp, nv, stride; int p_off, p_type; } VtxView;
+static unsigned long g_asp_wide = 0;
+static float g_wide_ylo, g_wide_yhi;
+static int ortho_full_width(const VSConst *vsk, int cx, const VtxView *vv){
+    if (!vv || !vv->vp || !vv->nv || vv->nv > 64u || !vv->stride || vv->p_off < 0) return 0;
+    if (vv->p_type != 2 && vv->p_type != 3) return 0;        /* FLOAT3 / FLOAT4 */
+    const float *r = vsk->f[cx], *ry = vsk->f[cx + 1];
+    float lo = 1e30f, hi = -1e30f, ylo = 1e30f, yhi = -1e30f;
+    for (uint32_t i = 0; i < vv->nv; i++){
+        uint32_t a = vv->vp + i * vv->stride + (uint32_t)vv->p_off;
+        if (!mem_is_committed(a + 11)) return 0;
+        float x = MRF32(a), y = MRF32(a + 4), z = MRF32(a + 8);
+        float w = (vv->p_type == 3) ? MRF32(a + 12) : 1.f;
+        float cxv = x * r[0] + y * r[1] + z * r[2] + w * r[3];
+        float cyv = x * ry[0] + y * ry[1] + z * ry[2] + w * ry[3];
+        if (cxv < lo) lo = cxv; if (cxv > hi) hi = cxv;
+        if (cyv < ylo) ylo = cyv; if (cyv > yhi) yhi = cyv;
+    }
+    g_wide_ylo = ylo; g_wide_yhi = yhi;
+    /* Bars only: full width but part of the height and on screen (measured: the
+     * cinematic bars are y 0.75..1 and -1..-0.75).  A full-screen picture (splash,
+     * loading screen, y -1..1 or larger) keeps its 4:3 shape. */
+    return lo <= -0.98f && hi >= 0.98f && (yhi - ylo) < 1.9f && yhi > -1.f && ylo < 1.f;
+}
+static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const VtxView *vv){
     if (g_aspfix == 1.f || !prog) return vsk;
     unsigned vs = g_cur_vs;
     if (vs >= MAXVS) return vsk;
@@ -1074,6 +1105,21 @@ static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog){
          * shrunk, bars appear at the edges. */
         { static int hf = -1;
           if (hf < 0){ const char *e = ENVC("HUDFIX"); hf = !(e && *e && *e=='0'); }
+          static int hw = -1;
+          if (hw < 0){ const char *e = ENVC("HUDWIDE"); hw = !(e && *e && *e=='0'); }
+          if (hf && hw && ortho_full_width(vsk, cx, vv)){
+              g_asp_wide++;
+              { const char *al = ENVC("ASPLOG"); static int nw = 0;
+                static uint32_t seen[256]; static int ns = 0; int dup = 0;
+                uint32_t key = (uint32_t)g_cur_ps_id * 2654435761u ^ g_tex_stage[0] * 40503u
+                             ^ (uint32_t)(int)(g_wide_ylo * 100.f) * 977u ^ (uint32_t)(int)(g_wide_yhi * 100.f);
+                for (int q = 0; q < ns; q++) if (seen[q] == key) dup = 1;
+                if (!dup && ns < 256) seen[ns++] = key;
+                if (al && !dup && (long)g_present_no >= atol(al) && nw < 200){ nw++;
+                      fprintf(stderr,"  [asp-wide] frame=%ld vs=%u ps=%d tex0=%u nv=%u y=%.3f..%.3f\n",
+                              (long)g_present_no, vs, g_cur_ps_id, g_tex_stage[0], vv->nv,
+                              (double)g_wide_ylo, (double)g_wide_yhi); } }
+              return vsk; }
           if (hf){ static VSConst ht; vsk_copy_used(&ht, vsk, prog);
                    for (int k = 0; k < 4; k++) ht.f[cx][k] *= g_aspfix;
                    return &ht; } }
@@ -1213,7 +1259,6 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
         g_gpuvs = (e8 && *e8 && *e8 != '0') ? 1 : 0; }
     const VSProg *prog = (g_cur_vs && g_cur_vs < MAXVS) ? g_vsprog[g_cur_vs] : 0;
     vsk = fixmat_apply(vsk);
-    vsk = aspect_apply(vsk, prog);
 
     /* Declaration parsing ONCE per (declaration, shader).  It used to rebuild from
      * scratch on every draw, reading up to 32 elements from guest memory and testing
@@ -1279,6 +1324,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     const DElem *el = dcc[dci].el; int nel = dcc[dci].nel;
     int p_off = dcc[dci].p_off, p_type = dcc[dci].p_type, c_off = dcc[dci].c_off,
         c_type = dcc[dci].c_type, t_off = dcc[dci].t_off, t_type = dcc[dci].t_type;
+    { VtxView vv = { vp, nv, stride, p_off, p_type };
+      vsk = aspect_apply(vsk, prog, &vv); }
 
     /* ---------------- GPU vertex shader (GPUVS) ----------------
      * Measured: ~45% of the run time was in the vs_run interpreter on the CPU,
@@ -1965,10 +2012,29 @@ int com_call(CPU *c, uint32_t magic){
                     MR32(pm+8)=60; MR32(pm+12)=22; }
             r=0; }
         else if (MID(GetAdapterIdentifier)){
+            /* D3DADAPTER_IDENTIFIER9 is 1100 bytes: Driver[512], Description[512],
+             * DeviceName[32], DriverVersion@1056, VendorId@1064, DeviceId@1068,
+             * SubSysId@1072, Revision@1076, DeviceIdentifier@1080, WHQLLevel@1096.
+             * Only the two strings used to be written; VendorId / DeviceId kept
+             * whatever was in memory, the game's first-run hardware detection saw an
+             * unknown card and put EVERY graphics setting at its minimum (world detail
+             * 0: visible world pop-in, no crowds, reflections, shadows, fog, motion
+             * blur...).  Report a top card of the game's era (GeForce 6800 Ultra) and
+             * a driver of the time.  ADAPTERID=<vendor>:<device> (hex) overrides. */
             uint32_t p=A(c,3);
-            if(p){ mem_commit(p,1024); memset(g_mem+p,0,1024);
-                   strcpy((char*)(g_mem+p),"NFSU2 Native Renderer");
-                   strcpy((char*)(g_mem+p+512),"Apple Silicon / Metal"); }
+            if(p){ mem_commit(p,1100); memset(g_mem+p,0,1100);
+                   strcpy((char*)(g_mem+p),"nv4_disp.dll");
+                   strcpy((char*)(g_mem+p+512),"NVIDIA GeForce 6800 Ultra (Apple Silicon / Metal)");
+                   strcpy((char*)(g_mem+p+1024),"\\\\.\\DISPLAY1");
+                   uint32_t ven = 0x10DEu, dev = 0x0040u;
+                   { const char *e = ENVC("ADAPTERID");
+                     if (e && *e){ ven = (uint32_t)strtoul(e, NULL, 16);
+                                   const char *q = strchr(e, ':'); if (q) dev = (uint32_t)strtoul(q + 1, NULL, 16); } }
+                   MR32(p+1056) = (10u << 16) | 7164u;       /* 6.14.10.7164 (ForceWare 71.64) */
+                   MR32(p+1060) = (6u << 16) | 14u;
+                   MR32(p+1064) = ven; MR32(p+1068) = dev;
+                   MR32(p+1072) = 0; MR32(p+1076) = 0xA1u;
+                   MR32(p+1096) = 1u; }
             r=0; }
         else if (MID(GetDeviceCaps)){ uint32_t pc=A(c,3); if(pc) fill_caps(pc); r=0; }
         else if (MID(CreateDevice)){
@@ -2596,6 +2662,12 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(BeginScene)){ if (metal_available()) metal_begin_frame(); r=0; }
         else if (MID(EndScene)) r=0;
         else if (MID(Present)){ g_present_no++;
+            /* STALL=<present>:<ms> (test): freeze the game thread once, as a slow disk or a
+             * long frame would -- e.g. to check the sound stale-data guard (audio.m). */
+            { static long sa = -2; static unsigned sms = 0;
+              if (sa == -2){ const char *e = ENVC("STALL"); sa = -1;
+                  if (e && *e){ sa = atol(e); const char *q = strchr(e, ':'); sms = q ? (unsigned)atoi(q + 1) : 1000u; } }
+              if (sa >= 0 && (long)g_present_no == sa){ fprintf(stderr, "STALL: present %ld, %u ms\n", sa, sms); usleep(sms * 1000u); } }
             { extern void guest_cpu_mark(void); guest_cpu_mark(); }
             /* FETICK: the front-end tick [0x8651a8] should increase at 60 Hz, but the game's
              * frame-delta measurement always gives 1/1800 s, so the tick never
@@ -3751,6 +3823,9 @@ int com_call(CPU *c, uint32_t magic){
                   uint32_t n2u   = A(c,4);
                   if (sid3 && base3 && p1 >= base3){
                       void audio_note_write(int, uint32_t);
+                      void audio_note_region(int, uint32_t, uint32_t);   /* see audio.m STALE DATA GUARD */
+                      audio_note_region((int)sid3, p1 - base3, n1);
+                      if (n2u && n2u < 1u<<22) audio_note_region((int)sid3, 0u, n2u);
                       if (n2u && n2u < 1u<<22)
                           audio_note_write((int)sid3, n2u);          /* continue from the start */
                       else

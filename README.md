@@ -51,8 +51,9 @@ The game boots, reaches the menus, and races are playable with sound.
 - One workaround with an unknown root cause remains: the front end's
   world-view-projection matrix arrives broken and an identity matrix is injected
   instead (`FIXMAT`, see `run.sh`).
-- 400 instructions in rarely used opcodes are still emitted as traps. None are
-  hit in the measured race scene.
+- About 310 instructions in rarely used opcodes (many of them data the
+  disassembler mistook for code) are still emitted as traps. None are hit in the
+  measured race scene.
 - Some visuals are unverified against a Windows reference (crowds / skinned
   meshes). See "Remaining graphics items" in `PROJECT.md`.
 - Under investigation: in career mode, the scene behind the post-race results
@@ -156,9 +157,12 @@ HD build draws about 18 W.
   | | |
   |---|---|
   | File | `SPEED2.EXE`, 4,788,224 bytes |
+  | Build | European v1.2 executable without the CD check |
   | SHA-256 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` |
 
-  Other builds have not been tested and will not work without changes.
+  Other builds (for example the US retail executable) have not been tested and
+  will not work without changes. The app checks the file at startup and says so
+  instead of crashing; `NFSU2_ANY_EXE=1` skips the check.
 
 ## Build and run
 

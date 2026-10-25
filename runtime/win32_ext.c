@@ -443,6 +443,7 @@ static const char *reg_path(void){
     snprintf(pth, sizeof pth, "%s/.nfsu2_registry", h ? h : ".");
     return pth;
 }
+static void reg_save(void);
 static void reg_load(void){
     if (g_reg_loaded) return;
     g_reg_loaded = 1;
@@ -462,6 +463,38 @@ static void reg_load(void){
         (void)isstr;
     }
     fclose(f);
+    /* One-time repair.  Before 2026-10-25 the game's first-run hardware detection
+     * measured a 0 MHz CPU (EFLAGS ID bit, see eflags_get in cpu.h) and saved every
+     * graphics option at its minimum, then NotFirstTime=1, so it never detected
+     * again: no crowds, short draw distance (pop-in), no reflections.  If the saved
+     * settings carry exactly that signature, drop NotFirstTime and the g_* values
+     * so the next launch detects again.  Done once (PortSettingsRepaired). */
+    int fixed = 0, zero = 0;
+    for (int i = 0; i < g_regn; i++){
+        if (!strcasecmp(g_reg[i].name, "PortSettingsRepaired")) fixed = 1;
+        if (!g_reg[i].is_str && g_reg[i].dw == 0 &&
+            (!strcasecmp(g_reg[i].name, "g_PerformanceLevel") ||
+             !strcasecmp(g_reg[i].name, "g_WorldLodLevel") ||
+             !strcasecmp(g_reg[i].name, "g_CarLodLevel") ||
+             !strcasecmp(g_reg[i].name, "g_CrowdEnable"))) zero++;
+    }
+    if (!fixed && g_regn < MAXREG){
+        if (zero == 4){
+            int k = 0;
+            for (int i = 0; i < g_regn; i++){
+                if (!strncmp(g_reg[i].name, "g_", 2) ||
+                    !strcasecmp(g_reg[i].name, "NotFirstTime")) continue;
+                if (k != i) g_reg[k] = g_reg[i];
+                k++;
+            }
+            g_regn = k;
+            fprintf(stderr, "registry: minimum settings from the old hardware detection"
+                            " found; detecting again\n");
+        }
+        snprintf(g_reg[g_regn].name, 64, "PortSettingsRepaired");
+        g_reg[g_regn].is_str = 0; g_reg[g_regn].dw = 1; g_regn++;
+        reg_save();
+    }
 }
 static void reg_save(void){
     FILE *f = fopen(reg_path(), "w");
@@ -520,7 +553,13 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
               else { dval = g_reg[ri].dw; have_d = 1; }
           } }
         if (sval || have_d) { /* the saved value will be used */ }
-        else if (!strcasecmp(vn,"NotFirstTime")){ dval=1; have_d=1; }
+        /* NotFirstTime is NOT faked any more: it used to read 1 on an empty
+         * registry (from the days when writes were dropped and every launch was
+         * a "first launch"), so the game never ran its first-run hardware
+         * detection and kept every graphics setting at 0.  Writes persist now: the
+         * first launch detects, writes NotFirstTime=1 itself, and later launches
+         * read it back.  REGFIRST=1 restores the fake. */
+        else if (!strcasecmp(vn,"NotFirstTime") && getenv("REGFIRST")){ dval=1; have_d=1; }
         else if (!strcasecmp(vn,"Language"))      sval="English";
         else if (!strcasecmp(vn,"Install Dir"))   sval="C:\\NFSU2";
         else if (!strcasecmp(vn,"CD Drive"))      sval="C:\\NFSU2";

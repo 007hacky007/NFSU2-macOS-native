@@ -16,7 +16,7 @@
 # and everyone runs it with their own installation.
 #
 # Saves (career profiles) are, in EVERY bundle, OUTSIDE the app and the game
-# folder, in ~/Library/Application Support/NFSU2 Kayitlar; settings in
+# folder, in ~/Library/Application Support/NFSU2 Saves; settings in
 # ~/.nfsu2_registry.  When a new version is shipped and the .app or the game
 # folder is replaced, the player's progress isn't lost (runtime/bundle.m).
 set -e
@@ -137,7 +137,7 @@ echo "ready: $APP  ($SZ)"
 
 if [ "$EMBED" = 1 ]; then
   echo "personal single-piece app ready (DON'T DISTRIBUTE: it contains the game itself)."
-  echo "saves: ~/Library/Application Support/NFSU2 Kayitlar"
+  echo "saves: ~/Library/Application Support/NFSU2 Saves"
   exit 0
 fi
 
@@ -188,7 +188,7 @@ IF SOMETHING GOES WRONG
      defaults delete $BID
 
 SAVES
-  Career saves:  ~/Library/Application Support/NFSU2 Kayitlar
+  Career saves:  ~/Library/Application Support/NFSU2 Saves
   Settings:      ~/.nfsu2_registry
   Both live OUTSIDE the app and the game folder: when a new version comes
   out, replacing $NAME.app (or the game folder) doesn't delete your

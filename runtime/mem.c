@@ -12,6 +12,7 @@ void (*g_backtrace_fn)(struct CPU*,int) = 0;   /* set by dispatch.c */
 CPU *g_cur_cpu = 0;
 
 uint8_t *g_mem = 0;
+uint32_t g_eflags_hi = 0;   /* EFLAGS AC/ID bits, see eflags_get in cpu.h */
 uint32_t g_image_base = 0x400000u, g_res_dir_va = 0, g_res_dir_size = 0;
 
 /* watch state: must be defined in every build (debug.c is optional) */

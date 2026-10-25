@@ -1523,8 +1523,9 @@ not embedded.
 
 Writing inside a signed bundle breaks the signature, so a **write root** was
 added to `fileio.c` (`fileio_set_write_root`): writes / creates / deletes go to
-`~/Library/Application Support/NFSU2 Kayitlar` (the folder name is Turkish for
-"NFSU2 Saves" and is kept as-is so existing saves keep working), reads look
+`~/Library/Application Support/NFSU2 Saves` (until 2026-10-25 it was called
+"NFSU2 Kayitlar"; the runtime renames the old folder once on first start, so
+existing saves keep working), reads look
 there first and then in the game root, and directory listings are the union of
 both. Active only when the data is found inside the bundle (or when
 `NFSU2_SAVEDIR` is given); running from the terminal and a bundle with its data
@@ -2016,7 +2017,7 @@ text input arrives with `WM_CHAR` (we didn't generate it; `metal.m` character ri
 the attribute as a file (profiles are looked up as FOLDERS; the wildcard pattern
 was ignored too), `FileTimeToLocalFileTime`/`FileTimeToSystemTime` were missing (a
 crash when a save existed), `RemoveDirectoryA`/`GetTimeZoneInformation` were
-added. Saves are in `~/Library/Application Support/NFSU2 Kayitlar` for every
+added. Saves are in `~/Library/Application Support/NFSU2 Saves` for every
 bundle; in tests ALWAYS use `NFSU2_SAVEDIR=<scratch>`. Test:
 `AUTOTEXT='1650:\b\b\b\bTalha\n'` types a name, `FILEOPLOG=1` logs file operations.
 
@@ -2039,3 +2040,71 @@ tests can't produce (the end of a career race). Test hook `YAKALAKARE=<frame>`.
 Open item: in career mode the post-race scene (behind the results panel) stays
 black for the user; after a Quick Race drag loss the same scene is correct.
 
+
+## 2026-10-25: first public feedback (Reddit)
+
+Five reports from a player on another Mac. Findings and fixes:
+
+### First-run settings were all at minimum (pop-in, no crowds)
+
+On an empty registry the game runs its own hardware detection once
+(`sub_005ced70` → `sub_005ceca0` → `sub_005cde50`): score = CPU MHz bracket × 0.8
++ GPU table score × 0.2, truncated → `g_PerformanceLevel`, which picks the preset
+for every graphics option. CPU detection (`sub_005cdd00`) first checks for CPUID
+the classic way (pushfd, flip EFLAGS bit 21, popfd, pushfd, compare).
+`eflags_get/eflags_set` (`cpu.h`) did not keep bit 21, so the test always said
+"no CPUID", the MHz stayed 0, the level came out 0 and EVERY option was saved at
+its minimum (world detail 0 = visible building of the world ahead, no crowds,
+reflections, shadows). `NotFirstTime=1` was saved too, so it never detected again.
+
+- `g_eflags_hi` (`mem.c`) now carries the AC/ID bits through pushfd/popfd.
+- `rdtsc_shim` counts real time at a nominal 3.0 GHz (it used to add a fixed
+  3000 per call; the MHz measurement times RDTSC over 50 ms). `RDTSC=fixed`: old.
+- `GetAdapterIdentifier` fills the whole structure: NVIDIA 10DE/0040 (a GeForce
+  6800 Ultra, score 5.0 in the game's table). `ADAPTERID=ven:dev` overrides.
+- The `NotFirstTime` fake is gone (`REGFIRST=1` restores it).
+
+Result on an empty registry: level 4 (4.0 × 0.8 + 5.0 × 0.2 = 4.2; level 4 is the
+highest the game ever picks by itself, 5 is manual only), world LOD 2, crowds on,
+1080p row. Registries saved by the buggy detection (performance level, world
+LOD, car LOD and crowds all 0, no `PortSettingsRepaired` marker) are repaired
+once at load: `NotFirstTime` and the `g_*` values are dropped, so the game detects
+again.
+
+**Side effect, fixed:** the same CPUID test is in ten functions. Now that it
+passes, a library at 0x72d369 picks its SSE variant (0x7337d0 instead of
+0x733700), which uses `cvtpi2ps` and `shufps xmm, m128`; the lifter had neither
+(9.3 million traps in one Quick Race). Both were added to `lift.py`, with a
+`fuzzisa.py` template (all cases match real x86 under Rosetta), and `gen/all`
+was regenerated: the only code differences were these instructions. Traps per
+race: 0. The CRT's `stmxcsr` path stays unreachable (it needs SSE2, which our
+CPUID does not report).
+
+### Cinematic letterbox bars stopped at the 4:3 edges
+
+With `HUDFIX` every orthographic draw is narrowed to the centre so the HUD keeps
+its shape; the NIS letterbox bars were narrowed too and the 3D scene showed at the
+sides. Orthographic draws that span the whole width but only part of the height
+(the bars: y 0.75..1 and -1..-0.75) are now left at full width; full-screen
+pictures (splash, loading screen) keep their 4:3 shape. `HUDWIDE=0`: old.
+`ASPLOG=<frame>` logs each kind of full-width draw once.
+
+### Quit froze the app
+
+`ExitProcess` from a guest thread other than the main one parked that thread
+and nothing told the window to close. `guest_exit_now()` now asks the Metal side
+to quit first.
+
+### Menu music "skipping back" for a moment
+
+When the game stalls (first-launch shader compiles, loading), DirectSound keeps
+looping its 0.5 s buffer and replays old data. The mixer now tracks which 256-byte
+blocks were rewritten since playback last passed them and plays silence for
+stale ones (`SNDSTALE=0`: old). `STALL=<present>:<ms>` reproduces a stall: 2 s
+stall → 1.8 s muted instead of a replay; a normal race mutes ~85 ms.
+
+### Unsupported executables
+
+`SPEED2.EXE` is checked by SHA-256 at startup; any other build (the US retail
+executable, for one) gets a clear message instead of a crash.
+`NFSU2_ANY_EXE=1` skips the check.

@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <libgen.h>
 #include <mach-o/dyld.h>
+#include <CommonCrypto/CommonDigest.h>
 
 static char g_exe_dir[1024];      /* .../NFSU2.app/Contents/MacOS      */
 static char g_app_dir[1024];      /* the directory CONTAINING the .app */
@@ -125,7 +126,12 @@ const char *app_save_dir(void){
     const char *env = getenv("NFSU2_SAVEDIR");
     if (env && *env){ snprintf(dir, sizeof dir, "%s", env); return dir; }
     const char *home = getenv("HOME"); if (!home) return NULL;
-    snprintf(dir, sizeof dir, "%s/Library/Application Support/NFSU2 Kayitlar", home);
+    snprintf(dir, sizeof dir, "%s/Library/Application Support/NFSU2 Saves", home);
+    /* The folder used to be called "NFSU2 Kayitlar": move existing saves over once. */
+    { char old[1200]; struct stat st;
+      snprintf(old, sizeof old, "%s/Library/Application Support/NFSU2 Kayitlar", home);
+      if (stat(dir, &st) != 0 && stat(old, &st) == 0 && S_ISDIR(st.st_mode)){
+          if (rename(old, dir) == 0) fprintf(stderr, "saves: moved \"%s\" -> \"%s\"\n", old, dir); } }
     return dir;
 }
 
@@ -133,7 +139,7 @@ static void app_alert(const char *title, const char *msg){
     NSAlert *a = [NSAlert new];
     [a setMessageText:@(title)];
     [a setInformativeText:@(msg)];
-    [a addButtonWithTitle:@"Tamam"];
+    [a addButtonWithTitle:@"OK"];
     [a runModal];
 }
 
@@ -143,7 +149,7 @@ static int app_ask(char *out, size_t osz){
     [op setCanChooseFiles:NO];
     [op setCanChooseDirectories:YES];
     [op setAllowsMultipleSelection:NO];
-    [op setPrompt:@"Sec"];
+    [op setPrompt:@"Choose"];
     [op setMessage:@"Choose the Need for Speed Underground 2 folder "
                    @"(the folder containing SPEED2.EXE)."];
     [NSApp activateIgnoringOtherApps:YES];
@@ -220,6 +226,49 @@ const char *app_find_game(void){
         return found;
     }
     return NULL;
+}
+
+/* SUPPORTED EXECUTABLE.  Game addresses are hard-coded in the runtime (and the
+ * generated code is lifted from this exact file), so any other SPEED2.EXE --
+ * e.g. the US release -- crashes or hangs somewhere at startup with no hint why.
+ * Check the SHA-256 up front and say so.  NFSU2_ANY_EXE=1 skips the check. */
+#define NFSU2_EXE_SIZE   4788224u
+#define NFSU2_EXE_SHA256 "8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297"
+int app_check_exe(const char *exe){
+    const char *any = getenv("NFSU2_ANY_EXE");
+    if (any && *any == '1') return 1;
+    FILE *f = fopen(exe, "rb");
+    if (!f) return 1;                                /* the loader reports a missing file */
+    CC_SHA256_CTX c; CC_SHA256_Init(&c);
+    unsigned char buf[65536]; size_t n, tot = 0;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0){ CC_SHA256_Update(&c, buf, (CC_LONG)n); tot += n; }
+    fclose(f);
+    unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(md, &c);
+    char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
+    if (!strcmp(hex, NFSU2_EXE_SHA256)) return 1;
+    fprintf(stderr, "unsupported SPEED2.EXE: %s\n  size %zu bytes, sha256 %s\n"
+                    "  supported: %u bytes, sha256 %s (European v1.2 no-CD executable)\n"
+                    "  NFSU2_ANY_EXE=1 skips this check (it will almost certainly not run)\n",
+            exe, tot, hex, NFSU2_EXE_SIZE, NFSU2_EXE_SHA256);
+    if (app_is_bundled()){
+        char msg[1600];
+        snprintf(msg, sizeof msg,
+                 "This port runs exactly one build of the game's executable: the European "
+                 "v1.2 no-CD SPEED2.EXE (%u bytes). The SPEED2.EXE in the chosen folder is "
+                 "different (%zu bytes), for example the US release, and would crash.\n\n"
+                 "Replace SPEED2.EXE in your game folder with the supported one and open the "
+                 "app again. Details: README, \"Requirements\".\n\n%s",
+                 NFSU2_EXE_SIZE, tot, exe);
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        [NSApp activateIgnoringOtherApps:YES];
+        app_alert("Unsupported SPEED2.EXE", msg);
+        /* forget the folder so the next launch asks again */
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:kPrefKey];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+    return 0;
 }
 
 /* When exiting without finding the game, tell the user why. */
