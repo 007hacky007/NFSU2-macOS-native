@@ -1,4 +1,4 @@
-/* D3D9 arayuz metot tablolari: ad + stdcall arguman sayisi ('this' dahil) */
+/* D3D9 interface method tables: name + stdcall argument count (including 'this') */
 #ifndef D3D9_TABLES_H
 #define D3D9_TABLES_H
 typedef struct { const char *name; unsigned char nargs; } Method;
@@ -53,7 +53,7 @@ static const Method M_DEVICE[] = {
  {"DrawRectPatch",4},{"DrawTriPatch",4},{"DeletePatch",2},{"CreateQuery",3},
 };
 
-/* IDirect3DResource9 turevleri icin ortak on ek */
+/* common prefix for IDirect3DResource9 derivatives */
 #define RES_HEAD \
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},\
  {"SetPrivateData",5},{"GetPrivateData",4},{"FreePrivateData",2},\
@@ -74,7 +74,7 @@ static const Method M_SURFACE[] = { RES_HEAD,
  {"GetContainer",3},{"GetDesc",2},{"LockRect",4},{"UnlockRect",1},
  {"GetDC",2},{"ReleaseDC",2},
 };
-/* --- kucuk arayuzler: her birinin kendi vtable duzeni var --- */
+/* --- small interfaces: each has its own vtable layout --- */
 static const Method M_VSHADER[] = {
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},{"GetFunction",3},
 };
@@ -93,7 +93,7 @@ static const Method M_QUERY[] = {
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},{"GetType",1},
  {"GetDataSize",1},{"Issue",2},{"GetData",4},
 };
-/* basit/bilinmeyen nesneler icin genis bos vtable (cozulemeyen cagriyi onler) */
+/* a wide empty vtable for simple/unknown objects (prevents unresolved calls) */
 static const Method M_SIMPLE[] = {
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},
  {"GetFunction",3},{"GetDeclaration",3},

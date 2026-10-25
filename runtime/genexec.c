@@ -1,27 +1,27 @@
-/* Guest'in CALISMA ANINDA URETTIGI x86 kodunu calistir.
+/* Run x86 code the guest GENERATES AT RUN TIME.
  *
- * Statik rekompilasyonun asil kör noktasi: oyun yigina duz x86 yaziyor ve
- * oradan cagiriyor; o adresler icin uretilmis C karsiligimiz yok.  NFSU2'nin
- * malzeme/render durum boru hatti bunu yogun kullaniyor -- olculdu: bir
- * oturumda 17.000'den fazla cagri, hepsi sub_00725520 icindeki
- * `call [eax+8]` uzerinden.  Uretilen blok tipik olarak sudur:
+ * The real blind spot of static recompilation: the game writes plain x86 to
+ * its stack and calls it from there; we have no generated C counterpart for
+ * those addresses.  NFSU2's material/render state pipeline uses this heavily --
+ * measured: more than 17,000 calls in one session, all through
+ * `call [eax+8]` in sub_00725520.  A generated block typically looks like:
  *
- *     push esi                       ; 0x105fdbe4 gibi bir yigin adresi
- *     mov  esi,[esp+8]               ; arg1 = malzeme nesnesi
+ *     push esi                       ; a stack address like 0x105fdbe4
+ *     mov  esi,[esp+8]               ; arg1 = material object
  *     push esi
- *     call sub_0071feef              ; .text'teki KAYITLI kucuk erisimci
+ *     call sub_0071feef              ; a small REGISTERED accessor in .text
  *     add  esi,0x14
  *     ...
  *     mov  [esi+0xa0],eax  ...  mov [esi+0x150],eax
  *
- * Cagri hedefleri gercek lifted fonksiyonlar, yani onlari dogrudan
- * dispatch_indirect'e devredebiliyoruz.  Bu cagrilarin yutulmasi yuksek
- * detay ayarlarinda cokmeye yol aciyordu.
+ * The call targets are real lifted functions, so we can hand them straight to
+ * dispatch_indirect.  Swallowing these calls led to crashes at high detail
+ * settings.
  *
- * TASARIM ILKESI: bilinmeyen bir bayt gorursek SESSIZCE DEVAM ETMEYIZ.
- * Durur, esp'yi geri alir ve raporlariz -- yanlis calismaktansa gorunur
- * kalsin.  Ayni sekilde her bellek islemi commit kontrolunden gecer;
- * bozuk isaretciyle host'u cokertmek yerine bail ederiz.                */
+ * DESIGN PRINCIPLE: if we see an unknown byte we DO NOT CONTINUE SILENTLY.
+ * We stop, restore esp and report -- better visible than running wrong.
+ * Likewise every memory operation goes through a commit check; instead of
+ * crashing the host with a broken pointer we bail.                       */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,13 +39,13 @@ static uint32_t g_gen_bail_ops[16]; static int g_gen_bail_n = 0;
           if(!_d && g_gen_bail_n<16) g_gen_bail_ops[g_gen_bail_n++]=(op_); } \
         goto bail; }while(0)
 
-/* commit kontrollu erisim; basarisizsa bail */
+/* commit-checked access; bail on failure */
 #define CHK(a_,n_) do{ if(!mem_is_committed(a_) || !mem_is_committed((a_)+(n_)-1)) \
                          BAIL(pc, 0xFFFFFFFEu); }while(0)
 
 typedef struct { int is_reg; int reg; uint32_t ea; int len; } Opnd;
 
-/* ModRM (+SIB +disp) coz.  len = modrm'den itibaren tuketilen bayt.      */
+/* Decode ModRM (+SIB +disp).  len = bytes consumed starting at modrm.     */
 static Opnd modrm(CPU *c, uint32_t p, int *rf){
     Opnd o = {0,0,0,0};
     uint8_t m = MR8(p);
@@ -73,13 +73,13 @@ int run_generated(CPU *c, uint32_t entry){
         if (!mem_is_committed(pc)) BAIL(pc, 0xFFFFFFFFu);
         uint8_t op = MR8(pc);
         int osz16 = 0;
-        if (op == 0x66){ osz16 = 1; pc++; op = MR8(pc); }   /* operand boyutu 16 */
+        if (op == 0x66){ osz16 = 1; pc++; op = MR8(pc); }   /* operand size 16 */
         g_gen_insns++;
         int rf; Opnd o;
         uint32_t a, b, r;
 
         switch (op){
-        /* ---- yigin ---- */
+        /* ---- stack ---- */
         case 0x50: case 0x51: case 0x52: case 0x53:
         case 0x54: case 0x55: case 0x56: case 0x57:
             PUSH32(c->r[op-0x50]); pc++; continue;
@@ -146,12 +146,12 @@ int run_generated(CPU *c, uint32_t entry){
         case 0x8D: o = modrm(c,pc+1,&rf); if (o.is_reg) BAIL(pc,op);
             c->r[rf] = o.ea; pc += 1+o.len; continue;
 
-        /* ---- ALU: r/m32,r32 (op) ve r32,r/m32 (op+2) ---- */
+        /* ---- ALU: r/m32,r32 (op) and r32,r/m32 (op+2) ---- */
         case 0x01: case 0x09: case 0x11: case 0x19:
         case 0x21: case 0x29: case 0x31: case 0x39:
         case 0x03: case 0x0B: case 0x13: case 0x1B:
         case 0x23: case 0x2B: case 0x33: case 0x3B: {
-            int dir = (op & 2) != 0;                 /* 1: hedef yazmac  */
+            int dir = (op & 2) != 0;                 /* 1: register destination  */
             int fn  = (op >> 3) & 7;
             o = modrm(c,pc+1,&rf);
             uint32_t rm = o.is_reg ? c->r[o.reg] : ({ CHK(o.ea,4); MR32(o.ea); });
@@ -165,12 +165,12 @@ int run_generated(CPU *c, uint32_t entry){
             case 4: r=a&b; FLAGS_LOG(r,32); break;
             case 5: r=a-b; FLAGS_SUB(a,b,r,32); break;
             case 6: r=a^b; FLAGS_LOG(r,32); break;
-            default: r=a-b; FLAGS_SUB(a,b,r,32); pc += 1+o.len; continue;  /* cmp: yazma yok */
+            default: r=a-b; FLAGS_SUB(a,b,r,32); pc += 1+o.len; continue;  /* cmp: no write */
             }
             if (dir) c->r[rf]=r; else if (o.is_reg) c->r[o.reg]=r; else MR32(o.ea)=r;
             pc += 1+o.len; continue; }
 
-        /* ---- grup1: 0x83 imm8-isaretli, 0x81 imm32 ---- */
+        /* ---- group1: 0x83 sign-extended imm8, 0x81 imm32 ---- */
         case 0x81: case 0x83: {
             o = modrm(c,pc+1,&rf);
             int imm8 = (op == 0x83);
@@ -204,7 +204,7 @@ int run_generated(CPU *c, uint32_t entry){
             { uint32_t cf0=c->cf; a=c->r[op-0x48]; r=a-1; FLAGS_SUB(a,1u,r,32);
               c->cf=cf0; c->r[op-0x48]=r; } pc++; continue;
 
-        /* ---- kaydirma ---- */
+        /* ---- shifts ---- */
         case 0xC1: case 0xD1: case 0xD3: {
             o = modrm(c,pc+1,&rf);
             int extra = (op==0xC1) ? 1 : 0;
@@ -222,7 +222,7 @@ int run_generated(CPU *c, uint32_t entry){
             if (o.is_reg) c->r[o.reg]=r; else MR32(o.ea)=r;
             pc += 1+o.len+extra; continue; }
 
-        /* ---- grup3 (0xF7) ---- */
+        /* ---- group3 (0xF7) ---- */
         case 0xF7: {
             o = modrm(c,pc+1,&rf);
             a = o.is_reg ? c->r[o.reg] : ({ CHK(o.ea,4); MR32(o.ea); });
@@ -259,7 +259,7 @@ int run_generated(CPU *c, uint32_t entry){
             c->r[rf] = (uint32_t)p; c->cf = c->of = ((int64_t)(int32_t)(uint32_t)p != p);
             pc += 1+o.len+((op==0x6B)?1:4); continue; }
 
-        /* ---- kosullu atlama ---- */
+        /* ---- conditional jumps ---- */
         case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x77:
         case 0x78: case 0x79: case 0x7A: case 0x7B: case 0x7C: case 0x7D: case 0x7E: case 0x7F: {
             int t; switch (op & 0xF){
@@ -272,7 +272,7 @@ int run_generated(CPU *c, uint32_t entry){
         case 0xE9: pc += 5 + MR32(pc+1); continue;
         case 0xEB: pc += 2 + (uint32_t)(int32_t)(int8_t)MR8(pc+1); continue;
 
-        /* ---- 0x0F ikili ---- */
+        /* ---- 0x0F two-byte ---- */
         case 0x0F: {
             uint8_t o2 = MR8(pc+1);
             if (o2 >= 0x80 && o2 <= 0x8F){                       /* jcc rel32 */
@@ -311,7 +311,7 @@ int run_generated(CPU *c, uint32_t entry){
             if (o2 == 0x1F){ o = modrm(c,pc+2,&rf); pc += 2+o.len; continue; }   /* nop */
             BAIL(pc, 0x0F00u | o2); }
 
-        /* ---- grup5 (0xFF) ---- */
+        /* ---- group5 (0xFF) ---- */
         case 0xFF: {
             o = modrm(c,pc+1,&rf);
             switch (rf){
@@ -325,7 +325,7 @@ int run_generated(CPU *c, uint32_t entry){
             case 2: {                                            /* call r/m32 */
                 uint32_t t = o.is_reg ? c->r[o.reg] : ({ CHK(o.ea,4); MR32(o.ea); });
                 uint32_t next = pc+1+o.len;
-                PUSH32(next); dispatch_indirect(c, t); pc = next; continue; }   /* bkz. asagi */
+                PUSH32(next); dispatch_indirect(c, t); pc = next; continue; }   /* see below */
             case 4: {                                            /* jmp r/m32 */
                 uint32_t t = o.is_reg ? c->r[o.reg] : ({ CHK(o.ea,4); MR32(o.ea); });
                 pc = t; continue; }
@@ -339,14 +339,14 @@ int run_generated(CPU *c, uint32_t entry){
               if (o.is_reg) c->r[o.reg]=v; else { CHK(o.ea,4); MR32(o.ea)=v; } }
             pc += 1+o.len; continue;
 
-        /* ---- cagri / donus ---- */
+        /* ---- call / return ---- */
         case 0xE8: {
             uint32_t next = pc + 5, t = next + MR32(pc+1);
             PUSH32(next);
             dispatch_indirect(c, t);
-            /* donus noktasi = itilen adres (c->eip DEGIL): lift edilmis ret
-             * RETEIP=0 ile c->eip'e yazmiyor; model zaten degistirilmis donus
-             * adreslerini yok sayiyor, lift edilmis cagiran da hep 'next'te devam eder. */
+            /* return point = the pushed address (NOT c->eip): a lifted ret with
+             * RETEIP=0 doesn't write c->eip; the model already ignores modified
+             * return addresses, and a lifted caller always continues at 'next'. */
             pc = next; continue; }
         case 0xC3: POP32(c->eip); return 1;
         case 0xC2: { uint16_t n = MR16(pc+1); POP32(c->eip); c->esp += n; return 1; }
@@ -355,18 +355,18 @@ int run_generated(CPU *c, uint32_t entry){
         default: BAIL(pc,op);
         }
     }
-    BAIL(pc, 0xFFFFFFFDu);                 /* butce asimi */
+    BAIL(pc, 0xFFFFFFFDu);                 /* budget exceeded */
 bail:
-    c->esp = esp0;                         /* cagiranin donus adresi tekrar tepede */
+    c->esp = esp0;                         /* the caller's return address is on top again */
     return 0;
 }
 
 void genexec_report(void){
     if (!g_gen_calls) return;
-    fprintf(stderr, "  uretilen guest kod: %llu cagri, %llu komut",
+    fprintf(stderr, "  generated guest code: %llu calls, %llu instructions",
             (unsigned long long)g_gen_calls, (unsigned long long)g_gen_insns);
     if (g_gen_bail){
-        fprintf(stderr, ", %llu BASARISIZ (son: 0x%02x @0x%08x; gorulen:",
+        fprintf(stderr, ", %llu FAILED (last: 0x%02x @0x%08x; seen:",
                 (unsigned long long)g_gen_bail, g_gen_bop, g_gen_bpc);
         for (int i = 0; i < g_gen_bail_n; i++) fprintf(stderr, " %02x", g_gen_bail_ops[i]);
         fprintf(stderr, ")");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPEED2.EXE'den verilen adres araligini sokumle."""
+"""Disassemble the given address range of SPEED2.EXE."""
 import sys, struct
 sys.path.insert(0,'tools')
 import capstone

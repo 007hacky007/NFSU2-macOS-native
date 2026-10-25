@@ -5,7 +5,7 @@ L=Lifter(EXE, comments=False, trap=True)
 L.cur_fmask = F_ALL
 
 def written_flags(code):
-    """Yayilan C metninde HANGI bayraklar yazilabiliyor."""
+    """WHICH flags can be written in the emitted C text."""
     w = 0
     if 'SETZSP' in code: w |= F_ZF|F_SF|F_PF
     for mac,bits in (('FLAGS_ADD',F_ALL),('FLAGS_SUB',F_ALL),('FLAGS_ADC',F_ALL),
@@ -37,9 +37,9 @@ for a in samp:
             if miss:
                 bad[(i.mnemonic, nm(miss))]+=1
                 ex.setdefault((i.mnemonic, nm(miss)), (i.op_str, code[:150]))
-print("incelenen farkli komut bicimi:", ninsn)
-print("--- capstone 'yazar' diyor ama lift YAZMIYOR ---")
+print("distinct instruction forms examined:", ninsn)
+print("--- capstone says 'writes' but the lift does NOT WRITE ---")
 for (mn,ms),c in bad.most_common(30):
     ops,code = ex[(mn,ms)]
-    print("  %-12s eksik=%-6s  | %s" % (mn, ms, ops[:40]))
+    print("  %-12s missing=%-6s  | %s" % (mn, ms, ops[:40]))
     print("      -> %s" % code.replace('\n',' ')[:130])

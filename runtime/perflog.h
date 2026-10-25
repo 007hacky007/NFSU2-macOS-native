@@ -1,4 +1,4 @@
-/* PERFLOG=<dizin>: gercek oyun oturumu kaydi (bkz. perflog.c) */
+/* PERFLOG=<dir>: real game session recording (see perflog.c) */
 #ifndef PERFLOG_H
 #define PERFLOG_H
 #include <stdint.h>
@@ -6,8 +6,8 @@
 
 enum { PL_VS, PL_PS, PL_PSO, PL_TEX, PL_TEXUP, PL_NEV };
 
-extern int g_perflog;                 /* 0: kapali (kancalar tek dal) */
-extern _Atomic int g_pl_thumb_req;    /* ornekleyici 2 sn'de bir kurar, ana thread alir */
+extern int g_perflog;                 /* 0: off (the hooks are a single branch) */
+extern _Atomic int g_pl_thumb_req;    /* the sampler sets it every 2 s, the main thread takes it */
 extern char g_pl_dir[900];
 
 uint64_t perflog_now_us(void);

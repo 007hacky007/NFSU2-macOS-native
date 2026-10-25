@@ -1,24 +1,24 @@
 #!/bin/bash
-# out/NFSU2.app (ya da --hd ile out/NFSU2 HD.app) paketini kur.
+# Build the out/NFSU2.app bundle (or out/NFSU2 HD.app with --hd).
 #
-#   ./pack.sh                 sadece port (~35 MB) -- oyun verisi kullanicinin
-#   ./pack.sh --with-data     oyun verisini de yanina kopyala (~1.5 GB)
-#   ./pack.sh --zip           dagitim icin NFSU2.zip da uret
-#   ./pack.sh --embed         KISISEL tek parca uygulama: oyun verisi paketin
-#                             ICINE gomulur (out/kisisel/, ~1.4 GB).  Oyunun
-#                             kendisini icerdigi icin
-#                             DAGITILAMAZ; dagitim klasoru / zip uretilmez.
-#   ./pack.sh --hd            HD build'den "NFSU2 HD.app" (grafik iyilestirmeleri;
-#                             ayri paket kimligi, ayri log, orijinalle yan yana durur)
+#   ./pack.sh                 the port only (~35 MB) -- the game data is the user's
+#   ./pack.sh --with-data     also copy the game data next to it (~1.5 GB)
+#   ./pack.sh --zip           also produce NFSU2.zip for distribution
+#   ./pack.sh --embed         PERSONAL single-piece app: the game data is embedded
+#                             INSIDE the bundle (out/personal/, ~1.4 GB).  Since it
+#                             contains the game itself it
+#                             CANNOT BE DISTRIBUTED; no distribution folder / zip is made.
+#   ./pack.sh --hd            "NFSU2 HD.app" from the HD build (graphics improvements;
+#                             separate bundle id, separate log, sits next to the original)
 #
-# Oyun verisi VARSAYILAN OLARAK pakete girmez: uygulama ilk acilista
-# klasoru sorar ve secimi hatirlar.  Boylece paket kucuk kalir ve herkes
-# kendi kurulumuyla calisir.
+# The game data does NOT go into the bundle BY DEFAULT: the app asks for the
+# folder on first launch and remembers the choice.  That keeps the bundle small
+# and everyone runs it with their own installation.
 #
-# Kayitlar (kariyer profilleri) HER pakette uygulama ve oyun klasorunun
-# DISINDA, ~/Library/Application Support/NFSU2 Kayitlar'da; ayarlar
-# ~/.nfsu2_registry'de.  Yeni surum dagitilip .app ya da oyun klasoru
-# degistirilince oyuncunun ilerlemesi kaybolmaz (runtime/bundle.m).
+# Saves (career profiles) are, in EVERY bundle, OUTSIDE the app and the game
+# folder, in ~/Library/Application Support/NFSU2 Kayitlar; settings in
+# ~/.nfsu2_registry.  When a new version is shipped and the .app or the game
+# folder is replaced, the player's progress isn't lost (runtime/bundle.m).
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
@@ -29,7 +29,7 @@ for a in "$@"; do
     --zip)       MAKE_ZIP=1 ;;
     --hd)        HD=1 ;;
     --embed)     EMBED=1 ;;
-    *) echo "bilinmeyen secenek: $a"; exit 1 ;;
+    *) echo "unknown option: $a"; exit 1 ;;
   esac
 done
 
@@ -40,12 +40,12 @@ else
   BIN="$ROOT/out/nfsu2_boot";    NAME="NFSU2";    DISP="Need for Speed Underground 2"
   BID="org.nfsu2.nativeport";    TAG=""
 fi
-[ -x "$BIN" ] || { echo "once derleyin: ./build.sh && ./link.sh  ($BIN yok)"; exit 1; }
+[ -x "$BIN" ] || { echo "build first: ./build.sh && ./link.sh  ($BIN missing)"; exit 1; }
 
 if [ "$EMBED" = 1 ] && { [ "$WITH_DATA" = 1 ] || [ "$MAKE_ZIP" = 1 ]; }; then
-  echo "--embed kisisel kullanim icindir; --with-data / --zip ile birlikte kullanilamaz"; exit 1
+  echo "--embed is for personal use; it can't be combined with --with-data / --zip"; exit 1
 fi
-OUTDIR="$ROOT/out"; [ "$EMBED" = 1 ] && OUTDIR="$ROOT/out/kisisel"
+OUTDIR="$ROOT/out"; [ "$EMBED" = 1 ] && OUTDIR="$ROOT/out/personal"
 mkdir -p "$OUTDIR"
 APP="$OUTDIR/$NAME.app"
 rm -rf "$APP"
@@ -55,23 +55,23 @@ cp "$BIN" "$APP/Contents/MacOS/NFSU2"
 chmod +x "$APP/Contents/MacOS/NFSU2"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# --- simge ---
+# --- icon ---
 if [ -x "$ROOT/.venv/bin/python" ]; then
   "$ROOT/.venv/bin/python" "$ROOT/tools/mkicon.py" "$APP/Contents/Resources/AppIcon.icns" >/dev/null
 else
-  echo "uyari: .venv yok, simge uretilmedi"
+  echo "warning: no .venv, icon not generated"
 fi
 
-# --- gomulu oyun verisi (yalnizca --embed) ---
-# cp -c: APFS klonu.  Ayni diskte ek yer KAPLAMAZ ve aninda biter; klon
-# desteklenmiyorsa cp kendiliginden normal kopyaya duser.
+# --- embedded game data (--embed only) ---
+# cp -c: APFS clone.  Takes NO extra space on the same disk and finishes
+# instantly; if cloning isn't supported cp falls back to a normal copy by itself.
 if [ "$EMBED" = 1 ]; then
   SRC="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2"
-  [ -f "$SRC/SPEED2.EXE" ] || { echo "oyun verisi bulunamadi: $SRC"; exit 1; }
-  echo "oyun verisi pakete gomuluyor..."
+  [ -f "$SRC/SPEED2.EXE" ] || { echo "game data not found: $SRC"; exit 1; }
+  echo "embedding the game data in the bundle..."
   cp -Rc "$SRC" "$APP/Contents/Resources/Game"
-  # MOVIES: VP6 kod cozucusu yok, oyun onlari zaten atliyor (~249 MB).
-  # dinput8.dll / SCRIPTS / server.*: Windows eklentileri, yerel portta yuklenmez.
+  # MOVIES: no VP6 decoder, the game skips them anyway (~249 MB).
+  # dinput8.dll / SCRIPTS / server.*: Windows plugins, not loaded by the native port.
   rm -rf "$APP/Contents/Resources/Game/MOVIES" "$APP/Contents/Resources/Game/SCRIPTS" \
          "$APP/Contents/Resources/Game/dinput8.dll" "$APP/Contents/Resources/Game/server.dll" \
          "$APP/Contents/Resources/Game/server.cfg" "$APP/Contents/Resources/Game/SafeMode.bat"
@@ -79,8 +79,8 @@ if [ "$EMBED" = 1 ]; then
 fi
 
 VER="$(date +%Y.%m.%d)"
-# Surum takibi (bkz. link.sh): Finder'da "2.0 (2026.10.18)" gibi gorunur.
-SURUM="$(tr -cd '0-9' < "$ROOT/SURUM" 2>/dev/null)"; SURUM="${SURUM:-0}"
+# Version tracking (see link.sh): shows in Finder like "2.0 (2026.10.18)".
+VERSION="$(tr -cd '0-9' < "$ROOT/VERSION" 2>/dev/null)"; VERSION="${VERSION:-0}"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -92,134 +92,135 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>          <string>${BID}</string>
   <key>CFBundleIconFile</key>            <string>AppIcon</string>
   <key>CFBundlePackageType</key>         <string>APPL</string>
-  <key>CFBundleShortVersionString</key>  <string>${SURUM}.0</string>
+  <key>CFBundleShortVersionString</key>  <string>${VERSION}.0</string>
   <key>CFBundleVersion</key>             <string>${VER}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key>      <string>11.0</string>
   <key>LSApplicationCategoryType</key>   <string>public.app-category.racing-games</string>
   <key>LSArchitecturePriority</key>      <array><string>arm64</string></array>
-  <!-- Retina: bu anahtar olmadan pencere 1x cizilip WindowServer
-       tarafindan buyutulur (bulanik goruntu). -->
+  <!-- Retina: without this key the window is drawn at 1x and scaled up
+       by WindowServer (blurry image). -->
   <key>NSHighResolutionCapable</key>     <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key> <true/>
-  <!-- Oyun klasoru bu dizinlerde olabilir; izin sorusunun metni. -->
+  <!-- The game folder may be in these directories; text of the permission prompt. -->
   <key>NSDesktopFolderUsageDescription</key>
-    <string>Oyun dosyalarini (SPEED2.EXE) okumak icin.</string>
+    <string>To read the game files (SPEED2.EXE).</string>
   <key>NSDocumentsFolderUsageDescription</key>
-    <string>Oyun dosyalarini (SPEED2.EXE) okumak icin.</string>
+    <string>To read the game files (SPEED2.EXE).</string>
   <key>NSDownloadsFolderUsageDescription</key>
-    <string>Oyun dosyalarini (SPEED2.EXE) okumak icin.</string>
+    <string>To read the game files (SPEED2.EXE).</string>
   <key>NSRemovableVolumesUsageDescription</key>
-    <string>Oyun dosyalarini (SPEED2.EXE) okumak icin.</string>
+    <string>To read the game files (SPEED2.EXE).</string>
   <key>NSHumanReadableCopyright</key>
-    <string>x86 -> ARM64 statik rekompilasyon portu. Oyunun kendisi bu pakete dahil degildir.</string>
+    <string>x86 -> ARM64 static recompilation port. The game itself is not included in this bundle.</string>
 </dict>
 </plist>
 PLIST
 
-# --- imza ---
-# SIGN_ID verilirse gercek sertifikayla imzala (Apple Developer hesabi
-# olanlar icin), yoksa ad-hoc.  Ad-hoc imza Gatekeeper'i GECMEZ: indirilen
-# paket "spctl: rejected" olur, kullanicinin karantinayi kaldirmasi gerekir.
+# --- signature ---
+# If SIGN_ID is given, sign with a real certificate (for those with an Apple
+# Developer account), otherwise ad-hoc.  An ad-hoc signature does NOT PASS
+# Gatekeeper: the downloaded bundle is "spctl: rejected", the user has to remove the quarantine.
 if [ -n "$SIGN_ID" ]; then
   codesign --force --options runtime --sign "$SIGN_ID" --timestamp "$APP" \
-    && echo "imza: $SIGN_ID" || { echo "codesign BASARISIZ"; exit 1; }
+    && echo "signature: $SIGN_ID" || { echo "codesign FAILED"; exit 1; }
 else
   codesign --force --sign - --timestamp=none "$APP" 2>/dev/null \
-    && echo "imza: ad-hoc (notarize edilmedi)" || echo "uyari: codesign basarisiz"
+    && echo "signature: ad-hoc (not notarized)" || echo "warning: codesign failed"
 fi
 
-# genisletilmis oznitelikleri temizle (kaynak agactan gelen quarantine vb.)
+# clear extended attributes (quarantine etc. coming from the source tree)
 xattr -cr "$APP" 2>/dev/null || true
 
 SZ="$(du -sh "$APP" | cut -f1)"
-echo "hazir: $APP  ($SZ)"
+echo "ready: $APP  ($SZ)"
 
 if [ "$EMBED" = 1 ]; then
-  echo "kisisel tek parca uygulama hazir (DAGITMAYIN: oyunun kendisini icerir)."
-  echo "kayitlar: ~/Library/Application Support/NFSU2 Kayitlar"
+  echo "personal single-piece app ready (DON'T DISTRIBUTE: it contains the game itself)."
+  echo "saves: ~/Library/Application Support/NFSU2 Kayitlar"
   exit 0
 fi
 
-# --- test edenler icin okuma notu ---
+# --- read-me note for testers ---
 if [ "$WITH_DATA" = 1 ]; then
-  VERI="Oyun dosyalari yanindaki klasorde geliyor (ayrica bir sey gerekmiyor)."
-  ADIM3="3. Uygulamayi ac.  ONEMLI: $NAME.app ile yanindaki
-   \"Need for Speed Underground 2\" klasorunu AYNI yerde tut; uygulama
-   oyunu kendi yaninda arar.  Ikisini birlikte tasiyabilirsin."
+  DATA="The game files come in the folder next to it (nothing else needed)."
+  STEP3="3. Open the app.  IMPORTANT: keep $NAME.app and the
+   \"Need for Speed Underground 2\" folder next to it in the SAME place; the app
+   looks for the game next to itself.  You can move the two together."
 else
-  VERI="Kendi NFSU2 kurulumun.  Oyun dosyalari bu pakete DAHIL DEGIL."
-  ADIM3="3. Uygulamayi ac.  Ilk acilista oyunun kurulu oldugu klasoru sorar
-   (icinde SPEED2.EXE olan klasor).  Secim hatirlanir."
+  DATA="Your own NFSU2 installation.  The game files are NOT INCLUDED in this bundle."
+  STEP3="3. Open the app.  On first launch it asks for the folder the game is
+   installed in (the folder containing SPEED2.EXE).  The choice is remembered."
 fi
-cat > "$ROOT/out/OKUBENI.txt" <<TXT
-$DISP -- macOS (Apple Silicon) yerel port
+cat > "$ROOT/out/README.txt" <<TXT
+$DISP -- native macOS (Apple Silicon) port
 ================================================================
-x86 kodu ARM64'e statik olarak yeniden derlendi.  Wine yok, emulator yok.
+The x86 code was statically recompiled to ARM64.  No Wine, no emulator.
 
-GEREKENLER
-  - Apple Silicon Mac (M1 ve uzeri).  Intel Mac calistiramaz.
-  - macOS 11 Big Sur ve uzeri.
-  - $VERI
+REQUIREMENTS
+  - An Apple Silicon Mac (M1 or later).  Intel Macs can't run it.
+  - macOS 11 Big Sur or later.
+  - $DATA
 
-KURULUM
-1. $NAME.app'i Uygulamalar klasorune surukle.
-2. Terminal'i acip su satiri calistir:
+INSTALLATION
+1. Drag $NAME.app into the Applications folder.
+2. Open Terminal and run this line:
 
      xattr -dr com.apple.quarantine "/Applications/$NAME.app"
 
-   Bu adim ZORUNLU.  Uygulama Apple tarafindan notarize edilmedigi icin
-   indirildikten sonra macOS onu acmayi reddeder ("zarar gormus" ya da
-   "gelistirici dogrulanamiyor" der).  Komut sadece indirme etiketini siler.
-$ADIM3
+   This step is REQUIRED.  Since the app isn't notarized by Apple, macOS
+   refuses to open it after downloading (it says "damaged" or "the developer
+   cannot be verified").  The command only removes the download tag.
+$STEP3
 
-KULLANIM
-  Enter        baslik ekranini gec
-  Cmd-F        tam ekran
-  Cmd-Q        cikis
-  Cozunurluk   oyunun kendi menusunden: Options > Display.
-               Listedeki 1920x1080 satiri genis ekran icindir.
+USAGE
+  Enter        skip the title screen
+  Cmd-F        fullscreen
+  Cmd-Q        quit
+  Resolution   from the game's own menu: Options > Display.
+               The 1920x1080 row in the list is for widescreen.
 
-BIR SEY TERS GIDERSE
-  Log:  ~/Library/Logs/NFSU2/nfsu2${TAG}.log        (bir onceki: nfsu2${TAG}-onceki.log)
-  Bu dosyayi gonder, ne oldugu icinde yaziyor.
+IF SOMETHING GOES WRONG
+  Log:  ~/Library/Logs/NFSU2/nfsu2${TAG}.log        (the previous one: nfsu2${TAG}-previous.log)
+  Send this file, it says what happened.
 
-  Oyun klasorunu yeniden sectirmek icin:
+  To choose the game folder again:
      defaults delete $BID
 
-KAYITLAR
-  Kariyer kayitlari:  ~/Library/Application Support/NFSU2 Kayitlar
-  Ayarlar:            ~/.nfsu2_registry
-  Ikisi de uygulamanin ve oyun klasorunun DISINDA durur: yeni bir surum
-  geldiginde $NAME.app'i (ya da oyun klasorunu) degistirmek ilerlemeni
-  silmez.  Yedeklemek icin bu klasoru ve dosyayi kopyalaman yeterli.
+SAVES
+  Career saves:  ~/Library/Application Support/NFSU2 Kayitlar
+  Settings:      ~/.nfsu2_registry
+  Both live OUTSIDE the app and the game folder: when a new version comes
+  out, replacing $NAME.app (or the game folder) doesn't delete your
+  progress.  To back up, copying this folder and this file is enough.
 
-  Profil adi: "Create Profile" ekraninda yazilir.  Kutuda hazir gelen
-  "NAME"i Delete (geri) tusuyla sil, en fazla 7 harf/rakam yaz, Enter.
+  Profile name: typed on the "Create Profile" screen.  Delete the preset
+  "NAME" in the box with the Delete (backspace) key, type at most 7
+  letters/digits, Enter.
 TXT
-echo "not: $ROOT/out/OKUBENI.txt"
+echo "note: $ROOT/out/README.txt"
 
-# --- dagitim klasoru ---
-# Uygulama, .app'in bulundugu dizini (ve bir ustunu) tarayarak oyunu
-# kendiliginden buluyor.  Bu yuzden veri paketin ICINE degil YANINA
-# konur: imza bozulmaz.  Kayitlar zaten Application Support'a gider.
-DIST="$ROOT/out/NFSU2${TAG}-dagitim"
+# --- distribution folder ---
+# The app finds the game by itself by scanning the directory the .app is in (and
+# the one above).  So the data goes NEXT TO the bundle, not INSIDE it: the
+# signature stays intact.  Saves go to Application Support anyway.
+DIST="$ROOT/out/NFSU2${TAG}-dist"
 rm -rf "$DIST"; mkdir -p "$DIST"
 ditto "$APP" "$DIST/$NAME.app"
-cp "$ROOT/out/OKUBENI.txt" "$DIST/"
+cp "$ROOT/out/README.txt" "$DIST/"
 
 if [ "$WITH_DATA" = 1 ]; then
   SRC="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2"
-  [ -f "$SRC/SPEED2.EXE" ] || { echo "oyun verisi bulunamadi: $SRC"; exit 1; }
-  echo "oyun verisi kopyalaniyor (buyuk, birkac dakika)..."
-  # MOVIES: VP6 kod cozucusu yok, oyun onlari zaten atliyor (~249 MB)
+  [ -f "$SRC/SPEED2.EXE" ] || { echo "game data not found: $SRC"; exit 1; }
+  echo "copying the game data (large, a few minutes)..."
+  # MOVIES: no VP6 decoder, the game skips them anyway (~249 MB)
   rsync -a --exclude='MOVIES/' "$SRC/" "$DIST/Need for Speed Underground 2/"
 fi
-echo "dagitim klasoru: $DIST  ($(du -sh "$DIST" | cut -f1))"
+echo "distribution folder: $DIST  ($(du -sh "$DIST" | cut -f1))"
 
 if [ "$MAKE_ZIP" = 1 ]; then
   ZIP="$ROOT/out/NFSU2${TAG}.zip"; rm -f "$ZIP"
-  # ditto: imzayi ve paket yapisini bozmaz (zip -r bozar)
+  # ditto: keeps the signature and bundle structure intact (zip -r breaks them)
   ditto -c -k --sequesterRsrc --keepParent "$DIST" "$ZIP"
-  echo "dagitim arsivi: $ZIP  ($(du -sh "$ZIP" | cut -f1))"
+  echo "distribution archive: $ZIP  ($(du -sh "$ZIP" | cut -f1))"
 fi

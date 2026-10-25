@@ -17,7 +17,7 @@ time. On an M1 Pro, races run at **119 fps** (the display's limit), against
 > the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) contain the recompiled program but no game files:
 > on first launch you point them at your own installation.
 
-![Race, native ARM64 build](sunum_ss/secme/27_20260924_guncel-yaris.jpg)
+![Race, native ARM64 build](screenshots/selected/27_20260924_current-race.jpg)
 
 ## Status
 
@@ -32,7 +32,7 @@ The game boots, reaches the menus, and races are playable with sound.
 | Windowed, fullscreen, Retina-native and 1080p widescreen | working |
 | Career mode: profile creation (name entry), save and load | working |
 | Double-clickable `.app` (`./pack.sh`) | working |
-| Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAFIK_ARASTIRMA.md` |
+| Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAPHICS_RESEARCH.md` |
 
 ### Known limitations
 
@@ -50,7 +50,7 @@ The game boots, reaches the menus, and races are playable with sound.
 - 400 instructions in rarely used opcodes are still emitted as traps. None are
   hit in the measured race scene.
 - Some visuals are unverified against a Windows reference (crowds / skinned
-  meshes). See "Kalan grafik maddeleri" in `PROJECT.md`.
+  meshes). See "Remaining graphics items" in `PROJECT.md`.
 - Under investigation: in career mode, the scene behind the post-race results
   panel (car pulling up, crowd) can stay black; the same scene renders
   correctly after a Quick Race drag.
@@ -118,7 +118,7 @@ out/nfsu2_boot            ~35 MB arm64 Mach-O
 
 `./run.sh test` runs the first and third.
 
-- **Integrity run:** `tools/kontrol.sh` plays both builds invisibly and silently
+- **Integrity run:** `tools/check.sh` plays both builds invisibly and silently
   from the menus into a Quick Race (~1.5 min each) and checks the end-of-run
   report: no unsupported instructions, no unresolved indirect calls, no broken
   matrices, no GPU command buffer errors, no missing mip levels, the race was
@@ -128,7 +128,7 @@ out/nfsu2_boot            ~35 MB arm64 Mach-O
 ## Performance
 
 Measured on an M1 Pro at 1280×960, same scene and settings, alternating runs
-(method, raw numbers and caveats in `WINE_KIYAS.md`):
+(method, raw numbers and caveats in `WINE_COMPARISON.md`):
 
 | | This port | Wine 11.18 (wined3d, Rosetta 2) |
 |---|---|---|
@@ -170,7 +170,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 #    to C, import argument table -> gen/all/   (~1 min on an M1 Pro)
 #    The script holds the OVERRIDE list (functions that runtime/overrides.c and
 #    runtime/d3dx_hle.c replace); it must match them or the link fails.
-tools/uret_v2.sh "$EXE"
+tools/gen_v2.sh "$EXE"
 
 # 2) compile the shards, then build the runtime and link   (~1.5 min)
 ./build.sh && ./link.sh
@@ -187,8 +187,8 @@ tools/uret_v2.sh "$EXE"
 
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
 draw list (to `~/Library/Logs/NFSU2/`), for reporting rendering problems.
-`tools/oturum.sh [hd]` records a play session (frame times, CPU/GPU power,
-temperature, fan speed, screenshots) and `tools/oturum_analiz.py` turns it into
+`tools/session.sh [hd]` records a play session (frame times, CPU/GPU power,
+temperature, fan speed, screenshots) and `tools/session_report.py` turns it into
 a report.
 
 ## FAQ
@@ -206,7 +206,7 @@ Rosetta 2 is not used to run the game (only, optionally, by one test tool).
 **Is it faster than Wine or CrossOver?**
 On an M1 Pro at 1280×960: 119 fps in races (capped by the 120 Hz display)
 against 10–15 fps under Wine 11.18 with Rosetta 2, and 119 fps against 45 fps
-in the 3D menus. Method and raw numbers are in `WINE_KIYAS.md`.
+in the 3D menus. Method and raw numbers are in `WINE_COMPARISON.md`.
 
 **Is there a ready-made download?**
 Yes: the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) has `NFSU2.zip` (standard build) and
@@ -263,14 +263,14 @@ game.
 
 ## Documentation
 
-The engineering notes are in Turkish, as are the code comments.
-
 - `PROJECT.md` — chronological engineering log: findings, bugs and root causes,
   measurements.
 - `D3DX_HLE.md` — high-level emulation of the D3DX effect framework.
-- `GRAFIK_ARASTIRMA.md` — graphics research and the HD build.
-- `WINE_KIYAS.md` — comparison against Wine.
-- `sunum_ss/rapor/nfsu2-rapor.html` — illustrated project report.
+- `GRAPHICS_RESEARCH.md` — graphics research and the HD build.
+- `LIFTER_EFFICIENCY.md` — lifter efficiency work and measurements.
+- `WINE_COMPARISON.md` — comparison against Wine.
+- `LITERATURE.md` — related work.
+- `screenshots/report/nfsu2-report.html` — illustrated project report.
 
 ## How this was built
 

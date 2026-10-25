@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bir adrese call/jmp eden tum yerleri bul (lineer tarama)."""
+"""Find every place that calls/jmps to an address (linear scan)."""
 import sys
 sys.path.insert(0,'tools')
 from lift import Lifter
@@ -17,5 +17,5 @@ while off < L.TSZ-16:
             hits[t].append((i.address,i.mnemonic))
     off+=1
 for t in targets:
-    print(f"\n=== 0x{t:08x} referanslari: {len(hits[t])} ===")
+    print(f"\n=== 0x{t:08x} references: {len(hits[t])} ===")
     for a,m in hits[t][:30]: print(f"  0x{a:08x}  {m}")

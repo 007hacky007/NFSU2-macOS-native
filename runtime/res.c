@@ -1,4 +1,4 @@
-/* PE kaynak dizini (.rsrc) - FindResource / LoadResource / LockResource */
+/* PE resource directory (.rsrc) - FindResource / LoadResource / LockResource */
 #include "cpu.h"
 #include <stdio.h>
 #include <string.h>
@@ -7,8 +7,8 @@
 
 extern uint32_t g_image_base, g_res_dir_va, g_res_dir_size;
 
-/* IMAGE_RESOURCE_DIRECTORY: +12 NumberOfNamedEntries, +14 NumberOfIdEntries, girisler +16'dan */
-/* IMAGE_RESOURCE_DIRECTORY_ENTRY: +0 Name/Id, +4 OffsetToData (bit31 = alt dizin) */
+/* IMAGE_RESOURCE_DIRECTORY: +12 NumberOfNamedEntries, +14 NumberOfIdEntries, entries from +16 */
+/* IMAGE_RESOURCE_DIRECTORY_ENTRY: +0 Name/Id, +4 OffsetToData (bit31 = subdirectory) */
 /* IMAGE_RESOURCE_DATA_ENTRY:      +0 OffsetToData(RVA), +4 Size, +8 CodePage        */
 
 static int name_eq(uint32_t name_rva, const char *want){
@@ -23,7 +23,7 @@ static int name_eq(uint32_t name_rva, const char *want){
     return want[len] == 0;
 }
 
-/* dir icinde ara; want_str NULL ise want_id kullanilir. Bulunursa giris ofsetini dondurur. */
+/* search in dir; if want_str is NULL, want_id is used. Returns the entry offset if found. */
 static uint32_t dir_find(uint32_t dir, const char *want_str, uint32_t want_id, uint32_t *is_dir){
     uint32_t nnamed = MR16(dir + 12), nid = MR16(dir + 14);
     uint32_t base = dir + 16;
@@ -50,7 +50,7 @@ static uint32_t dir_find(uint32_t dir, const char *want_str, uint32_t want_id, u
     return 0;
 }
 
-/* ilk cocugu al (dil seviyesi icin) */
+/* take the first child (for the language level) */
 static uint32_t dir_first(uint32_t dir, uint32_t *is_dir){
     uint32_t n = (uint32_t)MR16(dir+12) + (uint32_t)MR16(dir+14);
     if (!n) return 0;
@@ -61,7 +61,7 @@ static uint32_t dir_first(uint32_t dir, uint32_t *is_dir){
 
 uint64_t g_res_found = 0, g_res_missed = 0;
 
-/* lpName/lpType: yuksek word 0 ise tamsayi kimlik, degilse guest string isaretcisi */
+/* lpName/lpType: if the high word is 0 it is an integer id, otherwise a guest string pointer */
 uint32_t res_find(uint32_t lpName, uint32_t lpType, int wide){
     if (!g_res_dir_va) return 0;
     char nbuf[128], tbuf[128];
@@ -89,16 +89,16 @@ uint32_t res_find(uint32_t lpName, uint32_t lpType, int wide){
     g_res_found++;
     { static int shown=0; if(getenv("VERBOSE") && shown<8){ shown++;
         uint32_t da = g_image_base + MR32(leaf), sz = MR32(leaf+4);
-        fprintf(stderr,"  [kaynak] tip=%s%u ad=%s -> VA 0x%08x boyut %u  ilk: %02x %02x %02x %02x (imza %s)\n",
+        fprintf(stderr,"  [resource] type=%s%u name=%s -> VA 0x%08x size %u  first: %02x %02x %02x %02x (signature %s)\n",
                 ts?"":"#", ts?0u:tid, ns?ns:"(id)", da, sz,
                 MR8(da),MR8(da+1),MR8(da+2),MR8(da+3),
                 MR32(da)==0xFEFF0901u?"EFEKT OK":"?" ); } }
-    return leaf;                      /* IMAGE_RESOURCE_DATA_ENTRY adresi = HRSRC */
+    return leaf;                      /* IMAGE_RESOURCE_DATA_ENTRY address = HRSRC */
 }
 uint32_t res_data(uint32_t hrsrc){ return hrsrc ? g_image_base + MR32(hrsrc) : 0; }
 uint32_t res_size(uint32_t hrsrc){ return hrsrc ? MR32(hrsrc + 4) : 0; }
 
 void res_report(void){
-    fprintf(stderr,"  kaynak: %llu bulundu, %llu bulunamadi\n",
+    fprintf(stderr,"  resources: %llu found, %llu not found\n",
             (unsigned long long)g_res_found,(unsigned long long)g_res_missed);
 }

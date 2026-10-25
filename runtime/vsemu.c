@@ -5,7 +5,7 @@
 #include <math.h>
 #include <stdio.h>
 
-/* ---- token cozumleme ---- */
+/* ---- token decoding ---- */
 #define OPC(t)     ((unsigned)((t) & 0x0000FFFFu))
 #define ILEN(t)    ((unsigned)(((t) & 0x0F000000u) >> 24))
 #define PRED(t)    (((t) & 0x10000000u) != 0)
@@ -13,32 +13,32 @@
 #define RT(t)      ((int)((((t) & 0x00001800u) >> 8) | (((t) & 0x70000000u) >> 28)))
 #define WMASK(t)   ((unsigned)(((t) >> 16) & 0xFu))
 #define SATUR(t)   (((t) & 0x00100000u) != 0)
-/* Hedef KAYDIRMA degistiricisi (D3DSP_DSTSHIFT, bit 24-27).
- * ps_1_x'te parlaklik olcegi bununla yapilir: _x2 _x4 _x8 _d2 _d4 _d8.
- * Hic uygulanmiyordu -> "mul_x2_sat" yazan her gölgelendirici YARIM
- * parlaklikta cikiyordu (NFSU2'de 23 ps_1_1 gölgelendiricisi var:
- * farlar, yansimalar, yol yuzeyi).  4 bit ISARETLIDIR: 0..7 = x2^n,
- * 8..15 = x2^(n-16), yani 0xF = /2. */
+/* Destination SHIFT modifier (D3DSP_DSTSHIFT, bits 24-27).
+ * In ps_1_x brightness scaling is done with it: _x2 _x4 _x8 _d2 _d4 _d8.
+ * It was never applied -> every shader writing "mul_x2_sat" came out at HALF
+ * brightness (NFSU2 has 23 ps_1_1 shaders: headlights, reflections, road
+ * surface).  The 4 bits are SIGNED: 0..7 = x2^n, 8..15 = x2^(n-16), i.e.
+ * 0xF = /2. */
 #define DSHIFT(t)  ((int)(((t) >> 24) & 0xFu) >= 8 ? \
                     (int)(((t) >> 24) & 0xFu) - 16 : (int)(((t) >> 24) & 0xFu))
 #define SWIZ(t)    ((unsigned)(((t) >> 16) & 0xFFu))
 #define SMOD(t)    ((unsigned)(((t) >> 24) & 0xFu))
 #define RELADDR(t) (((t) & 0x00002000u) != 0)
 
-/* kayit tipleri */
+/* register types */
 enum { R_TEMP=0, R_INPUT, R_CONST, R_ADDR, R_RASTOUT, R_ATTROUT, R_OUTPUT,
        R_CONSTINT, R_COLOROUT, R_DEPTHOUT, R_SAMPLER, R_CONST2, R_CONST3,
        R_CONST4, R_CONSTBOOL, R_LOOP, R_TEMPFLOAT16, R_MISCTYPE, R_LABEL,
        R_PREDICATE };
 
-/* opkodlar */
+/* opcodes */
 enum { O_NOP=0, O_MOV, O_ADD, O_SUB, O_MAD, O_MUL, O_RCP, O_RSQ, O_DP3, O_DP4,
        O_MIN, O_MAX, O_SLT, O_SGE, O_EXP, O_LOG, O_LIT, O_DST, O_LRP, O_FRC,
        O_M4x4, O_M4x3, O_M3x4, O_M3x3, O_M3x2, O_CALL, O_CALLNZ, O_LOOP,
        O_RET, O_ENDLOOP, O_LABEL, O_DCL, O_POW, O_CRS, O_SGN, O_ABS, O_NRM,
        O_SINCOS, O_REP, O_ENDREP, O_IF, O_IFC, O_ELSE, O_ENDIF, O_BREAK,
        O_BREAKC, O_MOVA, O_DEFB, O_DEFI,
-       /* --- piksel gölgelendirici komutlari (D3D numaralandirmasi) --- */
+       /* --- pixel shader instructions (D3D numbering) --- */
        O_TEXCOORD=64, O_TEXKILL=65, O_TEX=66,   /* ps_1_x tex / ps_2_0 texld */
        O_EXPP=78, O_LOGP=79, O_CND=80, O_DEF=81,
        O_CMP=88, O_DP2ADD=90, O_TEXLDD=95, O_TEXLDL=97,
@@ -50,49 +50,49 @@ typedef struct {
     int      has_dst;
     unsigned dst;
     unsigned src[4];
-    unsigned rel[4];        /* goreli adresleme tokeni, yoksa 0 */
-    float    imm[4];        /* def / defi icin */
+    unsigned rel[4];        /* relative addressing token, otherwise 0 */
+    float    imm[4];        /* for def / defi */
     int      match;         /* if->else|endif, rep->endrep, loop->endloop */
     int      match2;        /* else->endif */
-    unsigned cmp;           /* ifc/breakc karsilastirma kodu */
-    /* --- onceden cozulmus operand plani (hiz icin) ---------------------
-     * src_read/dst_write her KOSE icin token'i yeniden cozuyordu: bit
-     * ayiklama, reg_ptr cagrisi, swizzle dongusu, switch, memcpy.  Oysa
-     * bunlarin hepsi yalnizca KOMUTA bagli.  Bir kez burada cozulup
-     * kose dongusunde sadece aritmetik birakiliyor. */
-    unsigned char fsrc;        /* tum kaynaklar duz (reladdr/mod yok) */
-    unsigned char fdst;        /* dst = r#, tam maske, satur yok       */
+    unsigned cmp;           /* ifc/breakc comparison code */
+    /* --- pre-decoded operand plan (for speed) ---------------------------
+     * src_read/dst_write re-decoded the token for every VERTEX: bit extraction,
+     * a reg_ptr call, a swizzle loop, a switch, memcpy.  Yet all of these depend
+     * only on the INSTRUCTION.  They are decoded once here and only arithmetic is
+     * left in the vertex loop. */
+    unsigned char fsrc;        /* all sources plain (no reladdr/mod) */
+    unsigned char fdst;        /* dst = r#, full mask, no saturate     */
     signed char   s_type[4];
     short         s_num[4];
-    unsigned char s_def[4];    /* sabit def'li mi (p->def kullan)      */
+    unsigned char s_def[4];    /* is the constant def'd (use p->def)   */
     unsigned char s_sw[4][4];
-    unsigned char s_swk[4];    /* 0=birebir(.xyzw) 1=tek bilesen 2=genel */
+    unsigned char s_swk[4];    /* 0=identity(.xyzw) 1=single component 2=general */
     short         d_num;
 } VSIns;
 
 struct VSProg {
     unsigned  version;
-    int       is_ps;            /* 1 = piksel gölgelendiricisi */
+    int       is_ps;            /* 1 = pixel shader */
     VSIns    *ins;
     unsigned  n;
-    float     def[256][4];      /* def ile tanimlanan sabitler */
-    unsigned  defmask[8];       /* hangi c# def edildi (bit alani) */
+    float     def[256][4];      /* constants defined with def */
+    unsigned  defmask[8];       /* which c# were def'd (bit field) */
     int32_t   defi[16][4];
-    int       inmap[16][2];     /* v# -> (usage, index); usage<0 = kullanilmiyor */
-    int       smptype[16];      /* s# doku tipi: 2=2D 3=CUBE 4=VOLUME, 0=bildirilmemis */
-    int       maxreg;           /* kullanilan en yuksek gecici yazmac (r#) */
+    int       inmap[16][2];     /* v# -> (usage, index); usage<0 = unused */
+    int       smptype[16];      /* s# texture type: 2=2D 3=CUBE 4=VOLUME, 0=undeclared */
+    int       maxreg;           /* the highest temp register used (r#) */
     unsigned  unknown;
 };
 
 static int is_param(uint32_t t){ return (t & 0x80000000u) != 0; }
 
-/* ---- derleme ---- */
+/* ---- compilation ---- */
 VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
     if (!tok || max_dw < 2) return 0;
     uint32_t ver = tok[0];
-    /* 0xFFFE = vertex shader, 0xFFFF = pixel shader.  Ikisi de ayni token
-     * bicimini kullaniyor; piksel gölgelendiricileri (simdilik) yalnizca
-     * sokumlemek/incelemek icin kabul ediyoruz. */
+    /* 0xFFFE = vertex shader, 0xFFFF = pixel shader.  Both use the same token
+     * format; pixel shaders are (for now) accepted only for disassembly/
+     * inspection. */
     if ((ver >> 16) != 0xFFFEu && (ver >> 16) != 0xFFFFu) return 0;
 
     VSProg *p = calloc(1, sizeof *p);
@@ -123,10 +123,10 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
         memset(ix, 0, sizeof *ix);
         ix->op = op;
         ix->match = ix->match2 = -1;
-        ix->cmp = (t >> 16) & 0x7u;               /* ifc/breakc icin */
+        ix->cmp = (t >> 16) & 0x7u;               /* for ifc/breakc */
 
         unsigned len = ILEN(t);
-        size_t body = i + 1;                      /* ilk operand tokeni */
+        size_t body = i + 1;                      /* the first operand token */
         size_t next;
 
         if (op == O_DEF || op == O_DEFI){
@@ -158,20 +158,20 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
                     p->inmap[rn][1] = (int)((ut & 0x000F0000u) >> 16);
                 }
             }
-            /* ps_2_0: `dcl_2d s0` / `dcl_cube s1` -- doku TIPI *DCL
-             * token'inin* 27-30. bitlerinde (D3DSAMPLER_TEXTURE_TYPE:
-             * 2=2D, 3=CUBE, 4=VOLUME).  DST token'inda DEGIL: SM2+'da
-             * dst'in 28-30. bitleri kayit tipinin ust bitleri, oradan
-             * okuyunca her sey "4" cikiyor. */
+            /* ps_2_0: `dcl_2d s0` / `dcl_cube s1` -- the texture TYPE is in bits 27-30
+             * of the *DCL token* (D3DSAMPLER_TEXTURE_TYPE: 2=2D, 3=CUBE,
+             * 4=VOLUME).  NOT in the DST token: in SM2+ bits 28-30 of dst are the
+             * high bits of the register type, reading from there gives "4" for
+             * everything. */
             if (RT(ix->dst) == R_SAMPLER){
                 int rn = RN(ix->dst);
                 if (rn >= 0 && rn < 16)
                     p->smptype[rn] = (int)((ut >> 27) & 0xFu);
             }
         } else {
-            /* operandlari bit31'e gore tara; SM2+ uzunluk alani varsa ona guven */
+            /* scan operands by bit31; trust the SM2+ length field if present */
             size_t j = body;
-            if (PRED(t)) { /* yuklem kaydi en sonda; asagida atlanacak */ }
+            if (PRED(t)) { /* the predicate register is last; skipped below */ }
             size_t limit = len ? (body + len) : max_dw;
             if (limit > max_dw) limit = max_dw;
             int first = 1;
@@ -202,7 +202,7 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
         p->n++;
     }
 
-    /* akis denetimi eslestirme */
+    /* flow control matching */
     int stack[64]; int sp = 0;
     for (unsigned k = 0; k < p->n; k++){
         unsigned op = p->ins[k].op;
@@ -220,8 +220,8 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
             }
         }
     }
-    /* Kose basina yalnizca kullanilan yazmaclari temizleyebilmek icin
-     * en yuksek gecici yazmac numarasini burada bir kez hesapla. */
+    /* Compute the highest temp register number once here, so that only the
+     * registers in use need clearing per vertex. */
     for (unsigned q = 0; q < p->n; q++){
         VSIns *x = &p->ins[q];
         x->fsrc = 1; x->fdst = 0;
@@ -243,8 +243,8 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
             unsigned sw = SWIZ(tok);
             for (int c2 = 0; c2 < 4; c2++)
                 x->s_sw[t][c2] = (unsigned char)((sw >> (2*c2)) & 3u);
-            /* En sik iki durumu ayirt et: .xyzw (tek 16 baytlik okuma) ve
-             * .xxxx gibi tek-bilesen yayilimi.  Geri kalan genel yol. */
+            /* Tell the two most frequent cases apart: .xyzw (a single 16-byte read) and
+             * a single-component broadcast like .xxxx.  The rest is the general path. */
             if (sw == 0xE4u) x->s_swk[t] = 0u;
             else if (x->s_sw[t][0]==x->s_sw[t][1] && x->s_sw[t][1]==x->s_sw[t][2] &&
                      x->s_sw[t][2]==x->s_sw[t][3]) x->s_swk[t] = 1u;
@@ -282,7 +282,7 @@ int vs_input_reg(const VSProg *p, int usage, int usage_index){
     return -1;
 }
 
-/* ---- yurutme ---- */
+/* ---- execution ---- */
 typedef struct {
     const VSProg  *p;
     const VSConst *k;
@@ -304,9 +304,9 @@ static const float *reg_ptr(Exec *e, int type, int num, float tmp[4]){
         if (type == R_CONST2) n += 2048; else if (type == R_CONST3) n += 4096;
         else if (type == R_CONST4) n += 6144;
         if (n < 0 || n >= 256) return ZERO4;
-        /* def edilen sabitler oyunun yazdigini ezmez; def yalnizca varsayilandir,
-         * ancak D3D'de def sabitleri ayri bir alan degildir: shader'a gomulu
-         * sabit her zaman gecerlidir. */
+        /* def'd constants don't override what the game wrote; def is only a default,
+         * but in D3D def constants aren't a separate space: a constant embedded in
+         * the shader is always in effect. */
         if (e->p->defmask[n >> 5] & (1u << (n & 31))) return e->p->def[n];
         return e->k->f[n];
     }
@@ -399,9 +399,9 @@ static int cmp_ok(unsigned c, float a, float b){
 
 int vs_run(const VSProg *p, const VSConst *k, const float v[16][4], VSOut *o){
     if (!p || !k || !o) return 0;
-    /* Kose BASINA 512 baytlik r[32][4] temizligi olcumde en pahali is
-     * cikti (surenin ~%45'i vs_run'da).  Yalnizca programin gercekten
-     * kullandigi yazmaclari sifirla. */
+    /* Clearing the 512-byte r[32][4] PER vertex turned out to be the most expensive
+     * work in the measurement (~45% of the time in vs_run).  Only zero the
+     * registers the program actually uses. */
     Exec e;
     { int mr = p->maxreg; if (mr < 0) mr = -1; if (mr > 31) mr = 31;
       if (mr >= 0) memset(e.r, 0, (size_t)(mr+1) * sizeof e.r[0]); }
@@ -447,7 +447,7 @@ int vs_run(const VSProg *p, const VSConst *k, const float v[16][4], VSOut *o){
         switch (x->op){
         case O_NOP: case O_DCL: case O_DEF: case O_DEFI: case O_DEFB:
         case O_LABEL: case O_ENDIF: case O_ELSE:
-            if (x->op == O_ELSE && x->match >= 0) pc = (unsigned)x->match;  /* if dalindan geldi */
+            if (x->op == O_ELSE && x->match >= 0) pc = (unsigned)x->match;  /* came from the if branch */
             break;
         case O_MOV: memcpy(d, s[0], 16); DSTW(x,d); break;
         case O_MOVA:
@@ -486,12 +486,12 @@ int vs_run(const VSProg *p, const VSConst *k, const float v[16][4], VSOut *o){
         case O_LOG: { float a=fabsf(s[0][0]);
                       float r=(a==0.f)?-3.402823466e38f:log2f(a);
                       d[0]=d[1]=d[2]=d[3]=r; DSTW(x,d); } break;
-        /* DIKKAT: expp/logp, exp/log'un "dusuk hassasiyetli" hali DEGILDIR;
-         * dort bilesene FARKLI degerler yazarlar.  Ikisi de exp2/log2 olarak
-         * cevriliyordu.  NFSU2'nin deri-eklem gölgelendiricisi
-         * "expp r6.y, v4.zzzz" ile kemik indisinin KESIR kismini aliyor;
-         * biz .y'ye exp2 yazinca ucuncu kemik matrisinin indisi cop oluyor
-         * ve kalabalik/ara sahne karakterleri dagiliyordu. */
+        /* CAUTION: expp/logp are NOT the "low precision" versions of exp/log; they
+         * write DIFFERENT values to the four components.  Both were translated
+         * as exp2/log2.  NFSU2's skinning shader takes the FRACTIONAL part of the
+         * bone index with "expp r6.y, v4.zzzz"; when we wrote exp2 to .y, the
+         * third bone matrix's index became garbage and crowd/cutscene characters
+         * fell apart. */
         case O_EXPP: { float w=s[0][0], f=floorf(w);
                       d[0]=exp2f(f); d[1]=w-f; d[2]=exp2f(w); d[3]=1.f;
                       DSTW(x,d); } break;
@@ -571,7 +571,7 @@ int vs_run(const VSProg *p, const VSConst *k, const float v[16][4], VSOut *o){
     return 1;
 }
 
-/* ---- tani: sokum ---- */
+/* ---- diagnostics: disassembly ---- */
 static const char *OPN(unsigned op){
     switch(op){
     case O_NOP:return"nop"; case O_MOV:return"mov"; case O_ADD:return"add";
@@ -605,7 +605,7 @@ static void regname(char *b, size_t n, unsigned tok){
 }
 void vs_disasm(const VSProg *p, FILE *f){
     if (!p) return;
-    fprintf(f,"    vs_%u_%u, %u komut\n", p->version>>8, p->version&0xFF, p->n);
+    fprintf(f,"    vs_%u_%u, %u instructions\n", p->version>>8, p->version&0xFF, p->n);
     for (unsigned k=0;k<p->n;k++){
         const VSIns *x=&p->ins[k];
         char b[32];
@@ -641,27 +641,26 @@ void vs_disasm(const VSProg *p, FILE *f){
 }
 
 /* ====================================================================
- * Piksel gölgelendirici -> Metal Shading Language
+ * Pixel shader -> Metal Shading Language
  *
- * Oyunun kendi ps_1_x / ps_2_0 gölgelendiricilerini GPU'da aynen
- * calistirmak icin MSL'ye ceviriyoruz.  Sabit bir "renk * doku"
- * yaklasimi araba boyasini ve isigi dogru veremiyordu; birebir sonuc
- * icin gölgelendiricinin kendisi gerekiyor.
+ * We translate the game's own ps_1_x / ps_2_0 shaders to MSL to run them
+ * exactly on the GPU.  A fixed "color * texture" approach couldn't get car
+ * paint and lighting right; an exact result needs the shader itself.
  *
- * Yazmac eslemesi:  r# -> r[#]   t# (R_ADDR) -> t[#]   v# -> v[#]
- *                   c# -> def'liyse gomulu sabit, degilse P.c[#]
- * Cikis: ps_1_x'te r0, ps_2_0'da oC0 -> her ikisi de "oC".
+ * Register mapping:  r# -> r[#]   t# (R_ADDR) -> t[#]   v# -> v[#]
+ *                    c# -> an embedded constant if def'd, otherwise P.c[#]
+ * Output: r0 in ps_1_x, oC0 in ps_2_0 -> both become "oC".
  * ==================================================================== */
 static const char SWCH[4] = { 'x','y','z','w' };
-/* Sabit tamponunun MSL'deki adi: piksel gölgelendiricide "P", köşede "K".
- * msl_src iki ureticide de paylasildigi icin buradan secilir. */
+/* The constant buffer's name in MSL: "P" in the pixel shader, "K" in the vertex
+ * shader.  Since msl_src is shared by both generators, it is chosen here. */
 static const char *g_cbuf = "P";
 
-/* DIKKAT: bu uretici once yalnizca PIKSEL gölgelendiricisi icin yazilmisti.
- * Köşe tarafinda yazmac uzayi farkli: v0..v15 (piksel: v0/v1), r0..r31
- * (piksel: r0..r7) ve R_ADDR piksel tarafinda doku yazmaci, köşe tarafinda
- * adres yazmaci a0.  Kipe bakmadan uretmek v2+ girdilerini v[0]'a, r8+
- * yazmaclarini r[0]'a katliyordu. */
+/* CAUTION: this generator was first written only for PIXEL shaders.  On the
+ * vertex side the register space differs: v0..v15 (pixel: v0/v1), r0..r31
+ * (pixel: r0..r7), and R_ADDR is a texture register on the pixel side and the
+ * address register a0 on the vertex side.  Generating without looking at the
+ * mode folded v2+ inputs into v[0] and r8+ registers into r[0]. */
 #define VSMODE() (g_cbuf[0] == 'K')
 static void msl_reg(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned rel){
     int ty = RT(tok), n = RN(tok);
@@ -683,7 +682,7 @@ static void msl_reg(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned
         int idx = n;
         if (ty == R_CONST2) idx += 2048; else if (ty == R_CONST3) idx += 4096;
         else if (ty == R_CONST4) idx += 6144;
-        /* goreli adresleme: c[a0.<bilesen> + idx] */
+        /* relative addressing: c[a0.<component> + idx] */
         if (RELADDR(tok) && vs){
             char comp = 'x';
             if (rel){
@@ -705,12 +704,12 @@ static void msl_reg(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned
     }
 }
 
-/* Kaynak operandi: yazmac + swizzle + kaynak degistirici */
+/* Source operand: register + swizzle + source modifier */
 static void msl_src(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned rel){
     char reg[96]; msl_reg(reg, sizeof reg, p, tok, rel);
     unsigned sw = SWIZ(tok);
     char sws[8];
-    if (sw == 0xE4u) sws[0] = 0;                 /* .xyzw = swizzle yok */
+    if (sw == 0xE4u) sws[0] = 0;                 /* .xyzw = no swizzle */
     else { sws[0]='.';
            for (int i=0;i<4;i++) sws[1+i] = SWCH[(sw >> (2*i)) & 3u];
            sws[5]=0; }
@@ -731,7 +730,7 @@ static void msl_src(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned
     }
 }
 
-/* Hedef: yazmac + yazma maskesi.  ncomp maskedeki bilesen sayisini verir. */
+/* Destination: register + write mask.  ncomp gives the number of components in the mask. */
 static int msl_dst(char *o, size_t cap, const VSProg *p, unsigned tok){
     char reg[96]; msl_reg(reg, sizeof reg, p, tok, 0);
     unsigned m = WMASK(tok);
@@ -743,10 +742,10 @@ static int msl_dst(char *o, size_t cap, const VSProg *p, unsigned tok){
     return k-1;
 }
 
-/* Hedef yazma maskesinin bilesen harfleri (".yz" gibi); tam maske -> "".
- * DIKKAT: D3D'de maske BILESEN-BILESEN calisir (r0.yz = r1  ->  r0.y=r1.y,
- * r0.z=r1.z).  Onceki surum ifadeyi basa sikistiriyordu ((expr).xy), yani
- * bitisik olmayan her maskede YANLIS bileseni aliyordu. */
+/* The component letters of the destination write mask (like ".yz"); full mask -> "".
+ * CAUTION: in D3D the mask works COMPONENT BY COMPONENT (r0.yz = r1  ->  r0.y=r1.y,
+ * r0.z=r1.z).  The previous version squeezed the expression to the front
+ * ((expr).xy), so for every non-contiguous mask it took the WRONG component. */
 static void msl_mask_swz(char *o, size_t cap, unsigned tok){
     unsigned m = WMASK(tok);
     if (cap) o[0] = 0;
@@ -756,7 +755,7 @@ static void msl_mask_swz(char *o, size_t cap, unsigned tok){
     o[k] = 0;
 }
 
-/* Bir ifadeyi hedefin bilesen sayisina daralt (float4 -> float3 vb.) */
+/* Narrow an expression to the destination's component count (float4 -> float3 etc.) */
 static void msl_fit(char *o, size_t cap, const char *expr, int n){
     if (n >= 4) snprintf(o, cap, "%s", expr);
     else if (n == 1) snprintf(o, cap, "(%s).x", expr);
@@ -765,30 +764,31 @@ static void msl_fit(char *o, size_t cap, const char *expr, int n){
 }
 
 int ps_uses_colorout(const VSProg *p);
-/* cubemask: hangi asamalara KUP doku bagli (bit k = asama k).
- * D3D9'da ps_1_x doku TIPINI bildirmez -- tip baglamadan gelir; bu yuzden
- * ayni gölgelendiriciden iki varyant uretiyoruz ve cizim aninda bagli
- * dokuya gore secliyoruz. */
-/* reflk >= 0 (yalnizca HD): YANSIMA AYRISTIRMA varyanti.  k. asamanin
- * ornegi (yol yansimasi ya da kup harita) gövdede dogrusal kullaniliyor
- * (olculdu: ps 5, 6, 265 -- arada saturate yok).  Gövde uc kez calisir:
- *   ev 0: gercek ornek      -> renk (orijinalle birebir)
- *   ev 1: ornek.rgb = 0     -> A
- *   ev 2: ornek.rgb = 1     -> A + B
- * G-tamponuna B = o2 - o1 (sis dahil) ve orijinal ornek R0 yazilir; sahne
- * sonunda birlestirme gecisi renk + B*(R_yeni - R0) hesaplar (bkz.
- * metal.m "HD: SSR").  Sinif: 1 = 2B (yol), 2 = kup (araba).
- * Hedeflerin bicimi ve kodlamasi: metal.m "G-TAMPONU PAKETLEME" (iki taraf
- * ayni olmali; HD_GPACK=0 eski duzen).                                  */
+/* cubemask: which stages have a CUBE texture bound (bit k = stage k).
+ * In D3D9 ps_1_x doesn't declare the texture TYPE -- the type comes from the
+ * binding; so we generate two variants of the same shader and pick one at draw
+ * time based on the bound texture. */
+/* reflk >= 0 (HD only): the REFLECTION SEPARATION variant.  The sample of stage k
+ * (road reflection or cube map) is used linearly in the body (measured: ps 5, 6,
+ * 265 -- no saturate in between).  The body runs three times:
+ *   ev 0: the real sample   -> color (exactly the same as the original)
+ *   ev 1: sample.rgb = 0    -> A
+ *   ev 2: sample.rgb = 1    -> A + B
+ * B = o2 - o1 (including fog) and the original sample R0 are written to the
+ * G-buffer; at the end of the scene the composite pass computes
+ * color + B*(R_new - R0) (see metal.m "HD: SSR").  Class: 1 = 2D (road), 2 = cube (car).
+ * Format and encoding of the targets: metal.m "G-BUFFER PACKING" (both sides
+ * must match; HD_GPACK=0 the old layout).                               */
 static int hd_gpack(void){
     static int v = -1;
     if (v < 0){ const char *e = getenv("HD_GPACK"); v = (e && *e == '0') ? 0 : 1; }
     return v;
 }
 int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubemask, int reflk);
-/* SON ISLEM ZINCIRI (metal.m): karo bellegi okuma varyanti.  g_fb_in >= 0 iken
- * asama 0'in ornegi [[color(g_fb_in)]] girdisinden gelir (teksel merkezine 1:1
- * oturan tam ekran dortgen icin ayni deger) ve sonuc [[color(g_fb_out)]]'a yazilir. */
+/* POST-PROCESS CHAIN (metal.m): the tile memory read variant.  While g_fb_in >= 0
+ * the stage 0 sample comes from the [[color(g_fb_in)]] input (the same value for a
+ * fullscreen quad sitting 1:1 on texel centers) and the result is written to
+ * [[color(g_fb_out)]]. */
 static int g_fb_in = -1, g_fb_out = -1;
 int ps_to_msl_fb(const VSProg *p, int id, char *out, size_t cap, int in_idx, int out_idx){
     g_fb_in = in_idx; g_fb_out = out_idx;
@@ -804,7 +804,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
 #if !NFS_ENHANCED
     if (reflk >= 0) return 0;
 #endif
-    g_cbuf = "P";                       /* piksel: P.c[0..31] */
+    g_cbuf = "P";                       /* pixel: P.c[0..31] */
     size_t o = 0;
     #define EMIT(...) do{ int _w = snprintf(out+o, cap-o, __VA_ARGS__); \
                           if (_w < 0 || (size_t)_w >= cap-o) return 0; o += (size_t)_w; }while(0)
@@ -812,9 +812,9 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
     { int anycube = 0;
       for (int q = 0; q < 4; q++) if (p->smptype[q] == 3) anycube = 1;
       if (anycube || getenv("SMPTYPE")){
-          fprintf(stderr, "  [ps%d] ornekleyici tipleri: s0=%d s1=%d s2=%d s3=%d%s\n",
+          fprintf(stderr, "  [ps%d] sampler types: s0=%d s1=%d s2=%d s3=%d%s\n",
                   id, p->smptype[0], p->smptype[1], p->smptype[2], p->smptype[3],
-                  anycube ? "   <- KUP VAR" : "");
+                  anycube ? "   <- HAS CUBE" : "");
       } }
     if (g_fb_in >= 0)
         EMIT("struct PSFB%d { float4 c [[color(%d)]]; };\n"
@@ -825,55 +825,54 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
     for (int k = 0; k < 4; k++)
         EMIT("    %s<float> s%d [[texture(%d)]],\n",
              ((cubemask >> k) & 1u) ? "texturecube" : "texture2d", k, k);
-    /* ASAMA BASINA ORNEKLEYICI.  Once dort dokunun hepsi tek "sm"yi
-     * kullaniyordu, yani asama 0'in adres kipi digerlerine de gidiyordu.
-     * Yolun diffuse dokusu WRAP; far isigi dokusu ve sonum rampasi ise
-     * CLAMP ister.  WRAP ile far konisi TUM yol boyunca tekrarlaniyor ve
-     * zemin bastan basa patlak parliyordu. */
+    /* A SAMPLER PER STAGE.  At first all four textures used a single "sm", so the
+     * address mode of stage 0 also went to the others.  The road's diffuse texture
+     * wants WRAP; the headlight texture and the falloff ramp want CLAMP.  With WRAP
+     * the headlight cone repeated along the WHOLE road and the ground blew out
+     * bright from end to end. */
     EMIT("    sampler sm0 [[sampler(0)]], sampler sm1 [[sampler(1)]],\n");
     EMIT("    sampler sm2 [[sampler(2)]], sampler sm3 [[sampler(3)]],\n");
     EMIT("    constant PSPar &P [[buffer(0)]],\n");
-    /* alfa testi tanisi (kAT 2): atilacak parca sayaci, yalniz o varyantta var */
+    /* alpha test diagnostic (kAT 2): counter of fragments to discard, only in that variant */
     EMIT("    device atomic_uint *atdbg [[buffer(6), function_constant(kATD)]]) {\n");
     EMIT("  float4 r[16]; for (int q=0;q<16;q++) r[q]=float4(0.0);\n");
     EMIT("  float4 t[4]; for (int q=0;q<4;q++) t[q]=float4(0.0);\n");
-    /* D3D9: ps_1_1 - ps_2_0'da renk girdileri (v0/v1) gölgelendirici kullanmadan
-     * once [0,1]'e kirpilir ("diffuse and specular colors are saturated").  Kose
-     * gölgelendiricisi oD0/oD1'e [0,1] disi yazabiliyor (olculdu 2026-10-19:
-     * yaris + menude 1.18 milyar parca, cogu araba boyasi ps 265).  kCS islev
-     * sabiti (metal.m RENK KIRPMA; RENKSAT=0 eski davranis). */
+    /* D3D9: in ps_1_1 - ps_2_0 the color inputs (v0/v1) are clamped to [0,1] before
+     * the shader uses them ("diffuse and specular colors are saturated").  The
+     * vertex shader can write values outside [0,1] to oD0/oD1 (measured
+     * 2026-10-19: 1.18 billion fragments in race + menu, mostly car paint ps 265).
+     * The kCS function constant (metal.m COLOR CLAMPING; RENKSAT=0 old behavior). */
     if (((p->version >> 8) & 0xFFu) < 3u)
         EMIT("  float4 v[2] = { kCS ? saturate(i.col0) : i.col0, kCS ? saturate(i.col1) : i.col1 };\n");
     else
         EMIT("  float4 v[2] = { i.col0, i.col1 };\n");
     EMIT("  float4 oC = float4(0.0);\n");
-    /* Asama -> koordinat kumesi eslemesi D3DTSS_TEXCOORDINDEX ile degisir
-     * (izde 422 bin cagride asama 1 ve 2 koordinat 0'i kullaniyor) ve
-     * D3DTTFF_PROJECTED bolme ister.  Ikisi de P.proj'da: idx + 16*kip. */
+    /* The stage -> coordinate set mapping changes with D3DTSS_TEXCOORDINDEX (in the
+     * trace, stages 1 and 2 use coordinate 0 in 422 thousand calls) and
+     * D3DTTFF_PROJECTED needs a divide.  Both are in P.proj: idx + 16*mode. */
     EMIT("#define TSEL(i) (int(P.proj[i]))\n");
-    /* DIKKAT: doku koordinati DINAMIK INDEKSLI bir yerel diziden
-     * (float4 uv[4]) okunuyordu.  Metal derleyicisi boyle bir diziyi
-     * scratch bellege koyuyor; ornekleme koordinati artik dogrudan
-     * interpolanttan gelmedigi icin DOKU TUREVLERI (mip secimi)
-     * bozuluyor ve her ucgen KENARINDA bir-iki seviye kaba mip
-     * seciliyordu.  Ekranda her dortgenin cercevesi ve kosegeni
-     * 1 piksellik cizgi olarak goruluyordu (harflerde en belirgin;
-     * olculdu: kosegen uzerinde 2676 -> 533 koyu piksel).
-     * Cozum: diziyi kaldirip interpolantlar arasindan TEKIL secim.
-     * Secim kosulu tekduze (uniform buffer) oldugu icin dallanma
-     * turevleri etkilemiyor. */
-    /* Ornekleme koordinati DOGRUDAN interpolanttan gelmeli.  Eskiden ternary
-     * zinciri + kosullu bolme ile uretiliyordu; turev dortgeni ucgen kenarina
-     * tastiginda LOD patliyor ve HER dortgenin cercevesinde / iki ucgenin
-     * paylastigi kosegende 2 piksellik cizgi olusuyordu.  (Olculdu: kenarda
-     * LOD >> 1; lodMaxClamp=1 cizgiyi siliyordu, mip icerigi ise eksiksiz.)
-     * D3DTSS_TEXCOORDINDEX secimi artik KOSE golgelendiricisinde yapiliyor,
-     * burada asama k dogrudan i.uvk okuyor.  Yansitmali bolme tek ve
-     * SUREKLI: eski "abs(w)<1e-6 ? 1.0 : w" korumasi kenarda 1.0 ile 1e-6
-     * arasinda ziplayip koordinati alti buyukluk mertebesi kaydiriyordu. */
-    /* Yalnizca GERCEKTEN ornekleme yapilan asamalar icin hesapla.  Dordunu
-     * birden uretmek her pikselde 4 bolme + 8 secim demekti (olculdu: yaris
-     * karesi 15.7 -> 18.7 ms). */
+    /* CAUTION: the texture coordinate was read from a DYNAMICALLY INDEXED local array
+     * (float4 uv[4]).  The Metal compiler puts such an array in scratch memory;
+     * since the sampling coordinate no longer came directly from an interpolant,
+     * the TEXTURE DERIVATIVES (mip selection) broke and a mip one or two levels
+     * too coarse was selected along every triangle EDGE.  On screen the frame and
+     * diagonal of every quad showed up as a 1-pixel line (most visible on letters;
+     * measured: 2676 -> 533 dark pixels on the diagonal).
+     * Solution: remove the array and do a SINGLE selection among the
+     * interpolants.  Since the selection condition is uniform (uniform buffer),
+     * the branching doesn't affect the derivatives. */
+    /* The sampling coordinate must come DIRECTLY from the interpolant.  It used to be
+     * produced with a ternary chain + a conditional divide; when the derivative quad
+     * spilled over a triangle edge the LOD blew up and a 2-pixel line formed on the
+     * frame of EVERY quad / along the diagonal shared by two triangles.  (Measured:
+     * LOD >> 1 at the edge; lodMaxClamp=1 removed the line, while the mip content
+     * was complete.)
+     * The D3DTSS_TEXCOORDINDEX selection is now done in the VERTEX shader; here
+     * stage k reads i.uvk directly.  The projective divide is single and
+     * CONTINUOUS: the old "abs(w)<1e-6 ? 1.0 : w" guard jumped between 1.0 and
+     * 1e-6 at the edge and shifted the coordinate by six orders of magnitude. */
+    /* Compute only for stages that ACTUALLY sample.  Producing all four meant 4
+     * divides + 8 selects per pixel (measured: race frame 15.7 -> 18.7 ms). */
     unsigned tcuse = 0;
     for (unsigned q2 = 0; q2 < p->n; q2++){
         const VSIns *y = &p->ins[q2];
@@ -888,11 +887,11 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
              " tc%d = q.xy / d; }\n", k, k, k, k, k);
     }
 #if NFS_ENHANCED
-    /* HD bulaniklik kipi (bkz. enhance.c): P.pad0 > 0 iken coklu ornekli
-     * 2B gölgelendiricide ornek ofsetleri merkeze gore P.pad0 ile olceklenir
-     * ve dokular P.pad1 mip seviyesinden okunur.  Yalnizca yol yansimasi
-     * bulaniklik cizimlerinde acilir; diger her cizimde pad0 = 0 (dal
-     * sabit tampondan, yani tum dalga icin ayni). */
+    /* HD blur mode (see enhance.c): while P.pad0 > 0, in a multi-tap 2D shader the
+     * tap offsets are scaled about the center by P.pad0 and the textures are read
+     * from mip level P.pad1.  Only enabled for road reflection blur draws; for
+     * every other draw pad0 = 0 (the branch comes from the constant buffer, so it
+     * is the same for the whole wave). */
     int hdblur = __builtin_popcount(tcuse) >= 2 && !(cubemask & tcuse);
     if (hdblur){
         int n = __builtin_popcount(tcuse);
@@ -905,7 +904,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
 #else
     int hdblur = 0;
 #endif
-    /* Asama basina ornekleme: 2B'de uv2, kupte uv3 kullanilir. */
+    /* Sampling per stage: uv2 is used for 2D, uv3 for cubes. */
     for (int k = 0; k < 4; k++){
         if (g_fb_in >= 0 && k == 0)
             EMIT("#define SMP0(uv2, uv3) fbin\n");
@@ -942,25 +941,25 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         case O_LABEL: case O_END:
             continue;
         case O_TEX: case O_TEXLDD: case O_TEXLDL: {
-            /* ps_1_x : "tex tN"            -> tN = ornekle(sN, uvN)
-             * ps_1_4 : "texld rN, tM"      -> rN = ornekle(sN, uvM)
+            /* ps_1_x : "tex tN"            -> tN = sample(sN, uvN)
+             * ps_1_4 : "texld rN, tM"      -> rN = sample(sN, uvM)
              * ps_2_0 : "texld dst, coord, sampler"
              *
-             * DIKKAT: sonuc EskIDEN HER ZAMAN t[] dizisine yaziliyordu.
-             * ps_1_4/ps_2_0'da hedef bir GECICI yazmac (r0) olabiliyor;
-             * o zaman sonraki komutlar sifir okuyor ve gölgelendirici
-             * siyah donduruyordu.  Belirti: bleach-bypass acikken tum
-             * 3B sahne kararıyordu (ana menu tamamen siyah) -- birlestirme
-             * gölgelendiricileri "t[0]=ornekle(...)" yazip hemen ardindan
-             * r[0] okuyordu.  Artik hedef, diger komutlarla ayni ortak
-             * yolla (maske/saturate/kaydirma dahil) yaziliyor. */
+             * CAUTION: the result USED TO ALWAYS be written to the t[] array.
+             * In ps_1_4/ps_2_0 the destination can be a TEMP register (r0); then
+             * the following instructions read zero and the shader returned black.
+             * Symptom: with bleach-bypass on the whole 3D scene went dark (the main
+             * menu completely black) -- the composite shaders wrote
+             * "t[0]=sample(...)" and read r[0] right after.  Now the destination is
+             * written through the same common path as the other instructions
+             * (including mask/saturate/shift). */
             int dn = RN(x->dst) & 3;
             if (x->nsrc >= 2){                     /* ps_2_0 */
                 int smp = RN(x->src[1]) & 3;
                 char cs[160]; msl_src(cs, sizeof cs, p, x->src[0], x->rel[0]);
                 snprintf(ex, sizeof ex, "SMP%d((%s).xy, (%s).xyz)", smp, cs, cs);
             } else if (x->nsrc == 1 && RT(x->src[0]) == R_ADDR){
-                /* ps_1_4: kaynak tM doku KOORDINATI, ornek DEGERI degil */
+                /* ps_1_4: the source tM is a texture COORDINATE, not a sample VALUE */
                 snprintf(ex, sizeof ex, "SMP%d(TCRD(%d), TPICK(%d).xyz)",
                          dn, RN(x->src[0]) & 3, RN(x->src[0]) & 3);
             } else if (x->nsrc == 1){
@@ -969,7 +968,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
             } else {                               /* ps_1_x: tex tN */
                 snprintf(ex, sizeof ex, "SMP%d(TCRD(%d), TPICK(%d).xyz)", dn, dn, dn);
                 if (reflk >= 0 && dn == reflk){
-                    /* yalnizca bu bicimi destekliyoruz: hedef t[dn] */
+                    /* we only support this form: destination t[dn] */
                     EMIT("  t[%d] = %s;\n", dn, ex);
                     EMIT("  if (hd_ev == 0) hd_rs = t[%d]; else t[%d].rgb = float3(hd_ev == 1 ? 0.0 : 1.0);\n", dn, dn);
                     hd_seen = 1;
@@ -1004,7 +1003,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         case O_POW:    snprintf(ex, sizeof ex, "float4(pow(abs((%s).x), (%s).x))", s0, s1); break;
         case O_NRM:    snprintf(ex, sizeof ex, "float4(length((%s).xyz) == 0.0 ? float3(0.0) : normalize((%s).xyz), 1.0)", s0, s0); break;
         case O_EXP: snprintf(ex, sizeof ex, "float4(exp2((%s).x))", s0); break;
-        /* expp: (2^floor(w), frac(w), 2^w, 1) -- exp'in esdegeri DEGIL */
+        /* expp: (2^floor(w), frac(w), 2^w, 1) -- NOT the equivalent of exp */
         case O_EXPP: snprintf(ex, sizeof ex,
                         "float4(exp2(floor((%s).x)), fract((%s).x), exp2((%s).x), 1.0)",
                         s0, s0, s0); break;
@@ -1015,7 +1014,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         case O_LOG: snprintf(ex, sizeof ex,
                        "float4((%s).x == 0.0 ? -3.4e38 : log2(abs((%s).x)))", s0, s0); break;
         default:
-            continue;                       /* desteklenmeyen: atla */
+            continue;                       /* unsupported: skip */
         }
         if (!x->has_dst) continue;
         { char mz[8]; msl_mask_swz(mz, sizeof mz, x->dst);
@@ -1025,30 +1024,31 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         if (sat) EMIT("  %s = saturate(%s);\n", d, fit);
         else     EMIT("  %s = %s;\n", d, fit);
     }
-    /* ps_1_x sonucu r0'da, ps_2_0 oC0'da.  Hangisi yazildiysa onu dondur. */
+    /* The ps_1_x result is in r0, ps_2_0's in oC0.  Return whichever was written. */
     EMIT("  float4 res = %s;\n", ps_uses_colorout(p) ? "oC" : "r[0]");
-    /* Alfa testi bir islev sabitiyle (kAT, metal.m kPrelude): testsiz cizim
-     * discard_fragment icermeyen varyantla cizilir ki GPU gizli yuzey
-     * elemesini (HSR) yapabilsin.  kAT 2 = tani: atilacak parca macenta. */
+    /* The alpha test via a function constant (kAT, metal.m kPrelude): a draw without
+     * the test is drawn with the variant that has no discard_fragment, so the GPU can
+     * do hidden surface removal (HSR).  kAT 2 = diagnostic: fragments to discard are
+     * magenta. */
     EMIT("  if (kAT == 1 && res.a < P.aref) discard_fragment();\n");
     EMIT("  bool at_kill = (kAT == 2 && res.a < P.aref);\n");
     EMIT("#undef TSEL\n#undef TPICK\n#undef TCRD\n");
-    /* D3D9 sis: C = f*Cs + (1-f)*Cfog, yalnizca RGB.  P.fog.a = FOGENABLE. */
+    /* D3D9 fog: C = f*Cs + (1-f)*Cfog, RGB only.  P.fog.a = FOGENABLE. */
     EMIT("  res.rgb = mix(P.fog.rgb, res.rgb, mix(1.0, saturate(i.fog), P.fog.a));\n");
     EMIT("  if (kATD) { if (at_kill) { atomic_fetch_add_explicit(&atdbg[%d], 1u, memory_order_relaxed);"
          " res = float4(1.0, 0.0, 1.0, 1.0); }\n", id);
-    /* tani: [0,1] disinda kose rengi gelen parca (D3D9 oD0/oD1'i kirpar) */
+    /* diagnostic: a fragment arriving with a vertex color outside [0,1] (D3D9 clamps oD0/oD1) */
     EMIT("    if (any(i.col0 < 0.0) || any(i.col0 > 1.0) || any(i.col1 < 0.0) || any(i.col1 > 1.0))"
          " atomic_fetch_add_explicit(&atdbg[4096 + %d], 1u, memory_order_relaxed); }\n", id);
     if (g_fb_in >= 0){
         EMIT("  PSFB%d fbo; fbo.c = res; return fbo;\n}\n", id);
     } else if (reflk >= 0){
-        if (!hd_seen) return 0;             /* asama farkli bicimde: varyant yok */
+        if (!hd_seen) return 0;             /* the stage has a different format: no variant */
         int cls = ((cubemask >> reflk) & 1u) ? 2 : 1;
         EMIT("  hd_o[hd_ev] = res;\n  }\n");
         EMIT("  PSOut hd_out; hd_out.c0 = hd_o[0];\n");
         if (hd_gpack()){
-            /* c1 = R0 + sinif/4, c2 = B/4, c3 = birim yon (kod 512 = sifir) */
+            /* c1 = R0 + class/4, c2 = B/4, c3 = unit direction (code 512 = zero) */
             EMIT("  hd_out.c1 = float4(saturate(hd_rs.rgb), %d.0 * 0.25);\n", cls);
             EMIT("  hd_out.c2 = float4(saturate((hd_o[2].rgb - hd_o[1].rgb) * 0.25), 0.0);\n");
             if (cls == 2) EMIT("  { float3 hd_d = i.uv%d.xyz; float hd_l = dot(hd_d, hd_d);\n"
@@ -1058,15 +1058,15 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         } else {
             EMIT("  hd_out.c1 = float4(hd_o[2].rgb - hd_o[1].rgb, %d.0);\n", cls);
             EMIT("  hd_out.c2 = float4(saturate(hd_rs.rgb), 1.0);\n");
-            /* kup: ornekleme vektoru = yansima yonu (araba boyasi icin isin) */
+            /* cube: the sampling vector = the reflection direction (the ray for car paint) */
             if (cls == 2) EMIT("  hd_out.c3 = float4(i.uv%d.xyz, 1.0);\n", reflk);
             else          EMIT("  hd_out.c3 = float4(0.0);\n");
         }
         EMIT("  return hd_out;\n}\n");
     } else if (NFS_ENHANCED){
-        /* HD: yansimasiz opak cizim G-tamponunu SIFIRLAR (onundeki yolun
-         * verisini ortmeli); karisimli cizimlerde yazma maskesi kapali.
-         * Paketli duzende sifir yon 512 koduyla yazilir (bkz. metal.m). */
+        /* HD: an opaque draw without reflection ZEROES the G-buffer (it must cover the
+         * data of the road in front of it); for blended draws the write mask is off.
+         * In the packed layout a zero direction is written with code 512 (see metal.m). */
         EMIT("  PSOut hd_out; hd_out.c0 = res; hd_out.c1 = float4(0.0); hd_out.c2 = float4(0.0);\n");
         EMIT("  hd_out.c3 = float4(%s);\n", hd_gpack() ? "float3(512.0 / 1023.0), 0.0" : "0.0");
         EMIT("  return hd_out;\n}\n");
@@ -1076,7 +1076,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
     return (int)o;
 }
 
-/* Gölgelendirici oC0'a mi yaziyor (ps_2_0) yoksa r0'a mi (ps_1_x)? */
+/* Does the shader write to oC0 (ps_2_0) or to r0 (ps_1_x)? */
 int ps_uses_colorout(const VSProg *p){
     if (!p) return 0;
     for (unsigned q = 0; q < p->n; q++)
@@ -1085,21 +1085,21 @@ int ps_uses_colorout(const VSProg *p){
 }
 
 /* ====================================================================
- * KOSE (vertex) gölgelendiricisi -> Metal Shading Language
+ * VERTEX shader -> Metal Shading Language
  *
- * Kose donusumu simdiye kadar CPU'da YORUMLANIYORDU: olcumde calisma
- * suresinin ~%45'i vs_run icindeydi ve tavan ~3.5 M kose/sn idi.  Oyunun
- * kendi vs_1_1/vs_2_x bytecode'unu MSL'ye cevirip GPU'da kosturuyoruz.
+ * Until now the vertex transform was INTERPRETED on the CPU: in the measurement
+ * ~45% of the run time was inside vs_run and the ceiling was ~3.5 M vertices/s.
+ * We translate the game's own vs_1_1/vs_2_x bytecode to MSL and run it on the GPU.
  *
- * Kose verisi GPU'ya HAM gonderilir; okuma yerlesimi (offset/tip) D3D
- * kose bildiriminden alinip gölgelendiriciye GOMULUR, boylece
- * MTLVertexDescriptor kombinasyon patlamasi olmaz.
+ * Vertex data is sent to the GPU RAW; the read layout (offset/type) is taken from
+ * the D3D vertex declaration and EMBEDDED in the shader, so there is no
+ * MTLVertexDescriptor combination explosion.
  * ==================================================================== */
 
-/* D3DDECLTYPE -> MSL ifadesi (ham bayt tamponundan oku).
- * DIKKAT: com.c'deki decl_fetch ile BIREBIR ayni olmali; ayrisirsa CPU ve
- * GPU yollari sessizce farkli goruntu uretir.  (Ilk surumde UBYTE4 yanlisla
- * 255'e bolunuyordu ve 8..12 tipleri hic yoktu.) */
+/* D3DDECLTYPE -> an MSL expression (read from the raw byte buffer).
+ * CAUTION: must be EXACTLY the same as decl_fetch in com.c; if they diverge the
+ * CPU and GPU paths silently produce different images.  (In the first version
+ * UBYTE4 was wrongly divided by 255 and types 8..12 didn't exist at all.) */
 static int decl_read_msl(char *o, size_t cap, unsigned type, unsigned off){
     switch (type){
     case 0: snprintf(o,cap,"float4(LDF(%u),0.0,0.0,1.0)",off); break;          /* FLOAT1 */
@@ -1125,12 +1125,12 @@ static int decl_read_msl(char *o, size_t cap, unsigned type, unsigned off){
                      off,off+2); break;                                         /* USHORT2N */
     case 12:snprintf(o,cap,"float4(LDU(%u),LDU(%u),LDU(%u),LDU(%u))/65535.0",
                      off,off+2,off+4,off+6); break;                             /* USHORT4N */
-    default: return 0;             /* bilinmiyor -> ceviriyi reddet */
+    default: return 0;             /* unknown -> reject the translation */
     }
     return 1;
 }
 
-/* dst yazmaci -> MSL hedefi.  Cikislar: oPos, oD0/oD1, oT0..oT3 */
+/* dst register -> the MSL destination.  Outputs: oPos, oD0/oD1, oT0..oT3 */
 static int vs_dst_msl(char *o, size_t cap, unsigned tok){
     int ty = RT(tok), n = RN(tok);
     switch (ty){
@@ -1145,9 +1145,9 @@ static int vs_dst_msl(char *o, size_t cap, unsigned tok){
     }
 }
 
-/* Gölgelendiricinin dokundugu EN YUKSEK sabit yazmaci (+1).  Sabit
- * tamponunu cizim basina 4 KB yerine yalnizca gerektigi kadar
- * yuklemek icin.  Goreli adresleme varsa sinir bilinemez -> 256. */
+/* The HIGHEST constant register the shader touches (+1).  To upload only as much
+ * of the constant buffer as needed instead of 4 KB per draw.  With relative
+ * addressing the bound can't be known -> 256. */
 int vs_kmax(const VSProg *p){
     if (!p) return 0;
     int mx = -1;
@@ -1176,25 +1176,25 @@ int vs_kmax(const VSProg *p){
     return mx + 1;
 }
 
-/* Gölgelendirici oFog (RASTOUT#1) yaziyor mu?  D3D9'da kose gölgelendiricisi
- * varken sis carpani bu yazmactan gelir; sabit islevli asama pikseli
- * FOGCOLOR'a dogru karistirir.  Biz oFog'u atiyorduk -> hic sis yoktu. */
-/* oPos'u ureten SABIT YAZMACI bul.  Konum matrisi her golgelendiricide
- * c0..c3'te DEGIL (olculdu: vs_9'da c0..c3 baska sabitleri tutuyor ve
- * "c3.w==0 -> perspektif" testi yanlis pozitif veriyordu).
- * Doner: oPos.x'i ureten c# (yoksa -1); *wreg = oPos.w'yi ureten c#. */
+/* Does the shader write oFog (RASTOUT#1)?  In D3D9, with a vertex shader present,
+ * the fog factor comes from this register; the fixed-function stage blends the
+ * pixel toward FOGCOLOR.  We were dropping oFog -> there was no fog at all. */
+/* Find the CONSTANT REGISTER that produces oPos.  The position matrix is NOT in
+ * c0..c3 in every shader (measured: in vs_9 c0..c3 hold other constants and the
+ * "c3.w==0 -> perspective" test gave false positives).
+ * Returns: the c# producing oPos.x (-1 if none); *wreg = the c# producing oPos.w. */
 int vs_pos_creg(const VSProg *p, int *wreg){
     int cx = -1, cw = -1;
     if (wreg) *wreg = -1;
     if (!p) return -1;
-    /* GECICI YAZMAC IZI: yol gölgelendiricileri (vs_4, vs_14) konumu once
-     * gecicilere hesaplayip sonra tasiyor:
+    /* TEMP REGISTER TRACKING: the road shaders (vs_4, vs_14) first compute the
+     * position into temps and then move it:
      *     dp4 r1.x, v0, c0 ... dp4 r0.w, v0, c3 ... mov oPos.x, r1.xxxx
      *     mov oPos.yzw, r0
-     * Eski surum yalnizca DOGRUDAN oPos'a yazan dp4/m4x4'u goruyordu ve
-     * bu gölgelendiricilerde -1 donuyordu -> genis ekran (Hor+) duzeltmesi
-     * YOL YUZEYINE HIC UYGULANMIYORDU (yol yatayda 1/0.75 gerili).
-     * tsrc[yazmac][bilesen] = o bileseni "dp4 v0, c#" ile ureten sabit. */
+     * The old version only saw dp4/m4x4 writing DIRECTLY to oPos and returned -1
+     * for these shaders -> the widescreen (Hor+) correction WAS NEVER APPLIED TO
+     * THE ROAD SURFACE (the road stretched 1/0.75 horizontally).
+     * tsrc[register][component] = the constant producing that component with "dp4 v0, c#". */
     int16_t tsrc[32][4];
     memset(tsrc, 0xFF, sizeof tsrc);
     for (unsigned q = 0; q < p->n; q++){
@@ -1209,7 +1209,7 @@ int vs_pos_creg(const VSProg *p, int *wreg){
             for (int c = 0; c < 4; c++) if (m & (1u << c)) tsrc[RN(x->dst)][c] = (int16_t)k;
             continue;
         }
-        if (RT(x->dst) != R_RASTOUT || RN(x->dst) != 0) continue;   /* oPos degil */
+        if (RT(x->dst) != R_RASTOUT || RN(x->dst) != 0) continue;   /* not oPos */
         if (x->op == O_M4x4 || x->op == O_M4x3){
             if (x->nsrc >= 2 && RT(x->src[1]) == R_CONST && !RELADDR(x->src[1])){
                 cx = RN(x->src[1]); cw = cx + 3; }
@@ -1219,7 +1219,7 @@ int vs_pos_creg(const VSProg *p, int *wreg){
             if (m & 8u) cw = RN(x->src[1]);
         } else if (x->op == O_MOV && x->nsrc >= 1 && RT(x->src[0]) == R_TEMP &&
                    RN(x->src[0]) < 32 && SMOD(x->src[0]) == 0u){
-            for (int c = 0; c < 4; c += 3){                 /* yalnizca x ve w */
+            for (int c = 0; c < 4; c += 3){                 /* only x and w */
                 if (!(m & (1u << c))) continue;
                 int sc = (int)((SWIZ(x->src[0]) >> (2 * c)) & 3u);
                 int k = tsrc[RN(x->src[0])][sc];
@@ -1231,10 +1231,10 @@ int vs_pos_creg(const VSProg *p, int *wreg){
     return cx;
 }
 
-/* Sis sabitlerinin yazmaci: NFSU2 kalibi (vs_4, vs_14, ...)
+/* The register of the fog constants: the NFSU2 pattern (vs_4, vs_14, ...)
  *     add r.w, -r.wwww, cK.xxxx ; mul r.w, r.wwww, cK.yyyy ; max r.w, r.wwww, cK.zzzz
  *     min oFog, r.wwww, c#.yyyy
- * yani sis = clamp((cK.x - derinlik) * cK.y, cK.z, 1).  Doner: K ya da -1. */
+ * i.e. fog = clamp((cK.x - depth) * cK.y, cK.z, 1).  Returns: K or -1. */
 int vs_writes_fog(const VSProg *p);
 int vs_fog_creg(const VSProg *p){
     if (!p) return -1;
@@ -1249,11 +1249,12 @@ int vs_fog_creg(const VSProg *p){
     return (k >= 0 && vs_writes_fog(p)) ? k : -1;
 }
 
-/* Far isigi izdusumu (vs_13 sahne, vs_14 yol):
+/* Headlight projection (vs_13 scene, vs_14 road):
  *     dp4 oT1.x, v0, cK ; .y cK+1 ; .z cK+2 ; oT1.w = v0.c[K+3]
- *     mad oT2.x, r, cA.xxxx, cA.yyyy        (sonum rampasi = olcek*w + kayma)
- * Donus K (kalip yoksa -1); ramp[0..1] = olcek, kayma.  HD isin izleme sabit
- * kopyalarda far terimini isabet noktasinda bu matrisle yeniden kurar. */
+ *     mad oT2.x, r, cA.xxxx, cA.yyyy        (falloff ramp = scale*w + offset)
+ * Returns K (-1 if the pattern isn't there); ramp[0..1] = scale, offset.  HD ray
+ * tracing rebuilds the headlight term at the hit point for static copies with
+ * this matrix. */
 int vs_light_creg(const VSProg *p, float ramp[2]){
     if (!p) return -1;
     int pr = vs_input_reg(p, 0, 0), k[3] = { -1, -1, -1 };
@@ -1292,7 +1293,7 @@ int vs_writes_fog(const VSProg *p){
     return 0;
 }
 
-/* bkz. metal.m RENK KIRPMA */
+/* see metal.m COLOR CLAMPING */
 int vs_colsat_on(void){
     static int on = -1; if (on < 0){ const char *e = getenv("RENKSAT"); on = (e && *e == '0') ? 0 : 1; }
     return on;
@@ -1300,13 +1301,13 @@ int vs_colsat_on(void){
 int vs_version_major(const VSProg *p){ return p ? (int)((p->version >> 8) & 0xFFu) : 0; }
 int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t cap){
     if (!p || !out || cap < 1024) return 0;
-    g_cbuf = "K";                       /* kose: K.c[0..255] */
+    g_cbuf = "K";                       /* vertex: K.c[0..255] */
     size_t o = 0;
     #define VEMIT(...) do{ int _w = snprintf(out+o, cap-o, __VA_ARGS__); \
                            if (_w < 0 || (size_t)_w >= cap-o) return 0; o += (size_t)_w; }while(0)
 
-    /* Sabit tamponu gölgelendirici basina boyutlandirilir: cizim basina
-     * 4 KB yuklemek yerine yalnizca dokunulan sabitler gonderilir. */
+    /* The constant buffer is sized per shader: instead of uploading 4 KB per draw,
+     * only the touched constants are sent. */
     { int nk = vs_kmax(p); if (nk < 1) nk = 1;
       VEMIT("struct VSPar { uint stride; uint tsel; uint pad1; uint pad2;\n");
       VEMIT("               float4 c[%d]; };\n", nk); }
@@ -1319,23 +1320,23 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     VEMIT("#define LDB(x)  ((float)(B[(x)]))\n");
     VEMIT("#define LDS(x)  ((float)(*(device const short*)(B+(x))))\n");
     VEMIT("#define LDU(x)  ((float)(*(device const ushort*)(B+(x))))\n");
-    size_t body_a = o;                  /* (HD) yakalama cekirdegi ayni govdeyi kullanir */
+    size_t body_a = o;                  /* (HD) the capture kernel uses the same body */
     VEMIT("  float4 r[32]; for (int q=0;q<32;q++) r[q]=float4(0.0);\n");
     VEMIT("  float4 v[16]; for (int q=0;q<16;q++) v[q]=float4(0.0,0.0,0.0,1.0);\n");
     VEMIT("  float4 oPos=float4(0.0,0.0,0.0,1.0), dummy=float4(0.0);\n");
-    /* oFog varsayilani 1.0 = SIS YOK; gölgelendirici yazmazsa dogru davranis. */
+    /* the oFog default 1.0 = NO FOG; the right behavior if the shader doesn't write it. */
     VEMIT("  float4 oFog=float4(1.0);\n");
     VEMIT("  float4 oD[2]  = { float4(1.0), float4(0.0) };\n");
     VEMIT("  float4 oT[4]  = { float4(0.0), float4(0.0), float4(0.0), float4(0.0) };\n");
     VEMIT("  int4 a0 = int4(0); int aL = 0;\n");
 
-    /* Girdi yazmaclarini bildirimden oku */
+    /* Read the input registers from the declaration */
     for (int i = 0; i < 16; i++){
-        if (decl[i][0] < 0) continue;                 /* kullanilmiyor */
+        if (decl[i][0] < 0) continue;                 /* unused */
         char e[160];
         if (!decl_read_msl(e, sizeof e, (unsigned)decl[i][1], (unsigned)decl[i][0])){
             g_cbuf = "P";
-            return 0;                                 /* CPU yoluna dus */
+            return 0;                                 /* fall back to the CPU path */
         }
         VEMIT("  v[%d] = %s;\n", i, e);
     }
@@ -1387,8 +1388,8 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
         case O_NRM:  snprintf(ex,sizeof ex,"float4(length((%s).xyz)==0.0?float3(0.0):normalize((%s).xyz),1.0)", s0, s0); break;
         case O_SGN:  snprintf(ex,sizeof ex,"sign(%s)", s0); break;
         case O_M4x4: case O_M4x3: case O_M3x3: case O_M3x4: case O_M3x2: {
-            /* m?x? dst, src0, src1 : src1 ARDISIK sabit yazmaclarin ilki.
-             * Satir sayisi komuta gore degisir. */
+            /* m?x? dst, src0, src1 : src1 is the first of CONSECUTIVE constant registers.
+             * The row count depends on the instruction. */
             int rows = (x->op==O_M4x4) ? 4 : (x->op==O_M4x3 ? 3 :
                        (x->op==O_M3x3 ? 3 : (x->op==O_M3x4 ? 4 : 2)));
             int vec3 = (x->op==O_M3x3 || x->op==O_M3x4 || x->op==O_M3x2);
@@ -1422,9 +1423,9 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
         case O_DST:  snprintf(ex,sizeof ex,
                         "float4(1.0,(%s).y*(%s).y,(%s).z,(%s).w)", s0,s1,s0,s1); break;
         default:
-            /* Cevrilemeyen komut (akis denetimi, cagri, vb.).  Sessizce
-             * atlamak YANLIS gölgelendirici uretir; ceviriyi tumden
-             * reddedip kanitlanmis CPU yoluna dusuyoruz. */
+            /* An untranslatable instruction (flow control, call, etc.).  Silently skipping it
+             * produces a WRONG shader; we reject the translation entirely and fall
+             * back to the proven CPU path. */
             g_cbuf = "P";
             return 0;
         }
@@ -1442,16 +1443,16 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     size_t body_b = o;
     VEMIT("  VOut O;\n");
     VEMIT("  O.pos = oPos;\n");
-    /* D3D9 vs_1_1 - vs_2_x: oD0/oD1 [0,1]'e kirpilir (ps tarafinda v0/v1 "8 bit
-     * isaretsiz, (0, +1)"); kirpma kose basina, enterpolasyondan ONCE -- donanim
-     * renk enterpolatorleri [0,1] tasiyordu.  RENKSAT=0 eski (kirpmasiz). */
+    /* D3D9 vs_1_1 - vs_2_x: oD0/oD1 are clamped to [0,1] (on the ps side v0/v1 are
+     * "8 bit unsigned, (0, +1)"); clamping is per vertex, BEFORE interpolation --
+     * the hardware color interpolators carried [0,1].  RENKSAT=0 old (no clamping). */
     if (vs_colsat_on() && ((p->version >> 8) & 0xFFu) < 3u)
         VEMIT("  O.col0 = saturate(oD[0]); O.col1 = saturate(oD[1]);\n");
     else
         VEMIT("  O.col0 = oD[0]; O.col1 = oD[1];\n");
-    /* D3DTSS_TEXCOORDINDEX: asama k, oT[sel] okur.  Secim BURADA yapilir ki
-     * piksel golgelendiricisinde koordinat saf interpolant kalsin. */
-    /* UV OLCEGI (metal.m): K.pad1 = duzeltilecek oT kumeleri, UVB.xy = fark */
+    /* D3DTSS_TEXCOORDINDEX: stage k reads oT[sel].  The selection is done HERE so the
+     * coordinate stays a pure interpolant in the pixel shader. */
+    /* UV SCALE (metal.m): K.pad1 = the oT sets to correct, UVB.xy = the difference */
     VEMIT("  for (int q = 0; q < 4; q++) if ((K.pad1 >> q) & 1u) oT[q].xy += UVB.xy;\n");
     VEMIT("  O.uv0 = oT[(K.tsel      ) & 3u]; O.uv1 = oT[(K.tsel >>  8) & 3u];\n");
     VEMIT("  O.uv2 = oT[(K.tsel >> 16) & 3u]; O.uv3 = oT[(K.tsel >> 24) & 3u];\n");
@@ -1460,13 +1461,13 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     VEMIT("#undef LDF\n#undef LDB\n#undef LDS\n#undef LDU\n");
     VEMIT("  return O;\n}\n");
 #if NFS_ENHANCED
-    /* YAKALAMA CEKIRDEGI (isin izleme): ayni govde, cikti tampona.
-     * Bir dagitim ayni gölgelendiriciyi kullanan TUM cizimleri kapsar;
-     * kose basina ITEM[g] cizim kaydini verir (ham kose ve sabit ofseti).
-     * Dunya konumu kirpma uzayindan iptal hatasi OLMADAN cikar: perspektifte
-     * oPos.w = gorus derinligi, yani gorus = (x/P00', y/P11, w) ve
-     * dunya = gorus * V^-1 (yakin 0.5 / uzak 16 km'de z-w farki float32'de
-     * coker; bu yol o farki hic kullanmaz). */
+    /* CAPTURE KERNEL (ray tracing): the same body, output to a buffer.
+     * One dispatch covers ALL draws using the same shader; per vertex ITEM[g] gives
+     * the draw record (raw vertex and constant offsets).
+     * The world position comes out of clip space WITHOUT cancellation error: in
+     * perspective oPos.w = view depth, so view = (x/P00', y/P11, w) and
+     * world = view * V^-1 (at near 0.5 / far 16 km the z-w difference collapses in
+     * float32; this path never uses that difference). */
     {
         size_t blen = body_b - body_a;
         VEMIT("kernel void vsk_%d(uint tid [[thread_position_in_grid]],\n", id);
@@ -1477,7 +1478,7 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
         VEMIT("  if (tid >= C.count) return;\n");
         VEMIT("  uint g = C.first + tid; HDRec rc = REC[ITEM[g]]; uint vid = g - rc.first;\n");
         VEMIT("  device const VSPar &K = *(device const VSPar *)(KBASE + rc.koff);\n");
-        /* indisli kayit (metal.m KALICI KOSE / INDIS HAVUZU): kose ve indis havuzda */
+        /* indexed record (metal.m PERSISTENT VERTEX / INDEX POOL): vertices and indices are in the pool */
         VEMIT("  device const uchar *VB0 = VBASE;\n");
         VEMIT("  if (rc.isz != 0u){ uint ix = (rc.isz == 4u) ? *(device const uint *)(POOL + rc.ib + vid * 4u)\n");
         VEMIT("                                              : uint(*(device const ushort *)(POOL + rc.ib + vid * 2u));\n");

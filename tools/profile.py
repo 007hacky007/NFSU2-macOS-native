@@ -43,11 +43,11 @@ while q:
         ops=i.operands; op=ops[0] if ops else None
         if m=='call':
             if op is not None and op.type==X86_OP_IMM: seed(op.imm)
-            else: grp['DOLAYLI_CALL']+=1
+            else: grp['INDIRECT_CALL']+=1
             va=i.address+i.size; continue
         if m in ('jmp','ljmp'):
             if op is not None and op.type==X86_OP_IMM: va=op.imm; continue
-            grp['DOLAYLI_JMP']+=1
+            grp['INDIRECT_JMP']+=1
             if op is not None and op.type==X86_OP_MEM and op.mem.scale==4 and op.mem.disp:
                 t=op.mem.disp&0xffffffff; n=0
                 while n<1024 and (t+4*n) in rs:
@@ -60,12 +60,12 @@ while q:
             va=i.address+i.size; continue
         if m in ('ret','retf','iret','iretd','hlt','ud2','int3'): break
         va=i.address+i.size
-print(f"toplam cozulen komut: {total}\n")
-print("=== EN SIK 25 KOMUT ===")
+print(f"total decoded instructions: {total}\n")
+print("=== TOP 25 INSTRUCTIONS ===")
 for m,c in mn.most_common(25): print(f"  {m:10s} {c:8d}  {100.0*c/total:5.2f}%")
-print(f"\n=== KRITIK KATEGORILER ===")
-for k in ('x87','SSE/MMX','DOLAYLI_CALL','DOLAYLI_JMP'):
+print(f"\n=== CRITICAL CATEGORIES ===")
+for k in ('x87','SSE/MMX','INDIRECT_CALL','INDIRECT_JMP'):
     print(f"  {k:14s} {grp[k]:8d}  {100.0*grp[k]/total:5.2f}%")
-print(f"\n  benzersiz komut cesidi (opcode): {len(mn)}")
+print(f"\n  distinct instruction kinds (opcode): {len(mn)}")
 risky=[m for m in mn if m in ('in','out','cpuid','rdtsc','cli','sti','lock','xchg','cmpxchg','cmpxchg8b','lgdt','lidt','sysenter','int','into','rdpmc','wrmsr','rdmsr','sgdt','sidt','smsw','arpl','bound')]
-print(f"  ayricalikli/ozel komutlar: {sorted((m,mn[m]) for m in risky)}")
+print(f"  privileged/special instructions: {sorted((m,mn[m]) for m in risky)}")

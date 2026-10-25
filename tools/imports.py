@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IAT'i cikar ve her import'un .text icinde kac cagri sitesi oldugunu say."""
+"""Extract the IAT and count how many call sites each import has inside .text."""
 import sys, struct, collections
 sys.path.insert(0,'tools')
 import pefile
@@ -17,9 +17,9 @@ for e in pe.DIRECTORY_ENTRY_IMPORT:
     for imp in e.imports:
         nm = imp.name.decode('latin1') if imp.name else f"#{imp.ordinal}"
         iat[imp.address] = (dll, nm)
-print(f"IAT girisi: {len(iat)}  (adres araligi 0x{min(iat):08x}-0x{max(iat):08x})")
+print(f"IAT entries: {len(iat)}  (address range 0x{min(iat):08x}-0x{max(iat):08x})")
 
-# .text'i tara: call/jmp dword ptr [IAT]
+# scan .text: call/jmp dword ptr [IAT]
 md=L.md; md.detail=True
 EPa=IB+pe.OPTIONAL_HEADER.AddressOfEntryPoint
 def rd32(a):
@@ -69,16 +69,16 @@ for a,(dll,nm) in iat.items():
     by_dll[dll]+=n
     rows.append((n,dll,nm,a))
 rows.sort(reverse=True)
-print(f"cagrilan import: {used}/{len(iat)}   IAT disi dolayli cagri: {indirect_other}\n")
-print("=== DLL BAZINDA CAGRI SITESI ===")
+print(f"called imports: {used}/{len(iat)}   indirect calls outside the IAT: {indirect_other}\n")
+print("=== CALL SITES PER DLL ===")
 for d,n in by_dll.most_common(): print(f"  {d:14s} {n:5d}")
-print(f"\n=== EN COK CAGRILAN 40 IMPORT (Asama 3 oncelik listesi) ===")
+print(f"\n=== TOP 40 MOST CALLED IMPORTS (Stage 3 priority list) ===")
 for n,dll,nm,a in rows[:40]:
     print(f"  {n:5d}  {dll:14s} {nm}")
-print(f"\n=== HIC CAGRILMAYAN {len(iat)-used} IMPORT (stub yeterli) ===")
+print(f"\n=== {len(iat)-used} NEVER CALLED IMPORTS (a stub is enough) ===")
 z=[f"{dll}!{nm}" for n,dll,nm,a in rows if n==0]
 for i in range(0,min(len(z),60),4): print("   "+"  ".join(f"{x:26s}" for x in z[i:i+4]))
-# C tablosu uret
+# generate the C table
 with open('gen/all/imports.c','w') as f:
     f.write('#include "cpu.h"\n#include <stdint.h>\n')
     f.write('typedef struct { uint32_t iat; const char*dll; const char*name; } ImpEnt;\n')
@@ -86,4 +86,4 @@ with open('gen/all/imports.c','w') as f:
     for a,(dll,nm) in sorted(iat.items()):
         f.write(f'  {{0x{a:08x}u,"{dll}","{nm}"}},\n')
     f.write('};\n')
-print(f"\n-> gen/all/imports.c yazildi ({len(iat)} giris)")
+print(f"\n-> gen/all/imports.c written ({len(iat)} entries)")

@@ -1,27 +1,27 @@
 #!/bin/bash
-# NFSU2 native ARM64 portunu calistir
+# Run the NFSU2 native ARM64 port
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-# NFSU2_DATA: oyun klasoru (icinde SPEED2.EXE) ya da dogrudan SPEED2.EXE yolu.
-# Verilmezse depo kokundeki varsayilan klasor kullanilir.
+# NFSU2_DATA: the game folder (containing SPEED2.EXE) or the SPEED2.EXE path itself.
+# If not given, the default folder at the repository root is used.
 EXE="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2/SPEED2.EXE"
 if [ -n "$NFSU2_DATA" ]; then
   if [ -d "$NFSU2_DATA" ]; then EXE="$NFSU2_DATA/SPEED2.EXE"; else EXE="$NFSU2_DATA"; fi
 fi
-[ -f "$EXE" ] || { echo "SPEED2.EXE bulunamadi: $EXE"; exit 1; }
-# IKI BUILD (bkz. link.sh):
-#   ./run.sh [mod]          orijinal  (out/nfsu2_boot)
-#   NFSHD=1 ./run.sh [mod]  HD        (out/nfsu2_hd_boot) -- grafik iyilestirmeleri
-#   ./run.sh hd | hd1080p   HD'nin kisayollari
-# HD ayarlari (yalnizca HD build okur): HDREFL=0 (yansima iyilestirmesi kapali),
-#   HD_ROAD (yol yansimasi olcegi; varsayilan isin izleme acikken 1/3, kapaliyken 0.5),
+[ -f "$EXE" ] || { echo "SPEED2.EXE not found: $EXE"; exit 1; }
+# TWO BUILDS (see link.sh):
+#   ./run.sh [mode]          original  (out/nfsu2_boot)
+#   NFSHD=1 ./run.sh [mode]  HD        (out/nfsu2_hd_boot) -- graphics improvements
+#   ./run.sh hd | hd1080p    shortcuts for HD
+# HD settings (read by the HD build only): HDREFL=0 (reflection improvement off),
+#   HD_ROAD (road reflection scale; default 1/3 with ray tracing on, 0.5 with it off),
 #   HD_BLUR=0.5, HD_MIRROR=1024, HD_CUBE=512,
-#   HD_MSAA (varsayilan otomatik: 1440 satir ve ustu 2x, alti 4x; 1 = kapali),
-#   HD_SSR=1 (0 kapali), HD_SSR_CAR=1 (araba boyasi), HD_RT=1 (isin izlemeli yansima; 0 = SSR),
-#   HD_GSEP=1 (G-tamponu ayri tek ornekli geciste), HD_MBFIX=1 (hareket bulanikliginda
-#   sahne cok ornekli devam eder), HD_RT_FAR / HD_RT_BMIN (isin sinirlari; varsayilan kapali).
-#   Ayrinti: runtime/enhance.c, runtime/metal.m (ayni adli bolumler)
-# Oyun icinde Cmd+Shift+D: o karenin PNG'si + cizim listesi (~/Library/Logs/NFSU2/
-#   ya da PERFLOG dizini).  Oynarken olcum kaydi: tools/oturum.sh [hd].
+#   HD_MSAA (default automatic: 2x at 1440 rows and above, 4x below; 1 = off),
+#   HD_SSR=1 (0 off), HD_SSR_CAR=1 (car paint), HD_RT=1 (ray-traced reflections; 0 = SSR),
+#   HD_GSEP=1 (G-buffer in a separate single-sampled pass), HD_MBFIX=1 (the scene stays
+#   multisampled during motion blur), HD_RT_FAR / HD_RT_BMIN (ray limits; off by default).
+#   Details: runtime/enhance.c, runtime/metal.m (sections of the same name)
+# In game, Cmd+Shift+D: a PNG of that frame + the draw list (~/Library/Logs/NFSU2/
+#   or the PERFLOG directory).  Measurement recording while playing: tools/session.sh [hd].
 MODE="${1:-window}"
 case "$MODE" in
   hd)      NFSHD=1; MODE=window ;;
@@ -29,18 +29,18 @@ case "$MODE" in
 esac
 BIN="$ROOT/out/nfsu2_boot"
 [ "${NFSHD:-0}" = 1 ] && BIN="$ROOT/out/nfsu2_hd_boot"
-[ -x "$BIN" ] || { echo "once derleyin: ./build.sh && ./link.sh  ($BIN yok)"; exit 1; }
-[ "${NFSHD:-0}" = 1 ] && echo "build: HD (grafik iyilestirmeleri acik)" || echo "build: orijinal"
+[ -x "$BIN" ] || { echo "build first: ./build.sh && ./link.sh  ($BIN missing)"; exit 1; }
+[ "${NFSHD:-0}" = 1 ] && echo "build: HD (graphics improvements on)" || echo "build: original"
 
-# --- gecici gerekli ayarlar (kok nedenleri hala acik) ---
-# FIXMAT   : oyunun on yuz WorldViewProj matrisi bozuk geliyor (yalnizca
-#            2. ve 3. satirlari yazili, 0-1 sifir) -> her kose (1,1)'e
-#            cokuyor.  MODE=3 dogru olan birim matrisi enjekte eder;
-#            ham konumlar zaten kirpma uzayinda.
-# NOMOVIES : VP6 video kod cozucusu yok; video dosyalari yok sayilmazsa
-#            oyun ilk videoda sonsuza kadar bekliyor.
-# Tani amacli sentetik giris/zorlama degiskenleri kabuktan sizmasin:
-# eski bir "export AUTOKEY=..." oyunu kendiliginden tikliyor gosteriyordu.
+# --- temporarily required settings (root causes still open) ---
+# FIXMAT   : the game's front-end WorldViewProj matrix arrives broken (only
+#            rows 2 and 3 written, 0-1 zero) -> every vertex collapses to
+#            (1,1).  MODE=3 injects the correct identity matrix; the raw
+#            positions are already in clip space.
+# NOMOVIES : no VP6 video decoder; if the video files aren't ignored the
+#            game waits forever at the first video.
+# Don't let the diagnostic synthetic input/forcing variables leak in from the
+# shell: an old "export AUTOKEY=..." made the game look like it clicked by itself.
 unset AUTOKEY AUTOCLICK FORCESWITCH FETICK GAMELOG DUMPFRAME BOOTFLOW \
       DATADIFF VSKDUMP OWNERSCAN PARAMNAME PDLIST WATCHVSK WATCHADDR \
       MPROT_HARD MPROT_ANY MPROT_PERSIST PRESENTBT VSKBT GLYPHDUMP DRAWDUMP \
@@ -55,53 +55,55 @@ unset AUTOKEY AUTOCLICK FORCESWITCH FETICK GAMELOG DUMPFRAME BOOTFLOW \
 export FIXMAT="${FIXMAT:-1}"
 export NOMOVIES="${NOMOVIES:-1}"
 export FIXMAT_MODE="${FIXMAT_MODE:-3}"
-# SNDSYNC : oynatma hizini oyunun sanal saatinin gercek zamana oranina bagla.
-#           Saat artik gercek gecen sureyle ilerledigi icin oran normalde 1.000;
-#           yalnizca uzun bir takilmada kisa sure duser (yazilmamis bolgeyi
-#           calmamak icin).  0 = hep gercek zamanda cal.
-# SNDPLL  : eski yazma-imleci servosu (varsayilan KAPALI).  Oyun yazdigi yeri
-#           bizim oynatma imlecimize gore sectigi icin servo hatayi kapatamiyor,
-#           muzigi 40-50 sn %3 yavas/hizli caldiriyordu (bkz. runtime/audio.m).
+# SNDSYNC : tie the playback rate to the ratio of the game's virtual clock to
+#           real time.  Since the clock now advances with real elapsed time the
+#           ratio is normally 1.000; it only drops briefly during a long hitch
+#           (so unwritten data isn't played).  0 = always play in real time.
+# SNDPLL  : the old write-cursor servo (OFF by default).  Since the game picks
+#           where it writes based on our playback cursor, the servo couldn't
+#           close the error and played the music 3% slow/fast for 40-50 s
+#           (see runtime/audio.m).
 export SNDSYNC="${SNDSYNC:-1}"
-# GPUVS : kose gölgelendiricisini GPU'da calistir (oyunun kendi bytecode'u
-#         MSL'ye cevrilir).  Olculdu: cizim yolu 34.6 sn -> 2.2 sn,
-#         kose verimi 2.4 -> 90 M/sn.  Cevrilemeyen gölgelendirici
-#         otomatik olarak CPU yorumlayicisina duser.
-#         GPUVS=0 ile eski (CPU) yola donulur.
+# GPUVS : run the vertex shader on the GPU (the game's own bytecode is
+#         translated to MSL).  Measured: draw path 34.6 s -> 2.2 s,
+#         vertex throughput 2.4 -> 90 M/s.  A shader that can't be translated
+#         automatically falls back to the CPU interpreter.
+#         GPUVS=0 goes back to the old (CPU) path.
 export GPUVS="${GPUVS:-1}"
 
-# NOT: eskiden burada "on yuz UG_LS_Splash.fng'de takiliyor, FORCESWITCH=3
-# gerekiyor" yaziyordu.  Artik GECERLI DEGIL: FPUSH duzeltmesinden sonra
-# oyun kendiliginden baslik ekranina gelip "Press Enter Key" ile bekliyor --
-# orijinal davranisin ta kendisi.  FORCESWITCH=3 yalnizca menuye Enter'siz
-# atlamak icin (olcum/tani) duruyor.
-# NFSRES: oyunun kendi cozunurluk tablosu 6 satir ve tamami 4:3 -- menuden
-# 1080p secilemiyor.  Bu degisken cihazi istenen boyutta acar, geometriyi
-# Hor+ genis ekrana duzeltir ve arayuzu dairesel tutar (HUDFIX=0 ile kapatilir).
-#   NFSRES=1920x1080 ./run.sh      ya da     ./run.sh 1080p
+# NOTE: this used to say "the front end hangs at UG_LS_Splash.fng, FORCESWITCH=3
+# is needed".  That is NO LONGER TRUE: after the FPUSH fix the game reaches the
+# title screen by itself and waits with "Press Enter Key" -- exactly the original
+# behavior.  FORCESWITCH=3 is only kept for skipping to the menu without Enter
+# (measurement/diagnostics).
+# NFSRES: the game's own resolution table has 6 rows, all 4:3 -- 1080p can't be
+# picked from the menu.  This variable opens the device at the requested size,
+# corrects the geometry for Hor+ widescreen and keeps the UI round (turned off
+# with HUDFIX=0).
+#   NFSRES=1920x1080 ./run.sh      or     ./run.sh 1080p
 export NFSRES="${NFSRES:-}"
-# NFSNATIVE: Retina ekranda oyunun sectigi cozunurlugu (menude en fazla
-#   1280x960) ORANI KORUYARAK ekranin gercek piksel sayisina cikarir (14"
-#   MacBook Pro'da 2448x1836).  Eskiden 1280x960'lik yuzey pencereye ~2 kat
-#   buyutulup bulaniklasiyordu.  Varsayilan ACIK.  NFSNATIVE=0 kapatir:
-#   goruntu yine 1:1 piksel olur ama pencere yarim boyutta acilir.
-#   NFSRES verilirse o kazanir.
-# NFSMAXPIX: native olcegin ust siniri, piksel sayisi (varsayilan 6000000;
-#   5K/6K ekranlarda kare butcesini korumak icin).
+# NFSNATIVE: on a Retina screen, raises the resolution the game picked (at most
+#   1280x960 in the menu) to the screen's real pixel count KEEPING THE RATIO
+#   (2448x1836 on a 14" MacBook Pro).  The 1280x960 surface used to be scaled
+#   up ~2x to the window and got blurry.  ON by default.  NFSNATIVE=0 turns it
+#   off: the image is still 1:1 pixels but the window opens at half size.
+#   If NFSRES is given, it wins.
+# NFSMAXPIX: upper limit of the native scale, in pixels (default 6000000;
+#   to protect the frame budget on 5K/6K screens).
 
-# Cift tiklanabilir .app icin:  ./pack.sh  (bkz. out/NFSU2.app)
+# For a double-clickable .app:  ./pack.sh  (see out/NFSU2.app)
 
 if [ "$MODE" = "1080p" ]; then MODE=window; export NFSRES="${NFSRES:-1920x1080}"; fi
-[ -n "$NFSRES" ] && echo "cozunurluk: $NFSRES (genis ekran duzeltmesi acik)"
+[ -n "$NFSRES" ] && echo "resolution: $NFSRES (widescreen correction on)"
 case "$MODE" in
-  window)   echo "pencereli mod (kapatmak icin pencereyi kapat ya da Ctrl-C)"
+  window)   echo "windowed mode (close the window or Ctrl-C to quit)"
             WINDOW=1 ALARM="${ALARM:-0}" exec "$BIN" "$EXE" ;;
-  headless) echo "penceresiz mod, ${ALARM:-60} sn"
+  headless) echo "headless mode, ${ALARM:-60} s"
             ALARM="${ALARM:-60}" exec "$BIN" "$EXE" ;;
-  profile)  echo "ornekleyici profil"
+  profile)  echo "sampling profiler"
             SAMPLE=1 ALARM="${ALARM:-30}" exec "$BIN" "$EXE" ;;
-  trace)    echo "D3D9 cagri izi"
+  trace)    echo "D3D9 call trace"
             COMTRACE=1 ALARM="${ALARM:-20}" exec "$BIN" "$EXE" ;;
   test)     "$ROOT/out/isatest" && "$ROOT/out/nfsu2_all" "$EXE" ;;
-  *)        echo "kullanim: [NFSHD=1] ./run.sh [window|1080p|hd|hd1080p|headless|profile|trace|test]"; exit 1 ;;
+  *)        echo "usage: [NFSHD=1] ./run.sh [window|1080p|hd|hd1080p|headless|profile|trace|test]"; exit 1 ;;
 esac

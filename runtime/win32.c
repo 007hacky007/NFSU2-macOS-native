@@ -1,4 +1,4 @@
-/* Asama 3 tohumu: boot icin gerekli Win32 API alt kumesi + kalanlar icin izleme. */
+/* Phase 3 seed: the Win32 API subset needed for boot + tracing for the rest. */
 #include <stdatomic.h>
 #include "enhance.h"
 #include "cpu.h"
@@ -8,11 +8,11 @@
 #include <time.h>
 #include <setjmp.h>
 
-/* getenv() her cagrida ortam dizisini TARAR ve kilit alir.  Cizim basina
- * calisan yollarda (ornegin SetVertexShaderConstantF icindeki "PDLIST"
- * kontrolu &&-zincirinin ILK terimiydi) olculebilir maliyeti var:
- * profilde getenv+__findenv_locked konuk thread'in %3'unu yiyordu.
- * Ortam degiskenleri kosu boyunca degismez -> bir kez coz, sakla. */
+/* getenv() SCANS the environment array and takes a lock on every call.  On
+ * per-draw paths (for example the "PDLIST" check in SetVertexShaderConstantF
+ * was the FIRST term of an && chain) it has a measurable cost: in the profile
+ * getenv+__findenv_locked ate 3% of the guest thread.
+ * Environment variables don't change during a run -> resolve once, keep. */
 #define ENVC(nm_) ({ static const char *_ev_; static int _ei_; \
                      if (!_ei_){ _ei_ = 1; _ev_ = getenv(nm_); } _ev_; })
 
@@ -38,24 +38,24 @@ int g_bt_on = 0;
 
 #define IMP_MAGIC 0xF0000000u
 
-/* --- guest heap: baslikli bump ayirici (HeapSize/ReAlloc icin boyut saklar) --- */
+/* --- guest heap: a bump allocator with headers (keeps the size for HeapSize/ReAlloc) --- */
 #define HEAP_BASE 0x10000000u
 #define HEAP_MAX  0x2F000000u
 #define HDR 16u
-/* ---- HIBRIT sanal saat -------------------------------------------------
- * Denenenler:
- *   (a) cagri basina sabit artis -> zaman duzensiz, animasyonlar bozuk
- *   (b) gercek monotonik saat    -> emulator yavas oldugu icin oyun her
- *       karede devasa "gecen sure" gorup telafi dongusune giriyor (20->1 fps)
- *   (c) yalnizca kare basina 16.67 ms -> kare temposu dogru AMA kare
- *       sunmadan zamani bekleyen kod (video oynatici) SONSUZ DONGUYE
- *       giriyor: olcum, timeGetTime 231 milyon kez cagrildi.
- *   (d) SECILEN: kare basina 16.67 ms + saat cok kez sorgulanip hic kare
- *       gelmiyorsa yavasca ilerlet.  Boylece hem tempo dogru kalir hem de
- *       zaman bekleyen dongulerin ilerlemesi garanti olur.             */
-static _Atomic uint64_t g_vclock_base  = 0;   /* kare basindaki sanal zaman */
-static _Atomic uint64_t g_vclock_creep = 0;   /* mesgul-bekleme telafisi    */
-static _Atomic uint64_t g_real_base    = 0;   /* o karenin gercek zamani    */
+/* ---- HYBRID virtual clock -----------------------------------------------
+ * Tried:
+ *   (a) a fixed increment per call -> irregular time, broken animations
+ *   (b) the real monotonic clock -> since the emulator is slow, the game sees
+ *       a huge "elapsed time" every frame and enters a catch-up loop (20->1 fps)
+ *   (c) only 16.67 ms per frame -> the frame tempo is right BUT code that waits
+ *       on time without presenting frames (the video player) enters an
+ *       INFINITE LOOP: measured, timeGetTime was called 231 million times.
+ *   (d) CHOSEN: 16.67 ms per frame + advance slowly if the clock is queried
+ *       many times and no frame arrives.  This keeps the tempo right and
+ *       guarantees that loops waiting on time make progress.            */
+static _Atomic uint64_t g_vclock_base  = 0;   /* virtual time at the start of the frame */
+static _Atomic uint64_t g_vclock_creep = 0;   /* busy-wait compensation     */
+static _Atomic uint64_t g_real_base    = 0;   /* real time of that frame    */
 static _Atomic uint32_t g_vclock_polls = 0;
 
 static uint64_t real_us(void){
@@ -64,40 +64,42 @@ static uint64_t real_us(void){
     return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
-/* Sanal saat.
- * Kareler ARASINDA tam 16.667 ms ilerler: animasyon hizi emulatorun
- * hizindan bagimsiz kalir.  Kare ICINDE ise gercek zamanla orantili,
- * duzgun akar -- cunku oyun kare suresini saati kare icinde IKI KEZ
- * ornekleyip farkini alarak olcuyor (0x005812e5).  Tek hamlede atlayan
- * eski saat ona "kare sifir surdu" dedirtiyor, bu yuzden on yuz tiki
- * [0x8651a8] hic artmiyor ve tum animasyonlar/zamanli gecisler donuyordu. */
-/* Sanal zamanin gercek zamana oranini olc: saat degisiklikleri oyunu
- * hizlandirmasin (daha once 2.01 kati kosmustu). */
+/* Virtual clock.
+ * BETWEEN frames it advances exactly 16.667 ms: animation speed stays
+ * independent of the emulator's speed.  WITHIN a frame it flows smoothly,
+ * proportional to real time -- because the game measures the frame time by
+ * sampling the clock TWICE within a frame and taking the difference
+ * (0x005812e5).  The old clock that jumped in one step made it say "the frame
+ * took zero", so the front-end tick [0x8651a8] never increased and all
+ * animations/timed transitions froze. */
+/* Measure the ratio of virtual time to real time: clock changes must not
+ * speed the game up (it had previously run at 2.01x). */
 static _Atomic uint64_t g_vt_last = 0, g_rt_start = 0, g_vt_start = 0;
 void vclock_report(void){
     uint64_t v0 = atomic_load(&g_vt_start), r0 = atomic_load(&g_rt_start);
     uint64_t v1 = atomic_load(&g_vt_last),  r1 = real_us();
     if (!r0 || r1 <= r0) return;
-    fprintf(stderr, "  sanal saat        : %.3f x gercek zaman (%.1f sn sanal / %.1f sn gercek)\n",
+    fprintf(stderr, "  virtual clock     : %.3f x real time (%.1f s virtual / %.1f s real)\n",
             (double)(v1 - v0) / (double)(r1 - r0),
             (double)(v1 - v0)/1e6, (double)(r1 - r0)/1e6);
 }
 void vclock_tick(void){
     uint64_t cr = atomic_exchange(&g_vclock_creep, 0ull);
     uint64_t now = real_us();
-    /* Kare basina ilerleme.
-     *   VCLOCK=fixed : her kare tam 16.667 ms (eski davranis).  Emulator
-     *                  60 fps'in altina dusunce OYUN AGIR CEKIM olur --
-     *                  ve muzik de oyunun saatinden calindigi icin
-     *                  perdesi duser.  Kullanicinin duydugu "fps dusunce
-     *                  muzik yavasliyor" tam olarak buydu (olculdu: 50 fps'te
-     *                  sanal/gercek = 0.885, yani ~2 yarim ses pes).
-     *   VCLOCK=real  : GERCEK gecen sure (varsayilan).  Oyun da muzik de
-     *                  gercek zamanda akar.  Telafi dongusune girmemesi
-     *                  icin kare basina artis 50 ms ile sinirli. */
-    /*   VCLOCK=<us>  : her kare tam <us> (OLCUM: VCLOCK=8333 + NOVSYNC=1 ile
-     *                  oyun 120 fps zamaninda ama sinirlayici hic beklemez;
-     *                  fps = GPU/CPU kapasitesi, rota kare kare ayni). */
+    /* Advance per frame.
+     *   VCLOCK=fixed : exactly 16.667 ms per frame (old behavior).  When the
+     *                  emulator drops below 60 fps the GAME GOES SLOW MOTION --
+     *                  and since the music is also played from the game's clock,
+     *                  its pitch drops.  The user's "the music slows down when
+     *                  fps drops" was exactly this (measured: at 50 fps
+     *                  virtual/real = 0.885, i.e. ~2 semitones flat).
+     *   VCLOCK=real  : the REAL elapsed time (default).  The game and the music
+     *                  both flow in real time.  To keep it out of the catch-up
+     *                  loop, the per-frame increment is capped at 50 ms. */
+    /*   VCLOCK=<us>  : exactly <us> every frame (MEASUREMENT: with VCLOCK=8333 +
+     *                  NOVSYNC=1 the game runs in 120 fps time but the limiter
+     *                  never waits; fps = GPU/CPU capacity, the route is the
+     *                  same frame by frame). */
     { static _Atomic int mode = -1; static uint64_t fstep = 16667ull;
       int m = atomic_load(&mode);
       if (m < 0){ const char *e = ENVC("VCLOCK");
@@ -108,8 +110,8 @@ void vclock_tick(void){
       uint64_t step = fstep;
       if (m && rb && now > rb){
           step = now - rb;
-          if (step < 4000ull)  step = 4000ull;    /* 250 fps ustu: kirp */
-          if (step > 50000ull) step = 50000ull;   /* devasa dt -> telafi dongusu */
+          if (step < 4000ull)  step = 4000ull;    /* above 250 fps: clamp */
+          if (step > 50000ull) step = 50000ull;   /* huge dt -> catch-up loop */
       }
       atomic_fetch_add(&g_vclock_base, step + cr); }
     atomic_store(&g_real_base, now);
@@ -125,12 +127,13 @@ uint64_t host_us(void){
     uint64_t rb   = atomic_load(&g_real_base);
     uint64_t now  = real_us();
     uint64_t d    = (now > rb) ? (now - rb) : 0ull;
-    /* Kare ICI ilerlemenin tavani.  16 ms COK DARDI: bir karede 16 ms'den
-     * fazla OYUN zamani bekleyen kod (yaris oncesi ara sahne) tavana
-     * carpiyor ve ancak asagidaki emniyet valfiyle (200 ms sonra) ilerleyebiliyordu
-     * -> her kare zorunlu olarak ~235 ms surdu (4.6 fps, olculdu).
-     * Tavani tamamen kaldirmak da olmaz: oyun gercekten gecen sureyi gorup
-     * telafi dongusune giriyor.  Uc kare butcesi iyi bir orta yol. */
+    /* The ceiling on WITHIN-frame advance.  16 ms was TOO TIGHT: code waiting for
+     * more than 16 ms of GAME time within a frame (the pre-race cutscene) hit the
+     * ceiling and could only advance through the safety valve below (after
+     * 200 ms) -> every frame necessarily took ~235 ms (4.6 fps, measured).
+     * Removing the ceiling entirely doesn't work either: the game sees the time
+     * really elapsed and enters the catch-up loop.  A three-frame budget is a
+     * good middle ground. */
     { static _Atomic uint64_t maxd = 0;
       uint64_t m = atomic_load(&maxd);
       if (!m){ const char *e = ENVC("VCLOCK_MAXD");
@@ -139,20 +142,19 @@ uint64_t host_us(void){
                atomic_store(&maxd, m); }
       if (d > m) d = m; }
 
-    /* Kare uretmeden saati donup bekleyen dongulere karsi emniyet valfi.
+    /* Safety valve against loops that spin on the clock without producing frames.
      *
-     * DIKKAT: eskiden olcut ANKET SAYISIYDI (kare basina >2000 sorgu ->
-     * her 64 sorguda 400 us, >20000'de 2 ms...).  Yogun bir yaris
-     * karesinde 20 binden fazla saat sorgusu NORMALDIR; bu, kare basina
-     * ~100 ms sahte zaman ekliyordu.  Olculdu: gercek 1.01 sn'de sanal
-     * 2.04 sn (oran 2.01) -- ara sahneler ve yaris iki kat hizli
-     * kosuyordu.  Artik olcut GERCEK ZAMAN: yalnizca kare 200 ms'den
-     * uzun surduyse (yani gercekten takildiysa) devreye girer ve kare
-     * basina en fazla 100 ms ekler. */
+     * CAUTION: the criterion used to be the POLL COUNT (>2000 queries per frame ->
+     * 400 us every 64 queries, 2 ms above 20000...).  More than 20 thousand clock
+     * queries in a busy race frame is NORMAL; this added ~100 ms of fake time
+     * per frame.  Measured: 2.04 s virtual in 1.01 s real (ratio 2.01) --
+     * cutscenes and races ran twice as fast.  Now the criterion is REAL TIME: it
+     * only kicks in if the frame took longer than 200 ms (i.e. really stalled)
+     * and adds at most 100 ms per frame. */
     uint32_t n = atomic_fetch_add(&g_vclock_polls, 1);
-    uint64_t stalled = (now > rb) ? (now - rb) : 0ull;      /* kirpilmamis */
-    /* Emniyet valfi: esik 200 ms -> 60 ms, adim 2 ms -> 4 ms.  Tavan
-     * yukseldigi icin bu yol artik yalnizca GERCEK takilmalarda calisir. */
+    uint64_t stalled = (now > rb) ? (now - rb) : 0ull;      /* unclamped */
+    /* Safety valve: threshold 200 ms -> 60 ms, step 2 ms -> 4 ms.  Since the
+     * ceiling was raised, this path now only runs on REAL stalls. */
     if (stalled > 60000ull && (n & 15u) == 15u){
         if (atomic_load(&g_vclock_creep) < 200000ull)
             atomic_fetch_add(&g_vclock_creep, 4000ull);
@@ -169,8 +171,8 @@ static uint32_t galloc(uint32_t n, int zero){
     if (heap_ptr + need > HEAP_MAX || need < n){ g_alloc_fail++; return 0; }
     uint32_t p = heap_ptr; heap_ptr += need;
     mem_commit(p, need);
-    MR32(p) = n;                       /* kullanici boyutu */
-    MR32(p+4) = 0xA110C8EDu;           /* imza             */
+    MR32(p) = n;                       /* user size */
+    MR32(p+4) = 0xA110C8EDu;           /* signature        */
     uint32_t u = p + HDR;
     if (zero) memset(g_mem + u, 0, n);
     return u;
@@ -183,7 +185,7 @@ static uint32_t gsize(uint32_t u){
 uint32_t win32_block_size(uint32_t u){ return gsize(u); }
 uint32_t win32_heap_used(void){ return heap_ptr - HEAP_BASE; }
 
-/* --- izleme --- */
+/* --- tracing --- */
 typedef struct { uint32_t calls; uint32_t unimpl; } ImpStat;
 static ImpStat *stat_;
 static uint32_t trace_n = 0, trace_max = 0;
@@ -196,88 +198,89 @@ static uint32_t tls_slot[128]; static int tls_next = 0;
 static uint32_t g_cmdline = 0;
 static uint64_t tick0;
 
-static uint32_t ARG(CPU*c,int i){ return MR32(c->esp + 4u*(uint32_t)i); }  /* ret adresi POP edildikten sonra */
+static uint32_t ARG(CPU*c,int i){ return MR32(c->esp + 4u*(uint32_t)i); }  /* after the ret address is POPped */
 
-/* QPCWHO=1: QueryPerformanceCounter'i kim (thread, donus adresi, bir ust
- * cerceve) cagiriyor.  120 fps'te kare basina ~21 bin cagri goruldu (60 fps
- * PACE60'ta ~2 bin): zamana bagli bir bekleme dongusu.  Cagri GIL altinda,
- * tablo kilitsiz. */
+/* QPCWHO=1: who (thread, return address, one frame up) calls
+ * QueryPerformanceCounter.  ~21 thousand calls per frame were seen at 120 fps
+ * (~2 thousand at 60 fps with PACE60): a time-based wait loop.  The call is
+ * under the GIL, the table is lock-free. */
 typedef struct { uint32_t tid, ra, ra2; uint64_t n; } QpcWho;
 static QpcWho g_qw[128];
 static void qpc_report(void){
-    fprintf(stderr, "\n=== QPCWHO: QueryPerformanceCounter cagiranlar ===\n");
+    fprintf(stderr, "\n=== QPCWHO: QueryPerformanceCounter callers ===\n");
     for (int k = 0; k < 128; k++){
         int b = -1;
         for (int i = 0; i < 128; i++) if (g_qw[i].n && (b < 0 || g_qw[i].n > g_qw[b].n)) b = i;
         if (b < 0 || k >= 24) break;
-        fprintf(stderr, "  %12llu  thread %5u  donus 0x%08x  ust 0x%08x\n",
+        fprintf(stderr, "  %12llu  thread %5u  return 0x%08x  parent 0x%08x\n",
                 (unsigned long long)g_qw[b].n, g_qw[b].tid, g_qw[b].ra, g_qw[b].ra2);
         g_qw[b].n = 0;
     }
 }
-/* ---- Oyunun kare bekleme dongusu: donme yerine uyku ----
- * sub_0057eae0 (0x57eb5e..0x57eb8e), kare suresi dt hedefin altindaysa:
- *     start = GetTicks(); hedef = (X - dt) * k;
- *     do { gecen = Fark(start, GetTicks()); } while (gecen < hedef);
- * GetTicks = sub_0043bdf0 = QPC >> [0x8284e4]; Fark = sub_0043be20 =
- * (now - start) * 2^S * [0x828028] saniye.  Dongu yalnizca saate bakiyor;
- * 120 fps'te kare basina ~19 bin QPC ve oyun thread'inin TUM bos zamani
- * (kare basina 8.2 ms CPU, %98) burada yaniyordu: D3DX'te kazanilan her
- * ms buraya gidiyor, guc degismiyordu.
- * Donguden gelen QPC'de (donus 0x43bdfe, onu cagiran 0x57eb79) kalan
- * sure oyunun kendi formuluyle hesaplanir ve (kalan - pay) kadar uyunur;
- * son pay yine donerek beklenir.  Cikis kosulu ve saat ayni oldugu icin
- * oyunun zamanlamasi degismez, yalnizca CPU bos kalir.  Uyku kevent
- * NOTE_CRITICAL ile (guest_sleep_ns): nanosleep ortalama 447 us gec
- * uyaniyordu, kevent 41 us (%98'i <= 200 us).
- * SPINSLEEP=<pay us> (varsayilan 200), SPINSLEEP=0 kapatir.
- * Yigin: POP32 sonrasi [esp+0xc] = 0x57eb79, E = esp+0x14 (0057eae0'nun
- * yerel taban), hedef float [E+0xc] = [esp+0x20], start = EBX. */
-static int g_spin_pay = -1;
-static uint64_t g_spin_n, g_spin_us, g_spin_gec[7];   /* gec uyanma: <=25,50,100,200,400,800,>800 us */
+/* ---- The game's frame wait loop: sleep instead of spinning ----
+ * sub_0057eae0 (0x57eb5e..0x57eb8e), if the frame time dt is below the target:
+ *     start = GetTicks(); target = (X - dt) * k;
+ *     do { elapsed = Diff(start, GetTicks()); } while (elapsed < target);
+ * GetTicks = sub_0043bdf0 = QPC >> [0x8284e4]; Diff = sub_0043be20 =
+ * (now - start) * 2^S * [0x828028] seconds.  The loop only looks at the clock;
+ * at 120 fps ~19 thousand QPCs per frame and ALL of the game thread's idle time
+ * (8.2 ms CPU per frame, 98%) burned here: every ms won in D3DX went here, and
+ * power didn't change.
+ * On a QPC coming from the loop (return 0x43bdfe, its caller 0x57eb79) the
+ * remaining time is computed with the game's own formula and we sleep for
+ * (remaining - margin); the final margin is still waited out by spinning.  Since
+ * the exit condition and the clock are the same, the game's timing doesn't
+ * change, only the CPU goes idle.  The sleep uses kevent NOTE_CRITICAL
+ * (guest_sleep_ns): nanosleep woke up 447 us late on average, kevent 41 us
+ * (98% <= 200 us).
+ * SPINSLEEP=<margin us> (default 200), SPINSLEEP=0 turns it off.
+ * Stack: after POP32 [esp+0xc] = 0x57eb79, E = esp+0x14 (0057eae0's local
+ * base), target float [E+0xc] = [esp+0x20], start = EBX. */
+static int g_spin_margin = -1;
+static uint64_t g_spin_n, g_spin_us, g_spin_late[7];   /* late wake-up: <=25,50,100,200,400,800,>800 us */
 static void spin_report(void){
-    fprintf(stderr, "\n=== SPINSLEEP: kare bekleme dongusu %llu kez uyudu, toplam %.2f sn (pay %d us) ===\n",
-            (unsigned long long)g_spin_n, g_spin_us / 1e6, g_spin_pay);
-    fprintf(stderr, "  gec uyanma: <=25us %llu  <=50 %llu  <=100 %llu  <=200 %llu  <=400 %llu  <=800 %llu  >800 %llu\n",
-            (unsigned long long)g_spin_gec[0], (unsigned long long)g_spin_gec[1], (unsigned long long)g_spin_gec[2],
-            (unsigned long long)g_spin_gec[3], (unsigned long long)g_spin_gec[4], (unsigned long long)g_spin_gec[5],
-            (unsigned long long)g_spin_gec[6]);
+    fprintf(stderr, "\n=== SPINSLEEP: the frame wait loop slept %llu times, total %.2f s (margin %d us) ===\n",
+            (unsigned long long)g_spin_n, g_spin_us / 1e6, g_spin_margin);
+    fprintf(stderr, "  late wake-up: <=25us %llu  <=50 %llu  <=100 %llu  <=200 %llu  <=400 %llu  <=800 %llu  >800 %llu\n",
+            (unsigned long long)g_spin_late[0], (unsigned long long)g_spin_late[1], (unsigned long long)g_spin_late[2],
+            (unsigned long long)g_spin_late[3], (unsigned long long)g_spin_late[4], (unsigned long long)g_spin_late[5],
+            (unsigned long long)g_spin_late[6]);
     extern uint64_t g_sleep_late_ns, g_sleep_gil_ns, g_sleep_n;
-    if (g_sleep_n) fprintf(stderr, "  ortalama: nanosleep gecikmesi %.0f us, uyanista kilit bekleme %.0f us\n",
+    if (g_sleep_n) fprintf(stderr, "  mean: nanosleep latency %.0f us, lock wait on wake-up %.0f us\n",
                            g_sleep_late_ns / 1e3 / g_sleep_n, g_sleep_gil_ns / 1e3 / g_sleep_n);
 }
-uint64_t spin_slept_us(void){ return g_spin_us; }   /* perflog: kare sinirlayici uykusu */
+uint64_t spin_slept_us(void){ return g_spin_us; }   /* perflog: frame limiter sleep */
 static void qpc_spin_sleep(CPU *c){
     if (MR32(c->esp + 0xcu) != 0x57eb79u) return;
-    if (g_spin_pay < 0){ const char *e = getenv("SPINSLEEP"); g_spin_pay = e ? atoi(e) : 200;
-                         if (g_spin_pay && ENVC("QPCWHO")) atexit(spin_report); }
-    if (!g_spin_pay) return;
-    /* oyunun birimi: F = [0x828028] QPC tiki basina (olculen 0.001 = ms,
-     * k = [0x784550] = 1000), X = [0x865558] = 1/120 sn kare hedefi */
+    if (g_spin_margin < 0){ const char *e = getenv("SPINSLEEP"); g_spin_margin = e ? atoi(e) : 200;
+                         if (g_spin_margin && ENVC("QPCWHO")) atexit(spin_report); }
+    if (!g_spin_margin) return;
+    /* the game's units: F = [0x828028] per QPC tick (measured 0.001 = ms,
+     * k = [0x784550] = 1000), X = [0x865558] = 1/120 s frame target */
     uint32_t S = MR32(0x8284e4u) & 31u;
-    float F = MRF32(0x828028u), hedef = MRF32(c->esp + 0x20u);
-    if (!(F > 0.0f) || !(hedef > 0.0f)) return;
+    float F = MRF32(0x828028u), frame_target = MRF32(c->esp + 0x20u);
+    if (!(F > 0.0f) || !(frame_target > 0.0f)) return;
     uint64_t now = host_qpc();
     int32_t d = (int32_t)((uint32_t)(now >> S) - c->ebx); if (d < 0) d = 0;
-    double kalan = (double)hedef - (double)d * (double)(1u << S) * (double)F;
-    double us = kalan / (double)F - (double)g_spin_pay;      /* QPC tiki = us (QPF 1 MHz) */
-    if (us < 50.0 || us > 100000.0) return;                  /* kisa: don; >0.1 sn: beklenmedik */
+    double rem_time = (double)frame_target - (double)d * (double)(1u << S) * (double)F;
+    double us = rem_time / (double)F - (double)g_spin_margin;      /* QPC tick = us (QPF 1 MHz) */
+    if (us < 50.0 || us > 100000.0) return;                  /* short: spin; >0.1 s: unexpected */
     void guest_sleep_ns(long ns);
     guest_sleep_ns((long)(us * 1000.0));
     g_spin_n++; g_spin_us += (uint64_t)us;
-    { double gec = (double)(host_qpc() - now) - us;          /* istenenden fazla uyunan us */
-      int b = gec <= 25 ? 0 : gec <= 50 ? 1 : gec <= 100 ? 2 : gec <= 200 ? 3 : gec <= 400 ? 4 : gec <= 800 ? 5 : 6;
-      g_spin_gec[b]++; }
+    { double overshoot = (double)(host_qpc() - now) - us;          /* us slept beyond what was asked */
+      int b = overshoot <= 25 ? 0 : overshoot <= 50 ? 1 : overshoot <= 100 ? 2 : overshoot <= 200 ? 3 : overshoot <= 400 ? 4 : overshoot <= 800 ? 5 : 6;
+      g_spin_late[b]++; }
 }
 static void qpc_who(CPU *c){
     static int init = 0; static uint64_t tot = 0;
     if (!init){ init = 1; atexit(qpc_report); }
     if ((++tot & 0xFFFFFu) == 0){ long metal_frames(void);
-        fprintf(stderr, "  [qpc] %llu M cagri, kare %ld\n", (unsigned long long)(tot >> 20), metal_frames()); }
+        fprintf(stderr, "  [qpc] %llu M calls, frame %ld\n", (unsigned long long)(tot >> 20), metal_frames()); }
     uint32_t tid = (c->fs_base && mem_is_committed(c->fs_base+0x24u)) ? MR32(c->fs_base+0x24u) : 0u;
-    uint32_t ra = c->eip;                       /* POP32 sonrasi: donus adresi */
-    /* sub_0043bdf0 (oyunun zaman sarmalayicisi): sub esp,8; push arg; call.
-     * POP32 sonrasi [esp]=arg, [esp+4..0xb]=yerel, [esp+0xc]=onu cagiran. */
+    uint32_t ra = c->eip;                       /* after POP32: the return address */
+    /* sub_0043bdf0 (the game's time wrapper): sub esp,8; push arg; call.
+     * After POP32 [esp]=arg, [esp+4..0xb]=locals, [esp+0xc]=its caller. */
     uint32_t ra2 = ra == 0x43bdfeu ? MR32(c->esp+0xcu)
                  : (c->ebp && mem_is_committed(c->ebp+4u)) ? MR32(c->ebp+4u) : 0u;
     uint32_t h = (tid * 2654435761u ^ ra * 40503u ^ ra2) & 127u;
@@ -292,14 +295,15 @@ int win32_call(CPU *c, uint32_t idx){
     if (idx >= g_imp_count) return 0;
     const ImpEnt *e = &g_imp[idx];
     stat_[idx].calls++; g_win32_calls++;
-    guest_fair_yield();          /* diger guest thread'lerine sira ver */
-    POP32(c->eip);                      /* donus adresini al */
+    guest_fair_yield();          /* give the other guest threads a turn */
+    POP32(c->eip);                      /* take the return address */
     int handled = 1;
     const char *n = e->name;
     uint32_t r = 0;
 
-    /* QueryPerformanceCounter en sik cagri (kare sinirlayici); ad zincirinin
-     * ~20 strcmp'ini atlamak icin import indisi ilk eslesmede onbellege alinir. */
+    /* QueryPerformanceCounter is the most frequent call (the frame limiter); to
+     * skip the ~20 strcmps of the name chain, the import index is cached on the
+     * first match. */
     static uint32_t qpc_idx = 0xFFFFFFFFu;
     if (idx == qpc_idx || (qpc_idx == 0xFFFFFFFFu && !strcmp(n,"QueryPerformanceCounter") && (qpc_idx = idx, 1))){
         if (ENVC("QPCWHO")) qpc_who(c);
@@ -316,13 +320,13 @@ int win32_call(CPU *c, uint32_t idx){
         { const char *w = ENVC("TRACE_ALLOC");
           if (w){ uint32_t want = (uint32_t)strtoul(w,0,0);
             if (sz == want){ extern uint32_t g_watch_prev_ip;
-              fprintf(stderr,"      [alloc] HeapAlloc(%u) -> 0x%08x   cagiran guest komut: 0x%08x\n",
+              fprintf(stderr,"      [alloc] HeapAlloc(%u) -> 0x%08x   calling guest instruction: 0x%08x\n",
                       sz, r, g_watch_prev_ip);
               guest_backtrace(c, 12); } } }
-        /* WATCHALLOC=<boyut>: o boyuttaki ilk ayirmanin +16'sina watchpoint kur.
-         * Sabit blogu yalnizca bir kez yazildigi icin yazmayi ancak boyle
-         * yakalayabiliyoruz. */
-        /* WATCHAT=<adres>: tam o adresi donduren ayirmada watchpoint kur */
+        /* WATCHALLOC=<size>: set a watchpoint at +16 of the first allocation of that
+         * size.  Since the constant block is written only once, this is the only
+         * way to catch the write. */
+        /* WATCHAT=<address>: set a watchpoint on the allocation returning exactly that address */
         { const char *wa = ENVC("WATCHAT");
           if (wa && r){ static int armed2 = 0;
             uint32_t want3 = (uint32_t)strtoul(wa,0,0);
@@ -330,7 +334,7 @@ int win32_call(CPU *c, uint32_t idx){
               void watch_arm(uint32_t);
               const char *wo = ENVC("WATCHOFF");
               uint32_t off3 = wo ? (uint32_t)strtoul(wo,0,0) : 0u;
-              fprintf(stderr,"      [alloc] hedef blok 0x%08x (%u bayt) ayrildi, izlenen +%u\n",
+              fprintf(stderr,"      [alloc] target block 0x%08x (%u bytes) allocated, watching +%u\n",
                       r, sz, off3);
               watch_arm(r + off3);
               if (ENVC("MPROT")){ void mprot_arm(uint32_t); mprot_arm(r + off3); }
@@ -342,14 +346,14 @@ int win32_call(CPU *c, uint32_t idx){
             int wantn = ws ? atoi(ws) : 1;
             if (!armed && sz == want2 && ++seen == wantn){ armed = 1;
               void watch_arm(uint32_t);
-              fprintf(stderr,"      [alloc] %u baytlik blok 0x%08x ayrildi; +16'ya watchpoint\n", sz, r);
+              fprintf(stderr,"      [alloc] %u-byte block 0x%08x allocated; watchpoint at +16\n", sz, r);
               watch_arm(r); } } }
         static int shown=0;
         if (ENVC("VERBOSE") && shown<2 && sz>0x100000u){ shown++;
-            fprintf(stderr,"      [heap] HeapAlloc(size=0x%08x) SUPHELI. ebp=0x%08x esp=0x%08x\n", sz, c->ebp, c->esp);
-            fprintf(stderr,"        yigin (esp'den):");
+            fprintf(stderr,"      [heap] HeapAlloc(size=0x%08x) SUSPICIOUS. ebp=0x%08x esp=0x%08x\n", sz, c->ebp, c->esp);
+            fprintf(stderr,"        stack (from esp):");
             for(int k=0;k<14;k++) fprintf(stderr," %s%08x", k?"":"", MR32(c->esp+4u*k));
-            fprintf(stderr,"\n        ebp cevresi   :");
+            fprintf(stderr,"\n        around ebp    :");
             for(int k=-4;k<=6;k++) fprintf(stderr," %s%08x", k==0?">":"", MR32(c->ebp+4u*(uint32_t)k));
             fprintf(stderr,"\n        esi=%08x edi=%08x ebx=%08x\n", c->esi,c->edi,c->ebx); }
     }
@@ -403,11 +407,11 @@ int win32_call(CPU *c, uint32_t idx){
         if (arr && i<256u && mem_is_committed(arr+4u*i)) r = MR32(arr+4u*i);
         else r = (i<128)?tls_slot[i]:0; }
     else if (!strcmp(n,"TlsFree"))               r = 1;
-    /* Kritik bolumler burada ELE ALINMAZ; win32_ext.c'de GERCEK
-     * ozyinelemeli kilitlerle uygulaniyor (bkz. cs_for).  Etkisiz stub
-     * birakilirsa GIL'in adil paylasimi karsilikli dislamayi bozuyor. */
+    /* Critical sections are NOT HANDLED here; they are implemented in win32_ext.c
+     * with REAL recursive locks (see cs_for).  If left as a no-op stub, the GIL's
+     * fair sharing breaks mutual exclusion. */
     else if (!strcmp(n,"GetCurrentThreadId")){
-        /* TEB'den gercek thread kimligi (fs:[0x24]); her thread benzersiz olmali */
+        /* the real thread id from the TEB (fs:[0x24]); every thread must be unique */
         r = (c->fs_base && mem_is_committed(c->fs_base+0x24u)) ? MR32(c->fs_base+0x24u) : 1u;
         if (!r) r = 1u; }
     else if (!strcmp(n,"GetCurrentProcessId"))   r = 100;
@@ -423,7 +427,7 @@ int win32_call(CPU *c, uint32_t idx){
         const char*s="C:\\\\NFSU2\\\\SPEED2.EXE"; uint32_t l=(uint32_t)strlen(s);
         if(p&&sz){ if(l>=sz) l=sz-1; memcpy(g_mem+p,s,l); MR8(p+l)=0; } r=l; }
     else if (!strcmp(n,"ExitProcess")){ g_exit_code=(int)ARG(c,0);
-        fprintf(stderr,"\n*** guest ExitProcess(%u) - sonlandiriliyor\n",ARG(c,0));
+        fprintf(stderr,"\n*** guest ExitProcess(%u) - terminating\n",ARG(c,0));
         if(g_exit_armed) longjmp(g_exit_jmp,1); return -1; }
     else if (!strcmp(n,"LoadLibraryA")||!strcmp(n,"LoadLibraryW")){
         r = 0x20000000u;
@@ -431,12 +435,12 @@ int win32_call(CPU *c, uint32_t idx){
           if (ENVC("VERBOSE") && sh<12){ sh++; fprintf(stderr,"      [dll] LoadLibrary(ptr=0x%08x) \"%s\"\n", p2, p2?(char*)(g_mem+p2):"(NULL)"); } } }
     else if (!strcmp(n,"GetProcAddress")){
         uint32_t pname = ARG(c,1); r = 0;
-        if (pname > 0xffff){                       /* isimle (ordinal degil) */
+        if (pname > 0xffff){                       /* by name (not ordinal) */
             const char *want = (const char*)(g_mem + pname);
             for (uint32_t i=0;i<g_imp_count;i++)
                 if (!strcmp(g_imp[i].name, want)){ r = IMP_MAGIC + i; break; }
             { static int sh=0;
-              if (ENVC("VERBOSE") && !r && sh<12){ sh++; fprintf(stderr,"      [dll] GetProcAddress(\"%s\") BULUNAMADI\n", want); } }
+              if (ENVC("VERBOSE") && !r && sh<12){ sh++; fprintf(stderr,"      [dll] GetProcAddress(\"%s\") NOT FOUND\n", want); } }
         } }
     else if (!strcmp(n,"FreeLibrary"))           r = 1;
     else if (!strcmp(n,"InterlockedIncrement")){ uint32_t p=ARG(c,0); r=++MR32(p); }
@@ -521,8 +525,8 @@ int win32_call(CPU *c, uint32_t idx){
         else r = 0; }
     else if (!strcmp(n,"MessageBoxA")){
         uint32_t txt=ARG(c,1), cap=ARG(c,2);
-        fprintf(stderr,"\n*** GUEST MESSAGEBOX ***\n  baslik: %s\n  metin : %s\n***\n",
-                cap?(char*)(g_mem+cap):"(yok)", txt?(char*)(g_mem+txt):"(yok)");
+        fprintf(stderr,"\n*** GUEST MESSAGEBOX ***\n  title: %s\n  text : %s\n***\n",
+                cap?(char*)(g_mem+cap):"(none)", txt?(char*)(g_mem+txt):"(none)");
         r = 1; }
     else if (!strcmp(n,"Direct3DCreate9")) r = com_direct3dcreate9();
     else if (!strcmp(n,"DirectInput8Create")) r = com_directinput8create(ARG(c,3));
@@ -531,13 +535,13 @@ int win32_call(CPU *c, uint32_t idx){
     else if (!strcmp(n,"SetConsoleCtrlHandler")) r = 1;
     else if (!strcmp(n,"RtlUnwind"))             r = 0;
     else if (!strcmp(n,"TerminateProcess")){ g_exit_code=(int)ARG(c,1);
-        fprintf(stderr,"\n*** guest TerminateProcess(%u) - sonlandiriliyor\n",ARG(c,1));
+        fprintf(stderr,"\n*** guest TerminateProcess(%u) - terminating\n",ARG(c,1));
         if(g_exit_armed) longjmp(g_exit_jmp,1); return -1; }
-    else if (fileio_call(c, n, &r)) { /* dosya G/C */ }
-    else if (win32_ext_call(c, n, &r)) { /* 2. tur katman */ }
+    else if (fileio_call(c, n, &r)) { /* file I/O */ }
+    else if (win32_ext_call(c, n, &r)) { /* second-round layer */ }
     else { handled = 0; g_win32_unimpl++; stat_[idx].unimpl++;
            if (getenv("FILEOPLOG"))
-               fprintf(stderr, "  [stub] %s (donus 0x%08x)\n", n, MR32(c->esp));
+               fprintf(stderr, "  [stub] %s (return 0x%08x)\n", n, MR32(c->esp));
            if (unimpl_first==0xffffffffu){ unimpl_first=idx; unimpl_name=n; } }
 
     if (g_bt_on && (!strcmp(n,"GetModuleFileNameA")||!strcmp(n,"ExitProcess")||!strcmp(n,"RaiseException")))
@@ -548,7 +552,7 @@ int win32_call(CPU *c, uint32_t idx){
     else trace_n++;
 
     c->eax = r;
-    c->esp += 4u * (uint32_t)e->nargs;      /* stdcall: callee argumanlari temizler */
+    c->esp += 4u * (uint32_t)e->nargs;      /* stdcall: the callee cleans up the arguments */
     return 1;
 }
 
@@ -559,32 +563,32 @@ void win32_init(void){
     mem_commit(HEAP_BASE, 0x10000);
     g_cmdline = galloc(64,1);
     strcpy((char*)(g_mem+g_cmdline), "SPEED2.EXE");
-    /* IAT'i sihirli adreslerle doldur */
+    /* fill the IAT with magic addresses */
     for (uint32_t i=0;i<g_imp_count;i++) MR32(g_imp[i].iat) = IMP_MAGIC + i;
     com_init();
-    /* CRT heap modu tanilamasi icin sonradan okunacak adresler */
-    fprintf(stderr,"win32: %u import IAT'e baglandi, heap 0x%08x\n", g_imp_count, HEAP_BASE);
+    /* addresses to be read later for diagnosing the CRT heap mode */
+    fprintf(stderr,"win32: %u imports bound to the IAT, heap 0x%08x\n", g_imp_count, HEAP_BASE);
 }
 
 void win32_report(void){
     fprintf(stderr,"\n=== WIN32 KATMANI ===\n");
-    fprintf(stderr,"  toplam import cagrisi : %llu\n",(unsigned long long)g_win32_calls);
-    fprintf(stderr,"  implemente edilmemis  : %llu\n",(unsigned long long)g_win32_unimpl);
-    fprintf(stderr,"  heap kullanimi        : %u KB   basarisiz ayirma: %llu\n",
+    fprintf(stderr,"  total import calls    : %llu\n",(unsigned long long)g_win32_calls);
+    fprintf(stderr,"  not implemented       : %llu\n",(unsigned long long)g_win32_unimpl);
+    fprintf(stderr,"  heap usage            : %u KB   failed allocations: %llu\n",
             win32_heap_used()/1024u, (unsigned long long)g_alloc_fail);
-    /* en cok cagrilan implemente edilmemisler */
-    fprintf(stderr,"  guest thread : %llu baslatildi, %llu sonlandi\n",
+    /* the most called unimplemented ones */
+    fprintf(stderr,"  guest threads : %llu started, %llu terminated\n",
             (unsigned long long)win32_ext_threads(),(unsigned long long)win32_ext_threads_exited());
     fileio_report();
     { extern void res_report(void); res_report(); }
     { extern void overrides_report(void); overrides_report(); }
     enh_report();
     { extern void d3dx_hle_report(void); d3dx_hle_report(); }
-    fprintf(stderr,"  --- IMPLEMENTE EDILMEMIS (cagrildi, stub dondu) ---\n");
+    fprintf(stderr,"  --- NOT IMPLEMENTED (called, stub returned) ---\n");
     for (uint32_t i=0;i<g_imp_count;i++)
         if (stat_[i].unimpl)
-            fprintf(stderr,"    %-14s %-32s %u kez\n", g_imp[i].dll, g_imp[i].name, stat_[i].unimpl);
-    fprintf(stderr,"  --- EN COK CAGRILAN 15 ---\n");
+            fprintf(stderr,"    %-14s %-32s %u times\n", g_imp[i].dll, g_imp[i].name, stat_[i].unimpl);
+    fprintf(stderr,"  --- 15 MOST CALLED ---\n");
     for (int k=0;k<15;k++){
         uint32_t best=0, bi=0;
         for (uint32_t i=0;i<g_imp_count;i++) if (stat_[i].calls>best){ best=stat_[i].calls; bi=i; }
@@ -595,8 +599,8 @@ void win32_report(void){
     int shown=0;
     for (uint32_t i=0;i<g_imp_count && shown<15;i++)
         if (stat_[i].calls){
-            /* handled olup olmadigini bilmiyoruz; sadece sik cagrilanlari goster */
+            /* we don't know whether they were handled; just show the frequently called ones */
         }
     for (uint32_t i=0;i<g_imp_count;i++)
-        if (stat_[i].calls>1 && shown<15){ fprintf(stderr,"    %-30s %u kez\n", g_imp[i].name, stat_[i].calls); shown++; }
+        if (stat_[i].calls>1 && shown<15){ fprintf(stderr,"    %-30s %u times\n", g_imp[i].name, stat_[i].calls); shown++; }
 }

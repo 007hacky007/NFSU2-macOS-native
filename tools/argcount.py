@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Her import icin stdcall arguman sayisini cagri sitelerindeki push dizisinden cikar.
-   Ayrica fs:/gs: segment kullanimini (SEH/TLS) say."""
+"""Derive the stdcall argument count of every import from the push sequence at its call sites.
+   Also count fs:/gs: segment usage (SEH/TLS)."""
 import sys, struct, collections
 sys.path.insert(0,'tools')
 import pefile
@@ -47,7 +47,7 @@ while q:
                 prev_was_mov_ebp_esp=False
                 for prev in reversed(recent):
                     m2=prev.mnemonic; ops2=prev.op_str
-                    # fonksiyon prologu: 'mov ebp, esp' gorursek argumanlar bitti
+                    # function prologue: if we see 'mov ebp, esp' the arguments are over
                     if m2=='mov' and ops2.replace(' ','')=='ebp,esp':
                         hit_prologue=True; break
                     if m2=='sub' and ops2.startswith('esp'):
@@ -57,7 +57,7 @@ while q:
                         continue
                     else: break
                 if hit_prologue and n>0:
-                    n = max(0, n)   # prologa carptik: sayim guvenilmez, isaretle
+                    n = max(0, n)   # ran into a prologue: the count is unreliable, mark it
                     argv.setdefault(t, collections.Counter())
                     unreliable.add(t)
                 argv[t][n]+=1
@@ -77,12 +77,12 @@ while q:
         if m in ('ret','retf','int3','hlt','ud2'): break
         va=i.address+i.size
 
-print("=== SEGMENT ONEKI KULLANIMI (SEH / TLS gostergesi) ===")
-for s,n in seg.most_common(): print(f"  {s}: {n} erisim")
-print("  en sik kaliplar:")
+print("=== SEGMENT PREFIX USAGE (SEH / TLS indicator) ===")
+for s,n in seg.most_common(): print(f"  {s}: {n} accesses")
+print("  most common patterns:")
 for (s,m),n in seg_sites.most_common(8): print(f"    {s}: {m:8s} {n}")
 
-# bilinen dogru degerlerle capraz kontrol
+# cross-check against known correct values
 KNOWN={
  'GetVersion':0,'GetVersionExA':1,'GetVersionExW':1,'GetModuleHandleA':1,'GetModuleHandleW':1,
  'GetModuleFileNameA':3,'GetModuleFileNameW':3,'GetProcAddress':2,'LoadLibraryA':1,'LoadLibraryW':1,
@@ -146,7 +146,7 @@ KNOWN={
  'SleepEx':2,'GetDiskFreeSpaceExA':4,'FlushInstructionCache':3,'GetSystemDirectoryA':2,
  'GetWindowsDirectoryA':2,'GetComputerNameA':2,'GetUserNameA':2,'GetProfileStringA':5,
  'WritePrivateProfileStringA':4,'GetPrivateProfileIntA':4,
- # --- kalan 43: otoriter degerler ---
+ # --- the remaining 43: authoritative values ---
  'IsBadCodePtr':1,'IsBadWritePtr':2,'IsBadReadPtr':2,'SetEnvironmentVariableA':2,
  'Process32First':2,'Process32Next':2,'CreateToolhelp32Snapshot':2,
  'SetProcessAffinityMask':2,'GetProcessAffinityMask':3,'SetPriorityClass':2,'GetPriorityClass':1,
@@ -156,7 +156,7 @@ KNOWN={
  'lineAnswer':3,'lineMakeCall':5,'lineGetID':6,'lineClose':1,'lineNegotiateAPIVersion':6,
  'lineOpen':9,'lineGetDevCaps':5,'lineInitialize':5,'lineShutdown':1,
  'wvsprintfA':3,'PostThreadMessageA':4,'SetRect':5,'SetActiveWindow':1,'GetForegroundWindow':0,
- 'wsprintfA':0,   # cdecl variadic: cagiran temizler -> callee HIC temizlemez
+ 'wsprintfA':0,   # cdecl variadic: the caller cleans up -> the callee NEVER cleans up
  'timeSetEvent':5,'timeKillEvent':1,'timeGetDevCaps':2,
  'shutdown':2,'getpeername':3,'WSAIoctl':9,
  'timeGetTime':0,'timeBeginPeriod':1,'timeEndPeriod':1,'joyGetPosEx':2,'joyGetNumDevs':0,
@@ -174,9 +174,9 @@ for a,(dll,nm) in iat.items():
     rows.append((dll,nm,best,sum(cnt.values()) if cnt else 0,a))
     if nm in KNOWN and cnt:
         if KNOWN[nm]==best: hit+=1
-        else: miss+=1; print(f"  UYUSMAZLIK {nm}: cikarim {best}, gercek {KNOWN[nm]}  (dagilim {dict(cnt)})")
-print(f"\n=== ARGUMAN SAYISI CIKARIMI DOGRULUGU ===")
-print(f"  bilinen {hit+miss} fonksiyonda: {hit} dogru, {miss} yanlis = %{100.0*hit/max(hit+miss,1):.1f}")
+        else: miss+=1; print(f"  MISMATCH {nm}: derived {best}, actual {KNOWN[nm]}  (distribution {dict(cnt)})")
+print(f"\n=== ARGUMENT COUNT DERIVATION ACCURACY ===")
+print(f"  across {hit+miss} known functions: {hit} correct, {miss} wrong = %{100.0*hit/max(hit+miss,1):.1f}")
 with open('gen/all/impargs.c','w') as f:
     f.write('#include <stdint.h>\ntypedef struct { uint32_t iat; const char*dll; const char*name; int nargs; } ImpEnt;\n')
     f.write(f'const uint32_t g_imp_count = {len(rows)};\nconst ImpEnt g_imp[] = {{\n')
@@ -184,4 +184,4 @@ with open('gen/all/impargs.c','w') as f:
         n2 = KNOWN.get(nm, n)
         f.write(f'  {{0x{a:08x}u,"{dll}","{nm}",{n2}}},\n')
     f.write('};\n')
-print(f"-> gen/all/impargs.c ({len(rows)} giris)")
+print(f"-> gen/all/impargs.c ({len(rows)} entries)")

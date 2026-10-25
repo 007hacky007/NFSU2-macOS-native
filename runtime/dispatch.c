@@ -1,5 +1,5 @@
-/* Dolayli cagri dispatch: guest adres -> lift edilmis native fonksiyon.
- * O(1) dogrudan indeks tablosu (.text buyuklugunde uint32 dizisi).      */
+/* Indirect call dispatch: guest address -> lifted native function.
+ * O(1) direct index table (a uint32 array the size of .text).           */
 #include "cpu.h"
 uint64_t g_icall_hits = 0;
 #include <stdio.h>
@@ -15,7 +15,7 @@ extern const uint32_t g_fn_count;
 
 static uint32_t *g_idx;
 
-/* istatistik */
+/* statistics */
 uint64_t g_stat_indirect_ok = 0, g_stat_indirect_miss = 0, g_stat_unsupported = 0;
 #define MISS_MAX 64
 static uint32_t g_miss[MISS_MAX], g_miss_from[MISS_MAX]; static int g_miss_n = 0;
@@ -29,7 +29,7 @@ void dispatch_init(void){
     if (g_idx) return;
     g_backtrace_fn = (void(*)(struct CPU*,int))guest_backtrace;
     g_idx = calloc(TEXT_SIZE, sizeof(uint32_t));
-    if (!g_idx){ fprintf(stderr,"dispatch tablosu ayrilamadi\n"); exit(1); }
+    if (!g_idx){ fprintf(stderr,"could not allocate the dispatch table\n"); exit(1); }
     uint32_t dup = 0, oob = 0;
     for (uint32_t i = 0; i < g_fn_count; i++){
         uint32_t a = g_fn_addr[i];
@@ -37,7 +37,7 @@ void dispatch_init(void){
         if (g_idx[a - TEXT_BASE]) dup++;
         g_idx[a - TEXT_BASE] = i + 1;
     }
-    fprintf(stderr, "dispatch: %u fonksiyon kayitli (%u yinelenen, %u aralik disi), tablo %.1f MB\n",
+    fprintf(stderr, "dispatch: %u functions registered (%u duplicates, %u out of range), table %.1f MB\n",
             g_fn_count, dup, oob, TEXT_SIZE*4.0/1048576.0);
 }
 
@@ -47,25 +47,25 @@ void genexec_report(void);
 int  com_call(CPU*, uint32_t);
 int  g_guest_exited = 0;
 
-/* --- calisma zamani yamalari: dolayli cagri hedeflerini degistir ---
- * Yeniden uretim gerektirmeden (yalnizca dolayli cagrilan fonksiyonlar). */
+/* --- run-time patches: change indirect call targets ---
+ * Without regeneration (only for indirectly called functions). */
 #define PATCH_MAX 24
 static struct { uint32_t addr; guest_fn fn; } g_patch[PATCH_MAX];
 static int g_patch_n = 0;
 void dispatch_patch(uint32_t a, guest_fn f){
-    if (a >= 0xE0000000u){        /* dispatch_indirect'teki sira buna dayaniyor */
-        fprintf(stderr,"dispatch_patch: adres %08x metin araliginin disinda, yok sayildi\n", a);
+    if (a >= 0xE0000000u){        /* the order in dispatch_indirect relies on this */
+        fprintf(stderr,"dispatch_patch: address %08x outside the text range, ignored\n", a);
         return; }
     if (g_patch_n < PATCH_MAX){ g_patch[g_patch_n].addr=a; g_patch[g_patch_n].fn=f; g_patch_n++; }
 }
 
 void dispatch_indirect(CPU *c, uint32_t addr){
-    /* Once UCUZ aralik testi.  COM vtable metotlari (0xE...) ve Win32
-     * import kopruleri (0xF...) konuk metin araliginin cok ustunde, yani
-     * asagidaki yama tablosuyla ASLA cakismaz -- yamalar hep .text
-     * icindedir (dispatch_patch yalnizca konuk fonksiyon adresiyle
-     * cagriliyor).  Eskiden her cagri once g_patch[] dizisini dogrusal
-     * tariyordu; kosuda tek basina 377 milyon COM cagrisi var. */
+    /* The CHEAP range test first.  COM vtable methods (0xE...) and Win32
+     * import bridges (0xF...) are far above the guest text range, so they
+     * NEVER collide with the patch table below -- patches are always inside
+     * .text (dispatch_patch is only called with guest function addresses).
+     * Previously every call first scanned the g_patch[] array linearly; a run
+     * has 377 million COM calls alone. */
     if (addr >= 0xE0000000u){
         if (addr < 0xF0000000u){ com_call(c, addr); return; }
         if (win32_call(c, addr - 0xF0000000u) < 0) g_guest_exited = 1;
@@ -73,16 +73,16 @@ void dispatch_indirect(CPU *c, uint32_t addr){
     }
     for (int i = 0; i < g_patch_n; i++)
         if (g_patch[i].addr == addr){ g_stat_indirect_ok++; g_patch[i].fn(c); return; }
-    /* EFXSTAT: D3DX efekt vtable cagrilarinin envanteri (d3dx_hle.c) */
+    /* EFXSTAT: inventory of D3DX effect vtable calls (d3dx_hle.c) */
     { extern int g_efx_stat; extern void efx_stat_note(CPU *c, uint32_t addr);
       if (g_efx_stat && addr - 0x650000u < 0x40000u) efx_stat_note(c, addr); }
     uint32_t off = addr - TEXT_BASE;
     if (off < TEXT_SIZE){
         uint32_t k = g_idx[off];
         if (k){
-            /* ICALL=<adres>: o fonksiyona yapilan DOLAYLI cagrilari say ve
-             * ilk birkacinda cagri zincirini dok.  Sanal cagrilar statik
-             * grafla gorunmedigi icin gerekli. */
+            /* ICALL=<address>: count the INDIRECT calls made to that function and
+             * dump the call chain for the first few.  Needed because virtual
+             * calls don't show up in the static graph. */
             static uint32_t want = 0xFFFFFFFFu;
             if (want == 0xFFFFFFFFu){ const char *e = getenv("ICALL");
                                       want = e ? (uint32_t)strtoul(e,0,0) : 0; }
@@ -92,22 +92,22 @@ void dispatch_indirect(CPU *c, uint32_t addr){
                   uint32_t h2 = MR32(c->esp+8);
                   int f3=0; for(int q=0;q<ns;q++) if(seen[q]==h2) f3=1;
                   if(!f3 && ns<256){ seen[ns++]=h2;
-                    fprintf(stderr,"  [baglama] hash=0x%08X %s\n", h2,
+                    fprintf(stderr,"  [binding] hash=0x%08X %s\n", h2,
                             h2==0x3EE7363Fu ? "  <<< WORLDVIEWPROJECTION" :
                            (h2==0x04191C37u ? "  <<< TEXTUREOFFSET" : "")); } }
                 static int shown = 0;
                 if (shown < 3){ shown++;
-                    fprintf(stderr,"  [icall] 0x%08x cagrildi (arg1=%08x arg2=%08x arg3=%08x)\n",
+                    fprintf(stderr,"  [icall] 0x%08x called (arg1=%08x arg2=%08x arg3=%08x)\n",
                             addr, MR32(c->esp+4), MR32(c->esp+8), MR32(c->esp+12));
                     guest_backtrace(c, 10);
                 }
             }
             g_stat_indirect_ok++; g_fn_ptr[k-1](c); return; }
     }
-    /* Lift edilmis karsiligi yok.  Oyun bu adrese CALISMA ANINDA kod
-     * uretmis olabilir (NFSU2'nin malzeme boru hatti bunu yogun yapar).
-     * Kucuk bir x86 yorumlayicisiyla dene; bilinmeyen komutta guvenle
-     * geri doner (esp'yi eski haline getirir) ve asagidaki tesise duser. */
+    /* No lifted counterpart.  The game may have generated code at this address
+     * AT RUN TIME (NFSU2's material pipeline does this heavily).
+     * Try it with a small x86 interpreter; on an unknown instruction it returns
+     * safely (restores esp) and falls through to the facility below. */
     { static int gx = -1;
       if (gx < 0){ const char *e = getenv("GENEXEC"); gx = (e && *e=='0') ? 0 : 1; }
       if (gx && mem_is_committed(addr) && run_generated(c, addr)){
@@ -115,31 +115,31 @@ void dispatch_indirect(CPU *c, uint32_t addr){
       } }
 
     g_stat_indirect_miss++;
-    /* Cagiran: donus adresi ZATEN YIGINDA (POP32'den once).  Eskiden
-     * g_watch_prev_ip kullaniliyordu ama o yalnizca komut izleme aciksa
-     * dolar, bu yuzden rapor hep 0x00000000 gosteriyordu. */
+    /* Caller: the return address is ALREADY ON THE STACK (before POP32).
+     * g_watch_prev_ip used to be used, but it is only filled when instruction
+     * tracing is on, so the report always showed 0x00000000. */
     { uint32_t ret = MR32(c->esp);
       if (g_miss_n < MISS_MAX){ g_miss_from[g_miss_n]=ret; g_miss[g_miss_n++]=addr; }
       static int shown = 0;
       if (shown < 5){ shown++;
-          fprintf(stderr, "\n  [COZULEMEYEN DOLAYLI CAGRI] hedef=0x%08x  donus=0x%08x\n"
+          fprintf(stderr, "\n  [UNRESOLVED INDIRECT CALL] target=0x%08x  return=0x%08x\n"
                   "      eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x\n"
                   "      arg1=%08x arg2=%08x arg3=%08x\n",
                   addr, ret, c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi,
                   MR32(c->esp+4), MR32(c->esp+8), MR32(c->esp+12));
-          /* Hedefteki baytlar: oyun calisma aninda KOD mu uretti (thunk),
-           * yoksa isaretci mi bozuk?  Ayirt etmenin en hizli yolu. */
+          /* The bytes at the target: did the game generate CODE at run time (a thunk),
+           * or is the pointer broken?  The quickest way to tell. */
           if (mem_is_committed(addr+15)){
-              fprintf(stderr, "      hedefteki 96 bayt:\n       ");
+              fprintf(stderr, "      96 bytes at the target:\n       ");
               for (int q = 0; q < 96; q++){
                   if (q && !(q & 15)) fprintf(stderr, "\n       ");
                   fprintf(stderr, " %02x", MR8(addr+q));
               }
               fprintf(stderr, "\n");
-          } else fprintf(stderr, "      hedef commit EDILMEMIS (veri degil, cop isaretci)\n");
+          } else fprintf(stderr, "      target NOT COMMITTED (not data, a garbage pointer)\n");
           guest_backtrace(c, 12);
       } }
-    POP32(c->eip);            /* donus adresini temizle, cagriyi yut */
+    POP32(c->eip);            /* clear the return address, swallow the call */
 }
 
 void unsupported_insn(CPU *c, uint32_t addr, const char *mn){
@@ -149,7 +149,7 @@ void unsupported_insn(CPU *c, uint32_t addr, const char *mn){
 }
 
 void cpuid_shim(CPU *c){
-    /* jenerik Pentium III benzeri: SSE evet, 3DNow hayir */
+    /* a generic Pentium III-like: SSE yes, 3DNow no */
     switch (c->eax){
     case 0: c->eax=1; c->ebx=0x756e6547; c->edx=0x49656e69; c->ecx=0x6c65746e; break;
     case 1: c->eax=0x000006d8; c->ebx=0; c->ecx=0; c->edx=0x0383fbff; break;
@@ -161,22 +161,22 @@ uint64_t rdtsc_shim(void){
 }
 
 void dispatch_report(void){
-    fprintf(stderr,"\n=== calisma zamani ===\n");
-    fprintf(stderr,"  dolayli cagri  cozuldu : %llu\n", (unsigned long long)g_stat_indirect_ok);
-    fprintf(stderr,"  dolayli cagri  cozulemedi: %llu\n", (unsigned long long)g_stat_indirect_miss);
-    fprintf(stderr,"  desteklenmeyen komut     : %llu\n", (unsigned long long)g_stat_unsupported);
+    fprintf(stderr,"\n=== runtime ===\n");
+    fprintf(stderr,"  indirect calls resolved  : %llu\n", (unsigned long long)g_stat_indirect_ok);
+    fprintf(stderr,"  indirect calls unresolved: %llu\n", (unsigned long long)g_stat_indirect_miss);
+    fprintf(stderr,"  unsupported instructions : %llu\n", (unsigned long long)g_stat_unsupported);
     genexec_report();
-    if (g_miss_n){ fprintf(stderr,"  cozulemeyen dolayli cagrilar (hedef <- cagiran komut):\n");
+    if (g_miss_n){ fprintf(stderr,"  unresolved indirect calls (target <- calling instruction):\n");
         int shown=0;
         for(int i=0;i<g_miss_n && shown<12;i++){
             int dup=0; for(int j=0;j<i;j++) if(g_miss_from[j]==g_miss_from[i]) dup=1;
             if(dup) continue;
             fprintf(stderr,"    0x%08x  <-  0x%08x\n", g_miss[i], g_miss_from[i]); shown++; }
     }
-    if (g_unsup_n){ fprintf(stderr,"  ilk trap adresleri      :"); for(int i=0;i<g_unsup_n && i<10;i++) fprintf(stderr," 0x%08x",g_unsup[i]); fprintf(stderr,"\n"); }
+    if (g_unsup_n){ fprintf(stderr,"  first trap addresses     :"); for(int i=0;i<g_unsup_n && i<10;i++) fprintf(stderr," 0x%08x",g_unsup[i]); fprintf(stderr,"\n"); }
 }
 
-/* --- guest yigin izleyici: .text araligindaki donus adreslerini cozer --- */
+/* --- guest stack tracer: resolves return addresses in the .text range --- */
 static uint32_t nearest_fn(uint32_t a){
     uint32_t lo=0, hi=g_fn_count, best=0;
     while(lo<hi){ uint32_t m=(lo+hi)/2;
@@ -184,24 +184,24 @@ static uint32_t nearest_fn(uint32_t a){
     return best;
 }
 void guest_backtrace(CPU *c, int maxn){
-    fprintf(stderr,"    guest yigin izi (esp=0x%08x):\n", c->esp);
+    fprintf(stderr,"    guest stack trace (esp=0x%08x):\n", c->esp);
     int shown=0;
     for (uint32_t k=0; k<2048 && shown<maxn; k++){
         uint32_t a = c->esp + 4u*k;
-        if (!mem_is_committed(a)) continue;      /* haritalanmamis sayfayi atla */
+        if (!mem_is_committed(a)) continue;      /* skip unmapped pages */
         uint32_t v = MR32(a);
         if (v - TEXT_BASE < TEXT_SIZE){
             uint32_t f = nearest_fn(v);
-            fprintf(stderr,"      [%2d] +0x%04x  donus 0x%08x   (sub_%08x + 0x%x)\n",
+            fprintf(stderr,"      [%2d] +0x%04x  return 0x%08x   (sub_%08x + 0x%x)\n",
                     shown, k*4, v, f, v-f);
             shown++;
         }
     }
 }
 
-/* Hatali host PC'den uretilmis guest fonksiyonunu coz: g_fn_ptr host
- * adreslerini guest adresleriyle eslestirir; PC'nin altindaki en yakin
- * fonksiyon basi aranir. */
+/* Resolve the generated guest function from a faulting host PC: g_fn_ptr maps
+ * host addresses to guest addresses; the nearest function start below the PC
+ * is searched for. */
 uint32_t guest_fn_from_host(const void *pc){
     uintptr_t p = (uintptr_t)pc, best = 0; uint32_t bestg = 0;
     for (uint32_t i = 0; i < g_fn_count; i++){

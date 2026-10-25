@@ -1,27 +1,32 @@
-/* NFSRef -- Windows'ta orijinal oyundan TEKRARLANABILIR referans kareleri.
+/* NFSRef -- REPEATABLE reference frames from the original game on Windows.
  *
- * Clean Edition'daki dinput8.dll bir ASI yukleyicisi; bu DLL "nfsref.asi"
- * adiyla SCRIPTS/ klasorune konur.  Port'un otomatik test kosusunu
- * (PACE60 + AUTOSEQ + DUMPFRAME) orijinal oyunda tekrarlar:
+ * The dinput8.dll in the Clean Edition is an ASI loader; this DLL is placed
+ * in the SCRIPTS/ folder under the name "nfsref.asi".  It repeats the port's
+ * automated test run (PACE60 + AUTOSEQ + DUMPFRAME) in the original game:
  *
- *   sanal saat  : QPC/timeGetTime/GetTickCount kare sayisindan turetilir
- *                 (kare basi tam 16667 us) -> "kare N" her makinede ayni an
- *   girdi       : klavye olaylari DirectInput eylem haritasindan, port'un
- *                 urettigi bicimde sentezlenir (gercek klavye/fare yok sayilir)
- *   ayarlar     : oyunun kayit defteri okumalari nfsref_kayit.txt'ten
- *                 (port'un ~/.nfsu2_registry bicimi); yazmalar diske gitmez
- *   kayitlar    : SHGetFolderPath -> bos bir klasor (mevcut profil karismaz)
- *   videolar    : port'un NOMOVIES=1'i gibi acilmaz
- *   cikti       : secilen karelerde arka tampon BMP, her kare icin ozet satiri,
- *                 secilen karelerde D3D cagri dokumu
+ *   virtual clock : QPC/timeGetTime/GetTickCount are derived from the frame
+ *                   count (exactly 16667 us per frame) -> "frame N" is the
+ *                   same moment on every machine
+ *   input         : keyboard events are synthesized from the DirectInput
+ *                   action map, in the form the port produces them (the real
+ *                   keyboard/mouse are ignored)
+ *   settings      : the game's registry reads come from nfsref_registry.txt
+ *                   (the port's ~/.nfsu2_registry format); writes don't go
+ *                   to disk
+ *   saves         : SHGetFolderPath -> an empty folder (the existing profile
+ *                   isn't touched)
+ *   videos        : not opened, like the port's NOMOVIES=1
+ *   output        : back buffer BMPs at the selected frames, a summary line
+ *                   for every frame, D3D call dumps at the selected frames
  *
- * Her sey <oyun>/NFSRef_cikti/ altina yazilir.  Ayarlar nfsref.ini'de.
- * Cikti bicimi port tarafindaki REFLOG ile ayni tutulur (karsilastirma). */
+ * Everything is written under <game>/NFSRef_output/.  Settings are in
+ * nfsref.ini.  The output format is kept the same as REFLOG on the port side
+ * (for comparison). */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
 #include <d3d9.h>
-/* dinput.h yerine gereken sabitler */
+/* constants needed instead of dinput.h */
 #define DI_OK S_OK
 #define DIERR_INPUTLOST ((HRESULT)0x8007001EL)
 #define DIERR_NOTACQUIRED ((HRESULT)0x8007000CL)
@@ -32,8 +37,8 @@
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
-static FILE *g_log, *g_kare;
-static FILE *g_slog, *g_sdat; static CRITICAL_SECTION g_slk;   /* ses kaydi */
+static FILE *g_log, *g_frames_csv;
+static FILE *g_slog, *g_sdat; static CRITICAL_SECTION g_slk;   /* sound recording */
 static char g_game[MAX_PATH], g_out[MAX_PATH], g_save[MAX_PATH];
 static CRITICAL_SECTION g_lk;
 
@@ -46,7 +51,7 @@ static void L(const char *fmt, ...){
     va_end(ap);
 }
 
-/* ---- ayarlar ------------------------------------------------------ */
+/* ---- settings ----------------------------------------------------- */
 #define SQMAX 64
 static long  sq_f[SQMAX], sq_d[SQMAX]; static unsigned char sq_k[SQMAX]; static int sq_n;
 #define CAPMAX 64
@@ -84,7 +89,7 @@ static int in_list(const long *a, int n, long f){
     return 0;
 }
 
-/* ---- kayit defteri (port'un ~/.nfsu2_registry bicimi: "d ad=sayi" / "s ad=metin") */
+/* ---- registry (the port's ~/.nfsu2_registry format: "d name=number" / "s name=text") */
 #define MAXREG 128
 static struct { char name[64]; int is_str; DWORD dw; char sv[260]; } g_reg[MAXREG];
 static int g_regn;
@@ -101,7 +106,7 @@ static void reg_put(const char *nm, int is_str, DWORD dw, const char *sv){
 }
 static void reg_load(const char *path){
     FILE *f = fopen(path, "r");
-    if (!f){ L("UYARI: %s yok, varsayilan kayit degerleri\n", path); return; }
+    if (!f){ L("WARNING: %s missing, default registry values\n", path); return; }
     char ln[512];
     while (fgets(ln, sizeof ln, f)){
         ln[strcspn(ln, "\r\n")] = 0;
@@ -116,29 +121,30 @@ static void reg_load(const char *path){
 
 static void modof(DWORD a, char *out, int n);
 
-/* ---- sanal saat ---------------------------------------------------- */
-static volatile LONG g_frame;            /* simdiye kadarki Present sayisi */
-static DWORD g_main_tid;                 /* Present cagiran thread */
-static volatile LONG g_polls;            /* ana thread, bu karedeki saat sorgusu */
+/* ---- virtual clock ------------------------------------------------- */
+static volatile LONG g_frame;            /* number of Presents so far */
+static DWORD g_main_tid;                 /* thread calling Present */
+static volatile LONG g_polls;            /* main thread, clock queries in this frame */
 static LONG g_polls_max, g_valve_frames;
-static volatile LONGLONG g_extra_us;     /* emniyet valfinin ekledigi */
-#define VALVE_AT   50000                 /* bu kadar sorgudan sonra ... */
-#define VALVE_STEP 500                   /* ... her 500 sorguda +1 ms */
+static volatile LONGLONG g_extra_us;     /* added by the safety valve */
+#define VALVE_AT   50000                 /* after this many queries ... */
+#define VALVE_STEP 500                   /* ... +1 ms every 500 queries */
 
 static LARGE_INTEGER g_t0, g_qf;
-static volatile LONG g_started;          /* ilk Present oldu mu */
+static volatile LONG g_started;          /* has the first Present happened */
 static uint64_t real_us(void){
-    LARGE_INTEGER t; QueryPerformanceCounter(&t);   /* kendi IAT'imiz: gercek */
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);   /* our own IAT: real */
     return (uint64_t)((t.QuadPart - g_t0.QuadPart) * 1000000.0 / (double)g_qf.QuadPart);
 }
-/* Ilk kareye kadar saat GERCEK zamanla akar (port'ta da baslangicta saat
- * ilerliyor; donuk saat baslangic kodunu bozabilir).  Ilk Present'te
- * deterministik sayima gecilir: t = 1 sn + kare*16667 us + ek. */
-static volatile LONGLONG g_last_pres_us;   /* son Present'in gercek zamani */
+/* Until the first frame the clock flows in REAL time (on the port the clock
+ * also advances at startup; a frozen clock can break startup code).  At the
+ * first Present we switch to deterministic counting: t = 1 s + frame*16667 us
+ * + extra. */
+static volatile LONGLONG g_last_pres_us;   /* real time of the last Present */
 #define STALL_US 250000ull
-static LONG g_qpc_main, g_qpc_other;        /* durum satiri icin */
-/* Kareler durursa (yukleme, ya da kare sayimi bozulursa) saat GERCEK zamana
- * duser: oyun asla gercekten hizli akamaz. */
+static LONG g_qpc_main, g_qpc_other;        /* for the status line */
+/* If frames stop (loading, or if frame counting breaks) the clock falls back
+ * to REAL time: the game can never really run fast. */
 static uint64_t stall_us(void){
     uint64_t r = real_us(), lp = (uint64_t)g_last_pres_us;
     return (g_started && r > lp + STALL_US) ? r - lp - STALL_US : 0;
@@ -157,13 +163,13 @@ static BOOL WINAPI h_QPF(LARGE_INTEGER *p){ if (p) p->QuadPart = 1000000; return
 static DWORD WINAPI h_GetTickCount(void){ return (DWORD)(vt_us() / 1000ull) + 1000u; }
 static DWORD WINAPI h_timeGetTime(void){ return (DWORD)(vt_us() / 1000ull) + 1000u; }
 static void WINAPI h_GetSystemTimeAsFileTime(FILETIME *p){
-    /* port ile ayni: sabit taban, her cagrida +10 ms */
+    /* same as the port: fixed base, +10 ms on every call */
     static volatile LONGLONG ft = 130000000000000000LL;
     LONGLONG v = InterlockedExchangeAdd64(&ft, 100000) + 100000;
     if (p){ p->dwLowDateTime = (DWORD)v; p->dwHighDateTime = (DWORD)(v >> 32); }
 }
 
-/* ---- girdi durumu (port metal.m AUTOSEQ ile ayni kural) ------------- */
+/* ---- input state (same rule as the port's metal.m AUTOSEQ) ---------- */
 static unsigned char g_keys[256];
 static void seq_update(long f){
     for (int q = 0; q < sq_n; q++){
@@ -172,7 +178,7 @@ static void seq_update(long f){
     }
 }
 
-/* ---- IAT yamasi ----------------------------------------------------- */
+/* ---- IAT patch ------------------------------------------------------ */
 static int iat_patch(HMODULE m, const char *dll, const char *fn, WORD ord, void *nw, void **old){
     BYTE *b = (BYTE *)m;
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + ((IMAGE_DOS_HEADER *)b)->e_lfanew);
@@ -198,7 +204,7 @@ static int iat_patch(HMODULE m, const char *dll, const char *fn, WORD ord, void 
     return 0;
 }
 static void vt_patch(void **vt, int idx, void *nw, void **old){
-    if (vt[idx] == nw) return;            /* ayni vtable ikinci kez */
+    if (vt[idx] == nw) return;            /* same vtable a second time */
     DWORD op;
     VirtualProtect(&vt[idx], 4, PAGE_READWRITE, &op);
     if (old) *old = vt[idx];
@@ -206,10 +212,10 @@ static void vt_patch(void **vt, int idx, void *nw, void **old){
     VirtualProtect(&vt[idx], 4, op, &op);
 }
 
-/* ---- kayit defteri kancalari ------------------------------------- */
+/* ---- registry hooks ---------------------------------------------- */
 #define FAKEKEY ((HKEY)(ULONG_PTR)0x4E465200u)
-#define ILK(nm) do { static volatile LONG once; if (!InterlockedExchange(&once, 1)) \
-        L("ilk cagri %s (thread %lu, kare %ld)\n", nm, (unsigned long)GetCurrentThreadId(), g_frame); } while (0)
+#define FIRST(nm) do { static volatile LONG once; if (!InterlockedExchange(&once, 1)) \
+        L("first call %s (thread %lu, frame %ld)\n", nm, (unsigned long)GetCurrentThreadId(), g_frame); } while (0)
 static int is_fake(HKEY k){ return ((ULONG_PTR)k & 0xFFFFFF00u) == 0x4E465200u; }
 static int is_game_path(const char *s){
     if (!s) return 0;
@@ -226,15 +232,15 @@ static RegQueryValueExA_t o_RegQueryValueExA; static RegSetValueExA_t o_RegSetVa
 static RegCloseKey_t o_RegCloseKey;
 
 static LONG WINAPI h_RegOpenKeyExA(HKEY k, LPCSTR s, DWORD o, REGSAM sam, PHKEY out){
-    if (is_fake(k) || is_game_path(s)){ L("kayit: OpenKeyEx(\"%s\") -> sanal\n", s ? s : ""); if (out) *out = FAKEKEY; return ERROR_SUCCESS; }
+    if (is_fake(k) || is_game_path(s)){ L("registry: OpenKeyEx(\"%s\") -> virtual\n", s ? s : ""); if (out) *out = FAKEKEY; return ERROR_SUCCESS; }
     return o_RegOpenKeyExA(k, s, o, sam, out);
 }
 static LONG WINAPI h_RegOpenKeyA(HKEY k, LPCSTR s, PHKEY out){
-    if (is_fake(k) || is_game_path(s)){ L("kayit: OpenKey(\"%s\") -> sanal\n", s ? s : ""); if (out) *out = FAKEKEY; return ERROR_SUCCESS; }
+    if (is_fake(k) || is_game_path(s)){ L("registry: OpenKey(\"%s\") -> virtual\n", s ? s : ""); if (out) *out = FAKEKEY; return ERROR_SUCCESS; }
     return o_RegOpenKeyA(k, s, out);
 }
 static LONG WINAPI h_RegCreateKeyA(HKEY k, LPCSTR s, PHKEY out){
-    if (is_fake(k) || is_game_path(s)){ L("kayit: CreateKey(\"%s\") -> sanal\n", s ? s : ""); if (out) *out = FAKEKEY; return ERROR_SUCCESS; }
+    if (is_fake(k) || is_game_path(s)){ L("registry: CreateKey(\"%s\") -> virtual\n", s ? s : ""); if (out) *out = FAKEKEY; return ERROR_SUCCESS; }
     return o_RegCreateKeyA(k, s, out);
 }
 static LONG WINAPI h_RegQueryValueExA(HKEY k, LPCSTR nm, LPDWORD rsv, LPDWORD type, LPBYTE data, LPDWORD cb){
@@ -255,49 +261,49 @@ static LONG WINAPI h_RegQueryValueExA(HKEY k, LPCSTR nm, LPDWORD rsv, LPDWORD ty
         else if (cb && *cb < 4){ *cb = 4; r = ERROR_MORE_DATA; }
         else { memcpy(data, &g_reg[i].dw, 4); if (cb) *cb = 4; r = ERROR_SUCCESS; }
     }
-    L("kayit: Query(\"%s\") -> %s\n", vn, r == ERROR_SUCCESS ? "var" : "yok");
+    L("registry: Query(\"%s\") -> %s\n", vn, r == ERROR_SUCCESS ? "found" : "missing");
     return r;
 }
 static LONG WINAPI h_RegSetValueExA(HKEY k, LPCSTR nm, DWORD rsv, DWORD type, const BYTE *data, DWORD cb){
     if (!is_fake(k)) return o_RegSetValueExA(k, nm, rsv, type, data, cb);
     if (nm && *nm && data){
-        if (type == REG_DWORD && cb >= 4){ DWORD v; memcpy(&v, data, 4); reg_put(nm, 0, v, 0); L("kayit: Set(\"%s\")=%lu\n", nm, (unsigned long)v); }
-        else if (type == REG_SZ){ char t[260]; snprintf(t, sizeof t, "%.*s", (int)cb, (const char *)data); reg_put(nm, 1, 0, t); L("kayit: Set(\"%s\")=\"%s\"\n", nm, t); }
+        if (type == REG_DWORD && cb >= 4){ DWORD v; memcpy(&v, data, 4); reg_put(nm, 0, v, 0); L("registry: Set(\"%s\")=%lu\n", nm, (unsigned long)v); }
+        else if (type == REG_SZ){ char t[260]; snprintf(t, sizeof t, "%.*s", (int)cb, (const char *)data); reg_put(nm, 1, 0, t); L("registry: Set(\"%s\")=\"%s\"\n", nm, t); }
     }
-    return ERROR_SUCCESS;             /* diske yazilmaz */
+    return ERROR_SUCCESS;             /* not written to disk */
 }
-static LONG WINAPI h_RegCloseKey(HKEY k){ ILK("RegCloseKey"); return is_fake(k) ? ERROR_SUCCESS : o_RegCloseKey(k); }
+static LONG WINAPI h_RegCloseKey(HKEY k){ FIRST("RegCloseKey"); return is_fake(k) ? ERROR_SUCCESS : o_RegCloseKey(k); }
 
-/* ---- dosya / kabuk / imlec / surucu -------------------------------- */
+/* ---- file / shell / cursor / driver --------------------------------- */
 typedef HANDLE (WINAPI *CreateFileA_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 static CreateFileA_t o_CreateFileA;
-static HANDLE WINAPI h_CreateFileA(LPCSTR p, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD cd, DWORD fl, HANDLE t){ ILK("CreateFileA");
+static HANDLE WINAPI h_CreateFileA(LPCSTR p, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD cd, DWORD fl, HANDLE t){ FIRST("CreateFileA");
     if (g_nomovies && p){
         const char *e = strrchr(p, '.');
         if (e && (!_stricmp(e, ".vp6") || !_stricmp(e, ".vp8") || !_stricmp(e, ".bik") || !_stricmp(e, ".mpg"))){
-            L("dosya: video atlandi %s\n", p);
+            L("file: video skipped %s\n", p);
             SetLastError(ERROR_FILE_NOT_FOUND); return INVALID_HANDLE_VALUE;
         }
     }
     return o_CreateFileA(p, a, s, sa, cd, fl, t);
 }
-static HRESULT WINAPI h_SHGetFolderPathA(HWND w, int csidl, HANDLE tok, DWORD fl, LPSTR out){ ILK("SHGetFolderPathA");
+static HRESULT WINAPI h_SHGetFolderPathA(HWND w, int csidl, HANDLE tok, DWORD fl, LPSTR out){ FIRST("SHGetFolderPathA");
     (void)w; (void)tok; (void)fl;
-    L("kabuk: SHGetFolderPathA(csidl=0x%x) -> %s\n", csidl, g_save);
+    L("shell: SHGetFolderPathA(csidl=0x%x) -> %s\n", csidl, g_save);
     if (out) snprintf(out, MAX_PATH, "%s", g_save);
     return S_OK;
 }
-static BOOL WINAPI h_GetCursorPos(POINT *p){ ILK("GetCursorPos"); if (p){ p->x = g_mx; p->y = g_my; } return TRUE; }
-static UINT WINAPI h_GetDriveTypeA(LPCSTR r){ ILK("GetDriveTypeA"); (void)r; return DRIVE_FIXED; }
-static DWORD WINAPI h_GetLogicalDrives(void){ ILK("GetLogicalDrives"); return 0x0000000Cu; }
+static BOOL WINAPI h_GetCursorPos(POINT *p){ FIRST("GetCursorPos"); if (p){ p->x = g_mx; p->y = g_my; } return TRUE; }
+static UINT WINAPI h_GetDriveTypeA(LPCSTR r){ FIRST("GetDriveTypeA"); (void)r; return DRIVE_FIXED; }
+static DWORD WINAPI h_GetLogicalDrives(void){ FIRST("GetLogicalDrives"); return 0x0000000Cu; }
 
 /* ---- DirectInput ---------------------------------------------------- */
-/* Oyun eylem haritasi kullaniyor: cihazlari EnumDevicesBySemantics ile
- * DirectInput'un KENDISININ yarattigi nesneler olarak alabilir, yani
- * CreateDevice'a ugramayabilir.  Bu yuzden: DirectInput8Create'ten hemen
- * sonra kendimiz bir klavye ve fare yaratip vtable'larini yamaliyoruz
- * (ayni turdeki tum cihazlar ayni vtable'i paylasir); kancada cihazin
- * turunu GetDeviceInfo ile sorup taniyoruz.
+/* The game uses an action map: it can get its devices through
+ * EnumDevicesBySemantics as objects DirectInput ITSELF created, i.e. it may
+ * never go through CreateDevice.  So: right after DirectInput8Create we create
+ * a keyboard and a mouse ourselves and patch their vtables (all devices of the
+ * same type share the same vtable); in the hook we identify the device type by
+ * asking GetDeviceInfo.
  * IDirectInput8A: 3 CreateDevice.  IDirectInputDevice8A: 2 Release,
  * 7 Acquire, 9 GetDeviceState, 10 GetDeviceData, 15 GetDeviceInfo,
  * 30 SetActionMap */
@@ -316,7 +322,7 @@ static DWORD g_act_app[256], g_act_ofs[256]; static int g_act_count;
 static unsigned char g_kb_prev[256]; static DWORD g_di_seq = 1;
 static LONG g_gdd_kbd, g_gds_kbd, g_ev_out;
 
-/* vtable basina asil fonksiyonlar (klavye/fare vtable'lari farkli olabilir) */
+/* original functions per vtable (keyboard/mouse vtables may differ) */
 static struct { void **vt; GetDeviceState_t gds; GetDeviceData_t gdd; SetActionMap_t sam;
                 Acquire_t acq; GetDeviceInfo_t gdi; } g_dvt[8];
 static int g_ndvt;
@@ -325,7 +331,7 @@ static int dvt_of(void *self){
     for (int i = 0; i < g_ndvt; i++) if (g_dvt[i].vt == vt) return i;
     return 0;
 }
-/* cihaz turu: 1 klavye, 2 fare, 0 diger (onbellekli) */
+/* device type: 1 keyboard, 2 mouse, 0 other (cached) */
 static struct { void *p; int k; } g_dk[32]; static int g_ndk;
 static int dev_kind(void *self){
     for (int i = 0; i < g_ndk; i++) if (g_dk[i].p == self) return g_dk[i].k;
@@ -334,9 +340,9 @@ static int dev_kind(void *self){
     if (SUCCEEDED(g_dvt[dvt_of(self)].gdi(self, di))){
         DWORD t = *(DWORD *)(di + 36) & 0xFF;            /* dwDevType */
         k = (t == 0x13) ? 1 : (t == 0x12) ? 2 : 0;       /* DI8DEVTYPE_KEYBOARD / MOUSE */
-        L("giris: cihaz %p tur 0x%02lx \"%s\" -> %s\n", self, (unsigned long)t, (char *)(di + 40),
-          k == 1 ? "klavye" : k == 2 ? "fare" : "diger (dokunulmuyor)");
-    } else L("giris: cihaz %p GetDeviceInfo basarisiz\n", self);
+        L("input: device %p type 0x%02lx \"%s\" -> %s\n", self, (unsigned long)t, (char *)(di + 40),
+          k == 1 ? "keyboard" : k == 2 ? "mouse" : "other (left alone)");
+    } else L("input: device %p GetDeviceInfo failed\n", self);
     if (g_ndk < 32){ g_dk[g_ndk].p = self; g_dk[g_ndk].k = k; g_ndk++; }
     return k;
 }
@@ -345,7 +351,7 @@ static HRESULT WINAPI h_SetActionMap(void *self, void *af_, LPCSTR user, DWORD f
     HRESULT r = g_dvt[dvt_of(self)].sam(self, af_, user, fl);
     if (dev_kind(self) == 1 && af_){
         /* DIACTIONFORMATA: +4 dwActionSize +12 dwNumActions +16 rgoAction
-         * DIACTIONA: +0 uAppData +4 dwSemantic (0x810004xx = klavye DIK) */
+         * DIACTIONA: +0 uAppData +4 dwSemantic (0x810004xx = keyboard DIK) */
         BYTE *af = af_;
         DWORD nact = *(DWORD *)(af+12), asz = *(DWORD *)(af+4); BYTE *rg = *(BYTE **)(af+16);
         if (!asz) asz = 40;
@@ -356,15 +362,15 @@ static HRESULT WINAPI h_SetActionMap(void *self, void *af_, LPCSTR user, DWORD f
             DWORD dik = sem & 0xFF; if (!dik) continue;
             g_act_app[dik] = app; g_act_ofs[dik] = k*4; g_act_count++;
         }
-        L("giris: SetActionMap klavye %lu eylem, %d tus esli, Enter %s (kare %ld, sonuc 0x%08lx)\n",
-          (unsigned long)nact, g_act_count, g_act_app[0x1C] ? "esli" : "ESLI DEGIL", g_frame, (unsigned long)r);
+        L("input: SetActionMap keyboard %lu actions, %d keys mapped, Enter %s (frame %ld, result 0x%08lx)\n",
+          (unsigned long)nact, g_act_count, g_act_app[0x1C] ? "mapped" : "NOT MAPPED", g_frame, (unsigned long)r);
     }
     return r;
 }
 static HRESULT WINAPI h_GetDeviceState(void *self, DWORD cb, LPVOID p){
     int k = dev_kind(self);
     if (!k) return g_dvt[dvt_of(self)].gds(self, cb, p);
-    BYTE tmp[512]; if (cb <= sizeof tmp) g_dvt[dvt_of(self)].gds(self, cb, tmp);   /* gercek girdiyi yut */
+    BYTE tmp[512]; if (cb <= sizeof tmp) g_dvt[dvt_of(self)].gds(self, cb, tmp);   /* swallow the real input */
     if (p && cb){
         memset(p, 0, cb);
         if (k == 1 && cb == 256){ g_gds_kbd++; for (int q = 0; q < 256; q++) if (g_keys[q]) ((BYTE *)p)[q] = 0x80; }
@@ -374,7 +380,7 @@ static HRESULT WINAPI h_GetDeviceState(void *self, DWORD cb, LPVOID p){
 static HRESULT WINAPI h_GetDeviceData(void *self, DWORD cb, void *rg, LPDWORD pn, DWORD fl){
     int k = dev_kind(self), vi = dvt_of(self);
     if (!k) return g_dvt[vi].gdd(self, cb, rg, pn, fl);
-    /* gercek olaylari bosalt (kullanicinin dokunusu karismasin) */
+    /* drain real events (so the user's touches don't interfere) */
     { BYTE tmp[32*64]; DWORD n; HRESULT rr;
       if (cb <= 32){ for (int g = 0; g < 8; g++){ n = 64; rr = g_dvt[vi].gdd(self, cb, tmp, &n, 0);
           if (rr == DIERR_INPUTLOST || rr == DIERR_NOTACQUIRED){ g_dvt[vi].acq(self); break; }
@@ -395,7 +401,7 @@ static HRESULT WINAPI h_GetDeviceData(void *self, DWORD cb, void *rg, LPDWORD pn
                     ((DWORD *)e)[3] = g_di_seq++;
                     if (cb >= 20) ((DWORD *)e)[4] = g_act_app[q];
                     g_ev_out++;
-                    L("giris: kare %ld dik 0x%02x %s\n", g_frame, q, now ? "bas" : "birak");
+                    L("input: frame %ld dik 0x%02x %s\n", g_frame, q, now ? "press" : "release");
                 }
                 if (!(fl & DIGDD_PEEK)) g_kb_prev[q] = now;
                 n++;
@@ -407,36 +413,36 @@ static HRESULT WINAPI h_GetDeviceData(void *self, DWORD cb, void *rg, LPDWORD pn
 }
 static void di_patch_vt(void *dev, const char *ne){
     void **vt = *(void ***)dev;
-    for (int i = 0; i < g_ndvt; i++) if (g_dvt[i].vt == vt){ L("giris: %s vtable %p zaten yamali\n", ne, vt); return; }
+    for (int i = 0; i < g_ndvt; i++) if (g_dvt[i].vt == vt){ L("input: %s vtable %p already patched\n", ne, vt); return; }
     if (g_ndvt >= 8) return;
     int i = g_ndvt++;
     g_dvt[i].vt = vt; g_dvt[i].acq = (Acquire_t)vt[7]; g_dvt[i].gdi = (GetDeviceInfo_t)vt[15];
     vt_patch(vt, 9,  (void *)h_GetDeviceState, (void **)&g_dvt[i].gds);
     vt_patch(vt, 10, (void *)h_GetDeviceData,  (void **)&g_dvt[i].gdd);
     vt_patch(vt, 30, (void *)h_SetActionMap,   (void **)&g_dvt[i].sam);
-    L("giris: %s vtable %p yamandi\n", ne, vt);
+    L("input: %s vtable %p patched\n", ne, vt);
 }
 static HRESULT WINAPI h_CreateDevice2(void *self, REFGUID g, void **out, LPUNKNOWN u){
     HRESULT r = o_CreateDevice(self, g, out, u);
     if (SUCCEEDED(r) && out && *out){
-        L("giris: oyun CreateDevice -> %p\n", *out);
-        di_patch_vt(*out, "oyun cihazi");
+        L("input: game CreateDevice -> %p\n", *out);
+        di_patch_vt(*out, "game device");
     }
     return r;
 }
-static HRESULT WINAPI h_DI8Create(HINSTANCE h, DWORD v, REFIID id, LPVOID *out, LPUNKNOWN u){ ILK("DirectInput8Create");
+static HRESULT WINAPI h_DI8Create(HINSTANCE h, DWORD v, REFIID id, LPVOID *out, LPUNKNOWN u){ FIRST("DirectInput8Create");
     HRESULT r = o_DI8Create(h, v, id, out, u);
-    L("giris: DirectInput8Create -> 0x%08lx\n", (unsigned long)r);
+    L("input: DirectInput8Create -> 0x%08lx\n", (unsigned long)r);
     if (SUCCEEDED(r) && out && *out){
         void **vt = *(void ***)*out;
         vt_patch(vt, 3, (void *)h_CreateDevice2, (void **)&o_CreateDevice);
-        /* klavye ve fare vtable'larini simdiden yamala (EnumDevicesBySemantics yolu) */
+        /* patch the keyboard and mouse vtables right away (EnumDevicesBySemantics path) */
         void *d = 0;
-        if (SUCCEEDED(o_CreateDevice(*out, &G_SysKeyboard, &d, 0)) && d){ di_patch_vt(d, "klavye"); ((Release_t)(*(void ***)d)[2])(d); }
-        else L("giris: UYARI deneme klavyesi yaratilamadi\n");
+        if (SUCCEEDED(o_CreateDevice(*out, &G_SysKeyboard, &d, 0)) && d){ di_patch_vt(d, "keyboard"); ((Release_t)(*(void ***)d)[2])(d); }
+        else L("input: WARNING could not create the probe keyboard\n");
         d = 0;
-        if (SUCCEEDED(o_CreateDevice(*out, &G_SysMouse, &d, 0)) && d){ di_patch_vt(d, "fare"); ((Release_t)(*(void ***)d)[2])(d); }
-        else L("giris: UYARI deneme faresi yaratilamadi\n");
+        if (SUCCEEDED(o_CreateDevice(*out, &G_SysMouse, &d, 0)) && d){ di_patch_vt(d, "mouse"); ((Release_t)(*(void ***)d)[2])(d); }
+        else L("input: WARNING could not create the probe mouse\n");
     }
     return r;
 }
@@ -447,15 +453,15 @@ typedef HRESULT (WINAPI *D3DCreateDevice_t)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND
 static D3DCreate9_t o_D3DCreate9; static D3DCreateDevice_t o_D3DCreateDevice;
 static LONG c_pres_vt, c_pres_sc, c_begin, c_end, c_draw_all;
 static IDirect3DDevice9 *g_dev; static void **g_dev_vt; static int g_hp_on = 1;
-static int g_dump_on;                         /* bu karede cagri dokumu */
+static int g_dump_on;                         /* call dump in this frame */
 static FILE *g_dump;
-static LONG g_draws, g_prims;                 /* bu karedeki */
+static LONG g_draws, g_prims;                 /* in this frame */
 static float g_cam[16]; static int g_cam_have;
 
-/* Asil fonksiyonlar vtable BASINA saklanir: oyunun kullandigi nesne
- * CreateDevice'in dondurdugunden farkli bir vtable tasiyabiliyor (Windows'ta
- * olculdu: tablo kancalari hic cagri gormedi, Present hotpatch'i gordu). */
-static void *volatile g_cur[160];          /* yuva -> su an cagrilacak asil fonksiyon */
+/* The original functions are stored PER vtable: the object the game uses can
+ * carry a different vtable from the one CreateDevice returned (measured on
+ * Windows: the table hooks never saw a call, the Present hotpatch did). */
+static void *volatile g_cur[160];          /* slot -> the original function to call right now */
 #define O(name, d) ((name##_t)g_cur[name##_IDX])
 #define DEVFN(idx, ret, name, args) typedef ret (WINAPI *name##_t) args; enum { name##_IDX = idx };
 DEVFN(13, HRESULT, CreateAdditionalSwapChain, (IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *, void **))
@@ -491,7 +497,7 @@ DEVFN(106, HRESULT, CreatePixelShader, (IDirect3DDevice9 *, const DWORD *, IDire
 DEVFN(107, HRESULT, SetPixelShader, (IDirect3DDevice9 *, IDirect3DPixelShader9 *))
 DEVFN(109, HRESULT, SetPixelShaderConstantF, (IDirect3DDevice9 *, UINT, const float *, UINT))
 
-/* gölgelendirici kimligi: bayt kodunun FNV-1a ozeti (port da ayni sekilde) */
+/* shader id: FNV-1a hash of the bytecode (the port does the same) */
 #define MAXSH 1024
 static struct { void *p; uint32_t h; } g_sh[MAXSH]; static int g_shn;
 static uint32_t sh_hash(const DWORD *t){
@@ -510,13 +516,14 @@ static uint32_t sh_get(void *p){
     for (int i = 0; i < g_shn; i++) if (g_sh[i].p == p) return g_sh[i].h;
     return 0xFFFFFFFFu;
 }
-/* ---- dokum cikisi + durum blogu kaydi ----------------------------------
- * Cihaz PUREDEVICE (bayrak 0x50): Get* durum sorgulari YOK.  Bu yuzden
- * durumun golgesini kendimiz tutuyoruz: her Set* golgeye yazilir; durum
- * blogu kaydi (BeginStateBlock..End) sirasinda cagrilar cihaza UYGULANMAZ,
- * bloga YAPI olarak kaydedilir; Capture blogu golgeden tazeler; Apply blogu
- * golgeye uygular ve dokum karesindeyse icerigini (gercek degerleriyle) yazar.
- * Port'taki com.c durum blogu modeliyle ayni. */
+/* ---- dump output + state block recording -------------------------------
+ * The device is PUREDEVICE (flag 0x50): there are NO Get* state queries.  So
+ * we keep a shadow of the state ourselves: every Set* is written to the
+ * shadow; during state block recording (BeginStateBlock..End) the calls are
+ * NOT APPLIED to the device but recorded into the block as a STRUCTURE;
+ * Capture refreshes the block from the shadow; Apply applies the block to the
+ * shadow and, in a dump frame, writes its contents (with real values).
+ * Same as the state block model in the port's com.c. */
 static int g_sbrec;
 #define DON (g_dump_on && g_dump)
 #define D(...) do { if (DON) fprintf(g_dump, __VA_ARGS__); } while (0)
@@ -530,9 +537,9 @@ typedef struct { void *obj; int n, cap, kind; SBE *e; void *snap; } SB;
 #define MAXSB 4096
 static SB g_sb[MAXSB]; static int g_nsb; static SB g_sbcur;
 static LONG c_sb_apply, c_sb_capture;
-static int g_in_sb;                     /* d3d9 Apply/Capture ICINDE: ic cagrilar dokulmez */
+static int g_in_sb;                     /* INSIDE d3d9 Apply/Capture: inner calls aren't dumped */
 static LONG c_sb_inner;
-/* golge durum */
+/* shadow state */
 typedef struct {
     DWORD rs[256], tss[8][33], ss[16][14], fvf;
     void *tex[16], *vs, *ps, *decl;
@@ -540,7 +547,7 @@ typedef struct {
 } Shadow;
 static Shadow sh;
 
-/* doku kimligi: boyut/bicim + (yonetilen dokuda) seviye 0 iceriginin FNV ozeti */
+/* texture id: size/format + (for managed textures) FNV hash of the level 0 content */
 #define MAXTH 8192
 static struct { void *p; uint32_t h; } g_th[MAXTH]; static int g_nth;
 static int fmt_rowbytes(D3DFORMAT f, UINT w, UINT *rows_div){
@@ -562,7 +569,7 @@ static uint32_t locked_hash(const D3DLOCKED_RECT *lr, D3DSURFACE_DESC *ds){
     for (UINT y = 0; y < rows; y++) h = fnv(h, (const BYTE *)lr->pBits + y*lr->Pitch, (size_t)rb);
     return h;
 }
-/* RT dokulari: dokum karesinde gorulenler, kare sonunda goruntu olarak yazilir */
+/* RT textures: those seen in a dump frame are written as images at the end of the frame */
 #define MAXRTD 48
 static IDirect3DBaseTexture9 *g_rtd[MAXRTD]; static int g_nrtd;
 static int g_tex_hash_on = 1, g_rt_dump_on = 1;
@@ -570,7 +577,7 @@ static void rt_note(IDirect3DBaseTexture9 *t){
     for (int i = 0; i < g_nrtd; i++) if (g_rtd[i] == t) return;
     if (g_nrtd < MAXRTD){ IDirect3DBaseTexture9_AddRef(t); g_rtd[g_nrtd++] = t; }
 }
-/* RT dokulara kalici kimlik (ilk gorulme sirasi) */
+/* persistent ids for RT textures (order of first appearance) */
 #define MAXRTID 256
 static void *g_rtid[MAXRTID]; static int g_nrtid;
 static int rt_id(void *t){
@@ -578,20 +585,20 @@ static int rt_id(void *t){
     if (g_nrtid < MAXRTID){ g_rtid[g_nrtid] = t; return g_nrtid++; }
     return -1;
 }
-/* doku tanimi: nesne YASARKEN cagrilmali (dogrudan SetTexture ya da kayit/Capture ani) */
+/* texture description: must be called while the object is ALIVE (direct SetTexture or at record/Capture time) */
 static void tex_desc(void *tp, char *out, int n, int *is_rt){
     IDirect3DBaseTexture9 *t = tp; *is_rt = 0;
-    if (!t){ snprintf(out, n, "yok"); return; }
-    if (IsBadReadPtr(t, 4)){ snprintf(out, n, "gecersiz"); return; }
+    if (!t){ snprintf(out, n, "none"); return; }
+    if (IsBadReadPtr(t, 4)){ snprintf(out, n, "invalid"); return; }
     D3DRESOURCETYPE ty = IDirect3DBaseTexture9_GetType(t);
     D3DSURFACE_DESC ds; memset(&ds, 0, sizeof ds);
     if (ty == D3DRTYPE_TEXTURE) IDirect3DTexture9_GetLevelDesc((IDirect3DTexture9 *)t, 0, &ds);
     else if (ty == D3DRTYPE_CUBETEXTURE) IDirect3DCubeTexture9_GetLevelDesc((IDirect3DCubeTexture9 *)t, 0, &ds);
-    else { snprintf(out, n, "tur%u", (unsigned)ty); return; }
-    const char *kind = ty == D3DRTYPE_CUBETEXTURE ? "kup" : "2d";
+    else { snprintf(out, n, "type%u", (unsigned)ty); return; }
+    const char *kind = ty == D3DRTYPE_CUBETEXTURE ? "cube" : "2d";
     char id[32];
     if (ds.Usage & D3DUSAGE_RENDERTARGET){ *is_rt = 1; snprintf(id, sizeof id, "rt%d", rt_id(t)); }
-    else if (ds.Pool == D3DPOOL_DEFAULT) snprintf(id, sizeof id, "dinamik");
+    else if (ds.Pool == D3DPOOL_DEFAULT) snprintf(id, sizeof id, "dynamic");
     else {
         uint32_t h = 0; int f = -1;
         for (int i = 0; i < g_nth; i++) if (g_th[i].p == t){ f = i; h = g_th[i].h; break; }
@@ -614,7 +621,7 @@ static void tex_print_live(DWORD st, void *tp){
     if (rt && g_rt_dump_on) rt_note(tp);
     D("TEX %lu %s\n", (unsigned long)st, b);
 }
-/* bildirim (vertex declaration) kimligi */
+/* vertex declaration id */
 #define MAXDECL 1024
 static struct { void *p; uint32_t h; } g_decl[MAXDECL]; static int g_ndecl;
 static uint32_t decl_get(void *p){
@@ -657,7 +664,7 @@ static void shadow_set(const SBE *e){
     default: break;
     }
 }
-/* Capture: kayitli girdileri golgedeki SIMDIKI degerlerle tazele */
+/* Capture: refresh the recorded entries with the CURRENT values from the shadow */
 static void shadow_get(SBE *e){
     switch (e->t){
     case E_RS:  if (e->a < 256) e->v = sh.rs[e->a]; break;
@@ -674,7 +681,7 @@ static void shadow_get(SBE *e){
     default: break;
     }
 }
-/* her Set* buradan gecer: kayittaysa bloga, degilse golgeye + dokume */
+/* every Set* goes through here: into the block if recording, otherwise into the shadow + the dump */
 static void emit(SBE e, const float *src, int nf){
     if (g_in_sb){ e.f = (float *)src; e.desc = 0; shadow_set(&e); c_sb_inner++; return; }
     if (g_sbrec){
@@ -689,7 +696,7 @@ static void emit(SBE e, const float *src, int nf){
         g_sbcur.e[g_sbcur.n++] = e;
         return;
     }
-    e.f = (float *)src; e.desc = 0;                /* dogrudan cagri: nesne canli */
+    e.f = (float *)src; e.desc = 0;                /* direct call: the object is alive */
     shadow_set(&e);
     if (DON) print_e(&e);
 }
@@ -698,12 +705,12 @@ static SB *sb_find(void *obj){
     return 0;
 }
 
-/* gölgelendirici bayt kodu: NFSRef_cikti/golge/ altina bir kez yazilir */
+/* shader bytecode: written once under NFSRef_output/shaders/ */
 static int g_sh_dump_on = 1;
 static void shader_save(const char *pre, uint32_t h, const DWORD *t){
     if (!g_sh_dump_on || !t) return;
     int n = 0; while (n < 65536 && t[n] != 0x0000FFFFu) n++;
-    char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\golge\\%s_%08x.bin", g_out, pre, h);
+    char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\shaders\\%s_%08x.bin", g_out, pre, h);
     if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return;
     FILE *o = fopen(p, "wb"); if (!o) return;
     fwrite(t, 4, (size_t)n + 1, o); fclose(o);
@@ -724,7 +731,7 @@ static HRESULT WINAPI h_CreateVertexDeclaration(IDirect3DDevice9 *d, const D3DVE
         int n = 0; while (n < 64 && el[n].Stream != 0xFF) n++;
         uint32_t h = fnv(2166136261u, (const BYTE *)el, (size_t)(n + 1) * sizeof *el);
         if (g_ndecl < MAXDECL){ g_decl[g_ndecl].p = *o; g_decl[g_ndecl].h = h; g_ndecl++; }
-        if (g_sh_dump_on){ char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\golge\\decl_%08x.bin", g_out, h);
+        if (g_sh_dump_on){ char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\shaders\\decl_%08x.bin", g_out, h);
             if (GetFileAttributesA(p) == INVALID_FILE_ATTRIBUTES){ FILE *f = fopen(p, "wb");
                 if (f){ fwrite(el, sizeof *el, (size_t)n + 1, f); fclose(f); } } }
     }
@@ -769,7 +776,7 @@ static HRESULT WINAPI h_SetViewport(IDirect3DDevice9 *d, const D3DVIEWPORT9 *v){
 }
 static HRESULT WINAPI h_SetRenderTarget(IDirect3DDevice9 *d, DWORD i, IDirect3DSurface9 *s){
     if (DON && s){ D3DSURFACE_DESC ds; IDirect3DSurface9_GetDesc(s, &ds); D("RT %lu %ux%u f%u\n", (unsigned long)i, ds.Width, ds.Height, (unsigned)ds.Format); }
-    else if (DON) D("RT %lu yok\n", (unsigned long)i);
+    else if (DON) D("RT %lu missing\n", (unsigned long)i);
     return O(SetRenderTarget, d)(d, i, s);
 }
 static HRESULT WINAPI h_Clear(IDirect3DDevice9 *d, DWORD n, const D3DRECT *r, DWORD f, D3DCOLOR c, float z, DWORD s){
@@ -777,7 +784,7 @@ static HRESULT WINAPI h_Clear(IDirect3DDevice9 *d, DWORD n, const D3DRECT *r, DW
 static HRESULT WINAPI h_StretchRect(IDirect3DDevice9 *d, IDirect3DSurface9 *a, const RECT *ra, IDirect3DSurface9 *b, const RECT *rb, D3DTEXTUREFILTERTYPE f){
     D("STRETCH %u\n", (unsigned)f); return O(StretchRect, d)(d, a, ra, b, rb, f); }
 
-/* durum bloklari: IDirect3DStateBlock9 4 Capture, 5 Apply */
+/* state blocks: IDirect3DStateBlock9 4 Capture, 5 Apply */
 typedef HRESULT (WINAPI *SBFn_t)(IDirect3DStateBlock9 *);
 enum { CI_SB_CAPTURE = 120, CI_SB_APPLY = 121 };
 static void hook_sb_vt(void **vt);
@@ -794,14 +801,14 @@ static HRESULT WINAPI h_SBCapture(IDirect3DStateBlock9 *b){
 static HRESULT WINAPI h_SBApply(IDirect3DStateBlock9 *b){
     c_sb_apply++;
     SB *s = sb_find(b);
-    if (!s) D("SBAPPLY ? bilinmeyen\n");
+    if (!s) D("SBAPPLY ? unknown\n");
     else if (s->kind == 0){
         D("SBAPPLY %d %d\n", (int)(s - g_sb), s->n);
         for (int i = 0; i < s->n; i++){ shadow_set(&s->e[i]); if (DON) print_e(&s->e[i]); }
         D("SBEND\n");
     } else {
         if (s->snap) memcpy(&sh, s->snap, sizeof sh);
-        D("SBAPPLY %d tum-durum (CreateStateBlock)\n", (int)(s - g_sb));
+        D("SBAPPLY %d all-state (CreateStateBlock)\n", (int)(s - g_sb));
     }
     SBFn_t o = (SBFn_t)g_cur[CI_SB_APPLY];
     g_in_sb++; HRESULT r = o(b); g_in_sb--;
@@ -835,7 +842,7 @@ static HRESULT WINAPI h_CreateStateBlock(IDirect3DDevice9 *d, D3DSTATEBLOCKTYPE 
     if (SUCCEEDED(r) && o && *o){
         SB *s = sb_new(*o);
         if (s){ s->kind = 1; s->snap = malloc(sizeof sh); if (s->snap) memcpy(s->snap, &sh, sizeof sh); }
-        L("CreateStateBlock tur %u -> blok %d (kare %ld)\n", (unsigned)ty, s ? (int)(s - g_sb) : -1, g_frame);
+        L("CreateStateBlock type %u -> block %d (frame %ld)\n", (unsigned)ty, s ? (int)(s - g_sb) : -1, g_frame);
     }
     return r;
 }
@@ -848,7 +855,7 @@ static HRESULT WINAPI h_DrawPrimitiveUP(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t,
 static HRESULT WINAPI h_DrawIndexedPrimitiveUP(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t, UINT mi, UINT nv, UINT n, const void *ix, D3DFORMAT f, const void *v, UINT st){
     c_draw_all++; g_draws++; g_prims += n; D("DIUP %u %u %u\n", (unsigned)t, nv, n); return O(DrawIndexedPrimitiveUP, d)(d, t, mi, nv, n, ix, f, v, st); }
 
-/* yuzey -> BMP (RGB) [+ ayri alfa BMP]; desteklenmeyen bicim ham .bin */
+/* surface -> BMP (RGB) [+ separate alpha BMP]; unsupported formats as raw .bin */
 static int write_bmp(const char *path, const BYTE *bits, int pitch, int w, int h, D3DFORMAT fmt, int alpha){
     int bpp = 0;
     if (fmt == D3DFMT_A8R8G8B8 || fmt == D3DFMT_X8R8G8B8) bpp = 4;
@@ -881,8 +888,8 @@ static int write_bmp(const char *path, const BYTE *bits, int pitch, int w, int h
 static void dump_surface(IDirect3DDevice9 *d, IDirect3DSurface9 *s, const char *base){
     D3DSURFACE_DESC ds; IDirect3DSurface9 *sys = 0;
     if (FAILED(IDirect3DSurface9_GetDesc(s, &ds))) return;
-    if (ds.MultiSampleType != D3DMULTISAMPLE_NONE){ L("  %s: cok ornekli, atlandi\n", base); return; }
-    if (FAILED(IDirect3DDevice9_CreateOffscreenPlainSurface(d, ds.Width, ds.Height, ds.Format, D3DPOOL_SYSTEMMEM, &sys, 0))){ L("  %s: sistem yuzeyi yok (f%u)\n", base, (unsigned)ds.Format); return; }
+    if (ds.MultiSampleType != D3DMULTISAMPLE_NONE){ L("  %s: multisampled, skipped\n", base); return; }
+    if (FAILED(IDirect3DDevice9_CreateOffscreenPlainSurface(d, ds.Width, ds.Height, ds.Format, D3DPOOL_SYSTEMMEM, &sys, 0))){ L("  %s: no system surface (f%u)\n", base, (unsigned)ds.Format); return; }
     if (SUCCEEDED(IDirect3DDevice9_GetRenderTargetData(d, s, sys))){
         D3DLOCKED_RECT lr;
         if (SUCCEEDED(IDirect3DSurface9_LockRect(sys, &lr, 0, D3DLOCK_READONLY))){
@@ -896,7 +903,7 @@ static void dump_surface(IDirect3DDevice9 *d, IDirect3DSurface9 *s, const char *
             }
             IDirect3DSurface9_UnlockRect(sys);
         }
-    } else L("  %s: GetRenderTargetData basarisiz (f%u)\n", base, (unsigned)ds.Format);
+    } else L("  %s: GetRenderTargetData failed (f%u)\n", base, (unsigned)ds.Format);
     IDirect3DSurface9_Release(sys);
 }
 static void rt_dump_all(IDirect3DDevice9 *d, long f){
@@ -911,31 +918,31 @@ static void rt_dump_all(IDirect3DDevice9 *d, long f){
         } else if (ty == D3DRTYPE_CUBETEXTURE){
             for (int fc = 0; fc < 6; fc++){ IDirect3DSurface9 *s = 0;
                 if (SUCCEEDED(IDirect3DCubeTexture9_GetCubeMapSurface((IDirect3DCubeTexture9 *)t, (D3DCUBEMAP_FACES)fc, 0, &s)) && s){
-                    snprintf(base, sizeof base, "%s\\rt_%05ld_rt%d_kup%d", g_out, f, rt_id(t), fc); dump_surface(d, s, base); IDirect3DSurface9_Release(s); } }
+                    snprintf(base, sizeof base, "%s\\rt_%05ld_rt%d_cube%d", g_out, f, rt_id(t), fc); dump_surface(d, s, base); IDirect3DSurface9_Release(s); } }
         }
         IDirect3DBaseTexture9_Release(t);
     }
-    if (g_nrtd) L("kare %ld: %d hedef doku kaydedildi\n", f, g_nrtd);
+    if (g_nrtd) L("frame %ld: %d target textures saved\n", f, g_nrtd);
     g_nrtd = 0;
 }
 
 static void save_backbuffer(IDirect3DDevice9 *d, long f){
     IDirect3DSurface9 *bb = 0, *rt = 0, *sys = 0;
     D3DSURFACE_DESC ds;
-    if (FAILED(IDirect3DDevice9_GetBackBuffer(d, 0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb){ L("HATA: GetBackBuffer\n"); return; }
+    if (FAILED(IDirect3DDevice9_GetBackBuffer(d, 0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb){ L("ERROR: GetBackBuffer\n"); return; }
     IDirect3DSurface9_GetDesc(bb, &ds);
     IDirect3DSurface9 *src = bb;
     if (ds.MultiSampleType != D3DMULTISAMPLE_NONE){
         if (SUCCEEDED(IDirect3DDevice9_CreateRenderTarget(d, ds.Width, ds.Height, ds.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &rt, 0))
             && SUCCEEDED(IDirect3DDevice9_StretchRect(d, bb, 0, rt, 0, D3DTEXF_NONE))) src = rt;
-        else { L("HATA: MSAA cozumu\n"); goto out; }
+        else { L("ERROR: MSAA resolve\n"); goto out; }
     }
-    if (FAILED(IDirect3DDevice9_CreateOffscreenPlainSurface(d, ds.Width, ds.Height, ds.Format, D3DPOOL_SYSTEMMEM, &sys, 0))){ L("HATA: CreateOffscreenPlainSurface\n"); goto out; }
-    if (FAILED(IDirect3DDevice9_GetRenderTargetData(d, src, sys))){ L("HATA: GetRenderTargetData\n"); goto out; }
+    if (FAILED(IDirect3DDevice9_CreateOffscreenPlainSurface(d, ds.Width, ds.Height, ds.Format, D3DPOOL_SYSTEMMEM, &sys, 0))){ L("ERROR: CreateOffscreenPlainSurface\n"); goto out; }
+    if (FAILED(IDirect3DDevice9_GetRenderTargetData(d, src, sys))){ L("ERROR: GetRenderTargetData\n"); goto out; }
     D3DLOCKED_RECT lr;
-    if (FAILED(IDirect3DSurface9_LockRect(sys, &lr, 0, D3DLOCK_READONLY))){ L("HATA: LockRect\n"); goto out; }
+    if (FAILED(IDirect3DSurface9_LockRect(sys, &lr, 0, D3DLOCK_READONLY))){ L("ERROR: LockRect\n"); goto out; }
     {
-        char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\kare_%05ld.bmp", g_out, f);
+        char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\frame_%05ld.bmp", g_out, f);
         FILE *o = fopen(p, "wb");
         if (o){
             int w = (int)ds.Width, h = (int)ds.Height, rs = (w*3 + 3) & ~3;
@@ -958,7 +965,7 @@ static void save_backbuffer(IDirect3DDevice9 *d, long f){
                 fwrite(row, rs, 1, o);
             }
             free(row); fclose(o);
-            L("kare %ld kaydedildi %ux%u bicim %u\n", f, ds.Width, ds.Height, (unsigned)ds.Format);
+            L("frame %ld saved %ux%u format %u\n", f, ds.Width, ds.Height, (unsigned)ds.Format);
         }
     }
     IDirect3DSurface9_UnlockRect(sys);
@@ -970,26 +977,26 @@ out:
 
 static double real_s(void){ return real_us() / 1e6; }
 
-/* ---- kare sinirlari: TUM Present yollari buradan gecer ---------------- */
-static volatile DWORD g_pres_tid;            /* ic ice Present'i bir kez say */
+/* ---- frame boundaries: ALL Present paths go through here -------------- */
+static volatile DWORD g_pres_tid;            /* count a nested Present once */
 
 static void hook_device_vt(void **vt);
-static void frame_pre(IDirect3DDevice9 *d, const char *yol, void *ra){
-    long f = g_frame + 1;                     /* bu Present ile tamamlanan kare */
+static void frame_pre(IDirect3DDevice9 *d, const char *path_name, void *ra){
+    long f = g_frame + 1;                     /* the frame completed by this Present */
     g_main_tid = GetCurrentThreadId();
     if (!g_started){ g_extra_us = (LONGLONG)real_us(); g_last_pres_us = (LONGLONG)real_us(); g_started = 1;
-                     L("ilk Present: gercek %.3f sn, deterministik saat basladi\n", real_s()); }
-    { uint64_t st = stall_us();                 /* durgunlugu kalici yap (saat geri gitmesin) */
+                     L("first Present: real %.3f s, deterministic clock started\n", real_s()); }
+    { uint64_t st = stall_us();                 /* make the stall permanent (so the clock doesn't go backwards) */
       if (st){ g_extra_us += (LONGLONG)st; g_last_pres_us = (LONGLONG)real_us(); } }
-    if (d && !IsBadReadPtr(d, 4)) hook_device_vt(*(void ***)d);   /* tablo girdileri degisti mi? */
+    if (d && !IsBadReadPtr(d, 4)) hook_device_vt(*(void ***)d);   /* did the table entries change? */
     if (f <= 5 || f == 50 || f == 500){ char m[MAX_PATH + 32]; modof((DWORD)ra, m, sizeof m);
-        L("Present kare %ld yol %s cagiran %s thread %lu\n", f, yol, m, (unsigned long)GetCurrentThreadId()); }
+        L("Present frame %ld path %s caller %s thread %lu\n", f, path_name, m, (unsigned long)GetCurrentThreadId()); }
     if (d && in_list(cap_f, cap_n, f)) save_backbuffer(d, f);
-    if (g_kare){
-        fprintf(g_kare, "%ld,%ld,%ld,%ld,%lld", f, g_draws, g_prims, g_polls, (long long)g_extra_us);
-        for (int i = 0; i < 16; i++) fprintf(g_kare, ",%.7g", g_cam_have ? g_cam[i] : 0.0f);
-        fprintf(g_kare, "\n");
-        if ((f % 300) == 0) fflush(g_kare);
+    if (g_frames_csv){
+        fprintf(g_frames_csv, "%ld,%ld,%ld,%ld,%lld", f, g_draws, g_prims, g_polls, (long long)g_extra_us);
+        for (int i = 0; i < 16; i++) fprintf(g_frames_csv, ",%.7g", g_cam_have ? g_cam[i] : 0.0f);
+        fprintf(g_frames_csv, "\n");
+        if ((f % 300) == 0) fflush(g_frames_csv);
     }
     if (g_polls > g_polls_max) g_polls_max = g_polls;
     if (g_polls > VALVE_AT) g_valve_frames++;
@@ -997,30 +1004,30 @@ static void frame_pre(IDirect3DDevice9 *d, const char *yol, void *ra){
         if (d) rt_dump_all(d, f); }
 }
 static void frame_post(void){
-    /* GERCEK 60 fps'e sabitle (port'un PACE60'i).  Sanal saat kare basina
-     * 16.667 ms ilerledigi icin bu olmadan hizli bir PC'de oyun zamani
-     * gercek zamandan kat kat hizli akiyor. */
+    /* Lock to REAL 60 fps (the port's PACE60).  Since the virtual clock
+     * advances 16.667 ms per frame, without this the game time runs many times
+     * faster than real time on a fast PC. */
     if (g_pace){
         static uint64_t next = 0;
-        if (!next) timeBeginPeriod(1);            /* Sleep(1) gercekten ~1 ms olsun */
+        if (!next) timeBeginPeriod(1);            /* make Sleep(1) really ~1 ms */
         uint64_t now = real_us();
         if (!next || now > next + 100000ull) next = now;
         next += 16667ull;
         while ((now = real_us()) < next){ if (next - now > 2000ull) Sleep(1); }
     }
     g_last_pres_us = (LONGLONG)real_us();
-    /* sonraki kare */
+    /* next frame */
     InterlockedIncrement(&g_frame);
     g_polls = 0; g_draws = 0; g_prims = 0; g_cam_have = 0;
     seq_update(g_frame + 1);
     if (in_list(dump_f, dump_n, g_frame + 1)){
-        char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\cagri_%05ld.txt", g_out, g_frame + 1);
+        char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\calls_%05ld.txt", g_out, g_frame + 1);
         g_dump = fopen(p, "w"); g_dump_on = g_dump != 0;
     }
     if (g_quit && g_frame >= g_quit){
-        L("BITTI: %ld kare, gercek %.1f sn, en cok sorgu/kare %ld, valf %ld kare, ek %lld us\n",
+        L("DONE: %ld frames, real %.1f s, max queries/frame %ld, valve %ld frames, extra %lld us\n",
           g_frame, real_s(), g_polls_max, g_valve_frames, (long long)g_extra_us);
-        if (g_kare) fclose(g_kare), g_kare = 0;
+        if (g_frames_csv) fclose(g_frames_csv), g_frames_csv = 0;
         EnterCriticalSection(&g_slk);
         if (g_slog) fclose(g_slog), g_slog = 0;
         if (g_sdat) fclose(g_sdat), g_sdat = 0;
@@ -1029,17 +1036,17 @@ static void frame_post(void){
         TerminateProcess(GetCurrentProcess(), 0);
     }
 }
-#define PRES_WRAP(cnt, yol, dev, call) do { \
+#define PRES_WRAP(cnt, path_name, dev, call) do { \
         DWORD me = GetCurrentThreadId(); \
-        if (g_pres_tid == me) return call;          /* ic ice: zaten sayiliyor */ \
+        if (g_pres_tid == me) return call;          /* nested: already being counted */ \
         cnt++; g_pres_tid = me; \
-        frame_pre(dev, yol, __builtin_return_address(0)); \
+        frame_pre(dev, path_name, __builtin_return_address(0)); \
         HRESULT hr_ = call; \
         frame_post(); g_pres_tid = 0; \
         return hr_; } while (0)
 
 static HRESULT WINAPI h_Present(IDirect3DDevice9 *d, const RECT *a, const RECT *b, HWND w, const RGNDATA *r){
-    PRES_WRAP(c_pres_vt, "cihaz", d, O(Present, d)(d, a, b, w, r)); }
+    PRES_WRAP(c_pres_vt, "device", d, O(Present, d)(d, a, b, w, r)); }
 /* IDirect3DSwapChain9: 3 Present(src, dst, hwnd, dirty, flags) */
 typedef HRESULT (WINAPI *SCPresent_t)(void *, const RECT *, const RECT *, HWND, const RGNDATA *, DWORD);
 static SCPresent_t o_SCPresent;
@@ -1049,7 +1056,7 @@ static void sc_hook(void *sc, const char *ne){
     if (!sc) return;
     void **vt = *(void ***)sc;
     if (vt[3] != (void *)h_SCPresent){ vt_patch(vt, 3, (void *)h_SCPresent, (void **)&o_SCPresent);
-        L("swapchain %s %p vtable %p kancalandi\n", ne, sc, vt); }
+        L("swapchain %s %p vtable %p hooked\n", ne, sc, vt); }
 }
 static HRESULT WINAPI h_GetSwapChain(IDirect3DDevice9 *d, UINT i, void **o){
     HRESULT r = O(GetSwapChain, d)(d, i, o); if (SUCCEEDED(r) && o) sc_hook(*o, "GetSwapChain"); return r; }
@@ -1058,10 +1065,10 @@ static HRESULT WINAPI h_CreateAdditionalSwapChain(IDirect3DDevice9 *d, D3DPRESEN
 static HRESULT WINAPI h_BeginScene(IDirect3DDevice9 *d){ c_begin++; return O(BeginScene, d)(d); }
 static HRESULT WINAPI h_EndScene(IDirect3DDevice9 *d){ c_end++; return O(EndScene, d)(d); }
 
-/* Windows sistem DLL'leri "hotpatch" girisiyle derlenir: fonksiyondan once
- * 5 bayt bosluk, ilk komut 2 baytlik "mov edi,edi".  Oraya atlama yazinca
- * fonksiyon HANGI yoldan cagrilirsa cagrilsin (vtable, kopya vtable, onbellege
- * alinmis isaretci) kancamizdan gecer. */
+/* Windows system DLLs are compiled with a "hotpatch" entry: 5 bytes of space
+ * before the function, the first instruction a 2-byte "mov edi,edi".  Writing
+ * a jump there makes the function go through our hook WHICHEVER path it is
+ * called through (vtable, copied vtable, cached pointer). */
 static int hotpatch(void *fn, void *hook, void **tramp){
     BYTE *p = fn;
     if (IsBadReadPtr(p - 5, 7)) return 0;
@@ -1078,23 +1085,23 @@ static int hotpatch(void *fn, void *hook, void **tramp){
 }
 static void bytes_of(void *fn, char *out, int n){
     BYTE *p = fn; out[0] = 0;
-    if (!p || IsBadReadPtr(p, 8)){ snprintf(out, n, "(okunamadi)"); return; }
+    if (!p || IsBadReadPtr(p, 8)){ snprintf(out, n, "(unreadable)"); return; }
     snprintf(out, n, "%02x %02x %02x %02x %02x %02x %02x %02x", p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
 }
 
 static HRESULT WINAPI h_Reset(IDirect3DDevice9 *d, D3DPRESENT_PARAMETERS *pp){
-    L("Reset kare %ld\n", g_frame);
+    L("Reset frame %ld\n", g_frame);
     return O(Reset, d)(d, pp);
 }
 
-/* ---- D3D cihaz kancalari: koprucuk + hotpatch ------------------------
- * Windows'ta OLCULDU: cihaz tablosu d3d9.dll'de degil yigin bellekte ve
- * ilk kareden sonra girdileri d3d9 tarafindan yeniden yaziliyor; tabloya
- * takilan kancalar siliniyordu.  Artik her yuvanin HEDEF FONKSIYONU kancalanir
- * (hotpatch girisi).  Her (yuva, hedef) icin 16 baytlik bir koprucuk:
- *     mov dword [g_cur+4*yuva], hedef+2 ; jmp C_kancasi
- * C kancasi asili g_cur'dan cagirir.  Tablo her Present'te taranir; yeni bir
- * hedef gorulurse o da kancalanir ve log'a yazilir. */
+/* ---- D3D device hooks: trampoline + hotpatch -------------------------
+ * MEASURED on Windows: the device table isn't in d3d9.dll but in heap memory,
+ * and after the first frame its entries are rewritten by d3d9; hooks placed in
+ * the table were wiped out.  Now the TARGET FUNCTION of every slot is hooked
+ * (the hotpatch entry).  A 16-byte trampoline for every (slot, target):
+ *     mov dword [g_cur+4*slot], target+2 ; jmp C_hook
+ * The C hook calls the original from g_cur.  The table is scanned on every
+ * Present; if a new target is seen, it is hooked too and logged. */
 static BYTE *g_stubmem; static int g_stubn;
 #define STUBMAX 2048
 static struct { int slot; void *tgt; void *stub; } g_sk[STUBMAX]; static int g_nsk;
@@ -1121,19 +1128,19 @@ static void hook_slot2(void **vt, int vslot, int slot, void *hook, const char *n
     void *t = vt[vslot];
     if (!t || is_stub(t)) return;
     for (int i = 0; i < g_nsk; i++) if (g_sk[i].slot == slot && g_sk[i].tgt == t){
-        if (g_sk[i].stub){ vt_patch(vt, vslot, g_sk[i].stub, 0); c_vt_rewrite++; }   /* vtable yedegi: tekrar tak */
-        return; }                                       /* hotpatch'li hedef: cagri zaten bize gelir */
+        if (g_sk[i].stub){ vt_patch(vt, vslot, g_sk[i].stub, 0); c_vt_rewrite++; }   /* vtable fallback: hook again */
+        return; }                                       /* hotpatched target: the call comes to us anyway */
     if (g_nsk >= STUBMAX) return;
     char m[MAX_PATH + 32], bb[64]; modof((DWORD)t, m, sizeof m); bytes_of(t, bb, sizeof bb);
-    for (int i = 0; i < g_nsk; i++) if (g_sk[i].tgt == t && !g_sk[i].stub){   /* baska yuva icin hotpatch'li */
-        static int warned; if (warned++ < 20) L("UYARI: %s yuva %d hedef %p [%s] baska yuvayla PAYLASILIYOR, atlandi\n", nm, slot, t, m);
+    for (int i = 0; i < g_nsk; i++) if (g_sk[i].tgt == t && !g_sk[i].stub){   /* hotpatched for another slot */
+        static int warned; if (warned++ < 20) L("WARNING: %s slot %d target %p [%s] SHARED with another slot, skipped\n", nm, slot, t, m);
         return; }
     void *dummy;
     if (g_hp_on && hp_ok(t)){
         void *st = make_stub(slot, (BYTE *)t + 2, hook);
         if (st && hotpatch(t, st, &dummy)){
             g_sk[g_nsk].slot = slot; g_sk[g_nsk].tgt = t; g_sk[g_nsk].stub = 0; g_nsk++; c_tgt_new++;
-            if (c_tgt_new <= 300) L("kanca %-24s yuva %3d hedef %p [%s] hotpatch (kare %ld)\n", nm, slot, t, m, g_frame);
+            if (c_tgt_new <= 300) L("hook %-24s slot %3d target %p [%s] hotpatch (frame %ld)\n", nm, slot, t, m, g_frame);
             return;
         }
     }
@@ -1141,7 +1148,7 @@ static void hook_slot2(void **vt, int vslot, int slot, void *hook, const char *n
     if (!st) return;
     g_sk[g_nsk].slot = slot; g_sk[g_nsk].tgt = t; g_sk[g_nsk].stub = st; g_nsk++; c_tgt_new++;
     vt_patch(vt, vslot, st, 0);
-    if (c_tgt_new <= 300) L("kanca %-24s yuva %3d hedef %p [%s] VTABLE (baytlar %s, kare %ld)\n", nm, slot, t, m, bb, g_frame);
+    if (c_tgt_new <= 300) L("hook %-24s slot %3d target %p [%s] VTABLE (bytes %s, frame %ld)\n", nm, slot, t, m, bb, g_frame);
 }
 static void hook_slot(void **vt, int slot, void *hook, const char *nm){ hook_slot2(vt, slot, slot, hook, nm); }
 static void hook_sb_vt(void **vt){
@@ -1172,42 +1179,43 @@ static void hook_device_vt(void **vt){
 static HRESULT WINAPI h_D3DCreateDevice(IDirect3D9 *self, UINT ad, D3DDEVTYPE ty, HWND w, DWORD bf, D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out){
     unsigned short cw0, cw1;
     __asm__ volatile("fnstcw %0" : "=m"(cw0));
-    if (pp) L("CreateDevice: %ux%u bicim %u pencereli %d msaa %u bayrak 0x%lx vsync 0x%x\n",
+    if (pp) L("CreateDevice: %ux%u format %u windowed %d msaa %u flags 0x%lx vsync 0x%x\n",
               pp->BackBufferWidth, pp->BackBufferHeight, (unsigned)pp->BackBufferFormat, pp->Windowed,
               (unsigned)pp->MultiSampleType, (unsigned long)bf, pp->PresentationInterval);
     HRESULT r = o_D3DCreateDevice(self, ad, ty, w, bf, pp, out);
     __asm__ volatile("fnstcw %0" : "=m"(cw1));
-    L("CreateDevice -> 0x%08lx  x87 kontrol sozcugu 0x%04x -> 0x%04x\n", (unsigned long)r, cw0, cw1);
+    L("CreateDevice -> 0x%08lx  x87 control word 0x%04x -> 0x%04x\n", (unsigned long)r, cw0, cw1);
     if (SUCCEEDED(r) && out && *out){
         g_dev = *out; g_main_tid = GetCurrentThreadId();
         void **vt = *(void ***)*out;
         g_dev_vt = vt;
         { char bb[64], m[MAX_PATH + 32]; bytes_of(vt[17], bb, sizeof bb); modof((DWORD)vt[17], m, sizeof m);
-          L("cihaz vtable %p, Present = %p [%s] baytlar %s\n", vt, vt[17], m, bb); }
+          L("device vtable %p, Present = %p [%s] bytes %s\n", vt, vt[17], m, bb); }
         hook_device_vt(vt);
     }
     return r;
 }
-static IDirect3D9 *WINAPI h_D3DCreate9(UINT v){ ILK("Direct3DCreate9");
+static IDirect3D9 *WINAPI h_D3DCreate9(UINT v){ FIRST("Direct3DCreate9");
     IDirect3D9 *d = o_D3DCreate9(v);
     L("Direct3DCreate9(%u) -> %p\n", v, d);
     if (d){ void **vt = *(void ***)d; vt_patch(vt, 16, (void *)h_D3DCreateDevice, (void **)&o_D3DCreateDevice); }
     return d;
 }
 
-/* ---- DirectSound kaydi -------------------------------------------------
- * Oyunun sese yazdigi her sey: tampon tanimlari (bicim, boyut, bayrak),
- * Play/Stop/SetCurrentPosition/Volume/Pan/Frequency/Release ve Unlock ile
- * tampona yazilan veri.  Ses birden fazla thread'den cagrildigi icin asil
- * fonksiyon NESNENIN vtable'ina gore bulunur (koprucuk kullanilmaz).
+/* ---- DirectSound recording ---------------------------------------------
+ * Everything the game writes to sound: buffer descriptions (format, size,
+ * flags), Play/Stop/SetCurrentPosition/Volume/Pan/Frequency/Release, and the
+ * data written to the buffer with Unlock.  Since sound is called from more than
+ * one thread, the original function is looked up from the OBJECT's vtable (no
+ * trampoline is used).
  * IDirectSound: 3 CreateSoundBuffer, 5 DuplicateSoundBuffer
  * IDirectSoundBuffer: 2 Release, 4 GetCurrentPosition, 11 Lock, 12 Play,
  *   13 SetCurrentPosition, 15 SetVolume, 16 SetPan, 17 SetFrequency,
  *   18 Stop, 19 Unlock */
 typedef HRESULT (WINAPI *DSCreate_t)(const GUID *, void **, void *);
 static DSCreate_t o_DSCreate;
-static int g_ses_on = 1;
-static long long g_sdat_pos, g_ses_cap = 200ll << 20;
+static int g_sound_on = 1;
+static long long g_sdat_pos, g_sound_cap = 200ll << 20;
 static LONG c_unlock_bytes;
 #define MAXAVT 16
 static struct { void **vt; void *o[24]; } g_avt[MAXAVT]; static int g_navt;
@@ -1234,7 +1242,7 @@ static int buf_id(void *p){
 static int buf_new(void *p){
     EnterCriticalSection(&g_slk);
     int id = g_nbuf;
-    for (int i = 0; i < g_nbuf; i++) if (g_buf[i].p == p){ g_buf[i].p = 0; }   /* yeniden kullanilan adres */
+    for (int i = 0; i < g_nbuf; i++) if (g_buf[i].p == p){ g_buf[i].p = 0; }   /* reused address */
     if (g_nbuf < MAXBUF){ g_buf[g_nbuf].p = p; g_buf[g_nbuf].id = id; g_buf[g_nbuf].lockoff = 0; g_nbuf++; }
     LeaveCriticalSection(&g_slk);
     return id;
@@ -1266,7 +1274,7 @@ static HRESULT WINAPI h_BLock(void *b, DWORD off, DWORD n, void **p1, DWORD *n1,
         for (int i = g_nbuf - 1; i >= 0; i--) if (g_buf[i].p == b){ g_buf[i].lockoff = off; break; }
         LeaveCriticalSection(&g_slk);
     }
-    S("LOCK %d off %lu n %lu bayrak 0x%lx -> %lu+%lu  r=0x%08lx\n", id, (unsigned long)off, (unsigned long)n, (unsigned long)fl,
+    S("LOCK %d off %lu n %lu flags 0x%lx -> %lu+%lu  r=0x%08lx\n", id, (unsigned long)off, (unsigned long)n, (unsigned long)fl,
       (unsigned long)(n1 ? *n1 : 0), (unsigned long)(n2 ? *n2 : 0), (unsigned long)r);
     return r;
 }
@@ -1275,8 +1283,8 @@ static HRESULT WINAPI h_BUnlock(void *b, void *p1, DWORD n1, void *p2, DWORD n2)
     EnterCriticalSection(&g_slk);
     for (int i = g_nbuf - 1; i >= 0; i--) if (g_buf[i].p == b){ off = g_buf[i].lockoff; break; }
     long long pos = g_sdat_pos;
-    int yaz = g_sdat && g_sdat_pos + n1 + n2 <= g_ses_cap;
-    if (yaz){
+    int do_write = g_sdat && g_sdat_pos + n1 + n2 <= g_sound_cap;
+    if (do_write){
         if (p1 && n1) fwrite(p1, 1, n1, g_sdat);
         if (p2 && n2) fwrite(p2, 1, n2, g_sdat);
         g_sdat_pos += (p1 ? n1 : 0) + (p2 ? n2 : 0);
@@ -1284,11 +1292,11 @@ static HRESULT WINAPI h_BUnlock(void *b, void *p1, DWORD n1, void *p2, DWORD n2)
     LeaveCriticalSection(&g_slk);
     c_unlock_bytes += (LONG)(n1 + n2);
     S("UNLOCK %d off %lu n1 %lu n2 %lu veri %lld%s\n", id, (unsigned long)off, (unsigned long)n1, (unsigned long)n2,
-      yaz ? pos : -1ll, yaz ? "" : " (sinir/yok)");
+      do_write ? pos : -1ll, do_write ? "" : " (limit/none)");
     return ((BUnlock_t)avt_orig(b, 19))(b, p1, n1, p2, n2);
 }
 static HRESULT WINAPI h_BPlay(void *b, DWORD r1, DWORD pr, DWORD fl){
-    S("PLAY %d oncelik %lu bayrak 0x%lx\n", buf_id(b), (unsigned long)pr, (unsigned long)fl);
+    S("PLAY %d priority %lu flags 0x%lx\n", buf_id(b), (unsigned long)pr, (unsigned long)fl);
     return ((BPlay_t)avt_orig(b, 12))(b, r1, pr, fl); }
 static HRESULT WINAPI h_BStop(void *b){ S("STOP %d\n", buf_id(b)); return ((BVoid_t)avt_orig(b, 18))(b); }
 static HRESULT WINAPI h_BSetPos(void *b, DWORD p){ S("SETPOS %d %lu\n", buf_id(b), (unsigned long)p); return ((BDword_t)avt_orig(b, 13))(b, p); }
@@ -1320,11 +1328,11 @@ static HRESULT WINAPI h_DSCreateBuf(void *ds, const void *desc_, void **out, voi
         DWORD fl = desc ? *(const DWORD *)(desc+4) : 0, by = desc ? *(const DWORD *)(desc+8) : 0;
         const BYTE *wf = desc ? *(const BYTE * const *)(desc+16) : 0;
         if (wf && !IsBadReadPtr(wf, 16))
-            S("CREATE %d bayrak 0x%lx boyut %lu bicim tag %u kanal %u hz %lu bit %u blok %u\n", id, (unsigned long)fl, (unsigned long)by,
+            S("CREATE %d flags 0x%lx size %lu format tag %u channels %u hz %lu bits %u block %u\n", id, (unsigned long)fl, (unsigned long)by,
               *(const WORD *)wf, *(const WORD *)(wf+2), (unsigned long)*(const DWORD *)(wf+4), *(const WORD *)(wf+14), *(const WORD *)(wf+12));
-        else S("CREATE %d bayrak 0x%lx boyut %lu (bicim yok)\n", id, (unsigned long)fl, (unsigned long)by);
+        else S("CREATE %d flags 0x%lx size %lu (no format)\n", id, (unsigned long)fl, (unsigned long)by);
         buf_hook(*out);
-    } else S("CREATE basarisiz r=0x%08lx\n", (unsigned long)r);
+    } else S("CREATE failed r=0x%08lx\n", (unsigned long)r);
     return r;
 }
 static HRESULT WINAPI h_DSDup(void *ds, void *src, void **out){
@@ -1334,7 +1342,7 @@ static HRESULT WINAPI h_DSDup(void *ds, void *src, void **out){
 }
 static HRESULT WINAPI h_DSCreate(const GUID *g, void **out, void *u){
     HRESULT r = o_DSCreate(g, out, u);
-    L("ses: DirectSoundCreate -> 0x%08lx\n", (unsigned long)r);
+    L("sound: DirectSoundCreate -> 0x%08lx\n", (unsigned long)r);
     if (SUCCEEDED(r) && out && *out && !IsBadReadPtr(*out, 4)){
         void **vt = *(void ***)*out;
         EnterCriticalSection(&g_slk);
@@ -1344,7 +1352,7 @@ static HRESULT WINAPI h_DSCreate(const GUID *g, void **out, void *u){
     return r;
 }
 
-/* ---- baslangic ------------------------------------------------------ */
+/* ---- startup -------------------------------------------------------- */
 static uint32_t crc32_file(const char *p, long *sz){
     static uint32_t T[256];
     for (uint32_t i = 0; i < 256; i++){ uint32_t c = i; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1)); T[i] = c; }
@@ -1356,7 +1364,7 @@ static uint32_t crc32_file(const char *p, long *sz){
 }
 
 
-/* ---- cokme kaydi: adres, modul, thread, yazmaclar, yigin ------------ */
+/* ---- crash record: address, module, thread, registers, stack -------- */
 static void modof(DWORD a, char *out, int n){
     HMODULE h = 0; char p[MAX_PATH];
     if (a > 0x10000 && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)a, &h) && h){
@@ -1372,10 +1380,10 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *e){
     static volatile LONG n; if (InterlockedIncrement(&n) > 8) return EXCEPTION_CONTINUE_SEARCH;
     CONTEXT *c = e->ContextRecord; char m[MAX_PATH + 32];
     modof((DWORD)e->ExceptionRecord->ExceptionAddress, m, sizeof m);
-    L("ISTISNA kod %08lx adres %p [%s] thread %lu kare %ld\n", (unsigned long)code,
+    L("EXCEPTION code %08lx address %p [%s] thread %lu frame %ld\n", (unsigned long)code,
       e->ExceptionRecord->ExceptionAddress, m, (unsigned long)GetCurrentThreadId(), g_frame);
     if (code == EXCEPTION_ACCESS_VIOLATION)
-        L("  %s erisimi, adres 0x%08lx\n", e->ExceptionRecord->ExceptionInformation[0] ? "yazma" : "okuma",
+        L("  %s access, address 0x%08lx\n", e->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
           (unsigned long)e->ExceptionRecord->ExceptionInformation[1]);
     L("  eax %08lx ebx %08lx ecx %08lx edx %08lx esi %08lx edi %08lx ebp %08lx esp %08lx\n",
       c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Ebp, c->Esp);
@@ -1388,9 +1396,9 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *e){
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* ---- durum satiri: saniyede bir, ne oldugunu OLCEREK gosterir ---------- */
+/* ---- status line: once a second, shows what is happening BY MEASURING -- */
 static double g_limit_s = 420;
-static DWORD WINAPI durum_thread(LPVOID u){
+static DWORD WINAPI status_thread(LPVOID u){
     (void)u;
     LONG lf = 0, lpv = 0, lps = 0, lb = 0, le = 0, ld = 0, lqm = 0, lqo = 0, lg = 0, lev = 0;
     for (;;){
@@ -1399,30 +1407,30 @@ static DWORD WINAPI durum_thread(LPVOID u){
         if (g_dev && !IsBadReadPtr(g_dev, 4)){
             void **cur = *(void ***)g_dev;
             if (cur != g_dev_vt){
-                L("UYARI: cihaz vtable degisti %p -> %p, yeniden kancalaniyor\n", g_dev_vt, cur);
+                L("WARNING: device vtable changed %p -> %p, re-hooking\n", g_dev_vt, cur);
                 g_dev_vt = cur; hook_device_vt(cur);
             }
             char m[MAX_PATH + 32]; modof((DWORD)cur[17], m, sizeof m);
-            snprintf(vs, sizeof vs, "%s (%s)", m, is_stub(cur[17]) ? "koprucuk" : "hedef");
+            snprintf(vs, sizeof vs, "%s (%s)", m, is_stub(cur[17]) ? "trampoline" : "target");
         }
         { static DWORD lastdev; DWORD gd = 0;
           if (!IsBadReadPtr((void *)0x870974, 4)) gd = *(DWORD *)0x870974;
           if (gd != lastdev){ lastdev = gd;
-              L("oyunun cihaz isaretcisi [0x870974] = %08lx (CreateDevice %p)%s\n", (unsigned long)gd, g_dev,
-                (gd && gd != (DWORD)g_dev) ? "  <-- FARKLI NESNE" : ""); } }
+              L("the game's device pointer [0x870974] = %08lx (CreateDevice %p)%s\n", (unsigned long)gd, g_dev,
+                (gd && gd != (DWORD)g_dev) ? "  <-- DIFFERENT OBJECT" : ""); } }
         long f = g_frame;
         double sanal = (1000000.0 + f * 16667.0 + (double)g_extra_us + (double)stall_us()) / 1e6;
-        L("durum %.0f sn | kare %ld (+%ld) sanal %.1f sn | Present %ld sc %ld | yeni hedef %ld tablo yeniden %ld | Begin %ld End %ld cizim %ld | saat ana %ld diger %ld | klavye okuma %ld olay %ld | Present -> %s\n",
+        L("status %.0f s | frame %ld (+%ld) virtual %.1f s | Present %ld sc %ld | new targets %ld table rewritten %ld | Begin %ld End %ld draws %ld | clock main %ld other %ld | keyboard reads %ld events %ld | Present -> %s\n",
           real_s(), f, f - lf, sanal, c_pres_vt - lpv, c_pres_sc - lps, c_tgt_new, c_vt_rewrite, c_begin - lb, c_end - le,
           c_draw_all - ld, g_qpc_main - lqm, g_qpc_other - lqo, g_gdd_kbd - lg, g_ev_out - lev, vs);
-        { static LONG la, lc, lu; L("       durum blogu Apply %ld Capture %ld ic cagri %ld | ses yazilan %ld bayt\n",
+        { static LONG la, lc, lu; L("       state block Apply %ld Capture %ld inner calls %ld | sound written %ld bytes\n",
               c_sb_apply - la, c_sb_capture - lc, c_sb_inner, c_unlock_bytes - lu); la = c_sb_apply; lc = c_sb_capture; lu = c_unlock_bytes; }
         EnterCriticalSection(&g_slk); if (g_slog) fflush(g_slog); LeaveCriticalSection(&g_slk);
         lf = f; lpv = c_pres_vt; lps = c_pres_sc; lb = c_begin; le = c_end; ld = c_draw_all;
         lqm = g_qpc_main; lqo = g_qpc_other; lg = g_gdd_kbd; lev = g_ev_out;
         if (real_s() > g_limit_s){
-            L("SURE ASIMI: %.0f sn gecti, kare %ld -- oyun kapatiliyor\n", real_s(), f);
-            if (g_kare) fflush(g_kare);
+            L("TIME LIMIT: %.0f s passed, frame %ld -- closing the game\n", real_s(), f);
+            if (g_frames_csv) fflush(g_frames_csv);
             EnterCriticalSection(&g_slk); if (g_slog) fflush(g_slog); if (g_sdat) fflush(g_sdat); LeaveCriticalSection(&g_slk);
             TerminateProcess(GetCurrentProcess(), 2);
         }
@@ -1442,91 +1450,91 @@ static void start(HMODULE self){
     { char *s = strrchr(me, '\\'); if (s) *s = 0; }
     snprintf(ini, sizeof ini, "%s\\nfsref.ini", me);
 
-    snprintf(g_out, sizeof g_out, "%s\\NFSRef_cikti", g_game);
+    snprintf(g_out, sizeof g_out, "%s\\NFSRef_output", g_game);
     CreateDirectoryA(g_out, 0);
-    for (int i = 1; i < 1000; i++){                 /* her kosuda bos kayit klasoru */
-        snprintf(g_save, sizeof g_save, "%s\\kayit_%03d", g_out, i);
+    for (int i = 1; i < 1000; i++){                 /* an empty save folder for every run */
+        snprintf(g_save, sizeof g_save, "%s\\save_%03d", g_out, i);
         if (GetFileAttributesA(g_save) == INVALID_FILE_ATTRIBUTES){ CreateDirectoryA(g_save, 0); break; }
     }
     char p[MAX_PATH];
-    snprintf(p, sizeof p, "%s\\golge", g_out); CreateDirectoryA(p, 0);
+    snprintf(p, sizeof p, "%s\\shaders", g_out); CreateDirectoryA(p, 0);
     snprintf(p, sizeof p, "%s\\nfsref_log.txt", g_out); g_log = fopen(p, "w");
-    snprintf(p, sizeof p, "%s\\kareler.csv", g_out); g_kare = fopen(p, "w");
-    if (g_kare){ fprintf(g_kare, "kare,cizim,ilkel,saat_sorgu,ek_us"); for (int i = 0; i < 16; i++) fprintf(g_kare, ",c%d", i); fprintf(g_kare, "\n"); }
+    snprintf(p, sizeof p, "%s\\frames.csv", g_out); g_frames_csv = fopen(p, "w");
+    if (g_frames_csv){ fprintf(g_frames_csv, "frame,draws,prims,clock_queries,extra_us"); for (int i = 0; i < 16; i++) fprintf(g_frames_csv, ",c%d", i); fprintf(g_frames_csv, "\n"); }
 
     char buf[2048];
     GetPrivateProfileStringA("nfsref", "autoseq", "", buf, sizeof buf, ini); parse_seq(buf);
-    GetPrivateProfileStringA("nfsref", "kareler", "", buf, sizeof buf, ini); cap_n = parse_list(buf, cap_f, CAPMAX);
-    GetPrivateProfileStringA("nfsref", "dokum", "", buf, sizeof buf, ini); dump_n = parse_list(buf, dump_f, CAPMAX);
-    g_quit = GetPrivateProfileIntA("nfsref", "cikis", 0, ini);
-    g_mx = GetPrivateProfileIntA("nfsref", "fare_x", 5, ini);
-    g_my = GetPrivateProfileIntA("nfsref", "fare_y", 5, ini);
-    g_nomovies = GetPrivateProfileIntA("nfsref", "video_yok", 1, ini);
-    g_pace = GetPrivateProfileIntA("nfsref", "hiz60", 1, ini);
+    GetPrivateProfileStringA("nfsref", "frames", "", buf, sizeof buf, ini); cap_n = parse_list(buf, cap_f, CAPMAX);
+    GetPrivateProfileStringA("nfsref", "dump", "", buf, sizeof buf, ini); dump_n = parse_list(buf, dump_f, CAPMAX);
+    g_quit = GetPrivateProfileIntA("nfsref", "exit", 0, ini);
+    g_mx = GetPrivateProfileIntA("nfsref", "mouse_x", 5, ini);
+    g_my = GetPrivateProfileIntA("nfsref", "mouse_y", 5, ini);
+    g_nomovies = GetPrivateProfileIntA("nfsref", "no_video", 1, ini);
+    g_pace = GetPrivateProfileIntA("nfsref", "pace60", 1, ini);
     g_hp_on = GetPrivateProfileIntA("nfsref", "hotpatch", 1, ini);
-    g_tex_hash_on = GetPrivateProfileIntA("nfsref", "doku_ozet", 1, ini);
-    g_rt_dump_on  = GetPrivateProfileIntA("nfsref", "hedef_doku", 1, ini);
-    g_sh_dump_on  = GetPrivateProfileIntA("nfsref", "golge_dokum", 1, ini);
-    g_ses_on      = GetPrivateProfileIntA("nfsref", "ses", 1, ini);
-    g_ses_cap     = (long long)GetPrivateProfileIntA("nfsref", "ses_sinir_mb", 200, ini) << 20;
-    if (g_ses_on){ char q[MAX_PATH];
-        snprintf(q, sizeof q, "%s\\ses_log.txt", g_out);  g_slog = fopen(q, "w");
-        snprintf(q, sizeof q, "%s\\ses_veri.bin", g_out); g_sdat = fopen(q, "wb");
-        if (g_slog) fprintf(g_slog, "# kare gercek_ms OLAY ...  (UNLOCK 'veri' = ses_veri.bin icindeki bayt konumu)\n"); }
-    g_limit_s = GetPrivateProfileIntA("nfsref", "sure_siniri", 420, ini);
+    g_tex_hash_on = GetPrivateProfileIntA("nfsref", "tex_summary", 1, ini);
+    g_rt_dump_on  = GetPrivateProfileIntA("nfsref", "target_tex", 1, ini);
+    g_sh_dump_on  = GetPrivateProfileIntA("nfsref", "shader_dump", 1, ini);
+    g_sound_on      = GetPrivateProfileIntA("nfsref", "sound", 1, ini);
+    g_sound_cap     = (long long)GetPrivateProfileIntA("nfsref", "sound_limit_mb", 200, ini) << 20;
+    if (g_sound_on){ char q[MAX_PATH];
+        snprintf(q, sizeof q, "%s\\sound_log.txt", g_out);  g_slog = fopen(q, "w");
+        snprintf(q, sizeof q, "%s\\sound_data.bin", g_out); g_sdat = fopen(q, "wb");
+        if (g_slog) fprintf(g_slog, "# frame real_ms EVENT ...  (UNLOCK 'data' = byte position in sound_data.bin)\n"); }
+    g_limit_s = GetPrivateProfileIntA("nfsref", "time_limit", 420, ini);
     { char md[32] = "";
-      GetEnvironmentVariableA("NFSREF_MOD", md, sizeof md);
-      if (!_stricmp(md, "teshis")){
-          /* kisa teshis: ~40 sn, ilk dort Enter'i ve uc menu karesini dener */
+      GetEnvironmentVariableA("NFSREF_MODE", md, sizeof md);
+      if (!_stricmp(md, "diagnose")){
+          /* short diagnostic: ~40 s, tries the first four Enters and three menu frames */
           g_quit = 2100; g_limit_s = 75; dump_n = 0;
           cap_n = 0; cap_f[cap_n++] = 900; cap_f[cap_n++] = 1300; cap_f[cap_n++] = 1650; cap_f[cap_n++] = 2050;
-          L("TESHIS MODU: cikis 2100. kare, sure siniri 75 sn\n");
+          L("DIAGNOSTIC MODE: exit at frame 2100, time limit 75 s\n");
       } }
-    int k_saat  = GetPrivateProfileIntA("nfsref", "saat", 1, ini);
-    int k_girdi = GetPrivateProfileIntA("nfsref", "girdi", 1, ini);
-    int k_kayit = GetPrivateProfileIntA("nfsref", "kayit", 1, ini);
-    int k_dosya = GetPrivateProfileIntA("nfsref", "dosya", 1, ini);
+    int k_clock  = GetPrivateProfileIntA("nfsref", "clock", 1, ini);
+    int k_input = GetPrivateProfileIntA("nfsref", "input", 1, ini);
+    int k_registry = GetPrivateProfileIntA("nfsref", "registry", 1, ini);
+    int k_files = GetPrivateProfileIntA("nfsref", "files", 1, ini);
 
     long sz = 0; uint32_t crc = crc32_file(exe, &sz);
-    L("NFSRef 6  exe %s  boyut %ld  crc32 %08x\n", exe, sz, crc);
-    L("ini %s: %d tus, %d kare, %d dokum, cikis %ld, fare %d,%d, video_yok %d | hiz60 %d hotpatch %d sinir %.0f sn saat %d girdi %d kayit %d dosya %d\n", ini, sq_n, cap_n, dump_n, g_quit, g_mx, g_my, g_nomovies, g_pace, g_hp_on, g_limit_s, k_saat, k_girdi, k_kayit, k_dosya);
+    L("NFSRef 6  exe %s  size %ld  crc32 %08x\n", exe, sz, crc);
+    L("ini %s: %d keys, %d frames, %d dumps, exit %ld, mouse %d,%d, no_video %d | pace60 %d hotpatch %d limit %.0f s clock %d input %d registry %d files %d\n", ini, sq_n, cap_n, dump_n, g_quit, g_mx, g_my, g_nomovies, g_pace, g_hp_on, g_limit_s, k_clock, k_input, k_registry, k_files);
 
-    /* port'un varsayilanlari, sonra dosya */
+    /* the port's defaults, then the file */
     reg_put("NotFirstTime", 0, 1, 0); reg_put("Language", 1, 0, "English");
     reg_put("Install Dir", 1, 0, g_game); reg_put("CD Drive", 1, 0, g_game);
     reg_put("StreamingInstall", 0, 0, 0); reg_put("VERSION", 1, 0, "1.2.0.0"); reg_put("SIZE", 0, 0, 0);
-    snprintf(p, sizeof p, "%s\\nfsref_kayit.txt", me); reg_load(p);
-    L("kayit defteri: %d deger\n", g_regn);
+    snprintf(p, sizeof p, "%s\\nfsref_registry.txt", me); reg_load(p);
+    L("registry: %d values\n", g_regn);
 
     HMODULE m = GetModuleHandleA(0);
     int ok = 0;
 #define IAT(dll, fn, h, o) ok += iat_patch(m, dll, fn, 0, (void *)h, (void **)o)
-    if (k_saat){
+    if (k_clock){
     IAT("KERNEL32.dll", "QueryPerformanceCounter", h_QPC, 0);
     IAT("KERNEL32.dll", "QueryPerformanceFrequency", h_QPF, 0);
     IAT("KERNEL32.dll", "GetTickCount", h_GetTickCount, 0);
     IAT("KERNEL32.dll", "GetSystemTimeAsFileTime", h_GetSystemTimeAsFileTime, 0);
     IAT("WINMM.dll", "timeGetTime", h_timeGetTime, 0); }
-    if (k_dosya){
+    if (k_files){
     IAT("KERNEL32.dll", "CreateFileA", h_CreateFileA, &o_CreateFileA);
     IAT("KERNEL32.dll", "GetDriveTypeA", h_GetDriveTypeA, 0);
     IAT("KERNEL32.dll", "GetLogicalDrives", h_GetLogicalDrives, 0);
     IAT("SHFOLDER.dll", "SHGetFolderPathA", h_SHGetFolderPathA, 0); }
-    if (k_kayit){
+    if (k_registry){
     IAT("ADVAPI32.dll", "RegOpenKeyExA", h_RegOpenKeyExA, &o_RegOpenKeyExA);
     IAT("ADVAPI32.dll", "RegOpenKeyA", h_RegOpenKeyA, &o_RegOpenKeyA);
     IAT("ADVAPI32.dll", "RegCreateKeyA", h_RegCreateKeyA, &o_RegCreateKeyA);
     IAT("ADVAPI32.dll", "RegQueryValueExA", h_RegQueryValueExA, &o_RegQueryValueExA);
     IAT("ADVAPI32.dll", "RegSetValueExA", h_RegSetValueExA, &o_RegSetValueExA);
     IAT("ADVAPI32.dll", "RegCloseKey", h_RegCloseKey, &o_RegCloseKey); }
-    if (k_girdi){
+    if (k_input){
     IAT("USER32.dll", "GetCursorPos", h_GetCursorPos, 0);
     IAT("DINPUT8.dll", "DirectInput8Create", h_DI8Create, &o_DI8Create); }
     IAT("d3d9.dll", "Direct3DCreate9", h_D3DCreate9, &o_D3DCreate9);
-    if (g_ses_on) ok += iat_patch(m, "DSOUND.dll", 0, 1, (void *)h_DSCreate, (void **)&o_DSCreate);
-    L("IAT: %d yama\n", ok);
+    if (g_sound_on) ok += iat_patch(m, "DSOUND.dll", 0, 1, (void *)h_DSCreate, (void **)&o_DSCreate);
+    L("IAT: %d patches\n", ok);
     seq_update(1);
-    CreateThread(0, 0, durum_thread, 0, 0, 0);
+    CreateThread(0, 0, status_thread, 0, 0, 0);
 }
 
 BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r){

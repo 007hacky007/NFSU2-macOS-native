@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PE .rsrc dizinini gez, tum kaynaklari listele."""
+"""Walk the PE .rsrc directory, list all resources."""
 import sys, struct
 EXE = "Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2/SPEED2.EXE"
 d = open(EXE,'rb').read()
@@ -31,5 +31,5 @@ def walk(off, depth, path):
             walk(oto & 0x7FFFFFFF, depth+1, path+[label])
         else:
             dva, dsz, _, _ = struct.unpack_from('<IIII', d, at(oto))
-            print("  %-40s VA=0x%08x boyut=%d" % ('/'.join(path+[label]), imgbase+dva, dsz))
+            print("  %-40s VA=0x%08x size=%d" % ('/'.join(path+[label]), imgbase+dva, dsz))
 walk(0, 0, [])

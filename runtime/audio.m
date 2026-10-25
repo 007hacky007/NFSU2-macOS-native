@@ -1,12 +1,12 @@
-/* CoreAudio cikisi.
+/* CoreAudio output.
  *
- * DirectSound katmani simdiye kadar yalnizca muhasebe yapiyordu (yazilan
- * bayt sayilir, oynatma imleci gecen zamana gore ilerlerdi) ama SES
- * CIKISI HIC YOKTU.  Oyun gercek PCM yaziyor (olculdu: ~9 MB, 5000+ dolu
- * yazma); burada o tamponlari karistirip AudioQueue ile calariz.
+ * Until now the DirectSound layer only did bookkeeping (written bytes were
+ * counted, the play cursor advanced with elapsed time) but there was NO SOUND
+ * OUTPUT AT ALL.  The game writes real PCM (measured: ~9 MB, 5000+ non-empty
+ * writes); here we mix those buffers and play them with AudioQueue.
  *
- * Karistirici 44.1 kHz, 2 kanal, 16-bit cikisa donusturur; kaynak
- * tamponlar farkli hizda/kanalda olabilir (en yakin komsu ornekleme). */
+ * The mixer converts to 44.1 kHz, 2-channel, 16-bit output; source buffers may
+ * have different rates/channels (nearest-neighbor resampling). */
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AudioUnit.h>
 #include <stdint.h>
@@ -17,19 +17,19 @@
 #include <math.h>
 
 extern uint8_t *g_mem;
-uint64_t host_us(void);          /* oyunun SANAL saati (kare basina 16.67 ms) */
+uint64_t host_us(void);          /* the game's VIRTUAL clock (16.67 ms per frame) */
 
-/* Oyun ses verisini kendi sanal zamaninda uretir; karistirici ise gercek
- * zamanda tuketiyordu.  Emulator 60 fps'in altinda kalinca sanal zaman
- * geride kalir ve her tampon turunda yazilmamis bir bolge kalir -> ses
- * duzenli araliklarla kesilir (olculdu: bosluk periyodu tam olarak tampon
- * suresi).  Cozum: tuketimi oyunun uretim hizina baglamak. */
+/* The game produces audio data in its own virtual time; the mixer consumed it
+ * in real time.  When the emulator stays below 60 fps, virtual time falls
+ * behind and on every buffer lap an unwritten region is left -> the sound cuts
+ * out at regular intervals (measured: the gap period is exactly the buffer
+ * duration).  Solution: tie consumption to the game's production rate. */
 static double g_rate_ratio = 1.0;
-static int    g_sync_mode = -1;      /* SNDSYNC: 1 = oyun hizina bagla */
+static int    g_sync_mode = -1;      /* SNDSYNC: 1 = tie to the game's speed */
 static void update_rate_ratio(void){
     if (g_sync_mode < 0){
         const char *e = getenv("SNDSYNC");
-        g_sync_mode = (e && *e) ? (*e != '0') : 1;      /* varsayilan: acik */
+        g_sync_mode = (e && *e) ? (*e != '0') : 1;      /* default: on */
     }
     if (!g_sync_mode){ g_rate_ratio = 1.0; return; }
     static uint64_t lv = 0, lr = 0;
@@ -41,13 +41,13 @@ static void update_rate_ratio(void){
         if (dr > 1000.0){
             double k = dv / dr;
             if (k < 0.25) k = 0.25;
-            /* TAVAN 1.0: ses GERCEK ZAMANDAN HIZLI calmamali.  Bu oran
-             * oyunun saatinden geliyordu ve saat (creep hatasi yuzunden)
-             * yer yer 2 kata kadar hizli kosuyordu -> sarkilar hizli
-             * caliyordu.  Saat duzeltildi, ama bagi da guvenli yapiyoruz:
-             * bu yolla bir saat hatasi bir daha PERDE hatasina donusemez. */
+            /* CEILING 1.0: sound must not play FASTER THAN REAL TIME.  This ratio
+             * came from the game's clock, and the clock (because of the creep
+             * bug) ran up to 2x fast in places -> songs played fast.  The clock
+             * was fixed, but we make the link safe too: through this path a clock
+             * bug can never again turn into a PITCH bug. */
             if (k > 1.00) k = 1.00;
-            /* yumusat: ani kare hizi dalgalanmalari perdeyi zipllatmasin */
+            /* smooth: so sudden frame rate fluctuations don't make the pitch jump */
             g_rate_ratio += (k - g_rate_ratio) * 0.10;
         }
     }
@@ -56,8 +56,8 @@ static void update_rate_ratio(void){
 
 #define OUT_RATE   44100
 #define OUT_CH     2
-/* Emulator CPU'yu doldurdugu icin 3x1024 (~70 ms) tamponlama yetmiyor,
- * geri cagirma geciktiginde kuyruk aciligindan ses kesiliyordu. */
+/* Since the emulator fills the CPU, 3x1024 (~70 ms) of buffering wasn't enough;
+ * when a callback was late the sound cut out from queue starvation. */
 #define NBUF       6
 #define FRAMES     2048
 
@@ -65,33 +65,33 @@ static void update_rate_ratio(void){
 typedef struct {
     uint32_t data, bytes, rate, chans, bits;
     int      used, playing, loop;
-    double   cursor;          /* kaynak ornek cinsinden */
+    double   cursor;          /* in source samples */
     float    vol;             /* 0..1 */
-    uint32_t wpos;            /* oyunun yazdigi son baytin bitisi */
-    int      wseen;           /* hic yazma gorduk mu */
-    double   trim;            /* hiz duzeltmesi (servo) */
-    double   target;          /* kilitlenecek dolgu orani (uyarlanir) */
-    double   freq;            /* SetFrequency orani (1.0 = ozgun hiz) */
+    uint32_t wpos;            /* end of the last byte the game wrote */
+    int      wseen;           /* have we seen any write at all */
+    double   trim;            /* rate correction (servo) */
+    double   target;          /* fill ratio to lock to (adaptive) */
+    double   freq;            /* SetFrequency ratio (1.0 = original rate) */
     uint64_t plays, stops, wr_bytes, wr_calls, wr_nonzero;
-    uint64_t over;            /* yaziciyi gectigimiz geri-cagirma sayisi */
+    uint64_t over;            /* number of callbacks where we passed the writer */
 } SndBuf;
 
 static SndBuf g_snd[MAXSND];
-static int    g_sndn = 1;                    /* 0 = gecersiz kimlik */
+static int    g_sndn = 1;                    /* 0 = invalid id */
 static pthread_mutex_t g_slock = PTHREAD_MUTEX_INITIALIZER;
 static AudioQueueRef        g_q;
 static AudioQueueBufferRef  g_qb[NBUF];
-static AudioUnit            g_au;            /* dusuk gecikmeli yol */
+static AudioUnit            g_au;            /* low-latency path */
 static int g_audio_on = 0;
 static int g_backend = 0;                    /* 1 = AudioUnit, 2 = AudioQueue */
-static unsigned g_au_slice = 0;              /* geri cagirma basina kare */
+static unsigned g_au_slice = 0;              /* frames per callback */
 static uint64_t g_mixed_frames = 0, g_active_peak = 0;
 static uint64_t g_replay = 0, g_reissue = 0, g_starved = 0, g_worst_gap_us = 0;
 static uint64_t g_out_frames = 0, g_out_zero = 0, g_gap_cb = 0;
 
-/* --- tani: karistirici cikisini ve tampon durumunu diske dok --- */
-static FILE *g_dump = NULL;      /* SNDDUMP=<yol> : ham s16le stereo */
-static FILE *g_csv  = NULL;      /* SNDCSV=<yol>  : geri-cagirma basina durum */
+/* --- diagnostics: dump the mixer output and buffer state to disk --- */
+static FILE *g_dump = NULL;      /* SNDDUMP=<path> : raw s16le stereo */
+static FILE *g_csv  = NULL;      /* SNDCSV=<path>  : state per callback */
 static uint64_t g_cb_no = 0;
 
 int audio_register(uint32_t data, uint32_t bytes, uint32_t rate,
@@ -111,7 +111,7 @@ int audio_register(uint32_t data, uint32_t bytes, uint32_t rate,
         b->wpos = 0; b->wseen = 0; b->trim = 1.0; b->target = 0.0; b->over = 0;
         b->freq = 1.0; b->plays = b->stops = 0;
         b->wr_bytes = b->wr_calls = b->wr_nonzero = 0;
-        fprintf(stderr, "  [ses] tampon #%d: %u Hz, %u kanal, %u bit, %u bayt (%.2f sn)\n",
+        fprintf(stderr, "  [sound] buffer #%d: %u Hz, %u channels, %u bits, %u bytes (%.2f s)\n",
                 id, rate, chans, bits, bytes,
                 (double)bytes / (double)(rate * chans * (bits/8u)));
     }
@@ -122,9 +122,9 @@ void audio_play(int id, int loop){
     if (id <= 0 || id >= MAXSND) return;
     pthread_mutex_lock(&g_slock);
     if (g_snd[id].used){
-        /* DIKKAT: zaten calan bir tamponda imleci SIFIRLAMA.  Oyun akis
-         * tamponlarinda Play'i tekrar tekrar cagiriyor; her cagride basa
-         * donulunce sarki "dur-basla" seklinde tekliyordu. */
+        /* CAUTION: DON'T RESET the cursor on a buffer that is already playing.  The game
+         * calls Play over and over on its streaming buffers; going back to the
+         * start on every call made the song stutter "stop-start". */
         if (!g_snd[id].playing){ g_snd[id].cursor = 0.0; g_replay++; }
         else g_reissue++;
         g_snd[id].playing = 1;
@@ -133,9 +133,9 @@ void audio_play(int id, int loop){
     }
     pthread_mutex_unlock(&g_slock);
 }
-/* Guest Unlock'tan: yazilan bolgenin BITIS ofseti.  Karistirici oynatma
- * imlecini bunun sabit bir mesafe gerisinde tutar (servo) - boylece ne
- * yazilmamis bolge calinir (bosluk) ne de imlec geri kalir (gecikme). */
+/* From the guest's Unlock: the END offset of the written region.  The mixer
+ * keeps the play cursor a fixed distance behind it (servo) - so neither an
+ * unwritten region is played (gap) nor does the cursor fall behind (latency). */
 void audio_note_write(int id, uint32_t end_off){
     if (id <= 0 || id >= MAXSND) return;
     pthread_mutex_lock(&g_slock);
@@ -152,9 +152,9 @@ void audio_note_write_stat(int id, uint32_t n, int nonzero){
                          if (nonzero) g_snd[id].wr_nonzero++; }
     pthread_mutex_unlock(&g_slock);
 }
-/* DirectSound SetFrequency: oynatma ornekleme hizini degistirir.
- * Oyun motor sesi gibi efektlerin PERDESINI boyle ayarliyor; uygulanmayinca
- * her ses ozgun hizinda calar. */
+/* DirectSound SetFrequency: changes the playback sample rate.
+ * The game adjusts the PITCH of effects like the engine sound this way; without
+ * it every sound plays at its original rate. */
 void audio_set_freq(int id, uint32_t hz){
     if (id <= 0 || id >= MAXSND) return;
     pthread_mutex_lock(&g_slock);
@@ -169,9 +169,9 @@ void audio_set_freq(int id, uint32_t hz){
     }
     pthread_mutex_unlock(&g_slock);
 }
-/* Ayni PCM verisini paylasan ikinci bir ses (DuplicateSoundBuffer).
- * Oyun ES ZAMANLI efektleri boyle calar; kopya bos donunce hepsi
- * sessiz kaliyordu. */
+/* A second sound sharing the same PCM data (DuplicateSoundBuffer).
+ * The game plays SIMULTANEOUS effects this way; when the duplicate returned
+ * empty, they all stayed silent. */
 int audio_duplicate(int src){
     if (src <= 0 || src >= MAXSND) return 0;
     int id = 0;
@@ -193,12 +193,11 @@ void audio_stop(int id){
     if (g_snd[id].used){ g_snd[id].playing = 0; g_snd[id].stops++; }
     pthread_mutex_unlock(&g_slock);
 }
-/* Guest'in GetCurrentPosition'i icin.
- * DirectSound iki imlec dondurur: OYNATMA ve YAZMA.  Yazma imleci
- * oynatmanin ONUNDEDIR (donanimin okumakta oldugu guvenli sinir); oyun
- * veriyi oradan itibaren yazar.  Ikisini esit dondurmek, oyunun tam
- * caldigimiz noktaya yazmasina ve sesin "dur-basla" seklinde teklemesine
- * yol aciyordu. */
+/* For the guest's GetCurrentPosition.
+ * DirectSound returns two cursors: PLAY and WRITE.  The write cursor is AHEAD
+ * of the play cursor (the safe limit the hardware is reading); the game writes
+ * data from there on.  Returning both as equal made the game write exactly at
+ * the point we were playing, and the sound stuttered "stop-start". */
 #define WRITE_LEAD_MS 50u
 void audio_cursors(int id, uint32_t *play, uint32_t *write){
     uint32_t p = 0, w = 0;
@@ -217,13 +216,13 @@ void audio_cursors(int id, uint32_t *play, uint32_t *write){
     if (play)  *play  = p;
     if (write) *write = w;
 }
-/* Karistiricinin zaman ekseni (SNDDUMP dosyasiyla ayni t).  Tani
- * kayitlarini ses dokumuyle hizalamak icin. */
+/* The mixer's time axis (the same t as the SNDDUMP file).  For aligning
+ * diagnostic records with the audio dump. */
 double audio_time(void){ return (double)g_mixed_frames / (double)OUT_RATE; }
 uint32_t audio_cursor(int id){ uint32_t p; audio_cursors(id, &p, 0); return p; }
 void audio_set_volume(int id, long millibel){
     if (id <= 0 || id >= MAXSND) return;
-    /* DirectSound: 0 = tam ses, -10000 = sessiz (yuzde yuz logaritmik) */
+    /* DirectSound: 0 = full volume, -10000 = silent (hundredths of a dB) */
     float v = (millibel <= -10000L) ? 0.f : powf(10.f, (float)millibel / 2000.f);
     if (v > 1.f) v = 1.f;
     pthread_mutex_lock(&g_slock);
@@ -247,32 +246,32 @@ static void mix_into(int16_t *out, unsigned frames){
         if (!bpf) continue;
         uint32_t nsrc = b->bytes / bpf;
         if (!nsrc) continue;
-        /* TEK YONLU servo: hiz orani (feedforward) uretimle tuketimi zaten
-         * esitliyor.  Servo yalnizca ONUMUZDEKI YAZILI VERI AZALDIGINDA
-         * devreye girip yavaslatir; boylece yazilmamis bolge hic calinmaz.
-         * Iki yonlu servo hedefi yanlis secilince durumu kotulestirmisti. */
-        /* --- oynatma imlecini oyunun YAZMA imlecine kilitle (PLL) ---
-         * Serbest calisan imlec, %1'lik bir hiz farkiyla bile tampon
-         * boyunca yavasca kayar ve her turda yazilmamis bolgeden bir kez
-         * gecer.  Olculdu: tam 30 sn'de bir 50-95 ms sessizlik; hiz orani
-         * 0.99 iken bile.  Periyot = tampon_suresi / hiz_hatasi, yani
-         * ileri-besleme hatayi kucultur ama SIFIRLAMAZ.
-         * Cozum: tuketim hizini, yazili veri miktarini (avail) sabit
-         * tutacak sekilde surekli duzelt.  Hedef, oyunun kendi dogal
-         * denge noktasi olsun -- sabit bir sayi secmek yanlis olur
-         * (once 0.25 secilmisti, oyun 0.30-0.64 arasinda calisiyor). */
-        /* SERVO VARSAYILAN KAPALI (2026-10-22).  Oyun akisi yazdigi yeri bizim
-         * bildirdigimiz GERCEK oynatma imlecine gore seciyor (com.c
-         * GetCurrentPosition -> audio_cursors): calmayi yavaslatinca oyun da
-         * muzigi ayni oranda yavas uretir, avail (yazma payi) hizdan bagimsiz
-         * kalir ve servo hatasini hic kapatamaz.  Olculdu (SNDMUTE + SNDCSV,
-         * Quick Race 3 dk): her yukleme / takilmadan sonra pay yeni bir duzeye
-         * (0.19 / 0.52 / 0.40) oturuyor, servo kelepceye (%3) dayanip 40-50 sn
-         * orada kaliyordu -- 50 sn boyunca muzik %3 yavas (yarim sesten pes,
-         * kullanici: "o andan itibaren muzik agir akiyor"), cagrilarin %33'unde
-         * hiz sapmasi > %1.  Servonun hedefledigi 30 sn bosluklari oyunun
-         * kendisi yaziyor (bkz. SNDZERO); servo onlari zaten gidermemisti.
-         * SNDPLL=1 eski servo. */
+        /* ONE-WAY servo: the rate ratio (feedforward) already balances production and
+         * consumption.  The servo only kicks in WHEN THE WRITTEN DATA AHEAD OF US
+         * SHRINKS and slows down; so an unwritten region is never played.
+         * A two-way servo had made things worse when its target was picked wrong. */
+        /* --- lock the play cursor to the game's WRITE cursor (PLL) ---
+         * A free-running cursor drifts slowly through the buffer even with a 1%
+         * rate difference, and passes through the unwritten region once per lap.
+         * Measured: 50-95 ms of silence exactly every 30 s, even with the rate
+         * ratio at 0.99.  Period = buffer_duration / rate_error, so feedforward
+         * shrinks the error but doesn't ZERO it.
+         * Solution: keep correcting the consumption rate so the amount of written
+         * data (avail) stays constant.  The target should be the game's own
+         * natural equilibrium -- picking a fixed number would be wrong (0.25 was
+         * picked first, the game runs between 0.30 and 0.64). */
+        /* SERVO OFF BY DEFAULT (2026-10-22).  The game's stream chooses where it writes
+         * based on the REAL play cursor we report (com.c GetCurrentPosition ->
+         * audio_cursors): when we slow playback down, the game produces the music
+         * just as much slower, avail (the write lead) stays independent of the
+         * rate and the servo can never close its error.  Measured (SNDMUTE +
+         * SNDCSV, Quick Race 3 min): after every load / stutter the lead settles
+         * at a new level (0.19 / 0.52 / 0.40), the servo hit the clamp (3%) and
+         * stayed there for 40-50 s -- the music 3% slow for 50 s (half a semitone
+         * flat, the user: "from that moment the music flows slower"), rate
+         * deviation > 1% in 33% of the calls.  The 30 s gaps the servo targeted are
+         * written by the game itself (see SNDZERO); the servo never fixed them
+         * anyway.  SNDPLL=1 is the old servo. */
         static int pll = -1;
         if (pll < 0){ const char *e = getenv("SNDPLL"); pll = e && *e == '1'; }
         if (!pll){
@@ -280,7 +279,7 @@ static void mix_into(int16_t *out, unsigned frames){
                 uint32_t bpf2 = b->chans * (b->bits/8u);
                 uint32_t pbyte = ((uint32_t)(b->cursor * (double)bpf2)) % b->bytes;
                 uint32_t avail = (b->wpos + b->bytes - pbyte) % b->bytes;
-                if ((double)avail / (double)b->bytes > 0.85) b->over++;   /* yalniz sayac */
+                if ((double)avail / (double)b->bytes > 0.85) b->over++;   /* counter only */
             }
             b->trim = 1.0;
         } else
@@ -291,18 +290,18 @@ static void mix_into(int16_t *out, unsigned frames){
             double frac = (double)avail / (double)b->bytes;
             double want;
             if (frac > 0.85){
-                /* imlec yaziciyi GECTI (avail modulo sarmasiyla buyuk
-                 * gorunuyor).  Hedefe dogru servo yapmak yerine sert
-                 * yavasla ve hedefi bozma. */
+                /* the cursor PASSED the writer (looks large because of avail's modulo
+                 * wrap).  Instead of servoing toward the target, slow down hard
+                 * and don't disturb the target. */
                 b->over++;
                 want = 0.94;
             } else {
                 if (b->target <= 0.0) b->target = frac;
-                else b->target += (frac - b->target) * 0.0008;   /* cok yavas */
+                else b->target += (frac - b->target) * 0.0008;   /* very slow */
                 if (b->target < 0.12) b->target = 0.12;
                 if (b->target > 0.60) b->target = 0.60;
-                /* Kp kucuk + kelepce dar: perde degisimi 3 sentin altinda
-                 * kalir, yani duyulmaz; ama kayma tamamen yok olur. */
+                /* small Kp + a narrow clamp: the pitch change stays under 3 cents, i.e.
+                 * inaudible; but the drift disappears completely. */
                 want = 1.0 + (frac - b->target) * 1.5;
                 if (want < 0.97) want = 0.97;
                 if (want > 1.03) want = 1.03;
@@ -343,7 +342,7 @@ static void mix_into(int16_t *out, unsigned frames){
             }
         }
         if (g_csv){
-            /* bu tamponun OKUDUGU kaynak bolgesinde kac bayt sifir? */
+            /* how many bytes are zero in the source region this buffer READS? */
             uint32_t bpf4 = b->chans * (b->bits/8u);
             uint32_t p0 = ((uint32_t)(b->cursor * (double)bpf4)) % b->bytes;
             uint32_t nby = (uint32_t)(step * (double)frames * (double)bpf4);
@@ -364,20 +363,20 @@ static void mix_into(int16_t *out, unsigned frames){
     pthread_mutex_unlock(&g_slock);
     if (active > g_active_peak) g_active_peak = active;
     g_mixed_frames += frames;
-    /* Periyodik durum: hangi tampon caliyor, dolu mu? */
+    /* Periodic state: which buffer is playing, is it full? */
     if (getenv("SNDSTAT")){
         static uint64_t next = 0;
         if (g_mixed_frames >= next){
             next = g_mixed_frames + (uint64_t)OUT_RATE * 2ull;
             pthread_mutex_lock(&g_slock);
-            fprintf(stderr, "  [durum] ");
+            fprintf(stderr, "  [state] ");
             for (int i2 = 1; i2 < g_sndn; i2++){
                 if (!g_snd[i2].used) continue;
                 uint32_t nz = 0, lim = g_snd[i2].bytes < 8192u ? g_snd[i2].bytes : 8192u;
                 for (uint32_t q = 0; q < lim; q++) if (g_mem[g_snd[i2].data + q]) nz++;
                 fprintf(stderr, "#%d[%s%s %uHz veri=%u%%] ", i2,
-                        g_snd[i2].playing ? "cal" : "dur",
-                        g_snd[i2].loop ? "+dongu" : "",
+                        g_snd[i2].playing ? "play" : "stop",
+                        g_snd[i2].loop ? "+loop" : "",
                         g_snd[i2].rate, lim ? (unsigned)(100u*nz/lim) : 0u);
             }
             fprintf(stderr, "\n");
@@ -385,8 +384,8 @@ static void mix_into(int16_t *out, unsigned frames){
         }
     }
 
-    /* Okudugumuz veri gercekten sessiz mi?  Sessizse oyun o bolgeyi
-     * HENUZ YAZMAMIS demektir (bizim imlec yaziciyi geciyor). */
+    /* Is the data we read really silent?  If it is, the game HASN'T WRITTEN that
+     * region YET (our cursor is passing the writer). */
     if (active){
         unsigned zero = 0;
         for (unsigned k = 0; k < frames * OUT_CH; k++) if (acc[k] == 0.f) zero++;
@@ -397,15 +396,15 @@ static void mix_into(int16_t *out, unsigned frames){
             static int shown = 0;
             if (getenv("SNDGAP") && shown < 40 &&
                 g_mixed_frames > (uint64_t)OUT_RATE * 5ull){ shown++;
-                fprintf(stderr, "  [bosluk] t=%.2f sn\n",
+                fprintf(stderr, "  [gap] t=%.2f s\n",
                         (double)g_mixed_frames / (double)OUT_RATE);
             }
             if (0){
-                fprintf(stderr, "  [bosluk] calan tamponlar:");
+                fprintf(stderr, "  [gap] playing buffers:");
                 pthread_mutex_lock(&g_slock);
                 for (int i2 = 1; i2 < g_sndn; i2++)
                     if (g_snd[i2].used && g_snd[i2].playing)
-                        fprintf(stderr, " #%d(imlec=%.0f/%u dongu=%d)", i2,
+                        fprintf(stderr, " #%d(cursor=%.0f/%u loop=%d)", i2,
                                 g_snd[i2].cursor,
                                 g_snd[i2].bytes / (g_snd[i2].chans*(g_snd[i2].bits/8u)),
                                 g_snd[i2].loop);
@@ -430,8 +429,8 @@ static uint64_t now_us_a(void){
 }
 static void cb(void *ud, AudioQueueRef q, AudioQueueBufferRef buf){
     (void)ud;
-    /* Geri cagirmalar arasi sure tampon suresini asarsa kuyruk BOSALMIS,
-     * yani ses kesilmis demektir.  Olculuyor. */
+    /* If the time between callbacks exceeds the buffer duration, the queue has
+     * DRAINED, i.e. the sound cut out.  It is being measured. */
     { static uint64_t last = 0;
       uint64_t now = now_us_a();
       uint64_t budget = (uint64_t)FRAMES * 1000000ull / (uint64_t)OUT_RATE;
@@ -443,8 +442,9 @@ static void cb(void *ud, AudioQueueRef q, AudioQueueBufferRef buf){
     AudioQueueEnqueueBuffer(q, buf, 0, NULL);
 }
 
-/* AudioUnit render geri cagirmasi.  AudioQueue yolundan tek farki, ciktinin
- * hazir bir kuyruk tamponuna degil dogrudan aygitin ABL'sine yazilmasi. */
+/* AudioUnit render callback.  The only difference from the AudioQueue path is
+ * that the output is written directly to the device's ABL instead of a ready
+ * queue buffer. */
 static OSStatus au_cb(void *ud, AudioUnitRenderActionFlags *flags,
                       const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
                       AudioBufferList *abl){
@@ -456,20 +456,20 @@ static OSStatus au_cb(void *ud, AudioUnitRenderActionFlags *flags,
     if (!abl || abl->mNumberBuffers < 1) return noErr;
     int16_t *out = (int16_t *)abl->mBuffers[0].mData;
     if (!out) return noErr;
-    if (nframes > (UInt32)FRAMES) nframes = (UInt32)FRAMES;   /* acc dizisi siniri */
+    if (nframes > (UInt32)FRAMES) nframes = (UInt32)FRAMES;   /* acc array bound */
     if (nframes > g_au_slice) g_au_slice = nframes;
     mix_into(out, (unsigned)nframes);
-    /* SNDMUTE=1 (tani): karistirma, servo ve zamanlama aynen calisir, aygita sessizlik gider */
+    /* SNDMUTE=1 (diagnostic): mixing, servo and timing run exactly the same, silence goes to the device */
     { static int mute = -1; if (mute < 0){ const char *e = getenv("SNDMUTE"); mute = e && *e && *e != '0'; }
       if (mute) memset(out, 0, (size_t)nframes * OUT_CH * sizeof(int16_t)); }
     abl->mBuffers[0].mDataByteSize = nframes * OUT_CH * sizeof(int16_t);
     return noErr;
 }
 
-/* AudioQueue 6 x 2048 kare kuyruklar: 278.6 ms.  Bu, Windows'ta OLMAYAN,
- * tamamen bizim ekledigimiz gecikmeydi ve oyunun kendi DirectSound
- * gecikmesinin (~275 ms) uzerine biniyordu.  AudioUnit aygitin kendi
- * dilimiyle (genelde 512 kare = 11.6 ms) calisir. */
+/* AudioQueue queues 6 x 2048 frames: 278.6 ms.  This was latency that DOESN'T
+ * EXIST on Windows, added entirely by us, and it stacked on top of the game's
+ * own DirectSound latency (~275 ms).  AudioUnit runs with the device's own
+ * slice (usually 512 frames = 11.6 ms). */
 static int au_start(const AudioStreamBasicDescription *f){
     AudioComponentDescription d;
     memset(&d, 0, sizeof d);
@@ -499,7 +499,7 @@ void audio_init(void){
     { const char *e = getenv("NOSOUND"); if (e && *e && *e != '0') return; }
     { const char *d = getenv("SNDDUMP");
       if (d && *d){ g_dump = fopen(d, "wb");
-          fprintf(stderr, "ses: cikis dokumu -> %s (%d Hz s16le %d kanal)\n", d, OUT_RATE, OUT_CH); } }
+          fprintf(stderr, "sound: output dump -> %s (%d Hz s16le %d channels)\n", d, OUT_RATE, OUT_CH); } }
     { const char *d = getenv("SNDCSV");
       if (d && *d){ g_csv = fopen(d, "w");
           if (g_csv) fprintf(g_csv, "cb,t,id,rate,bytes,pbyte,wpos,avail,frac,target,trim,ratio,zero\n"); } }
@@ -513,16 +513,16 @@ void audio_init(void){
     f.mFramesPerPacket  = 1;
     f.mBytesPerFrame    = OUT_CH * sizeof(int16_t);
     f.mBytesPerPacket   = f.mBytesPerFrame;
-    /* SNDBACKEND=queue ile eski (yuksek gecikmeli) yola donulebilir. */
+    /* SNDBACKEND=queue goes back to the old (high-latency) path. */
     { const char *e = getenv("SNDBACKEND");
       if (!(e && *e == 'q') && au_start(&f)){
           g_backend = 1; g_audio_on = 1;
-          fprintf(stderr, "ses: CoreAudio cikisi acildi (AudioUnit, %d Hz, %d kanal)\n",
+          fprintf(stderr, "sound: CoreAudio output opened (AudioUnit, %d Hz, %d channels)\n",
                   OUT_RATE, OUT_CH);
           return;
       } }
     if (AudioQueueNewOutput(&f, cb, NULL, NULL, NULL, 0, &g_q) != noErr){
-        fprintf(stderr, "ses: AudioQueue acilamadi\n"); return;
+        fprintf(stderr, "sound: could not open AudioQueue\n"); return;
     }
     for (int i = 0; i < NBUF; i++){
         if (AudioQueueAllocateBuffer(g_q, FRAMES*OUT_CH*sizeof(int16_t), &g_qb[i]) != noErr)
@@ -533,50 +533,50 @@ void audio_init(void){
     }
     AudioQueueSetParameter(g_q, kAudioQueueParam_Volume, 1.0f);
     if (AudioQueueStart(g_q, NULL) != noErr){
-        fprintf(stderr, "ses: AudioQueue baslatilamadi\n"); return;
+        fprintf(stderr, "sound: could not start AudioQueue\n"); return;
     }
     g_audio_on = 1; g_backend = 2;
-    fprintf(stderr, "ses: CoreAudio cikisi acildi (AudioQueue, %d Hz, %d kanal)\n",
+    fprintf(stderr, "sound: CoreAudio output opened (AudioQueue, %d Hz, %d channels)\n",
             OUT_RATE, OUT_CH);
 }
 
 void audio_report(void){
     if (g_dump){ fflush(g_dump); fclose(g_dump); g_dump = NULL; }
     if (g_csv){  fflush(g_csv);  fclose(g_csv);  g_csv  = NULL; }
-    fprintf(stderr, "  ses cikisi        : %s, %llu kare karistirildi, "
-            "en fazla %llu es zamanli tampon, %d kayitli\n",
-            g_audio_on ? "acik" : "KAPALI",
+    fprintf(stderr, "  sound output      : %s, %llu frames mixed, "
+            "at most %llu simultaneous buffers, %d registered\n",
+            g_audio_on ? "on" : "OFF",
             (unsigned long long)g_mixed_frames,
             (unsigned long long)g_active_peak, g_sndn - 1);
-    fprintf(stderr, "  ses Play cagrisi  : %llu bastan basladi, %llu zaten caliyordu\n",
+    fprintf(stderr, "  sound Play calls  : %llu started from the beginning, %llu were already playing\n",
             (unsigned long long)g_replay, (unsigned long long)g_reissue);
-    fprintf(stderr, "  ses hiz orani    : %.3f (oyun sanal zamani / gercek zaman)%s\n",
-            g_rate_ratio, g_sync_mode ? "" : "  [SNDSYNC=0: kapali]");
-    fprintf(stderr, "  ses veri boslugu  : ornek %.1f%% sessiz, %llu geri-cagirmanin cogu bos\n",
+    fprintf(stderr, "  sound rate ratio  : %.3f (game virtual time / real time)%s\n",
+            g_rate_ratio, g_sync_mode ? "" : "  [SNDSYNC=0: off]");
+    fprintf(stderr, "  sound data gaps   : %.1f%% of samples silent, %llu callbacks mostly empty\n",
             g_out_frames ? 100.0*(double)g_out_zero/(double)g_out_frames : 0.0,
             (unsigned long long)g_gap_cb);
-    fprintf(stderr, "  --- ses tamponu basina ---\n");
+    fprintf(stderr, "  --- per sound buffer ---\n");
     for (int i = 1; i < g_sndn; i++){
         SndBuf *b = &g_snd[i];
         if (!b->used) continue;
         fprintf(stderr, "   #%-3d %6u Hz %uch %5.2f sn  Play=%-4llu Stop=%-4llu  "
-                "yazma=%llu (%llu dolu, %.1f KB)  %s\n",
+                "writes=%llu (%llu non-empty, %.1f KB)  %s\n",
                 i, b->rate, b->chans,
                 (double)b->bytes/(double)(b->rate*b->chans*(b->bits/8u)),
                 (unsigned long long)b->plays, (unsigned long long)b->stops,
                 (unsigned long long)b->wr_calls, (unsigned long long)b->wr_nonzero,
-                b->wr_bytes/1024.0, b->playing ? "CALIYOR" : "durdu");
+                b->wr_bytes/1024.0, b->playing ? "PLAYING" : "stopped");
     }
     { uint64_t ov = 0; for (int i = 1; i < g_sndn; i++) ov += g_snd[i].over;
-      fprintf(stderr, "  ses imlec asimi   : %llu geri-cagirmada oynatma yaziciyi gecti\n",
+      fprintf(stderr, "  sound cursor overrun: %llu callbacks where playback passed the writer\n",
               (unsigned long long)ov); }
-    fprintf(stderr, "  ses cikis yolu    : %s, geri cagirma %u kare (%.1f ms kuyruk gecikmesi)\n",
-            g_backend == 1 ? "AudioUnit" : g_backend == 2 ? "AudioQueue" : "yok",
+    fprintf(stderr, "  sound output path : %s, callback %u frames (%.1f ms queue latency)\n",
+            g_backend == 1 ? "AudioUnit" : g_backend == 2 ? "AudioQueue" : "none",
             g_backend == 1 ? g_au_slice : (unsigned)(FRAMES*NBUF),
             (g_backend == 1 ? (double)g_au_slice : (double)(FRAMES*NBUF))
                 * 1000.0 / (double)OUT_RATE);
-    fprintf(stderr, "  ses kesilmesi     : %llu aclik, en uzun geri-cagirma araligi %.1f ms"
-            " (tampon %.1f ms)\n",
+    fprintf(stderr, "  sound dropouts    : %llu starvations, longest callback interval %.1f ms"
+            " (buffer %.1f ms)\n",
             (unsigned long long)g_starved, g_worst_gap_us/1000.0,
             (double)FRAMES*NBUF*1000.0/(double)OUT_RATE);
 }

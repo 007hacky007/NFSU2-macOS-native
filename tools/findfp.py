@@ -23,8 +23,8 @@ for f in sorted(funcs):
     mn=[i.mnemonic for i in ins]
     if not any(x.startswith('f') for x in mn): continue
     if any(x=='call' for x in mn): continue
-    # global bellek erisimi yok, sadece stack
-    # global SABIT okumalarina izin ver (rdata float sabitleri), yazmaya izin verme
+    # no global memory access, stack only
+    # allow global CONSTANT reads (rdata float constants), don't allow writes
     if any(o.type==X86_OP_MEM and o.mem.base==0 and o.mem.index==0 and i.mnemonic in ('mov','stos') for i in ins for o in i.operands[:1]): continue
     try:
         for i in ins:
@@ -34,8 +34,8 @@ for f in sorted(funcs):
     if mn[-1] not in ('ret','retf'): continue
     res.append((len(ins),f,ins))
 res.sort()
-print(f"uygun x87 fonksiyonu: {len(res)}\n")
+print(f"suitable x87 functions: {len(res)}\n")
 for n,f,ins in res[:8]:
-    print(f"--- 0x{f:08x} ({n} komut) ---")
+    print(f"--- 0x{f:08x} ({n} instructions) ---")
     for i in ins: print(f"   {i.address:08x}  {i.mnemonic:10s} {i.op_str}")
     print()

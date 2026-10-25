@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tum fonksiyonlari lift etmeyi dene; eksik komutlari sikliga gore raporla."""
+"""Try lifting all functions; report the missing instructions by frequency."""
 import sys, struct, collections, time
 sys.path.insert(0,'tools')
 import pefile
@@ -18,7 +18,7 @@ funcs={EP}
 for a in relocs:
     v=rd32(a)
     if v is not None and L.in_text(v): funcs.add(v)
-# dogrudan cagri hedeflerini de ekle
+# also add the direct call targets
 md=L.md; cov=bytearray(L.TSZ); q=collections.deque(funcs); seen=set(funcs)
 while q:
     va=q.popleft()
@@ -46,7 +46,7 @@ while q:
         va=i.address+i.size
 
 funcs=sorted(funcs)
-print(f"denenecek fonksiyon: {len(funcs)}")
+print(f"functions to try: {len(funcs)}")
 ok=0; bad=0; missing=collections.Counter(); bad_fn=collections.Counter(); t0=time.time()
 tot_ins=0; ok_ins=0
 for n,f in enumerate(funcs):
@@ -66,16 +66,16 @@ for n,f in enumerate(funcs):
                 missing[str(e)]+=1
                 if fail is None: fail=str(e)
             except Exception as e:
-                missing[f"<hata:{type(e).__name__}>"]+=1
+                missing[f"<error:{type(e).__name__}>"]+=1
                 if fail is None: fail=str(e)
     if fail is None: ok+=1; ok_ins+=ni
     else: bad+=1; bad_fn[fail]+=1
-print(f"\n=== SONUC ({time.time()-t0:.0f}s) ===")
-print(f"  TAM lift edilen fonksiyon : {ok}/{len(funcs)} = {100.0*ok/len(funcs):.1f}%")
-print(f"  komut bazinda kapsam      : {ok_ins}/{tot_ins} = {100.0*ok_ins/max(tot_ins,1):.1f}%")
-print(f"\n=== EKSIK KOMUTLAR (siklik) — sonraki is listesi ===")
+print(f"\n=== RESULT ({time.time()-t0:.0f}s) ===")
+print(f"  FULLY lifted functions    : {ok}/{len(funcs)} = {100.0*ok/len(funcs):.1f}%")
+print(f"  coverage by instruction   : {ok_ins}/{tot_ins} = {100.0*ok_ins/max(tot_ins,1):.1f}%")
+print(f"\n=== MISSING INSTRUCTIONS (frequency) — next work list ===")
 for m,cnt in missing.most_common(30):
-    print(f"  {m:14s} {cnt:7d}   (bu yuzden takilan fonksiyon: {bad_fn.get(m,0)})")
-print(f"\n  farkli eksik komut cesidi: {len(missing)}")
+    print(f"  {m:14s} {cnt:7d}   (functions blocked by it: {bad_fn.get(m,0)})")
+print(f"\n  distinct missing instruction kinds: {len(missing)}")
 tot_missing=sum(missing.values())
-print(f"  toplam eksik komut ornegi: {tot_missing}  = kodun %{100.0*tot_missing/max(tot_ins,1):.2f}'si")
+print(f"  total missing instruction instances: {tot_missing}  = %{100.0*tot_missing/max(tot_ins,1):.2f} of the code")

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Iki FPSCSV kosusunu gercek-zaman kovalarina gore eslestirip karsilastir.
+"""Compare two FPSCSV runs by matching them on real-time buckets.
 
-Gercek saatte oyun durumu gecen gercek zamana bagli: ayni saniye = ayni sahne.
-Kareler 0.5 sn'lik kovalara atilir (kumulatif ms), kova basina medyan alinir,
-iki kosu kova kova eslenir.  Yalnizca yaris kareleri (cizim > 400).
+With the real clock the game state depends on the real time elapsed: same second = same scene.
+Frames go into 0.5 s buckets (cumulative ms), the median is taken per bucket,
+the two runs are matched bucket by bucket.  Race frames only (draws > 400).
 
-    tools/bcmp.py a1.csv,a2.csv b1.csv,b2.csv     (A ve B gruplari, virgullu)
+    tools/bcmp.py a1.csv,a2.csv b1.csv,b2.csv     (groups A and B, comma-separated)
 """
 import csv, sys, statistics as st
 
@@ -14,7 +14,7 @@ def buckets(path, w=0.5):
     with open(path) as f:
         for r in csv.DictReader(f):
             ms = float(r['ms']); t += ms / 1000.0
-            if int(r['cizim']) <= 400 or ms > 100: continue   # menu / dokum karesi
+            if int(r.get('draws') or r['cizim']) <= 400 or ms > 100: continue   # menu / dump frame
             b.setdefault(int(t / w), []).append(ms)
     return {k: st.median(v) for k, v in b.items() if len(v) >= 3}
 
@@ -25,9 +25,9 @@ def group(paths):
 
 a = group(sys.argv[1].split(',')); b = group(sys.argv[2].split(','))
 keys = sorted(set(a) & set(b))
-if not keys: sys.exit("ortak yaris kovasi yok")
+if not keys: sys.exit("no common race bucket")
 ratios = [b[k] / a[k] for k in keys]
 ma = st.median([a[k] for k in keys]); mb = st.median([b[k] for k in keys])
-print(f"eslesen kova: {len(keys)}")
-print(f"A medyan {ma:.2f} ms ({1000/ma:.1f} fps)   B medyan {mb:.2f} ms ({1000/mb:.1f} fps)")
-print(f"B/A eslestirilmis oran (medyan): {st.median(ratios):.4f}  ->  {100*(st.median(ratios)-1):+.1f}%")
+print(f"matched buckets: {len(keys)}")
+print(f"A median {ma:.2f} ms ({1000/ma:.1f} fps)   B median {mb:.2f} ms ({1000/mb:.1f} fps)")
+print(f"B/A matched ratio (median): {st.median(ratios):.4f}  ->  {100*(st.median(ratios)-1):+.1f}%")

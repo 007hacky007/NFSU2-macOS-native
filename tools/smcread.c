@@ -1,12 +1,12 @@
-/* SMC sicaklik / fan okuyucu (sudo gerekmez; AppleSMC kullanici istemcisi).
+/* SMC temperature / fan reader (no sudo needed; AppleSMC user client).
  *
- *   smcoku ANAHTAR...                 anahtarlari bir kez yazar (ornek: smcoku F0Ac Tp01)
- *   smcoku -k <ms> <cikti.csv>        oturum kaydi: ms'de bir satir, sinyalle (INT/TERM) biter
+ *   smcread KEY...                    prints the keys once (example: smcread F0Ac Tp01)
+ *   smcread -k <ms> <output.csv>      session recording: a line every ms, ends on a signal (INT/TERM)
  *
- * CSV: epoch_s,fan0,fan1,cpu_ort,cpu_max,gpu_ort,gpu_max,sistem_w
- * cpu = Tp* (P/E cekirdek kumeleri), gpu = Tg*, sistem_w = PSTR (SMC sistem gucu,
- * ~1 sn'de bir guncellenir).  Bu makinede olmayan anahtarlar atlanir.
- * Derleme: clang -O1 -framework IOKit -o smcoku smcoku.c */
+ * CSV: epoch_s,fan0,fan1,cpu_avg,cpu_max,gpu_avg,gpu_max,system_w
+ * cpu = Tp* (P/E core clusters), gpu = Tg*, system_w = PSTR (SMC system power,
+ * updated about once a second).  Keys this machine doesn't have are skipped.
+ * Build: clang -O1 -framework IOKit -o smcread smcread.c */
 #include <IOKit/IOKitLib.h>
 #include <signal.h>
 #include <stdint.h>
@@ -29,7 +29,7 @@ static volatile sig_atomic_t g_stop;
 
 static uint32_t k4(const char *s){ return ((uint32_t)s[0] << 24) | ((uint32_t)s[1] << 16) | ((uint32_t)s[2] << 8) | (uint32_t)s[3]; }
 
-/* 9 = anahtar bilgisi, 5 = deger oku */
+/* 9 = key info, 5 = read value */
 static int smc_read(const char *key, double *v){
     SKeyData in, out; size_t sz = sizeof out;
     memset(&in, 0, sizeof in); memset(&out, 0, sizeof out);
@@ -47,7 +47,7 @@ static int smc_read(const char *key, double *v){
     return 0;
 }
 
-/* M1 Pro/Max kume sensorleri; digerleri yoksa atlanir */
+/* M1 Pro/Max cluster sensors; skipped if the others are missing */
 static const char *kCpu[] = { "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0T", "Tp0X", "Tp0b", NULL };
 static const char *kGpu[] = { "Tg05", "Tg0D", "Tg0L", "Tg0T", "Tg0f", "Tg0j", NULL };
 
@@ -63,12 +63,12 @@ static void on_sig(int s){ (void)s; g_stop = 1; }
 
 int main(int argc, char **argv){
     io_service_t s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
-    if (!s || IOServiceOpen(s, mach_task_self(), 0, &g_c)){ fprintf(stderr, "smcoku: AppleSMC acilamadi\n"); return 1; }
+    if (!s || IOServiceOpen(s, mach_task_self(), 0, &g_c)){ fprintf(stderr, "smcread: could not open AppleSMC\n"); return 1; }
     if (argc == 4 && !strcmp(argv[1], "-k")){
         int ms = atoi(argv[2]); FILE *f = fopen(argv[3], "w");
-        if (ms < 100 || !f){ fprintf(stderr, "smcoku: -k <ms>=100.. <cikti.csv>\n"); return 1; }
+        if (ms < 100 || !f){ fprintf(stderr, "smcread: -k <ms>=100.. <output.csv>\n"); return 1; }
         signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
-        fprintf(f, "epoch_s,fan0,fan1,cpu_ort,cpu_max,gpu_ort,gpu_max,sistem_w\n");
+        fprintf(f, "epoch_s,fan0,fan1,cpu_avg,cpu_max,gpu_avg,gpu_max,system_w\n");
         while (!g_stop){
             struct timeval tv; gettimeofday(&tv, NULL);
             double f0 = -1, f1 = -1, ca, cm, ga, gm, p = -1;
@@ -83,6 +83,6 @@ int main(int argc, char **argv){
         return 0;
     }
     for (int a = 1; a < argc; a++){ double v;
-        if (smc_read(argv[a], &v)) printf("%s yok\n", argv[a]); else printf("%s %.1f\n", argv[a], v); }
+        if (smc_read(argv[a], &v)) printf("%s missing\n", argv[a]); else printf("%s %.1f\n", argv[a], v); }
     return 0;
 }

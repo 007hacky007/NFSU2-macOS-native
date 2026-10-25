@@ -1,29 +1,29 @@
-/* D3DX9 efekt kutuphanesi (oyuna statik bagli) -- HLE calismasi.
+/* The D3DX9 effect library (statically linked into the game) -- HLE work.
  *
- * Olcum (2026-09-23): yaris karesinde konuk thread'in %48'i
- * ID3DXEffect::BeginPass (vtable 0x7b6fe8, yuva 66 = sub_0066ace2) icinde.
- * Bunun buyuk kismi D3D cagrisi degil, durum ifadelerinin (preshader)
- * CPU'da yorumlanmasi:
+ * Measurement (2026-09-23): in a race frame 48% of the guest thread is inside
+ * ID3DXEffect::BeginPass (vtable 0x7b6fe8, slot 66 = sub_0066ace2).
+ * Most of it isn't D3D calls but interpreting state expressions (preshaders)
+ * on the CPU:
  *
  *   BeginPass 66ace2
- *     -> 6691b1  gecisi uygula
- *        -> 669296  tek durum ata (tip>>24 anahtari, 100 baytlik kayit)
- *           -> 664a2f -> 663a42  durum ifadesini degerlendir
- *                          -> 663275 / 662edc  girdileri topla
+ *     -> 6691b1  apply pass
+ *        -> 669296  set a single state (type>>24 switch, 100-byte record)
+ *           -> 664a2f -> 663a42  evaluate the state expression
+ *                          -> 663275 / 662edc  gather inputs
  *                          -> 688e89  preshader VM (x87)
  *        -> 669f40 -> 668e0d -> 668cd0 -> 664a2f ...
  *
- * Asama 0: sayac sarmalayicilari (D3DXSTAT, D3DXANALYZE, CPUWIN).
- * Asama 1: sub_00664a2f durum degeri notu (varsayilan acik, D3DXMEMO=0
- *          kapatir; D3DXVERIFY=<n> bellek karsilastirmali dogrulama).
- * Asama 2: sub_00669296 durum atama notu (varsayilan acik, D3DXMEMO2=0
- *          kapatir; D3DXVERIFY2=<n>).  Cihaz cagrisi kaydi com.c'de (dxrec.h).
- * Asama 3: parametre surumleri (sub_0065ab24 kancasi) + sub_006691b1 gecis
- *          notu.  Dogrulamada YANLIS cikti -> varsayilan KAPALI (D3DXMEMO3=1).
- * Ayrintilar, olcumler ve ilerleme gunlugu: D3DX_HLE.md.
+ * Stage 0: counter wrappers (D3DXSTAT, D3DXANALYZE, CPUWIN).
+ * Stage 1: sub_00664a2f state value memo (on by default, D3DXMEMO=0 turns it
+ *          off; D3DXVERIFY=<n> verification with memory comparison).
+ * Stage 2: sub_00669296 state assignment memo (on by default, D3DXMEMO2=0
+ *          turns it off; D3DXVERIFY2=<n>).  Device call recording is in com.c (dxrec.h).
+ * Stage 3: parameter versions (the sub_0065ab24 hook) + sub_006691b1 pass
+ *          memo.  Came out WRONG in verification -> OFF by default (D3DXMEMO3=1).
+ * Details, measurements and progress log: D3DX_HLE.md.
  *
- * DIKKAT: buradaki her sub_XXXX, runtime/overrides.c'dekilerle birlikte
- * genall.py'nin OVERRIDE listesinde olmali (bkz. D3DX_HLE.md).          */
+ * CAUTION: every sub_XXXX here, together with the ones in runtime/overrides.c,
+ * must be in genall.py's OVERRIDE list (see D3DX_HLE.md).                */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,13 +41,13 @@ enum { DX_BEGINPASS, DX_PASSAPPLY, DX_STATEAPPLY, DX_664A2F, DX_EVALSTATE,
 
 static DxStat g_dx[DX_N] = {
     [DX_BEGINPASS]      = {"BeginPass",        0x0066ace2u},
-    [DX_PASSAPPLY]      = {"gecis uygula",      0x006691b1u},
-    [DX_STATEAPPLY]     = {"durum ata",         0x00669296u},
+    [DX_PASSAPPLY]      = {"apply pass",      0x006691b1u},
+    [DX_STATEAPPLY]     = {"set state",         0x00669296u},
     [DX_664A2F]         = {"sub_00664a2f",      0x00664a2fu},
-    [DX_EVALSTATE]      = {"ifade degerlendir", 0x00663a42u},
+    [DX_EVALSTATE]      = {"evaluate expr", 0x00663a42u},
     [DX_VM]             = {"preshader VM",      0x00688e89u},
-    [DX_GATHER_A]       = {"girdi topla (0)",   0x00663275u},
-    [DX_GATHER_B]       = {"girdi topla (1,2)", 0x00662edcu},
+    [DX_GATHER_A]       = {"gather inputs (0)",   0x00663275u},
+    [DX_GATHER_B]       = {"gather inputs (1,2)", 0x00662edcu},
     [DX_660A52]         = {"sub_00660a52",      0x00660a52u},
     [DX_668E0D]         = {"sub_00668e0d",      0x00668e0du},
     [DX_BEGIN]          = {"Begin",             0x00664792u},
@@ -63,9 +63,9 @@ static DxStat g_dx[DX_N] = {
 };
 
 long metal_frames(void);
-int g_dx_in_pass = 0;          /* BeginPass/CommitChanges derinligi (COMSTAT) */
+int g_dx_in_pass = 0;          /* BeginPass/CommitChanges depth (COMSTAT) */
 static int  g_dx_on = -1;
-static long g_dx_from = 0, g_dx_f0 = -1;   /* D3DXSTAT=<kare>: o kareden itibaren say */
+static long g_dx_from = 0, g_dx_f0 = -1;   /* D3DXSTAT=<frame>: count from that frame on */
 static inline int dx_on(void){
     if (g_dx_on < 0){
         const char *e = getenv("D3DXSTAT");
@@ -73,7 +73,7 @@ static inline int dx_on(void){
     }
     return g_dx_on;
 }
-/* Sayaclari olcum penceresinin basinda sifirla (yalnizca BeginPass'ten). */
+/* Reset the counters at the start of the measurement window (only from BeginPass). */
 static void dx_window(void){
     if (g_dx_f0 >= 0) return;
     long f = metal_frames();
@@ -111,18 +111,18 @@ DX_WRAP(DX_SETINTARRAY,    0066e8a9)
 DX_WRAP(DX_SETFLOAT,       0066f501)
 DX_WRAP(DX_SETVECTORARRAY, 0066ca38)
 
-/* ---- Analiz: ifade degerlendirmesinin girdileri gercekten degisiyor mu? ----
- * D3DXANALYZE=<kare>: o kareden itibaren her sub_00663a42 cagrisinda durumun
- * girdi parametre verisinin ozetini onceki degerlendirmeyle karsilastirir.
+/* ---- Analysis: do the inputs of expression evaluation really change? ----
+ * D3DXANALYZE=<frame>: from that frame on, on every sub_00663a42 call compares a
+ * hash of the state's input parameter data with the previous evaluation.
  *
  * sub_00663a42(this=ecx, a, b)  ret 8
- *   pass/param kaydi : P = a*0x64 + [this+0x2c]
- *   durum kaydi      : R = b*0x64 + [P+4]
- *   girdi kayitlari  : [R+0x34] + i*32, i < word[R+0x4e]   (yalnizca [R+0x3c] != 0)
- *     +0  kirli bayragi (0 degilse topla, sonra [+0] = [+4])
- *     +0xc -> {veri isaretcisi, tanim}   tanim: +0 tur, +4 sinif, +0x10 eleman,
- *                                              +0x14 satir, +0x18 sutun
- *     +0x10 -> yazmac tanimi: word +4 kume (0/1/2), +6 indeks, +8 adet      */
+ *   pass/param record : P = a*0x64 + [this+0x2c]
+ *   state record      : R = b*0x64 + [P+4]
+ *   input records     : [R+0x34] + i*32, i < word[R+0x4e]   (only if [R+0x3c] != 0)
+ *     +0  dirty flag (if non-zero gather, then [+0] = [+4])
+ *     +0xc -> {data pointer, definition}   definition: +0 type, +4 class,
+ *                                          +0x10 elements, +0x14 rows, +0x18 columns
+ *     +0x10 -> register definition: word +4 set (0/1/2), +6 index, +8 count */
 typedef struct { uint32_t k0, k1; uint64_t h; uint32_t n; } AnSlot;
 #define AN_CAP (1u<<16)
 static AnSlot *g_an; static long g_an_from = -1;
@@ -145,7 +145,7 @@ static void analyze_eval(CPU *c){
         unsigned n = MR16(R+0x4eu); uint32_t base = MR32(R+0x34u);
         for (unsigned i = 0; i < n; i++){
             uint32_t rec = base + i*32u;
-            if (!MR32(rec)) continue;             /* kirli degil: D3DX toplamayacak */
+            if (!MR32(rec)) continue;             /* not dirty: D3DX won't gather */
             alldirty0 = 0; nin++;
             uint32_t pp = MR32(rec+0xcu), dp = MR32(pp), ds = MR32(pp+4u);
             uint32_t el = MR32(ds+0x10u); if (!el) el = 1;
@@ -165,7 +165,7 @@ static void analyze_eval(CPU *c){
         if (!s->n){ s->k0 = th; s->k1 = (a<<16)|(b&0xffff); s->h = h; s->n = 1; an_first++;
             if (an_first <= 12){
                 uint32_t o = MR32(R+0x38u), vt = MR32(o);
-                fprintf(stderr, "[D3DXANALYZE] anahtar this=%08x a=%u b=%u R=%08x obj=%08x vt=%08x vt[3]=%08x"
+                fprintf(stderr, "[D3DXANALYZE] key this=%08x a=%u b=%u R=%08x obj=%08x vt=%08x vt[3]=%08x"
                         " [R+0x40]=%08x [R+0x44]=%08x P.data=%08x\n", th, a, b, R, o, vt, MR32(vt+12u),
                         MR32(R+0x40u), MR32(R+0x44u), MR32(P));
             }
@@ -185,20 +185,22 @@ void sub_00663a42(CPU *c){
     g_dx[DX_EVALSTATE].n++;
 }
 
-/* ---- Durum degeri notu (memo): sub_00664a2f(this=ecx, a, b)  ret 8 ----
- * Durumun degerini hesaplayip P.data + [R+0x48]'e yazar.  Ifade durumlarinda
- * ([R+0x38] != 0, [R+0x30]&4 == 0) sonuc yalnizca tek girdinin verisine bagli
- * (D3DXANALYZE: %95.8 ayni).  Girdi ozeti degismediyse cagriyi atlamak
- * bellekte hicbir seyi degistirmemeli -- D3DXVERIFY bunu olcer.
- *   D3DXVERIFY=<n> : tahmini isabetlerin 1/n'inde orijinali calistir, efekt
- *                    nesnesi +-256 KB ve .data'yi once/sonra karsilastir.
- *   D3DXMEMO=0     : notu kapat (varsayilan ACIK).
- * Ek koruma: isabette hedef dword (P.data+[R+0x48]) ve deger tamponunun ilk
- * dword'u ([R+8]) son gercek hesaptan beri degismemis olmali; efekt ayni
- * adreste yeniden yaratilirsa ya da biri hedefe yazarsa yeniden hesaplanir. */
-/* Not kaydi: girdinin TAM kopyasi tutulur ve memcmp ile karsilastirilir
- * (ozet degil -- carpisma riski yok; bayt bayt FNV ozeti profilde %8
- * tutuyordu).  MEMO_BUF'u asan girdiler notlanmaz, her zaman hesaplanir. */
+/* ---- State value memo: sub_00664a2f(this=ecx, a, b)  ret 8 ----
+ * Computes the state's value and writes it to P.data + [R+0x48].  For expression
+ * states ([R+0x38] != 0, [R+0x30]&4 == 0) the result depends only on the data
+ * of a single input (D3DXANALYZE: 95.8% the same).  If the input hash didn't
+ * change, skipping the call should change nothing in memory -- D3DXVERIFY
+ * measures this.
+ *   D3DXVERIFY=<n> : on 1/n of the predicted hits run the original and compare
+ *                    the effect object +-256 KB and .data before/after.
+ *   D3DXMEMO=0     : turn the memo off (ON by default).
+ * Extra guard: on a hit the target dword (P.data+[R+0x48]) and the first dword
+ * of the value buffer ([R+8]) must be unchanged since the last real computation;
+ * if the effect is recreated at the same address or someone writes to the
+ * target, it is recomputed. */
+/* Memo record: a FULL copy of the input is kept and compared with memcmp
+ * (not a hash -- no collision risk; a byte-wise FNV hash took 8% in the
+ * profile).  Inputs exceeding MEMO_BUF aren't memoized, always computed. */
 #define MEMO_BUF 256u
 typedef struct { uint32_t th, ab, eax, n, dst, dval, vval, len, valid; uint8_t buf[MEMO_BUF]; } MemoSlot;
 #define MEMO_CAP 4096u
@@ -210,13 +212,13 @@ static uint8_t *v_buf0, *v_buf1;
 #define V_DATA0 0x007e8000u
 #define V_DATA1 0x008bc000u
 
-/* Anlik goruntu yazici: kayit yuvasinin tamponundaki ESKI goruntuyle yerinde
- * karsilastirir, yalnizca ilk farktan sonra kopyalar.  Isabet orani %90+
- * oldugu icin cogu cagrida hic kopya yok (once kopyalayip sonra memcmp
- * etmek profilde %9 tutuyordu). */
+/* Snapshot writer: compares in place against the OLD snapshot in the record
+ * slot's buffer, and only copies after the first difference.  Since the hit
+ * rate is 90%+, most calls make no copy at all (copying first and then doing
+ * memcmp took 9% in the profile). */
 typedef struct { uint8_t *d; uint32_t len, cap; int eq; } SnapW;
-/* Satir ici: 8 baytlik sozcuklerle XOR-OR karsilastirma.  Sabit n'de
- * derleyici tamamen acar; kutuphane memcmp cagrisi profilde %2.6 idi. */
+/* Inline: XOR-OR comparison with 8-byte words.  With a constant n the compiler
+ * unrolls it completely; the library memcmp call was 2.6% in the profile. */
 static inline __attribute__((always_inline)) int sw_put(SnapW *w, const void *p, uint32_t n){
     if (w->len + n > w->cap) return 0;
     uint8_t *q = w->d + w->len;
@@ -232,7 +234,7 @@ static inline __attribute__((always_inline)) int sw_put(SnapW *w, const void *p,
     return 1;
 }
 
-/* Degerlendirmenin girdileri; tampon tasarsa 0. */
+/* The inputs of the evaluation; 0 if the buffer overflows. */
 static inline __attribute__((always_inline)) int state_input_snap(SnapW *w, uint32_t th, uint32_t P, uint32_t R){
     uint32_t fix[6] = { th, R, MR32(R+0x38u), MR32(P), MR32(R+0x48u), MR32(R+8u) };
     if (!sw_put(w, fix, sizeof fix)) return 0;
@@ -258,10 +260,10 @@ static void verify_diff(uint32_t lo, uint32_t n, const uint8_t *before,
     for (uint32_t i = 0; i < n && shown < 24; i++){
         if (before[i] == g_mem[lo+i]) continue;
         uint32_t a = lo + i, pd = MR32(P);
-        fprintf(stderr, "[D3DXVERIFY] fark %08x  (this%+d  R%+d  P.data%+d)  %02x -> %02x\n",
+        fprintf(stderr, "[D3DXVERIFY] diff %08x  (this%+d  R%+d  P.data%+d)  %02x -> %02x\n",
                 a, (int)(a-th), (int)(a-R), (int)(a-pd), before[i], g_mem[a]);
         shown++;
-        i |= 3u;                       /* ayni dword'u bir kez yaz */
+        i |= 3u;                       /* write the same dword once */
     }
 }
 
@@ -279,7 +281,7 @@ void sub_00664a2f(CPU *c){
     }
     uint32_t th = c->ecx, a = MR32(c->esp+4u), b = MR32(c->esp+8u);
     uint32_t P = a*0x64u + MR32(th+0x2cu), R = b*0x64u + MR32(P+4u);
-    if (g_pctx_n) pctx_note_inputs(R);     /* Asama 3: gecis bagimliligi */
+    if (g_pctx_n) pctx_note_inputs(R);     /* Stage 3: pass dependency */
     if (!g_memo){ sub_00664a2f_orig(c); return; }
     m_calls++;
     if ((MR8(R+0x30u) & 4) || !MR32(R+0x38u)){ sub_00664a2f_orig(c); return; }
@@ -304,7 +306,7 @@ void sub_00664a2f(CPU *c){
     if (hit){
         m_hit++;
         if (g_verify_n && (m_hit % (uint64_t)g_verify_n) == 0){
-            /* pencere: this etrafinda, yalnizca haritalanmis 16 KB sayfalar */
+            /* window: around this, only mapped 16 KB pages */
             uint32_t lo = th & ~0x3fffu, hi = lo + 0x4000u, dn = V_DATA1 - V_DATA0;
             while (lo - 0x4000u >= th - V_WIN && mem_is_committed(lo - 0x4000u)) lo -= 0x4000u;
             while (hi + 0x4000u <= th + V_WIN && mem_is_committed(hi)) hi += 0x4000u;
@@ -314,10 +316,11 @@ void sub_00664a2f(CPU *c){
             uint32_t esp0 = c->esp;
             sub_00664a2f_orig(c);
             v_runs++;
-            /* this+0x114 (kayitli FPU CW) ve +0x118 bit0 (CW kaydedildi):
-             * 663a42 BeginPass icindeki ilk degerlendirmede FPU hassasiyetini
-             * ayarlar, BeginPass sonu geri yukler.  Atlanan degerlendirme CW'ye
-             * hic dokunmadigi icin geri yukleme de gerekmez -- zararsiz fark. */
+            /* this+0x114 (saved FPU CW) and +0x118 bit0 (CW saved):
+             * 663a42 sets the FPU precision on the first evaluation inside
+             * BeginPass, and the end of BeginPass restores it.  Since the skipped
+             * evaluation never touches the CW, no restore is needed either -- a
+             * harmless difference. */
             { uint32_t off = th + 0x114u - lo; memcpy(v_buf0 + off, g_mem + th + 0x114u, 8); }
             int d0 = memcmp(v_buf0, g_mem + lo, n) != 0;
             int d1 = memcmp(v_buf1, g_mem + V_DATA0, dn) != 0;
@@ -326,7 +329,7 @@ void sub_00664a2f(CPU *c){
                 if (d0) verify_diff(lo, n, v_buf0, th, P, R);
                 if (d1) verify_diff(V_DATA0, dn, v_buf1, th, P, R);
                 if (c->eax != s->eax)
-                    fprintf(stderr, "[D3DXVERIFY] eax farki %08x -> %08x\n", s->eax, c->eax);
+                    fprintf(stderr, "[D3DXVERIFY] eax diff %08x -> %08x\n", s->eax, c->eax);
             } else v_clean++;
             (void)esp0;
             s->eax = c->eax; s->dval = rd32s(dst); s->vval = rd32s(vb);
@@ -338,25 +341,25 @@ void sub_00664a2f(CPU *c){
             return;
         }
     }
-    s->th = th; s->ab = ab; s->valid = 0; s->n++;     /* tampon zaten yeni goruntu */
+    s->th = th; s->ab = ab; s->valid = 0; s->n++;     /* the buffer is already the new snapshot */
     sub_00664a2f_orig(c);
     s->len = w.len; s->eax = c->eax; s->valid = 1;
     s->dst = dst; s->dval = rd32s(dst); s->vval = rd32s(vb);
 }
 
-/* ---- Asama 3: parametre surumleri ----
- * Parametre verisi yalnizca Set* ile degisir ve Set*'larin hepsi D3DX'in
- * "parametre degisti" noktasi sub_0065ab24'e ulasir (20 cagri yeri, hepsi
- * vtable Set* yuvalari + CloneEffect + parametre bloku yolu).  Orada
- * degisen verinin 64 baytlik satirlarina global bir sayac yazilir.  Efekt
- * havuzu veriyi efektler arasinda paylastigi icin anahtar veri ADRESI.
- * Bir gecisin bagimliliklari = durumlarinin okudugu satirlar; hicbiri kayit
- * anindan beri degismediyse gecis ayni ciktiyi uretir.                    */
+/* ---- Stage 3: parameter versions ----
+ * Parameter data only changes through Set*, and all the Set*s reach D3DX's
+ * "parameter changed" point sub_0065ab24 (20 call sites, all vtable Set* slots
+ * + CloneEffect + the parameter block path).  There a global counter is written
+ * to the 64-byte lines of the changed data.  Since the effect pool shares data
+ * between effects, the key is the data ADDRESS.
+ * A pass's dependencies = the lines its states read; if none of them changed
+ * since record time, the pass produces the same output.                  */
 #define PV_CAP (1u<<16)
 typedef struct { uint32_t line; uint32_t ep; } PvSlot;
 static PvSlot  g_pv[PV_CAP];
 static uint32_t g_pepoch = 1;
-static int      g_pv_on = 0;         /* yalnizca Asama 3 acikken surum tut */
+static int      g_pv_on = 0;         /* keep versions only while Stage 3 is on */
 static uint64_t pv_bumps, pv_full;
 
 static inline uint32_t pv_get(uint32_t line){
@@ -366,7 +369,7 @@ static inline uint32_t pv_get(uint32_t line){
         if (t->line == line) return t->ep;
         if (!t->line) return 0;
     }
-    return 0xFFFFFFFFu;                  /* tablo dolu: her zaman "degismis" */
+    return 0xFFFFFFFFu;                  /* table full: always "changed" */
 }
 static inline void pv_set(uint32_t line, uint32_t ep){
     uint32_t h = line * 0x9E3779B1u;
@@ -376,8 +379,8 @@ static inline void pv_set(uint32_t line, uint32_t ep){
     }
     pv_full++;
 }
-/* Parametre yuvasinin veri araligi (ust sinir tahmini: satir basina 16 bayt,
- * matris 4x16).  Tanim: +0x10 eleman, +0x14 satir. */
+/* The data range of a parameter slot (upper bound estimate: 16 bytes per row,
+ * matrix 4x16).  Definition: +0x10 elements, +0x14 rows. */
 static inline void slot_range(uint32_t sl, uint32_t *dp, uint32_t *n){
     uint32_t d = MR32(sl), ds = MR32(sl+4u);
     uint32_t el = MR32(ds+0x10u); if (!el) el = 1;
@@ -386,8 +389,8 @@ static inline void slot_range(uint32_t sl, uint32_t *dp, uint32_t *n){
     *dp = d; *n = d ? b : 0u;
 }
 
-/* Yerel 66056c dogrulamasi: orijinalin dogrudan yaptigi 65ab24 cagrilari
- * (efekt, yuva) sirasiyla kaydedilir; ic ice cagrilar kaydedilmez. */
+/* Native 66056c verification: the 65ab24 calls the original makes directly
+ * (effect, slot) are recorded in order; nested calls aren't recorded. */
 #define AB_LOG 64
 static int      g_ab_log, g_ab_n;
 static uint32_t g_ab_seq[AB_LOG][2];
@@ -412,12 +415,12 @@ void sub_0065ab24(CPU *c){
     g_ab_log = lg;
 }
 
-/* ---- Yerel yardimcilar (Secenek 1) ----
- * Lift edilmis x87/bayrak kodunun yerine birebir ayni sonucu ureten C.
- *   D3DXNATIVE=0     : kapat (varsayilan acik)
- *   D3DXNVERIFY=<n>  : her n. cagrida yerel sonucu hesapla, orijinali
- *                      calistir, karsilastir (matris: 64 bayt + eax;
- *                      havuz: 65ab24 cagri dizisi + eax).               */
+/* ---- Native helpers (Option 1) ----
+ * C that produces exactly the same result in place of the lifted x87/flag code.
+ *   D3DXNATIVE=0     : turn off (on by default)
+ *   D3DXNVERIFY=<n>  : on every nth call compute the native result, run the
+ *                      original, compare (matrix: 64 bytes + eax;
+ *                      pool: the 65ab24 call sequence + eax).           */
 static int g_dxn_on = -1, g_dxn_v = 0;
 static uint64_t mm_calls, mm_slow, mmv_runs, mmv_bad, pl_calls, plv_runs, plv_bad;
 static inline int dxn_on(void){
@@ -429,15 +432,16 @@ static inline int dxn_on(void){
 }
 
 /* D3DXMatrixMultiply(out, m1, m2)  stdcall, ret 12, eax = out.
- * Orijinal (x87): her cikti icin p_k = a_ik*b_kj (double, iki float'in
- * carpimi tam), t = (p2+p0) + (p1+p3), out = (float)t.  Satir yolu (m2 !=
- * out) m1 satirini, sutun yolu (m2 == out, m1 != out) m2 sutununu yazmadan
- * once okudugu icin sonuc daima ozgun girdilerin carpimi; m1 == m2 == out
- * durumunda m2 yigina kopyalanip satir yoluna gidiliyor.  Iki yolun tek
- * farki carpimdaki islenen sirasi -- yalnizca NaN yayiliminda onemli.
- * Hizli yol: 32 girdinin hepsi sonluysa carpim/toplam NaN ya da tasma
- * uretemez (|a*b| < 2^256), x87_r2 denetimleri bos gecer.  Aksi halde ve
- * kismi ortusmede orijinal calisir.  FMA birlestirmesi KAPALI olmali.   */
+ * Original (x87): for every output p_k = a_ik*b_kj (double, the product of two
+ * floats is exact), t = (p2+p0) + (p1+p3), out = (float)t.  Since the row path
+ * (m2 != out) reads the m1 row and the column path (m2 == out, m1 != out) reads
+ * the m2 column before writing, the result is always the product of the
+ * original inputs; for m1 == m2 == out, m2 is copied to the stack and the row
+ * path is taken.  The only difference between the two paths is the operand
+ * order in the product -- it only matters for NaN propagation.
+ * Fast path: if all 32 inputs are finite, the products/sums can't produce NaN
+ * or overflow (|a*b| < 2^256), and the x87_r2 checks are vacuous.  Otherwise,
+ * and on partial overlap, the original runs.  FMA contraction must be OFF. */
 #pragma clang fp contract(off)
 static inline __attribute__((always_inline)) int mm_ovl(uint32_t a, uint32_t b){
     return a != b && a - b + 63u < 127u;   /* |a-b| < 64 */
@@ -475,13 +479,13 @@ void sub_0067193e(CPU *c){
         mmv_runs++;
         if (memcmp(g_mem + out, R, 64) || c->eax != out){
             if (mmv_bad++ < 8)
-                fprintf(stderr, "[D3DXNVERIFY] matris farki out=%08x m1=%08x m2=%08x eax=%08x\n",
+                fprintf(stderr, "[D3DXNVERIFY] matrix diff out=%08x m1=%08x m2=%08x eax=%08x\n",
                         out, m1, m2, c->eax);
         }
         return;
     }
     memcpy(g_mem + out, R, 64);
-    /* orijinalin cikistaki ecx/edx'i (cagiran icin anlamsiz ama ucuz) */
+    /* the original's ecx/edx at exit (meaningless to the caller but cheap) */
     if (m2 != out){ c->ecx = m1 + 0x40u; c->edx = m2; }
     else if (m1 == out){ c->ecx = m1 + 0x40u; c->edx = sp - 0x44u; }
     else { c->ecx = m1; c->edx = m2; }
@@ -490,18 +494,18 @@ void sub_0067193e(CPU *c){
 }
 #pragma clang fp contract(on)
 
-/* Parametre degisti bildirimi, sub_0066056c(this=ecx, yuva) ret 4.
- * Parametre efekt havuzunda paylasiliyorsa havuzdaki her etkin efekt
- * (bayt +0x119 bit 0) icin 65ab24(efekt, o efektteki yuva), sonra kendisi.
- *   pobj = [[this+0xb0] + [yuva+0x14]*4],  bas = [pobj+0x40]  (halka liste,
- *   dugum: +0 efekt, +4 yuva, +0x10 sonraki), havuz = [this+0x38]:
- *   +8 efekt sayisi, +0xc tek efekt.
- * Orijinalin prologu (ebp/ebx/esi/edi itmeleri) aynen yapilir: 65ab24
- * ayni esp'yi gorur.  65ab24 yalnizca ecx ve [esp+4]'u okur. */
+/* Parameter-changed notification, sub_0066056c(this=ecx, slot) ret 4.
+ * If the parameter is shared in the effect pool, for every active effect in the
+ * pool (byte +0x119 bit 0) 65ab24(effect, the slot in that effect), then itself.
+ *   pobj = [[this+0xb0] + [slot+0x14]*4],  head = [pobj+0x40]  (a ring list,
+ *   node: +0 effect, +4 slot, +0x10 next), pool = [this+0x38]:
+ *   +8 effect count, +0xc single effect.
+ * The original's prologue (pushing ebp/ebx/esi/edi) is done exactly: 65ab24
+ * sees the same esp.  65ab24 only reads ecx and [esp+4]. */
 static inline __attribute__((always_inline)) uint32_t pl_call(CPU *c, uint32_t eff, uint32_t sl, uint32_t ret){
     c->ecx = eff; PUSH32(sl); PUSH32(ret); sub_0065ab24(c); return c->eax;
 }
-/* Kuru calisma (dogrulama): cagrilarin hepsi >= 0 donerse yapilacak dizi. */
+/* Dry run (verification): the sequence to execute if all calls return >= 0. */
 static int pl_plan(uint32_t th, uint32_t sl, uint32_t seq[][2]){
     int n = 0;
     #define PL_ADD(e, s) do{ if (n < AB_LOG){ seq[n][0] = (e); seq[n][1] = (s); } n++; }while(0)
@@ -540,7 +544,7 @@ void sub_0066056c(CPU *c){
             bad = plan[i][0] != g_ab_seq[i][0] || plan[i][1] != g_ab_seq[i][1];
         if (!pn && c->eax) bad = 1;
         if (bad && plv_bad++ < 8)
-            fprintf(stderr, "[D3DXNVERIFY] havuz farki this=%08x yuva=%08x plan %d cagri, orijinal %d (eax %08x)\n",
+            fprintf(stderr, "[D3DXNVERIFY] pool diff this=%08x slot=%08x plan %d calls, original %d (eax %08x)\n",
                     th, sl, pn, g_ab_n, c->eax);
         return;
     }
@@ -576,13 +580,13 @@ done:
     POP32(c->eip); c->esp += 4u;
 }
 
-/* SetMatrix'in donusturme adimi, sub_0065cf44(tanim, hedef, kaynak) ret 12.
- * 4x4 matrisi DEVRIK yazar, parametre turune gore ([tanim+0]):
- *   3 float : hedef[4j+i] = kaynak[4i+j] (bit kopyasi)
- *   1 bool  : hedef[4j+i] = (kaynak[4i+j] == [0x7d7d3c]) ? 0 : 1   (NaN -> 1)
- *   2 int   : __ftol (0x75dd28) ile -- orijinalde kalir
- *   diger   : 0x80004005; orijinalde kalir.
- * Basari eax = 0.  Hedef/kaynak ortusurse orijinal (yerinde devrik farkli). */
+/* SetMatrix's conversion step, sub_0065cf44(def, dest, src) ret 12.
+ * Writes the 4x4 matrix TRANSPOSED, by parameter type ([def+0]):
+ *   3 float : dest[4j+i] = src[4i+j] (bit copy)
+ *   1 bool  : dest[4j+i] = (src[4i+j] == [0x7d7d3c]) ? 0 : 1   (NaN -> 1)
+ *   2 int   : with __ftol (0x75dd28) -- stays in the original
+ *   other   : 0x80004005; stays in the original.
+ * Success eax = 0.  If dest/src overlap, the original (an in-place transpose differs). */
 static uint64_t sm_calls, sm_slow, smv_runs, smv_bad;
 void sub_0065cf44_orig(CPU *c);
 void sub_0065cf44(CPU *c){
@@ -605,7 +609,7 @@ void sub_0065cf44(CPU *c){
         sub_0065cf44_orig(c);
         smv_runs++;
         if ((memcmp(g_mem + dst, D, 64) || c->eax) && smv_bad++ < 8)
-            fprintf(stderr, "[D3DXNVERIFY] SetMatrix donusumu farki tur %u hedef=%08x kaynak=%08x eax=%08x\n",
+            fprintf(stderr, "[D3DXNVERIFY] SetMatrix conversion diff type %u dest=%08x src=%08x eax=%08x\n",
                     t, dst, src, c->eax);
         return;
     }
@@ -616,7 +620,7 @@ void sub_0065cf44(CPU *c){
     POP32(c->eip); c->esp += 12u;
 }
 
-/* Kaydi alinan gecisin baglami: durum sarmalayicisi bagimlilik bildirir. */
+/* Context of the pass being recorded: the state wrapper reports dependencies. */
 #define PS_DEPS 48
 typedef struct PassCtx { int elig; uint32_t tmask, ndep; uint32_t dep[PS_DEPS]; } PassCtx;
 static PassCtx *g_pctx[8];
@@ -632,10 +636,10 @@ static inline void pctx_dep_range(uint32_t dp, uint32_t n){
         x->dep[x->ndep++] = l;
     }
 }
-/* Bir durumun okudugu parametre verisi: ifade girdileri + deger tamponu.
- * Hem durum atama (669296) hem deger alma (664a2f) sarmalayicisindan
- * cagrilir; sampler nesnelerinin alt durumlari (tur 14/15, 668e0d/668cd0)
- * 669296'dan gecmiyor ama degerlerini 664a2f ile aliyor. */
+/* The parameter data a state reads: expression inputs + value buffer.
+ * Called from both the state assignment (669296) and value retrieval (664a2f)
+ * wrappers; the sub-states of sampler objects (type 14/15, 668e0d/668cd0)
+ * don't go through 669296 but get their values with 664a2f. */
 static void pctx_note_inputs(uint32_t R){
     if (MR32(R+0x38u) && !(MR8(R+0x30u) & 4) && MR32(R+0x3cu)){
         unsigned n = MR16(R+0x4eu); uint32_t base = MR32(R+0x34u);
@@ -654,13 +658,14 @@ static void pctx_note_state(uint32_t th, uint32_t P, uint32_t R, uint32_t type){
     pctx_note_inputs(R);
 }
 
-/* ---- Asama 2: durum atama notu, sub_00669296(this=ecx, a, b, elem) ret 0xc ----
- * Bir durumun cihaza uygulanmasi.  Girdilerin anlik goruntusu ayniysa ve
- * son gercek calismada yaptigi D3D cagrilarinin HEPSI simdi etkisizse
- * (com.c dxrec_redundant) fonksiyon atlanir.
- *   D3DXMEMO2=0     : kapat (varsayilan acik)
- *   D3DXVERIFY2=<n> : tahmini isabetlerin 1/n'inde orijinali kayitla calistir;
- *                     bellek penceresi + "her cagri etkisizdi" denetlenir. */
+/* ---- Stage 2: state assignment memo, sub_00669296(this=ecx, a, b, elem) ret 0xc ----
+ * Applying a state to the device.  If the input snapshot is the same and ALL
+ * the D3D calls it made in its last real run would now have no effect
+ * (com.c dxrec_redundant), the function is skipped.
+ *   D3DXMEMO2=0     : turn off (on by default)
+ *   D3DXVERIFY2=<n> : on 1/n of the predicted hits run the original with
+ *                     recording; the memory window + "every call had no
+ *                     effect" are checked. */
 #define M2_BUF 640u
 typedef struct {
     uint32_t th, ab, elem, eax, n, len, type, valid;
@@ -698,23 +703,24 @@ static inline __attribute__((always_inline)) int state_apply_snap(SnapW *w, uint
     return 1;
 }
 
-/* ---- Asama 4a: yerel durum uygulayici, sub_00669296 turleri 1/2/3 ----
- * Lift edilmis kodun birebir karsiligi, D3DX'in kendi bellek yapilari
- * uzerinde (defter tutma degismez, desteklenmeyen her yol orijinale duser):
- *   P = a*0x64 + [this+0x2c], R = b*0x64 + [P+4], deger = [[R+0x48] + [P]]
- *   el == 0xffff ise el = word[R+0x54]
- *   R+0 != 0 (kirli): R+0 = R+4; 664a2f(this, a, b) degeri yeniler (<0: don)
- *   tur = [R+0x58]>>24, durum = [R+0x58]&0xffffff, cihaz = [this+8]:
- *     1 SetRenderState(durum, deger)            vtable +0xe4
- *     2 SetTextureStageState(el, durum, deger)  +0x10c
- *     3 [this+0x3c]==1 ise hicbir sey; degilse SetSamplerState(el, durum, deger) +0x114
- *   Tur 3 kirli + [this+0x3c]==4 + el==0xffff: sampler'i kullanan her
- *   shader icin dongu -> orijinal.  Cihaz cagrisi etkisizse (com.c dxn_skip)
- *   hic yapilmaz; degilse konuk dagitimi uzerinden com_call'a gider.
- *   D3DXNATIVE4=0     : kapat
- *   D3DXN4VERIFY=<n>  : uygun cagrilarin 1/n'inde yerel kuru calisir, bellek
- *                       + cagri listesi saklanir, orijinal kayitla calisir,
- *                       karsilastirilir. */
+/* ---- Stage 4a: native state applier, sub_00669296 types 1/2/3 ----
+ * The exact equivalent of the lifted code, on D3DX's own memory structures
+ * (the bookkeeping doesn't change, every unsupported path falls back to the
+ * original):
+ *   P = a*0x64 + [this+0x2c], R = b*0x64 + [P+4], value = [[R+0x48] + [P]]
+ *   if el == 0xffff then el = word[R+0x54]
+ *   R+0 != 0 (dirty): R+0 = R+4; 664a2f(this, a, b) refreshes the value (<0: return)
+ *   type = [R+0x58]>>24, state = [R+0x58]&0xffffff, device = [this+8]:
+ *     1 SetRenderState(state, value)            vtable +0xe4
+ *     2 SetTextureStageState(el, state, value)  +0x10c
+ *     3 nothing if [this+0x3c]==1; otherwise SetSamplerState(el, state, value) +0x114
+ *   Type 3 dirty + [this+0x3c]==4 + el==0xffff: a loop over every shader using
+ *   the sampler -> original.  If the device call has no effect (com.c dxn_skip)
+ *   it isn't made at all; otherwise it goes to com_call through guest dispatch.
+ *   D3DXNATIVE4=0     : turn off
+ *   D3DXN4VERIFY=<n>  : on 1/n of eligible calls the native code does a dry run,
+ *                       memory + the call list are saved, the original runs with
+ *                       recording, and they are compared. */
 int dxn_skip(int kind, uint32_t a0, uint32_t a1, uint32_t a2);
 void sub_00664a2f(CPU *c);
 void sub_00669296_orig(CPU *c);
@@ -728,12 +734,12 @@ static void nat_verify(CPU *c, int (*nat)(CPU*), void (*orig)(CPU*), uint32_t th
                        const uint32_t *ext, int next, VStat *vs, const char *tag, uint32_t info);
 static int n4_dry, n4_dryn; static uint32_t n4_dryk[NDRY][4];
 /* kind: 1 SetRenderState(a0,a1) 2 SetTextureStageState 3 SetSamplerState
- *       (a0,a1,a2) 4 SetTexture(a0,a1) 5/6 Set{V,P}SConstantF(baslangic, veri,
- *       adet) 7/8 Set{Vertex,Pixel}Shader(a0) 9/10 ...ConstantI 11/12 ...ConstantB
- *       (9..12 etkisizlik denetimi yok: her zaman yapilir) */
+ *       (a0,a1,a2) 4 SetTexture(a0,a1) 5/6 Set{V,P}SConstantF(start, data,
+ *       count) 7/8 Set{Vertex,Pixel}Shader(a0) 9/10 ...ConstantI 11/12 ...ConstantB
+ *       (9..12 have no no-effect check: always made) */
 static const int n4_nargs[13] = { 0, 2, 3, 3, 2, 3, 3, 1, 1, 3, 3, 3, 3 };
-/* Tur 1..3 icin com.c dxrec_call_redundant'in satir ici esi (ayni kural);
- * kayit/tekrar/iz acikken -1: yavas yol (dxn_skip) karar verir. */
+/* The inline equivalent of com.c dxrec_call_redundant for types 1..3 (same rule);
+ * -1 while record/replay/trace is on: the slow path (dxn_skip) decides. */
 extern uint32_t g_rs[256], g_tss_raw[8][40], g_smp_raw[16][20];
 extern int g_rs_dirty, g_sb_rec, g_sb_replay, g_dxrec_depth, g_fxtr;
 static inline int n4_red_fast(int kind, uint32_t a0, uint32_t a1, uint32_t a2){
@@ -763,18 +769,18 @@ static inline uint32_t n4_dev(CPU *c, uint32_t dev, int kind, uint32_t off, uint
     dispatch_indirect(c, fn);
     return c->eax;
 }
-/* Kirli ifade durumu icin durum basina not (Asama 1'in mantigi, R ile
- * dogrudan indeksli kucuk yuvalar): girdi parametrelerinin verisi, hedef
- * dword ve deger tamponunun ilk dword'u son gercek 664a2f'den beri
- * degismediyse degerlendirme ayni sonucu yazardi -> atla.  En fazla 2
- * girdi / 64 bayt; daha buyukler her zaman degerlendirilir. */
+/* A per-state memo for dirty expression states (Stage 1's logic, small slots
+ * indexed directly by R): if the input parameters' data, the target dword and
+ * the first dword of the value buffer haven't changed since the last real
+ * 664a2f, the evaluation would write the same result -> skip.  At most 2
+ * inputs / 64 bytes; larger ones are always evaluated. */
 typedef struct { uint32_t R, th, dst, dval, vb, vval, eax, n, base; uint32_t rec[2], pp[2], dp[2], nb[2]; uint8_t d[96]; } N4Memo;
 #define N4M_CAP 2048u
 static N4Memo *g_n4m;
 static int g_n4m_on = -1;
 static uint64_t n4m_hit, n4m_miss, n4m_big, n4m_why[4];
 void sub_00664a2f_orig(CPU *c);
-/* 1: girdiler toplandi (rec, pp, dp, nb doldu); 0: notlanamaz */
+/* 1: inputs gathered (rec, pp, dp, nb filled); 0: not memoizable */
 static inline int n4m_inputs(uint32_t R, uint32_t *n, uint32_t *rec, uint32_t *pp, uint32_t *dp, uint32_t *nb){
     if (!MR32(R+0x38u) || (MR8(R+0x30u) & 4)){ n4m_why[0]++; return 0; }
     if (!MR32(R+0x3cu)){ n4m_why[1]++; return 0; }
@@ -797,8 +803,8 @@ static inline uint32_t n4_eval(CPU *c, uint32_t th, uint32_t a, uint32_t b, uint
     uint32_t dst = MR32(R+0x48u) + MR32(P), vb = MR32(R+8u);
     if (g_n4m){
         s = &g_n4m[((R >> 2) * 0x9E3779B1u) >> 21];
-        /* isabet: ayni durum, girdi kayitlari ayni parametreyi gosteriyor,
-         * veri ve hedef/deger tamponu son gercek degerlendirmedeki gibi */
+        /* hit: same state, the input records point to the same parameter,
+         * the data and target/value buffer are as in the last real evaluation */
         if (s->R == R && s->th == th && s->dst == dst && s->vb == vb && s->n
             && MR16(R+0x4eu) == s->n && MR32(R+0x34u) == s->base
             && MR32(s->rec[0] + 0xcu) == s->pp[0] && MR32(s->pp[0]) == s->dp[0]
@@ -824,15 +830,15 @@ static inline uint32_t n4_eval(CPU *c, uint32_t th, uint32_t a, uint32_t b, uint
     } else if (s) s->R = 0;
     return r;
 }
-/* ---- Asama 4c: yerel sampler uygulayici, sub_00668cd0(this, P, Rbas, Rson) ret 12 ----
- * [Rbas, Rson) arasindaki her sampler baglama durumu R icin:
- *   vp = [R+0x48] + [P]; kayit = w[vp+2] + w[vp] - 1, ardisik w[R+0x56] kayit,
- *   asama = w[R+0x54] (kayit basina +1).  Her kaydin (P2) durumlari:
- *     tur 3: [R2] kirliyse 664a2f(this, kayit no, k), sonra [R2] = [R2+4];
- *            SetSamplerState(asama, [R2+0x58]&0xffffff, [[R2+0x48]+[P2]])
- *     tur 9: o = [[this+0xb0] + [R2+0x1c]*4], i = [[R2+8]],
- *            [o+0x40] varsa i = [[o+0x40]+8][i]; SetTexture(asama, [[this+0x18] + i*24 + 4])
- *   <0 sonucta dur ve don; sonunda 0.  Baska tur iceren kayit -> orijinal. */
+/* ---- Stage 4c: native sampler applier, sub_00668cd0(this, P, Rstart, Rend) ret 12 ----
+ * For every sampler binding state R in [Rstart, Rend):
+ *   vp = [R+0x48] + [P]; record = w[vp+2] + w[vp] - 1, w[R+0x56] consecutive
+ *   records, stage = w[R+0x54] (+1 per record).  The states of each record (P2):
+ *     type 3: if [R2] is dirty 664a2f(this, record no, k), then [R2] = [R2+4];
+ *             SetSamplerState(stage, [R2+0x58]&0xffffff, [[R2+0x48]+[P2]])
+ *     type 9: o = [[this+0xb0] + [R2+0x1c]*4], i = [[R2+8]],
+ *             if [o+0x40] exists i = [[o+0x40]+8][i]; SetTexture(stage, [[this+0x18] + i*24 + 4])
+ *   On a <0 result stop and return; 0 at the end.  A record with another type -> original. */
 static uint64_t n6_calls;
 static VStat n6vs;
 static int g_n6_on = -1;
@@ -912,26 +918,26 @@ void sub_00668cd0(CPU *c){
     sub_00668cd0_orig(c);
 }
 
-/* ---- Asama 4d: yerel shader uygulayici, sub_00668e0d(this, P) ret 4 ----
- * P = shader kaydi; R0 = [P+4] shader nesnesi durumu, vs = [P+8] bit 1.
- *   R0 kirliyse: 669296(this, kayit, 0, 0xffff) -> orijinal.
- *   Set{Vertex,Pixel}Shader(nesne tablosundan; o+0x40 dolayli indeks)
- *   P&4: 663bc1(this, kayit, 1); P&0x10 ise word[P+0x50/56/5c] adet F/I/B
- *        sabitini (4c==4e / 52==54 / 58==5a ise) yukle; bir durum atla.
- *   float sabit durumlari [.., w[P+0x4e]): kirliyse R=R+4 ve R+0x30&0x10 ise
- *        ham kopya ([R+0x5c], [R+0x60] bayt) yoksa 6623ea; sonra blok yukle
- *        (dongu bossa yukleme de yok).  w[P+0x4e]==w[P+0x36] ise 0 don.
+/* ---- Stage 4d: native shader applier, sub_00668e0d(this, P) ret 4 ----
+ * P = shader record; R0 = [P+4] the shader object state, vs = [P+8] bit 1.
+ *   If R0 is dirty: 669296(this, record, 0, 0xffff) -> original.
+ *   Set{Vertex,Pixel}Shader(from the object table; o+0x40 indirect index)
+ *   P&4: 663bc1(this, record, 1); if P&0x10, upload word[P+0x50/56/5c] F/I/B
+ *        constants (if 4c==4e / 52==54 / 58==5a); skip one state.
+ *   float constant states [.., w[P+0x4e]): if dirty R=R+4, and if R+0x30&0x10
+ *        a raw copy ([R+0x5c], [R+0x60] bytes) otherwise 6623ea; then upload the
+ *        block (no upload if the loop is empty).  If w[P+0x4e]==w[P+0x36] return 0.
  *   int [.., w[P+0x54]) -> 6627a5 + ConstantI; bool [.., w[P+0x5a]) ->
- *        662bab + ConstantB; kalan [.., w[P+0x60]) sampler'lar -> 668cd0.
- * [ebp-8] yerel yuvasi doldurucu fonksiyonlara adres olarak gidiyor; ayni
- * guncelleme kuraliyla taklit edilir.  Kuru dogrulamada konuk alt cagrisi
- * gerekiyorsa yerel yol reddedilir (orijinal calisir). */
+ *        662bab + ConstantB; the remaining [.., w[P+0x60]) samplers -> 668cd0.
+ * The [ebp-8] local slot is passed by address to the filler functions; it is
+ * imitated with the same update rule.  In dry verification, if a guest subcall
+ * is needed the native path is rejected (the original runs). */
 void sub_00663bc1(CPU*); void sub_006623ea(CPU*); void sub_006627a5(CPU*); void sub_00662bab(CPU*);
 void sub_00668e0d_orig(CPU *c);
 static uint64_t n7_calls;
 static VStat n7vs;
 static int g_n7_on = -1;
-/* doldurucu: fn(this, R+8, hedef, w[R+0x56], [R+0x3c], [[R+0x34]+0x10], &yuva, [o+0x4c]) */
+/* filler: fn(this, R+8, dest, w[R+0x56], [R+0x3c], [[R+0x34]+0x10], &slot, [o+0x4c]) */
 static inline void n7_fill(CPU *c, void (*fn)(CPU*), uint32_t ret, uint32_t th, uint32_t P, uint32_t R, uint32_t *slot8){
     uint32_t o = MR32(MR32(th+0xb0u) + MR32(R+0x1cu)*4u);
     PUSH32(*slot8); uint32_t sa = c->esp;
@@ -1041,19 +1047,19 @@ out:
     if (t0){ g_dx[DX_668E0D].ticks += mach_absolute_time() - t0; g_dx[DX_668E0D].n++; }
 }
 
-/* ---- Asama 4e: yerel SetTexture yolu ----
- * sub_0065ccd8(this, doku, i, o40) ret 12: nesne tablosu yuvasi
- *   y = [this+0x18] + (o40 ? [[o40+8] + i*4] : i)*24;  [y+4] == doku ise 0.
- *   doku->AddRef, eski->Release, [y+4] = doku; o40 varsa havuz halkasi
- *   ([o40+0x10] .. o40, dugum: +0 efekt, +8 indeks tablosu) her efektin
- *   yuvasina ayni: AddRef(yeni), Release(eski), yaz.  0 doner.
- * com.c'de doku AddRef/Release'in hicbir yan etkisi yok (1/0 doner):
- *   hedef bir com.c dokusuysa cagri atlanir.
- * sub_0066d7e9 SetTexture(this, h, doku) ret 12: h < 0 ise kayit = ~h
- *   (metin tutamaci -> orijinal); dizi parametresi + eleman yoksa ya da tur
- *   5..9 degilse 0x8876086c; [this+0x3c]==3 -> orijinal (666a78 yolu);
- *   yuva ayniysa 0; degilse 65ccd8 sonra 66056c(this, kayit).
- *   D3DXNATIVE8=0 kapatir. */
+/* ---- Stage 4e: native SetTexture path ----
+ * sub_0065ccd8(this, tex, i, o40) ret 12: object table slot
+ *   y = [this+0x18] + (o40 ? [[o40+8] + i*4] : i)*24;  0 if [y+4] == tex.
+ *   tex->AddRef, old->Release, [y+4] = tex; if o40 exists, the pool ring
+ *   ([o40+0x10] .. o40, node: +0 effect, +8 index table) does the same for every
+ *   effect's slot: AddRef(new), Release(old), write.  Returns 0.
+ * In com.c texture AddRef/Release have no side effects (they return 1/0):
+ *   if the target is a com.c texture the call is skipped.
+ * sub_0066d7e9 SetTexture(this, h, tex) ret 12: if h < 0, record = ~h
+ *   (string handle -> original); if an array parameter without an element, or the
+ *   type isn't 5..9, 0x8876086c; [this+0x3c]==3 -> original (the 666a78 path);
+ *   0 if the slot is the same; otherwise 65ccd8 then 66056c(this, record).
+ *   D3DXNATIVE8=0 turns it off. */
 void sub_0065ccd8_orig(CPU *c);
 extern int g_fxtr; int fxtr_now(void);
 static int g_n8_on = -1;
@@ -1090,7 +1096,7 @@ static void n8_store(CPU *c, uint32_t th, uint32_t tex, uint32_t ix, uint32_t o4
 void sub_0065ccd8(CPU *c){
     if (!n8_init()){ sub_0065ccd8_orig(c); return; }
     uint32_t sp = c->esp, ret = MR32(sp), th = c->ecx;
-    PUSH32(c->ebp); PUSH32(c->ebx); PUSH32(c->esi); PUSH32(c->edi);  /* orijinal prolog: alt cagrilar ayni esp'yi gorsun */
+    PUSH32(c->ebp); PUSH32(c->ebx); PUSH32(c->esi); PUSH32(c->edi);  /* original prologue: so the subcalls see the same esp */
     n8_store(c, th, MR32(sp+4u), MR32(sp+8u), MR32(sp+12u));
     c->esp = sp + 16u; c->eip = ret; c->eax = 0;
 }
@@ -1110,7 +1116,7 @@ void sub_0066d7e9(CPU *c){
     uint32_t e = o40 ? MR32(MR32(o40+8u) + ix*4u) : ix;
     if (tex == MR32(MR32(th+0x18u) + e*24u + 4u)){ r = 0; goto done; }
     PUSH32(c->ebp); PUSH32(c->ebx); PUSH32(c->esi); PUSH32(c->edi);
-    PUSH32(c->ebp); PUSH32(c->ebx); PUSH32(c->esi); PUSH32(c->edi);   /* 65ccd8'in prologu */
+    PUSH32(c->ebp); PUSH32(c->ebx); PUSH32(c->esi); PUSH32(c->edi);   /* 65ccd8's prologue */
     n8_store(c, th, tex, ix, o40);
     c->esp += 16u;
     c->ecx = th; PUSH32(rec); PUSH32(0x66d8afu); sub_0066056c(c);
@@ -1123,8 +1129,8 @@ out:
     if (t0){ g_dx[DX_SETTEXTURE].ticks += mach_absolute_time() - t0; g_dx[DX_SETTEXTURE].n++; }
 }
 
-/* Cekirdek: 1 dondururse durum yerelde uygulandi, *res = 669296'nin donus
- * degeri.  Yigina dokunmaz (664a2f ve cihaz cagrilari icin it/cek haric). */
+/* Core: if it returns 1 the state was applied natively, *res = 669296's return
+ * value.  Doesn't touch the stack (except push/pop for 664a2f and device calls). */
 void sub_006691b1(CPU *c); void sub_00668e0d(CPU*);
 static uint64_t n4_obj;
 static inline int n4_core(CPU *c, uint32_t th, uint32_t a, uint32_t b, uint32_t eld, uint32_t *res){
@@ -1133,7 +1139,7 @@ static inline int n4_core(CPU *c, uint32_t th, uint32_t a, uint32_t b, uint32_t 
     if (el == 0xffffu) el = MR16(R+0x54u);
     int dirty = MR32(R) != 0;
     if (type == 14u || type == 15u){
-        /* nesne atama (14 shader, 15 sampler): kirli + dizi secici -> orijinal */
+        /* object assignment (14 shader, 15 sampler): dirty + array selector -> original */
         if (dirty && MR32(R+0x38u)) return 0;
         n4_obj++;
         if (dirty) MR32(R) = MR32(R+4u);
@@ -1182,19 +1188,19 @@ static int n4_apply(CPU *c){
     uint32_t th = c->ecx, sp = c->esp, res;
     uint32_t a = MR16(sp+4u), b = MR16(sp+8u), el = MR16(sp+12u);
     if (!n4_core(c, th, a, b, MR32(sp+12u), &res)) return 0;
-    if (el == 0xffffu){                                  /* orijinal arguman yuvasina yazar */
+    if (el == 0xffffu){                                  /* writes to the original argument slot */
         uint32_t P = a*0x64u + MR32(th+0x2cu), R = b*0x64u + MR32(P+4u);
         MR16(sp+12u) = MR16(R+0x54u);
     }
     c->eax = res; POP32(c->eip); c->esp += 12u;
     return 1;
 }
-/* Genel dogrulama: yerel kuru calisir (n4_dev cihaz cagrilarini KAYDEDER,
- * yapmaz), bellek ve cagri listesi saklanir; bellek geri alinir, orijinal
- * dxrec kaydiyla calisir; bellek penceresi (this +-256 KB, .data, ek
- * kayitlar), cagri dizisi, eax/esp karsilastirilir.  Yalnizca cihaza
- * yalniz n4_dev uzerinden giden yollar dogrulanabilir (konuk alt
- * cagrilari kuru calistirilamaz). */
+/* General verification: the native code does a dry run (n4_dev RECORDS the device
+ * calls, doesn't make them), memory and the call list are saved; memory is
+ * rolled back, the original runs with dxrec recording; the memory window
+ * (this +-256 KB, .data, extra records), the call sequence and eax/esp are
+ * compared.  Only paths that reach the device solely through n4_dev can be
+ * verified (guest subcalls can't be dry-run). */
 static void nat_verify(CPU *c, int (*nat)(CPU*), void (*orig)(CPU*), uint32_t th,
                        const uint32_t *ext, int next, VStat *vs, const char *tag, uint32_t info){
     uint32_t lo = th & ~0x3fffu, hi = lo + 0x4000u, dn = V_DATA1 - V_DATA0;
@@ -1223,10 +1229,10 @@ static void nat_verify(CPU *c, int (*nat)(CPU*), void (*orig)(CPU*), uint32_t th
     dxrec_begin(&vr, DXREC_STATE);
     orig(c);
     dxrec_end();
-    if (!vr.ok){ vs->norec++; return; }     /* durum blogu kaydi vb.: karsilastirilamaz */
+    if (!vr.ok){ vs->norec++; return; }     /* state block recording etc.: can't be compared */
     vs->runs++;
-    /* this+0x114..0x11b (kayitli FPU CW + bayrak): 663a42 BeginPass icinde
-     * kaydeder, sonunda geri yukler -- Asama 1 dogrulamasindaki gibi haric. */
+    /* this+0x114..0x11b (saved FPU CW + flag): 663a42 saves it inside BeginPass and
+     * restores it at the end -- excluded, as in the Stage 1 verification. */
     { uint32_t off = th + 0x114u - lo; memcpy(nat0 + off, g_mem + th + 0x114u, 8); }
     int dm = memcmp(nat0, g_mem + lo, n) || memcmp(nat1, g_mem + V_DATA0, dn);
     for (int i = 0; !dm && i < next; i++) dm = memcmp(natX[i], g_mem + ext[i], 0x64) != 0;
@@ -1244,7 +1250,7 @@ static void nat_verify(CPU *c, int (*nat)(CPU*), void (*orig)(CPU*), uint32_t th
     int de = c->eax != neax || c->esp != nesp;
     if (dm || dc || de){
         if (vs->bad++ < 12)
-            fprintf(stderr, "[%s] fark (%08x): bellek=%d cagri=%d (yerel %d, orijinal %d) eax=%d (%08x/%08x)\n",
+            fprintf(stderr, "[%s] diff (%08x): memory=%d calls=%d (native %d, original %d) eax=%d (%08x/%08x)\n",
                     tag, info, dm, dc, n4_dryn, vr.ncall, de, neax, c->eax);
         if (dm && vs->bad <= 4){ uint32_t z = ext && next ? ext[0] : 0; verify_diff(lo, n, nat0, th, z, z); }
     }
@@ -1294,10 +1300,10 @@ n4out:
     uint32_t type = (MR32(R+0x58u) >> 24) & 31u;
     pctx_note_state(th, P, R, type);
     m2_calls++; m2_type_calls[type]++;
-    /* Tur 9 (doku tablosundan dolayli okuma) ve 14/15 (ifadeyle diziden nesne
-     * secip ic ice uygulama) anlik goruntunun disinda girdi okuyor:
-     * D3DXVERIFY2 bu turlerde cihaz/bellek farki buldu.  Yalnizca dogrulanmis
-     * 1..8 notlanir; gerisi her zaman orijinal kodla calisir. */
+    /* Type 9 (indirect read from the texture table) and 14/15 (selecting an object
+     * from an array with an expression and applying it nested) read inputs outside
+     * the snapshot: D3DXVERIFY2 found device/memory differences for these types.
+     * Only the verified 1..8 are memoized; the rest always run the original code. */
     if (type == 0 || type > 8){ m2_excl++; sub_00669296_orig(c); goto out; }
     uint32_t ab = (a<<16) | b;
     uint32_t hk = (th * 0x9E3779B1u) ^ (ab * 0x85EBCA77u) ^ (el * 0xC2B2AE3Du);
@@ -1310,7 +1316,7 @@ n4out:
     if (!s->rec.call) DXREC_INIT(&s->rec, s->rcall, s->rdata);
     int mine = s->n && s->th == th && s->ab == ab && s->elem == el && s->valid;
     SnapW w = { s->buf, 0, M2_BUF, mine };
-    /* yuvayi hemen sahiplen: ic ice bir cagri ayni bos yuvayi almasin */
+    /* claim the slot right away: so a nested call doesn't take the same empty slot */
     s->th = th; s->ab = ab; s->elem = el; if (!s->n) s->n = 1;
     if (!state_apply_snap(&w, th, a, b, el, P, R)){
         m2_big++; s->valid = 0; sub_00669296_orig(c); goto out; }
@@ -1347,7 +1353,7 @@ n4out:
                 if (de) v2_eax++;
                 static int shown = 0;
                 if (shown++ < 12)
-                    fprintf(stderr, "[D3DXVERIFY2] tur %u (kod %08x) R=%08x: bellek=%d cihaz=%d eax=%d  cagri %u (kayit ok=%d)\n",
+                    fprintf(stderr, "[D3DXVERIFY2] type %u (code %08x) R=%08x: memory=%d device=%d eax=%d  calls %u (record ok=%d)\n",
                             type, MR32(R+0x58u), R, dm, dd, de, vr.ncall, vr.ok);
                 if (dm && shown <= 4){
                     if (memcmp(v_buf0, g_mem + lo, n)) verify_diff(lo, n, v_buf0, th, P, R);
@@ -1358,12 +1364,12 @@ n4out:
         }
         if (g_m2_on){
             m2_skip++;
-            dxrec_append(&s->rec);        /* acik gecis kaydi atlanan cagrilari da bilsin */
+            dxrec_append(&s->rec);        /* so the open pass record also knows the skipped calls */
             POP32(c->eip); c->esp += 12u; c->eax = s->eax;
             goto out;
         }
     }
-    s->valid = 0;                         /* tampon zaten yeni goruntu */
+    s->valid = 0;                         /* the buffer is already the new snapshot */
     dxrec_begin(&s->rec, DXREC_STATE);
     sub_00669296_orig(c);
     dxrec_end();
@@ -1373,14 +1379,14 @@ out:
     if (t0){ g_dx[DX_STATEAPPLY].ticks += mach_absolute_time() - t0; g_dx[DX_STATEAPPLY].n++; }
 }
 
-/* ---- Asama 3: gecis notu, sub_006691b1(this=ecx, gecis, eleman) ret 8 ----
- * Isabet: parmak izi ayni (efekt alanlari + gecis kaydi), kayit anindan beri
- * bagimli parametre satirlarinin hicbiri degismemis, kaydedilen cihaz
- * cagrilarinin hepsi simdi etkisiz.  Uygunluk: gecisteki her durum tur 1..8,
- * ic ice uygulama yok, 6691b1'in ozel yollari (P&8, [this+0x3c]==4 && P&1)
- * kapali.
- *   D3DXMEMO3=1     : ac (varsayilan KAPALI -- bkz. D3DX_HLE.md Asama 3 sonucu)
- *   D3DXVERIFY3=<n> : isabetlerin 1/n'inde orijinali calistir, bellek + cihaz */
+/* ---- Stage 3: pass memo, sub_006691b1(this=ecx, pass, element) ret 8 ----
+ * Hit: the fingerprint is the same (effect fields + pass record), none of the
+ * dependent parameter lines changed since record time, and all the recorded
+ * device calls currently have no effect.  Eligibility: every state in the pass
+ * is type 1..8, no nested application, 6691b1's special paths (P&8,
+ * [this+0x3c]==4 && P&1) off.
+ *   D3DXMEMO3=1     : on (OFF by default -- see D3DX_HLE.md Stage 3 result)
+ *   D3DXVERIFY3=<n> : on 1/n of the hits run the original, memory + device */
 #define M3_BUF 192u
 typedef struct {
     uint32_t th, ab, eax, n, len, valid, ep0;
@@ -1396,12 +1402,12 @@ static int g_m3_on = -1, g_v3_n = 0;
 static uint64_t m3_calls, m3_fp, m3_dep, m3_dev, m3_inel, m3_hit, m3_skip, m3_rec, m3_recok;
 static uint64_t v3_runs, v3_clean, v3_mem, v3_dev, v3_eax, m3_why[8]; static uint32_t m3_why_tm;
 
-/* Parmak izi: efekt alanlari, gecis kaydi ve teknik kaydinin +0x8c..+0xab
- * araligi.  Bayrak 8 acikken 6691b1 her gecis 66404c/6641a7'yi cagiriyor:
- * gecisin shader sabit yazmac sayisini ([P+0x1c..]) teknigin o ana kadarki
- * en buyugu ([teknik+0xa4..0xaa]) ile karsilastirip yalnizca BUYUMEDE
- * kayit hazirligi yapiyor.  Isinmadan sonra cagrisiz; buyume olursa bu
- * alanlar degisir ve gecis yeniden kaydedilir. */
+/* Fingerprint: the effect fields, the pass record and the +0x8c..+0xab range of
+ * the technique record.  With flag 8 on, 6691b1 calls 66404c/6641a7 on every
+ * pass: it compares the pass's shader constant register count ([P+0x1c..]) with
+ * the technique's largest so far ([technique+0xa4..0xaa]) and only prepares a
+ * record when it GROWS.  No calls after warm-up; if it grows these fields
+ * change and the pass is re-recorded. */
 static inline int pass_fp(SnapW *w, uint32_t th, uint32_t P){
     uint32_t fix[5] = { th, MR32(th+0x2cu), MR32(th+0x3cu), MR32(th+0x40u), MR32(th+0x118u) & ~1u };
     uint32_t tech = MR16(th+0x42u)*0xb4u + MR32(th+0xa4u);
@@ -1410,17 +1416,17 @@ static inline int pass_fp(SnapW *w, uint32_t th, uint32_t P){
 }
 
 void sub_006691b1_orig(CPU *c);
-/* ---- Asama 4b: yerel gecis dongusu, sub_006691b1(this, a, el) ret 8 ----
+/* ---- Stage 4b: native pass loop, sub_006691b1(this, a, el) ret 8 ----
  *   P = a*0x64 + [this+0x2c]
- *   [this+0x118]&8 : 66404c(P+0x1c, word[P+0x18]!=0xffff), 6641a7(P+0x24, word[P+0x1a]!=0xffff); <0 don
- *   P&8            : word[P+0x18]==0xffff ? 667d61(a) : 666e07(a); <0 don
- *   [this+0x3c]==4 : P&1 ise 668e0d(P)'nin sonucunu don; degilse her durum
- *                    icin 669296(a, b, el), <0 ise don
- *   diger          : her durum icin 669296; <0 ve [this+0x3c]!=1 ise don
- *   sonunda 0.  Tur 1/2/3 durumlar dogrudan n4_core ile, digerleri konuk
- *   cagrisiyla.  Orijinalin prologu (ebp/ebx/esi/edi) aynen kurulur.
- *   D3DXNATIVE5=0 kapatir.  D3DXN4VERIFY acikken durumlar 669296
- *   sarmalayicisindan gecer (orada dogrulanir). */
+ *   [this+0x118]&8 : 66404c(P+0x1c, word[P+0x18]!=0xffff), 6641a7(P+0x24, word[P+0x1a]!=0xffff); <0 return
+ *   P&8            : word[P+0x18]==0xffff ? 667d61(a) : 666e07(a); <0 return
+ *   [this+0x3c]==4 : if P&1 return the result of 668e0d(P); otherwise for every
+ *                    state 669296(a, b, el), return if <0
+ *   other          : 669296 for every state; return if <0 and [this+0x3c]!=1
+ *   0 at the end.  Type 1/2/3 states go directly through n4_core, the others
+ *   through a guest call.  The original's prologue (ebp/ebx/esi/edi) is set up
+ *   exactly.  D3DXNATIVE5=0 turns it off.  With D3DXN4VERIFY on, states go
+ *   through the 669296 wrapper (verified there). */
 void sub_0066404c(CPU*); void sub_006641a7(CPU*); void sub_00667d61(CPU*);
 void sub_00666e07(CPU*); void sub_00668e0d(CPU*);
 static int g_n5_on = -1;
@@ -1482,10 +1488,10 @@ void sub_006691b1(CPU *c){
         return;
     }
     if (g_m3_on < 0){
-        /* VARSAYILAN KAPALI: D3DXVERIFY3 gecis duzeyinde atlamanin yanlis
-         * oldugunu gosterdi (dokular nesne tablosundan geliyor, parametre
-         * verisinden degil; tahmini isabetlerin %78'i gercekte farkliydi).
-         * Yalnizca arastirma icin D3DXMEMO3=1. */
+        /* OFF BY DEFAULT: D3DXVERIFY3 showed that skipping at the pass level is wrong
+         * (textures come from the object table, not from parameter data; 78% of
+         * the predicted hits were actually different).
+         * D3DXMEMO3=1 for research only. */
         const char *m = getenv("D3DXMEMO3"); g_m3_on = m ? atoi(m) != 0 : 0;
         const char *v = getenv("D3DXVERIFY3"); g_v3_n = v ? atoi(v) : 0;
         if (g_m3_on || g_v3_n){ g_m3 = calloc(M3_CAP, sizeof *g_m3); g_pv_on = 1; }
@@ -1544,7 +1550,7 @@ void sub_006691b1(CPU *c){
                 if (de) v3_eax++;
                 static int shown = 0;
                 if (shown++ < 12){
-                    fprintf(stderr, "[D3DXVERIFY3] this=%08x gecis=%u: bellek=%d cihaz=%d eax=%d cagri %u (kayit %u) bagimlilik %u\n",
+                    fprintf(stderr, "[D3DXVERIFY3] this=%08x pass=%u: memory=%d device=%d eax=%d calls %u (record %u) dependencies %u\n",
                             th, a, dm, dd, de, vr.ncall, s->rec.ncall, s->ctx.ndep);
                     for (int q = 0; q < vr.ncall; q++) if (!vr.call[q].red){
                         const DxCall *k = &vr.call[q];
@@ -1552,7 +1558,7 @@ void sub_006691b1(CPU *c){
                         for (int z = 0; z < s->rec.ncall; z++)
                             if (s->rec.call[z].mid == k->mid && s->rec.call[z].a[0] == k->a[0]
                                 && (k->mid != s->rec.call[z].mid || s->rec.call[z].a[1] == k->a[1] || 1)){ old = s->rec.call[z].a[2]; if (s->rec.call[z].a[1] != k->a[1]) old = s->rec.call[z].a[1]; break; }
-                        fprintf(stderr, "      etkili cagri: %s(%u, %u, %u)  kayittaki: %08x\n",
+                        fprintf(stderr, "      effective call: %s(%u, %u, %u)  in record: %08x\n",
                                 dxrec_mid_name(k->mid), k->a[0], k->a[1], k->a[2], old);
                     }
                     if (dm && shown <= 3 && memcmp(v_buf0, g_mem + lo, n)) verify_diff(lo, n, v_buf0, th, P, P);
@@ -1567,7 +1573,7 @@ void sub_006691b1(CPU *c){
             goto out3;
         }
     }
-    /* kayit: bagimliliklari ve cihaz cagrilarini topla */
+    /* record: gather dependencies and device calls */
     m3_rec++;
     s->valid = 0; s->len = w.len;
     s->ep0 = g_pepoch;
@@ -1580,7 +1586,7 @@ void sub_006691b1(CPU *c){
     dxrec_end();
     g_pctx_n--;
     s->eax = c->eax;
-    /* kayit sirasinda bir parametre degistiyse (olmamali) guvenme */
+    /* if a parameter changed during recording (it shouldn't), don't trust it */
     s->valid = s->rec.ok && s->ctx.elig && s->ep0 == g_pepoch;
     if (s->valid) m3_recok++;
     else {
@@ -1598,16 +1604,17 @@ out3:
     if (t0){ g_dx[DX_PASSAPPLY].ticks += mach_absolute_time() - t0; g_dx[DX_PASSAPPLY].n++; }
 }
 
-/* ---- Konuk thread CPU suresi: GPU beklemesinden bagimsiz olcum ----
- * CPUWIN=<bas>[,<son>]: Present'te (konuk thread) thread CPU saati okunur;
- * raporda [bas, son) karelerinin kare basina CPU ms'i basilir.  Kare suresi
- * max(CPU, GPU) oldugu icin GPU baska bir uygulamayla paylasildiginda tek
- * guvenilir CPU olcusu budur.                                              */
+/* ---- Guest thread CPU time: a measurement independent of GPU waits ----
+ * CPUWIN=<start>[,<end>]: the thread CPU clock is read at Present (guest
+ * thread); the report prints the CPU ms per frame of frames [start, end).
+ * Since frame time is max(CPU, GPU), this is the only reliable CPU measure when
+ * the GPU is shared with another application.                              */
 #include <time.h>
 static long cw_from = -2, cw_to = 0, cw_f0 = -1, cw_f1 = -1;
 static double cw_t0, cw_t1;
-/* thread'e ozel komut/cevrim sayaci (libsystem_kernel thread_selfcounts):
- * zamandan cok daha kararli; ceviricinin urettigi kodun verimlilik olcusu */
+/* per-thread instruction/cycle counters (libsystem_kernel thread_selfcounts):
+ * much more stable than time; the efficiency measure of the code the translator
+ * generates */
 #include <dlfcn.h>
 static uint64_t cw_i0[2], cw_i1[2];
 static int (*cw_tsc)(int, void *, size_t);
@@ -1631,10 +1638,10 @@ void guest_cpu_mark(void){
     if (f <= cw_to){ cw_f1 = f; cw_t1 = t; cw_counts(cw_i1); }
 }
 
-/* ---- EFXSTAT=<kare>: ID3DXEffect vtable (0x7b6fe8, 82 metot) envanteri ----
- * dispatch_indirect'ten gelen her efekt metodu cagrisi: metot basina
- * cagri/kare (oyundan / D3DX icinden), farkli efekt nesnesi, Begin
- * bayraklari, farkli (efekt, gecis) ciftleri.  Yalnizca tani icin.      */
+/* ---- EFXSTAT=<frame>: inventory of the ID3DXEffect vtable (0x7b6fe8, 82 methods) ----
+ * Every effect method call coming from dispatch_indirect: calls/frame per method
+ * (from the game / from inside D3DX), distinct effect objects, Begin flags,
+ * distinct (effect, pass) pairs.  Diagnostics only.                     */
 #define EFX_NM 82
 int g_efx_stat;
 static long efx_from, efx_f0 = -1;
@@ -1649,7 +1656,7 @@ __attribute__((constructor)) static void efx_init(void){
     g_efx_stat = e != NULL || getenv("FXTRACE") != NULL;
     efx_from = e ? atol(e) : (1L << 40);
 }
-/* FXTRACE: efekt metodu isareti (com.c'deki cihaz cagrisi iziyle ayni akista) */
+/* FXTRACE: effect method marker (in the same stream as com.c's device call trace) */
 static void efx_trace(CPU *c, int k){
     static const char *nm[EFX_NM] = { [26]="SetInt", [28]="SetIntArray", [30]="SetFloat",
         [34]="SetVector", [36]="SetVectorArray", [38]="SetMatrix", [40]="SetMatrixArray",
@@ -1688,7 +1695,7 @@ void efx_stat_note(CPU *c, uint32_t addr){
     uint32_t ret = MR32(c->esp), th = MR32(c->esp+4u);
     efx_n[k][ret - 0x650000u < 0x40000u]++;
     efx_set_add(efx_this, &efx_nthis, 1024, th);
-    /* tutamac metin mi?  (yuva 8..64'te ilk arguman D3DXHANDLE) */
+    /* is the handle a string?  (the first argument in slots 8..64 is a D3DXHANDLE) */
     if (k >= 8 && k <= 64){
         uint32_t h = MR32(c->esp+8u);
         int str = h >= 0x10000u && mem_is_committed(h) && mem_is_committed(h+7u);
@@ -1710,8 +1717,8 @@ void efx_stat_note(CPU *c, uint32_t addr){
         if (j == efx_npair && efx_npair < 4096) efx_pair[efx_npair++] = p;
     }
 }
-/* D3DXCreateEffectFromResourceA(cihaz, modul, kaynak, tanimlar, include,
- * bayraklar, havuz, &efekt, &hatalar)  stdcall, 9 arguman. */
+/* D3DXCreateEffectFromResourceA(device, module, resource, defines, include,
+ * flags, pool, &effect, &errors)  stdcall, 9 arguments. */
 void sub_00640c12_orig(CPU *c);
 void sub_00640c12(CPU *c){
     uint32_t sp = c->esp, res = MR32(sp+12u), pool = MR32(sp+28u), pout = MR32(sp+32u);
@@ -1721,8 +1728,8 @@ void sub_00640c12(CPU *c){
         if (res >= 0x10000u){ int i = 0; for (; i < 63 && MR8(res+i); i++) nm[i] = (char)MR8(res+i); nm[i] = 0; }
         else snprintf(nm, sizeof nm, "#%u", res);
         uint32_t ef = pout ? MR32(pout) : 0u;
-        fprintf(stderr, "[EFXSTAT] olustur %-28s havuz=%08x efekt=%08x sonuc=%08x kare=%ld"
-                " param %u@%08x teknik %u@%08x nesne@%08x\n",
+        fprintf(stderr, "[EFXSTAT] create %-28s pool=%08x effect=%08x result=%08x frame=%ld"
+                " param %u@%08x technique %u@%08x object@%08x\n",
                 nm, pool, ef, c->eax, metal_frames(), ef ? MR32(ef+0x98u) : 0u, ef ? MR32(ef+0x9cu) : 0u,
                 ef ? MR32(ef+0xa0u) : 0u, ef ? MR32(ef+0xa4u) : 0u, ef ? MR32(ef+0x18u) : 0u);
     }
@@ -1731,14 +1738,14 @@ void sub_00640c12(CPU *c){
 static void efx_report(void){
     if (!g_efx_stat || efx_f0 < 0) return;
     long fr = metal_frames() - efx_f0; if (fr < 1) fr = 1;
-    fprintf(stderr, "\n=== EFXSTAT: ID3DXEffect cagrilari, %ld kare (%ld. kareden) ===\n", fr, efx_f0);
-    fprintf(stderr, "  yuva  adres      oyun/kare  D3DX-ici/kare   toplam   metin-tutamac\n");
+    fprintf(stderr, "\n=== EFXSTAT: ID3DXEffect calls, %ld frames (from frame %ld) ===\n", fr, efx_f0);
+    fprintf(stderr, "  slot  address    game/frame  D3DX-inner/frame   total   string-handle\n");
     for (int i = 0; i < EFX_NM; i++) if (efx_n[i][0] || efx_n[i][1])
         fprintf(stderr, "  %3d   %08x  %10.1f  %10.1f  %8llu  %8llu\n", i, efx_vt[i],
                 (double)efx_n[i][0]/fr, (double)efx_n[i][1]/fr,
                 (unsigned long long)(efx_n[i][0] + efx_n[i][1]), (unsigned long long)efx_hstr[i]);
-    fprintf(stderr, "  farkli efekt nesnesi: %d | farkli (efekt, gecis): %d\n", efx_nthis, efx_npair);
-    fprintf(stderr, "  Begin bayraklari:");
+    fprintf(stderr, "  distinct effect objects: %d | distinct (effect, pass): %d\n", efx_nthis, efx_npair);
+    fprintf(stderr, "  Begin flags:");
     for (int j = 0; j < efx_nbf; j++) fprintf(stderr, " 0x%x x%u", efx_bflag[j], efx_bflag_n[j]);
     fprintf(stderr, "\n");
 }
@@ -1747,97 +1754,97 @@ void d3dx_hle_report(void){
     efx_report();
     { extern void comstat_report(void); comstat_report(); }
     if (cw_f1 > cw_f0 && cw_f0 >= 0)
-        fprintf(stderr, "\n=== CPUWIN: konuk thread CPU %.3f ms/kare (%ld..%ld, %ld kare) ===\n",
+        fprintf(stderr, "\n=== CPUWIN: guest thread CPU %.3f ms/frame (%ld..%ld, %ld frames) ===\n",
                 (cw_t1 - cw_t0) / (double)(cw_f1 - cw_f0), cw_f0, cw_f1, cw_f1 - cw_f0);
         if (cw_i1[0] > cw_i0[0]){
             double fr = (double)(cw_f1 - cw_f0), ki = (double)(cw_i1[0] - cw_i0[0]), kc = (double)(cw_i1[1] - cw_i0[1]);
-            fprintf(stderr, "=== CPUWIN: konuk thread %.3f M komut/kare, %.3f M cevrim/kare, IPC %.2f ===\n",
+            fprintf(stderr, "=== CPUWIN: guest thread %.3f M instr/frame, %.3f M cycles/frame, IPC %.2f ===\n",
                     ki / fr / 1e6, kc / fr / 1e6, ki / kc);
         }
     if (m3_calls){
-        fprintf(stderr, "  --- gecis notu (sub_006691b1, Asama 3) ---\n");
-        fprintf(stderr, "  cagri %llu | isabet %llu (%.1f%%) | atlanan %llu | kayit %llu (uygun %llu)\n"
-                        "  kacan: parmak izi %llu, parametre degisti %llu, cihaz degisti %llu, uygun degil %llu\n"
-                        "  surum: %llu parametre degisimi, tablo dolu %llu\n",
+        fprintf(stderr, "  --- pass memo (sub_006691b1, Stage 3) ---\n");
+        fprintf(stderr, "  calls %llu | hits %llu (%.1f%%) | skipped %llu | records %llu (eligible %llu)\n"
+                        "  misses: fingerprint %llu, parameter changed %llu, device changed %llu, not eligible %llu\n"
+                        "  versions: %llu parameter changes, table full %llu\n",
             (unsigned long long)m3_calls, (unsigned long long)m3_hit, 100.0*m3_hit/m3_calls,
             (unsigned long long)m3_skip, (unsigned long long)m3_rec, (unsigned long long)m3_recok,
             (unsigned long long)m3_fp, (unsigned long long)m3_dep, (unsigned long long)m3_dev,
             (unsigned long long)m3_inel, (unsigned long long)pv_bumps, (unsigned long long)pv_full);
-        fprintf(stderr, "  uygunsuz kayit: rec %llu, tur/bagimlilik %llu, parametre %llu, bayrak8 %llu, P&8 %llu, 3c==4 %llu, cagri tasti %llu, gorulen turler %08x\n",
+        fprintf(stderr, "  ineligible records: rec %llu, type/dependency %llu, parameter %llu, flag8 %llu, P&8 %llu, 3c==4 %llu, call overflow %llu, types seen %08x\n",
             (unsigned long long)m3_why[0], (unsigned long long)m3_why[1], (unsigned long long)m3_why[2],
             (unsigned long long)m3_why[3], (unsigned long long)m3_why[4], (unsigned long long)m3_why[5],
             (unsigned long long)m3_why[6], m3_why_tm);
-        if (v3_runs) fprintf(stderr, "  DOGRULAMA3: %llu kosu, temiz %llu | bellek %llu, cihaz %llu, eax %llu\n",
+        if (v3_runs) fprintf(stderr, "  VERIFY3: %llu runs, clean %llu | memory %llu, device %llu, eax %llu\n",
             (unsigned long long)v3_runs, (unsigned long long)v3_clean, (unsigned long long)v3_mem,
             (unsigned long long)v3_dev, (unsigned long long)v3_eax);
     }
     if (n4_calls || n4vs.runs){
-        fprintf(stderr, "  --- yerel durum uygulayici (669296 tur 1/2/3, Asama 4a) ---\n"
-                        "  cagri %llu | kirli (664a2f) %llu | cihaz cagrisi yapilan %llu, atlanan (etkisiz) %llu\n",
+        fprintf(stderr, "  --- native state applier (669296 types 1/2/3, Stage 4a) ---\n"
+                        "  calls %llu | dirty (664a2f) %llu | device calls made %llu, skipped (no effect) %llu\n",
             (unsigned long long)n4_calls, (unsigned long long)n4_dirty,
             (unsigned long long)n4_issued, (unsigned long long)n4_skipped);
-        fprintf(stderr, "  yerel gecis dongusu (6691b1, Asama 4b): %llu\n", (unsigned long long)n5_calls);
-        fprintf(stderr, "  ifade notu: isabet %llu, kacan %llu, notlanamaz %llu (ifade degil %llu, girdisiz %llu, girdi>2 %llu, >96 bayt %llu)\n",
+        fprintf(stderr, "  native pass loop (6691b1, Stage 4b): %llu\n", (unsigned long long)n5_calls);
+        fprintf(stderr, "  expression memo: hits %llu, misses %llu, not memoizable %llu (not an expression %llu, no inputs %llu, inputs>2 %llu, >96 bytes %llu)\n",
             (unsigned long long)n4m_hit, (unsigned long long)n4m_miss, (unsigned long long)n4m_big,
             (unsigned long long)n4m_why[0], (unsigned long long)n4m_why[1], (unsigned long long)n4m_why[2], (unsigned long long)n4m_why[3]);
-        if (n4vs.runs) fprintf(stderr, "  DOGRULAMA-4: %llu kosu, FARKLI %llu (kayit gecersiz, karsilastirilmadi: %llu)\n",
+        if (n4vs.runs) fprintf(stderr, "  VERIFY-4: %llu runs, DIFFERENT %llu (record invalid, not compared: %llu)\n",
             (unsigned long long)n4vs.runs, (unsigned long long)n4vs.bad, (unsigned long long)n4vs.norec);
-        if (n8_set || n8_tex) fprintf(stderr, "  yerel SetTexture: %llu | doku yuvasi (65ccd8): %llu | atlanan doku AddRef/Release: %llu\n",
+        if (n8_set || n8_tex) fprintf(stderr, "  native SetTexture: %llu | texture slot (65ccd8): %llu | skipped texture AddRef/Release: %llu\n",
             (unsigned long long)n8_set, (unsigned long long)n8_tex, (unsigned long long)n8_refskip);
-        if (n7vs.runs || n7_calls) fprintf(stderr, "  yerel shader uygulayici (668e0d): %llu | DOGRULAMA-7: %llu kosu, FARKLI %llu (karsilastirilmadi %llu) | nesne durumu (tur 14/15): %llu\n",
+        if (n7vs.runs || n7_calls) fprintf(stderr, "  native shader applier (668e0d): %llu | VERIFY-7: %llu runs, DIFFERENT %llu (not compared %llu) | object state (type 14/15): %llu\n",
             (unsigned long long)n7_calls, (unsigned long long)n7vs.runs, (unsigned long long)n7vs.bad, (unsigned long long)n7vs.norec, (unsigned long long)n4_obj);
-        if (n6vs.runs || n6_calls) fprintf(stderr, "  yerel sampler uygulayici (668cd0): %llu | DOGRULAMA-6: %llu kosu, FARKLI %llu (karsilastirilmadi %llu)\n",
+        if (n6vs.runs || n6_calls) fprintf(stderr, "  native sampler applier (668cd0): %llu | VERIFY-6: %llu runs, DIFFERENT %llu (not compared %llu)\n",
             (unsigned long long)n6_calls, (unsigned long long)n6vs.runs, (unsigned long long)n6vs.bad, (unsigned long long)n6vs.norec);
     }
     if (mm_calls || pl_calls || sm_calls){
-        fprintf(stderr, "  --- yerel yardimcilar ---\n  matris carpimi %llu (yavas yol %llu) | havuz bildirimi %llu"
-                        " | SetMatrix donusumu %llu (yavas yol %llu)\n",
+        fprintf(stderr, "  --- native helpers ---\n  matrix multiply %llu (slow path %llu) | pool notification %llu"
+                        " | SetMatrix conversion %llu (slow path %llu)\n",
             (unsigned long long)mm_calls, (unsigned long long)mm_slow, (unsigned long long)pl_calls,
             (unsigned long long)sm_calls, (unsigned long long)sm_slow);
         if (mmv_runs || plv_runs || smv_runs)
-            fprintf(stderr, "  DOGRULAMA-N: matris %llu kosu, FARKLI %llu | havuz %llu kosu, FARKLI %llu"
-                            " | donusum %llu kosu, FARKLI %llu\n",
+            fprintf(stderr, "  VERIFY-N: matrix %llu runs, DIFFERENT %llu | pool %llu runs, DIFFERENT %llu"
+                            " | conversion %llu runs, DIFFERENT %llu\n",
                 (unsigned long long)mmv_runs, (unsigned long long)mmv_bad,
                 (unsigned long long)plv_runs, (unsigned long long)plv_bad,
                 (unsigned long long)smv_runs, (unsigned long long)smv_bad);
     }
     if (m2_calls){
-        fprintf(stderr, "  --- durum atama notu (sub_00669296) ---\n");
-        fprintf(stderr, "  cagri %llu | girdi ayni %llu (%.1f%%) | isabet %llu (%.1f%%) | atlanan %llu\n"
-                        "  kayit gecersiz %llu | cihaz degismis %llu | tampon tasti %llu | tur disi %llu\n",
+        fprintf(stderr, "  --- state assignment memo (sub_00669296) ---\n");
+        fprintf(stderr, "  calls %llu | same input %llu (%.1f%%) | hits %llu (%.1f%%) | skipped %llu\n"
+                        "  record invalid %llu | device changed %llu | buffer overflow %llu | out of type %llu\n",
             (unsigned long long)m2_calls, (unsigned long long)m2_same, 100.0*m2_same/m2_calls,
             (unsigned long long)m2_hit, 100.0*m2_hit/m2_calls, (unsigned long long)m2_skip,
             (unsigned long long)m2_norec, (unsigned long long)m2_devchg, (unsigned long long)m2_big,
             (unsigned long long)m2_excl);
-        fprintf(stderr, "  tur: cagri/isabet%%");
+        fprintf(stderr, "  type: calls/hit%%");
         for (int i = 0; i < 32; i++) if (m2_type_calls[i])
             fprintf(stderr, "  %d:%llu/%.0f%%", i, (unsigned long long)m2_type_calls[i],
                     100.0*m2_type_hit[i]/m2_type_calls[i]);
         fprintf(stderr, "\n");
         if (v2_runs){
-            fprintf(stderr, "  DOGRULAMA2: %llu kosu, temiz %llu | bellek %llu, cihaz %llu, eax %llu\n",
+            fprintf(stderr, "  VERIFY2: %llu runs, clean %llu | memory %llu, device %llu, eax %llu\n",
                 (unsigned long long)v2_runs, (unsigned long long)v2_clean, (unsigned long long)v2_mem,
                 (unsigned long long)v2_dev, (unsigned long long)v2_eax);
-            fprintf(stderr, "  hatali turler:");
+            fprintf(stderr, "  faulty types:");
             for (int i = 0; i < 32; i++) if (v2_type_bad[i]) fprintf(stderr, " %d:%llu", i, (unsigned long long)v2_type_bad[i]);
             fprintf(stderr, "\n");
         }
     }
     if (m_calls){
-        fprintf(stderr, "  --- durum degeri notu (sub_00664a2f) ---\n");
-        if (m_big) fprintf(stderr, "  girdisi %u bayti asan (notlanmadi): %llu\n", MEMO_BUF, (unsigned long long)m_big);
-        fprintf(stderr, "  cagri %llu | uygun %llu | isabet %llu (%.1f%%) | atlanan %llu | koruma iptali %llu\n",
+        fprintf(stderr, "  --- state value memo (sub_00664a2f) ---\n");
+        if (m_big) fprintf(stderr, "  input over %u bytes (not memoized): %llu\n", MEMO_BUF, (unsigned long long)m_big);
+        fprintf(stderr, "  calls %llu | eligible %llu | hits %llu (%.1f%%) | skipped %llu | guard aborts %llu\n",
             (unsigned long long)m_calls, (unsigned long long)m_elig, (unsigned long long)m_hit,
             m_elig ? 100.0*m_hit/m_elig : 0.0, (unsigned long long)m_skip, (unsigned long long)m_guard);
-        if (v_runs) fprintf(stderr, "  DOGRULAMA: %llu kosu, temiz %llu, FARKLI %llu\n",
+        if (v_runs) fprintf(stderr, "  VERIFY: %llu runs, clean %llu, DIFFERENT %llu\n",
             (unsigned long long)v_runs, (unsigned long long)v_clean, (unsigned long long)v_dirty);
     }
     if (!dx_on()) return;
     long fr = metal_frames() - (g_dx_f0 < 0 ? 0 : g_dx_f0); if (fr < 1) fr = 1;
     mach_timebase_info_data_t tb; mach_timebase_info(&tb);
-    fprintf(stderr, "\n=== D3DX efekt (D3DXSTAT) — %ld kare, %ld. kareden ===\n", fr, g_dx_f0);
+    fprintf(stderr, "\n=== D3DX effect (D3DXSTAT) — %ld frames, from frame %ld ===\n", fr, g_dx_f0);
     fprintf(stderr, "  %-20s %10s %12s %10s %10s\n",
-            "fonksiyon", "cagri/kare", "kapsayici", "ms/kare", "us/cagri");
+            "function", "calls/frame", "inclusive", "ms/frame", "us/call");
     for (int i = 0; i < DX_N; i++){
         DxStat *s = &g_dx[i];
         if (!s->n) continue;
@@ -1846,14 +1853,14 @@ void d3dx_hle_report(void){
                 (double)s->n / fr, s->addr, ns / 1e6 / fr, ns / 1e3 / s->n);
     }
     if (an_calls){
-        fprintf(stderr, "  --- D3DXANALYZE: ifade degerlendirme girdileri ---\n");
-        fprintf(stderr, "  cagri %llu | ilk %llu | girdi AYNI %llu (%.1f%%) | FARKLI %llu (%.1f%%)\n",
+        fprintf(stderr, "  --- D3DXANALYZE: expression evaluation inputs ---\n");
+        fprintf(stderr, "  calls %llu | first %llu | input SAME %llu (%.1f%%) | DIFFERENT %llu (%.1f%%)\n",
             (unsigned long long)an_calls, (unsigned long long)an_first,
             (unsigned long long)an_same, 100.0*an_same/an_calls,
             (unsigned long long)an_diff, 100.0*an_diff/an_calls);
-        fprintf(stderr, "  kirli girdisi olmayan %llu (%.1f%%), ort ozetlenen bayt %.0f\n",
+        fprintf(stderr, "  without dirty inputs %llu (%.1f%%), mean bytes hashed %.0f\n",
             (unsigned long long)an_dirty0, 100.0*an_dirty0/an_calls, (double)an_bytes/an_calls);
-        fprintf(stderr, "  kirli girdi sayisi dagilimi:");
+        fprintf(stderr, "  dirty input count distribution:");
         for (int i = 0; i < 9; i++) fprintf(stderr, " %d:%llu", i, (unsigned long long)an_hist_inputs[i]);
         fprintf(stderr, "\n");
     }

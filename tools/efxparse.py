@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""D3DX9 efekt (.efx) ikili formatini bagimsiz ayristir.
-   Amac: oyunun kurdugu parametre agaciyla karsilastirmak."""
+"""Parse the D3DX9 effect (.efx) binary format independently.
+   Goal: compare with the parameter tree the game builds."""
 import sys, struct
 sys.path.insert(0,'tools')
 from lift import Lifter
@@ -20,14 +20,14 @@ def main():
     VA=int(sys.argv[2],16); SZ=int(sys.argv[3])
     b=rd(VA,SZ)
     ver, blobsz = struct.unpack_from('<II', b, 0)
-    print(f"surum=0x{ver:08x}  blob={blobsz}  toplam={SZ}")
-    base = 8                       # blob buradan baslar
+    print(f"version=0x{ver:08x}  blob={blobsz}  total={SZ}")
+    base = 8                       # the blob starts here
     hdr  = 8 + blobsz
     nparam, ntech, unk, nobj = struct.unpack_from('<IIII', b, hdr)
-    print(f"parametre={nparam} teknik={ntech} ?={unk} nesne={nobj}\n")
+    print(f"parameters={nparam} techniques={ntech} ?={unk} objects={nobj}\n")
 
     def cstr(off):
-        # blob'ta: DWORD uzunluk, sonra string
+        # in the blob: a DWORD length, then the string
         if off==0 or base+off+4 > len(b): return ''
         n = struct.unpack_from('<I', b, base+off)[0]
         if n==0 or base+off+4+n > len(b): return ''
@@ -48,22 +48,22 @@ def main():
                     name=cstr(noff), sem=cstr(soff), elems=elems, members=members)
 
     p = hdr + 16
-    print(f"{'#':>3} {'sinif':12} {'tip':14} {'eleman':>6} {'uye':>4}  ad")
+    print(f"{'#':>3} {'class':12} {'tip':14} {'elements':>6} {'members':>4}  ad")
     print("  " + "-"*62)
     for i in range(nparam):
         if p+16 > len(b): break
         toff, voff, flags, nann = struct.unpack_from('<IIII', b, p)
         p += 16
         ti = read_type(toff)
-        if ti is None: print(f"{i:3} <okunamadi>"); continue
+        if ti is None: print(f"{i:3} <unreadable>"); continue
         print(f"{i:3} {ti['cls']:12} {ti['type']:14} {ti['elems']:6} {ti['members']:4}  {ti['name']}"
               + (f"  :{ti['sem']}" if ti['sem'] else ""))
-        # tur/deger ofsetleri: oyunun kurdugu isaretcilerle karsilastirmak icin
+        # type/value offsets: for comparing with the pointers the game sets up
         toff2, voff2 = toff, voff
         vb = b[base+voff2 : base+voff2+16]
-        print(f"      turOfs=0x{toff2:04x} degerOfs=0x{voff2:04x} bayrak=0x{flags:x} "
-              f"ann={nann}  deger[0:16]={vb.hex()}")
-        # annotation'lari atla
+        print(f"      turOfs=0x{toff2:04x} degerOfs=0x{voff2:04x} flags=0x{flags:x} "
+              f"ann={nann}  value[0:16]={vb.hex()}")
+        # skip the annotations
         for _ in range(nann):
             if p+8 <= len(b): p += 8
     print()

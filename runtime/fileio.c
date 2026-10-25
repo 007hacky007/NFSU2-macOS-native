@@ -1,5 +1,5 @@
-/* Guest dosya G/C -> POSIX.  Windows yollarini oyun dizinine esler,
- * buyuk/kucuk harf duyarsiz cozumleme yapar.                          */
+/* Guest file I/O -> POSIX.  Maps Windows paths to the game directory and does
+ * case-insensitive resolution.                                         */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +20,7 @@ static uint64_t now_ns_io(void){
 void mem_commit(uint32_t,uint32_t);
 
 static char g_root[1024] = ".";
-static char g_cwd_rel[512] = "";           /* oyun icindeki gecerli dizin */
+static char g_cwd_rel[512] = "";           /* current directory inside the game */
 uint64_t g_file_open=0, g_file_fail=0, g_file_read=0, g_bytes_read=0;
 uint64_t g_overlapped_reads=0;
 static int g_empty_next = 0;
@@ -29,15 +29,15 @@ void fileio_set_root(const char *exe_path){
     strncpy(g_root, exe_path, sizeof g_root - 1);
     char *slash = strrchr(g_root, '/');
     if (slash) *slash = 0; else strcpy(g_root, ".");
-    fprintf(stderr,"dosya: oyun kok dizini = %s\n", g_root);
+    fprintf(stderr,"file: game root directory = %s\n", g_root);
 }
 
-/* Windows yolunu gercek yola cevir.
- *   "C:\\NFSU2\\TRACKS\\X.BUN" | "TRACKS\\X.BUN" | ".\\X" -> <kok>/TRACKS/X.BUN
- * Sanal oyun dizini "C:\\NFSU2" oldugu icin o onek atilir.
- * Bilesenler buyuk-kucuk harf duyarsiz cozumlenir.                     */
-/* Yazma amacli acilislarda eksik ust dizinleri olustur (Windows'ta oyun
- * bunlari ayrica yaratiyor; bizde yolun tamami hazir olmali). */
+/* Convert a Windows path to a real path.
+ *   "C:\\NFSU2\\TRACKS\\X.BUN" | "TRACKS\\X.BUN" | ".\\X" -> <root>/TRACKS/X.BUN
+ * Since the virtual game directory is "C:\\NFSU2", that prefix is dropped.
+ * Components are resolved case-insensitively.                          */
+/* For opens meant for writing, create the missing parent directories (on
+ * Windows the game creates them separately; here the whole path must be ready). */
 static void mkparents(const char *path){
     char tmp[1024]; snprintf(tmp, sizeof tmp, "%s", path);
     for (char *q = tmp + 1; *q; q++){
@@ -49,10 +49,10 @@ static void mkparents(const char *path){
 static int resolve_in(const char *root, const char *win, char *out, size_t outsz){
     char rel[1024]; size_t k=0;
     const char *p = win;
-    if (p[0] && p[1]==':') p += 2;                       /* surucu harfi   */
+    if (p[0] && p[1]==':') p += 2;                       /* drive letter   */
     while (*p=='\\' || *p=='/') p++;
     if (!strncasecmp(p,"NFSU2",5) && (p[5]=='\\'||p[5]=='/'||p[5]==0)){
-        p += 5; while (*p=='\\'||*p=='/') p++;           /* sanal kok      */
+        p += 5; while (*p=='\\'||*p=='/') p++;           /* virtual root   */
     }
     while (p[0]=='.' && (p[1]=='\\'||p[1]=='/')) p += 2;
     for (; *p && k<sizeof rel-1; p++) rel[k++] = (*p=='\\') ? '/' : *p;
@@ -63,7 +63,7 @@ static int resolve_in(const char *root, const char *win, char *out, size_t outsz
     struct stat st;
     if (stat(out, &st)==0) return 1;
 
-    /* bilesen bilesen buyuk-kucuk harf duyarsiz */
+    /* case-insensitive, component by component */
     char cur[1024]; snprintf(cur, sizeof cur, "%s", root);
     char tmp[1024]; snprintf(tmp,sizeof tmp,"%s",rel);
     char *save=0; int missing=0;
@@ -86,24 +86,25 @@ static int resolve_in(const char *root, const char *win, char *out, size_t outsz
     return !missing;
 }
 
-/* --- yazma koku (kayit katmani) ----------------------------------------
- * Oyun kayitlarini ve profillerini KENDI klasorune yazar ("C:\NFSU2\NFS
- * Underground 2\<ad>\<ad>").  Oraya yazmak, yeni surum dagitilip .app ya
- * da oyun klasoru degistirilince kayitlari siler; veri .app'in icine
- * gomuluyken paketin imzasini da bozar.  Bu yuzden yazma koku artik HER
- * ZAMAN ayarli (bundle.m app_save_dir, ~/Library/Application Support):
- *   - yazma / olusturma / silme her zaman yazma kokune gider,
- *   - okuma once yazma kokune, yoksa oyun kokune bakar,
- *   - dizin listesi ikisinin birlesimidir.
- * Ayarli degilse (yalnizca HOME yoksa) her sey tek kokte kalir. */
+/* --- write root (save layer) ---------------------------------------------
+ * The game writes its saves and profiles into its OWN folder ("C:\NFSU2\NFS
+ * Underground 2\<name>\<name>").  Writing there deletes the saves when a new
+ * version is distributed and the .app or game folder is replaced; when the data
+ * is embedded inside the .app it also breaks the bundle's signature.  So the
+ * write root is now ALWAYS set (bundle.m app_save_dir, ~/Library/Application
+ * Support):
+ *   - writes / creates / deletes always go to the write root,
+ *   - reads look in the write root first, otherwise in the game root,
+ *   - directory listings are the union of both.
+ * If it isn't set (only if there is no HOME) everything stays in a single root. */
 static char g_wroot[1024] = "";
 void fileio_set_write_root(const char *dir){
     if (!dir || !*dir){ g_wroot[0] = 0; return; }
     snprintf(g_wroot, sizeof g_wroot, "%s", dir);
     mkparents(g_wroot); mkdir(g_wroot, 0755);
-    fprintf(stderr,"dosya: kayit dizini = %s\n", g_wroot);
+    fprintf(stderr,"file: save directory = %s\n", g_wroot);
 }
-/* Okuma: yazma kokunde varsa orasi, yoksa oyun koku. */
+/* Read: the write root if it exists there, otherwise the game root. */
 static int resolve(const char *win, char *out, size_t outsz){
     if (g_wroot[0]){
         char w[1024];
@@ -112,7 +113,7 @@ static int resolve(const char *win, char *out, size_t outsz){
     }
     return resolve_in(g_root, win, out, outsz);
 }
-/* Yazma: yazma koku varsa HER ZAMAN orasi. */
+/* Write: ALWAYS the write root if there is one. */
 static int resolve_w(const char *win, char *out, size_t outsz){
     return resolve_in(g_wroot[0] ? g_wroot : g_root, win, out, outsz);
 }
@@ -124,8 +125,8 @@ static int copy_file(const char *a, const char *b){
     while ((k = fread(bufr, 1, sizeof bufr, fa)) > 0) fwrite(bufr, 1, k, fb);
     fclose(fb); fclose(fa); return 1;
 }
-/* Kirpmadan yazilacak bir dosya yalnizca oyun kokunde duruyorsa once
- * yazma kokune kopyala; yoksa oyun bos bir dosyanin uzerine yazar. */
+/* If a file to be written without truncation exists only in the game root,
+ * copy it to the write root first; otherwise the game writes over an empty file. */
 static void copy_up(const char *win, const char *wpath){
     if (!g_wroot[0]) return;
     struct stat st; if (stat(wpath, &st) == 0) return;
@@ -134,11 +135,11 @@ static void copy_up(const char *win, const char *wpath){
         copy_file(src, wpath);
 }
 
-/* --- handle tablosu --- */
+/* --- handle table --- */
 #define FH_BASE 0x00900000u
 #define FH_MAX  256
 typedef struct { int fd; int empty; int used; char path[512]; DIR *dir; char pat[128];
-                 DIR *dir2; char path1[512]; } FH;   /* dir2: oyun koku (kayit katmani etkinken) */
+                 DIR *dir2; char path1[512]; } FH;   /* dir2: the game root (while the save layer is active) */
 static FH g_fh[FH_MAX];
 static uint32_t fh_new(void){
     for (int i=1;i<FH_MAX;i++) if(!g_fh[i].used){ memset(&g_fh[i],0,sizeof g_fh[i]);
@@ -155,13 +156,13 @@ static uint32_t A(CPU *c,int i){ return MR32(c->esp + 4u*(uint32_t)i); }
 #define GS(a) ((const char*)(g_mem + (uint32_t)(a)))
 #define INVALID_HANDLE 0xFFFFFFFFu
 
-/* Windows joker eslemesi: buyuk/kucuk harf duyarsiz, "*.*" her seyi tutar. */
+/* Windows wildcard matching: case-insensitive, "*.*" matches everything. */
 static int win_match(const char *pat, const char *name){
     if (!pat[0] || !strcmp(pat, "*") || !strcmp(pat, "*.*")) return 1;
     return fnmatch(pat, name, FNM_CASEFOLD) == 0;
 }
-/* Dizin taramasinda siradaki adi ver: once yazma koku, sonra oyun koku.
- * full: bulunan girdinin gercek yolu (oznitelik/boyut icin). */
+/* Give the next name in a directory scan: write root first, then the game root.
+ * full: the real path of the entry found (for attributes/size). */
 static int find_next(FH *f, char *nm, size_t nsz, char *full, size_t fsz){
     struct dirent *e;
     if (f->dir){
@@ -175,7 +176,7 @@ static int find_next(FH *f, char *nm, size_t nsz, char *full, size_t fsz){
         while ((e = readdir(f->dir2))){
             if (e->d_name[0] == '.') continue;
             if (!win_match(f->pat, e->d_name)) continue;
-            if (f->path1[0]){               /* yazma kokunde zaten verildi */
+            if (f->path1[0]){               /* already given from the write root */
                 char p[1024]; struct stat st;
                 snprintf(p, sizeof p, "%s/%s", f->path1, e->d_name);
                 if (stat(p, &st) == 0) continue; }
@@ -184,11 +185,11 @@ static int find_next(FH *f, char *nm, size_t nsz, char *full, size_t fsz){
     }
     return 0;
 }
-/* WIN32_FIND_DATAA (320 bayt): +0 oznitelik, +4/+12/+20 olusturma/erisim/
- * yazma FILETIME, +28 boyut (ust), +32 boyut (alt), +44 ad.
- * Oznitelik eskiden hep 0x80 (normal dosya) veriliyordu: oyun kariyer
- * profillerini "NFS Underground 2" altindaki KLASORLER olarak ariyor,
- * klasoru dosya sanip kaydi hic bulamiyordu. */
+/* WIN32_FIND_DATAA (320 bytes): +0 attributes, +4/+12/+20 creation/access/
+ * write FILETIME, +28 size (high), +32 size (low), +44 name.
+ * The attribute used to always be 0x80 (normal file): the game looks up career
+ * profiles as FOLDERS under "NFS Underground 2", took the folder for a file
+ * and never found the save. */
 static void fill_find_data(uint32_t fd_, const char *full, const char *nm){
     if (!fd_) return;
     mem_commit(fd_, 320); memset(g_mem+fd_, 0, 320);
@@ -199,7 +200,7 @@ static void fill_find_data(uint32_t fd_, const char *full, const char *nm){
             MR32(fd_+28) = (uint32_t)((uint64_t)st.st_size >> 32);
             MR32(fd_+32) = (uint32_t)st.st_size;
         }
-        /* Unix saniyesi -> FILETIME (1601'den beri 100 ns) */
+        /* Unix seconds -> FILETIME (100 ns since 1601) */
         uint64_t ft = ((uint64_t)st.st_mtime + 11644473600ull) * 10000000ull;
         for (int k = 0; k < 3; k++){
             MR32(fd_+4+8u*k) = (uint32_t)ft; MR32(fd_+8+8u*k) = (uint32_t)(ft >> 32); }
@@ -209,8 +210,8 @@ static void fill_find_data(uint32_t fd_, const char *full, const char *nm){
 }
 
 static int fileio_call_impl(CPU *c, const char *n, uint32_t *out);
-/* FILEOPLOG=1: dosya islemlerini (okuma/konumlama haric) sonuclariyla yaz.
- * Kayit (profil) hatalarini izlemek icin. */
+/* FILEOPLOG=1: log file operations (except reads/seeks) with their results.
+ * For tracking save (profile) bugs. */
 int fileio_call(CPU *c, const char *n, uint32_t *out){
     static int lg = -1; if (lg < 0) lg = getenv("FILEOPLOG") != 0;
     int h = fileio_call_impl(c, n, out);
@@ -221,7 +222,7 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
         if (strcmp(n,"CreateFileA") && strcmp(n,"GetFileAttributesA") && strcmp(n,"FindFirstFileA")
             && strcmp(n,"DeleteFileA") && strcmp(n,"CreateDirectoryA") && strcmp(n,"MoveFileA")
             && strcmp(n,"CopyFileA")) s0 = "";
-        fprintf(stderr, "  [dosya] %-18s %.200s -> 0x%x  (arg1=0x%x)\n", n, s0, *out, A(c,1));
+        fprintf(stderr, "  [file] %-18s %.200s -> 0x%x  (arg1=0x%x)\n", n, s0, *out, A(c,1));
     }
     return h;
 }
@@ -240,9 +241,9 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
             if (!(flags & O_TRUNC)) copy_up(GS(pn), real);
         } else ok = resolve(GS(pn), real, sizeof real);
         if (flags & O_CREAT) mkparents(real);
-        /* Dil eki geri dusumu: bu surumde film yolunda "_fr.vp6" soneki
-         * gomulu ama klasorde "_en" dosyalari var.  Istenen yoksa
-         * "_en" ve eksiz surumu dene.                                   */
+        /* Language suffix fallback: in this version the movie path has the "_fr.vp6"
+         * suffix embedded, but the folder has "_en" files.  If the requested one
+         * doesn't exist, try "_en" and the suffix-less version.         */
         struct stat _st;
         if (!(flags & O_CREAT) && stat(real, &_st) != 0){
             char alt[1024]; const char *dot = strrchr(real, '.');
@@ -250,14 +251,14 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
                 size_t base = (size_t)(dot - real);
                 const char *sfx[] = { "_en", "", "_dn", "_du", "_sw" };
                 for (int q = 0; q < 5; q++){
-                    /* mevcut dil ekini (varsa) kaldir */
+                    /* remove the current language suffix (if any) */
                     size_t cut = base;
                     if (base >= 3 && real[base-3] == '_') cut = base - 3;
                     snprintf(alt, sizeof alt, "%.*s%s%s",
                              (int)cut, real, sfx[q], dot);
                     if (stat(alt, &_st) == 0){
                         if (getenv("VERBOSE") || getenv("FILELIST"))
-                            fprintf(stderr,"  [dosya] dil geri dusumu: \"%s\" -> \"%s\"\n",
+                            fprintf(stderr,"  [file] language fallback: \"%s\" -> \"%s\"\n",
                                     real, alt);
                         snprintf(real, sizeof real, "%s", alt);
                         break;
@@ -265,13 +266,13 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
                 }
             }
         }
-        /* NOMOVIES=1: video dosyalarini yok say.  VP6 kod cozucusu yok;
-         * oyun videoyu oynatmaya calisip beklerse orada takiliyor. */
+        /* NOMOVIES=1: ignore video files.  There is no VP6 decoder; if the game tries
+         * to play a video and waits, it gets stuck there. */
         int fd;
         { const char *ext = strrchr(real, '.');
           const char *nm2 = getenv("NOMOVIES");
           int movie_mode = (nm2 && *nm2 && *nm2 != '0') ? atoi(nm2) : 0;
-          /* mod 3: yalnizca "blank" filmini atla (gercek filmler oynasin) */
+          /* mode 3: skip only the "blank" movie (let the real movies play) */
           const char *bn2 = strrchr(real, '/'); bn2 = bn2 ? bn2+1 : real;
           if (movie_mode == 3 && !strncasecmp(bn2, "blank", 5)) fd = -1;
           else if (movie_mode == 1 && ext &&
@@ -281,17 +282,17 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
           else if (movie_mode == 3 && !strncasecmp(bn2, "blank", 5)) { }
           else {
               fd = open(real, flags, 0644);
-              /* mod 2: acilsin ama bos gorunsun -> oynatici "bitti" desin */
+              /* mode 2: let it open but look empty -> the player says "done" */
               if (fd >= 0 && movie_mode == 2 && ext &&
                   (!strcasecmp(ext,".vp6") || !strcasecmp(ext,".vp8") ||
                    !strcasecmp(ext,".bik") || !strcasecmp(ext,".mpg")))
                   g_empty_next = 1;
           } }
         { static int shown=0; if ((getenv("VERBOSE")||getenv("FILELIST")) && shown<200){ shown++;
-            fprintf(stderr,"  [dosya] CreateFileA(\"%s\") -> \"%s\"  %s\n",
-                    GS(pn), real, fd>=0?"ACIK":"BASARISIZ"); } }
+            fprintf(stderr,"  [file] CreateFileA(\"%s\") -> \"%s\"  %s\n",
+                    GS(pn), real, fd>=0?"OPEN":"FAILED"); } }
         if (fd<0){ g_file_fail++; r=INVALID_HANDLE;
-            fprintf(stderr,"  [dosya] ACILAMADI: \"%s\" -> \"%s\" (disp=%u erisim=0x%x)\n",
+            fprintf(stderr,"  [file] COULD NOT OPEN: \"%s\" -> \"%s\" (disp=%u access=0x%x)\n",
                     GS(pn), real, disp, access); }
         else {
             uint32_t h=fh_new();
@@ -303,9 +304,9 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
     }
     else if (!strcmp(n,"ReadFile")){
         /* (hFile, lpBuffer, nBytes, lpNumberRead, lpOverlapped)
-         * OVERLAPPED verilirse: ofset yapidan alinir, sonuc yapiya yazilir
-         * ve hEvent sinyallenir.  Bunlar yapilmazsa oyun asenkron okumanin
-         * bitmesini sonsuza kadar bekler.                               */
+         * If an OVERLAPPED is given: the offset is taken from the structure, the
+         * result is written into it and hEvent is signalled.  Without this the
+         * game waits forever for the asynchronous read to finish.        */
         FH*f=fh_get(A(c,0)); uint32_t buf=A(c,1), len=A(c,2), pnr=A(c,3), ov=A(c,4);
         if(!f||f->fd<0){ if(pnr) MR32(pnr)=0; r=0; }
         else { if(len) mem_commit(buf,len);
@@ -316,7 +317,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
                    got = pread(f->fd, g_mem+buf, len, (off_t)off);
                    if(got<0) got=0;
                    MR32(ov+0) = 0;                      /* Internal = STATUS_SUCCESS */
-                   MR32(ov+4) = (uint32_t)got;          /* InternalHigh = okunan */
+                   MR32(ov+4) = (uint32_t)got;          /* InternalHigh = bytes read */
                    uint32_t hev = MR32(ov+16);
                    if (hev){ void win32_signal_event(uint32_t); win32_signal_event(hev); }
                    { const char *mf2 = getenv("MUTEFILE");
@@ -328,16 +329,16 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
                          memset(g_mem+buf, 0, (size_t)got); }
                    g_overlapped_reads++;
                } else if (f->empty){
-                   got = 0;                       /* aninda dosya sonu */
+                   got = 0;                       /* immediate end of file */
                } else {
                    got = read(f->fd, g_mem+buf, len);
                    if(got<0) got=0;
                }
-               /* MUTEFILE=<parca>: eslesen dosyanin okumalarini SIFIRLA
-                * doldur.  Muzik akisini (sdat.viv) susturup geriye ses
-                * efekti kaliyor mu, bunu nesnel olcmek icin.  Dosya sonu
-                * dondurmuyoruz ki akis mantigi normal calismaya devam
-                * etsin -- yalnizca icerik sessizlesir. */
+               /* MUTEFILE=<substring>: fill the reads of the matching file with ZEROS.
+                * To measure objectively whether sound effects remain once the
+                * music stream (sdat.viv) is silenced.  We don't return end of
+                * file, so the streaming logic keeps working normally -- only the
+                * content goes silent. */
                { const char *mf = getenv("MUTEFILE");
                  const char *ms = getenv("MUTESIZE");
                  const char *mn = getenv("MUTEMIN");
@@ -349,7 +350,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
                if (getenv("READLOG")){
                    const char *bn = strrchr(f->path,'/'); bn = bn?bn+1:f->path;
                    double audio_time(void);
-                   fprintf(stderr,"  [okuma] t=%8.3f %-28s istenen=%-9u alinan=%-9ld sure=%.2f ms\n",
+                   fprintf(stderr,"  [read] t=%8.3f %-28s requested=%-9u got=%-9ld time=%.2f ms\n",
                            audio_time(), bn, len, (long)got,
                            (double)(now_ns_io() - _rd0)/1e6);
                }
@@ -391,7 +392,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"FlushFileBuffers")){ FH*f=fh_get(A(c,0)); if(f&&f->fd>=0) fsync(f->fd); r=1; }
     else if (!strcmp(n,"CloseHandle")){
         FH*f=fh_get(A(c,0));
-        if(!f) return 0;                       /* bizim degil - diger katman baksin */
+        if(!f) return 0;                       /* not ours - let the other layer look */
         if(f->fd>=0) close(f->fd);
         if(f->dir) closedir(f->dir);
         f->used=0; r=1;
@@ -409,8 +410,8 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
     }
     else if (!strcmp(n,"SHGetFolderPathA")){
         /* (hwnd, csidl, hToken, dwFlags, pszPath) -> S_OK
-         * Sanal koku veriyoruz; resolve() bunu oyun dizinine esliyor.
-         * Bos donerse oyun kayit/profil dizinini bulamiyor.            */
+         * We give the virtual root; resolve() maps it to the game directory.
+         * If it returns empty the game can't find its save/profile directory. */
         uint32_t pp=A(c,4);
         if (pp){ mem_commit(pp, 260); snprintf((char*)(g_mem+pp), 260, "C:\\NFSU2"); }
         r=0; }
@@ -420,14 +421,14 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
         r = (mkdir(real,0755)==0 || errno==EEXIST);
     }
     else if (!strcmp(n,"RemoveDirectoryA")){
-        /* Profil silinirken dosyadan sonra klasoru de kaldiriyor. */
+        /* When a profile is deleted it also removes the folder after the file. */
         char real[1024]; resolve_w(GS(A(c,0)), real, sizeof real);
         r = (rmdir(real)==0);
     }
     else if (!strcmp(n,"MoveFileA")){
         char a[1024],b[1024]; resolve(GS(A(c,0)),a,sizeof a); resolve_w(GS(A(c,1)),b,sizeof b);
         mkparents(b);
-        /* Kaynak oyun kokundeyse (salt okunur) tasima yerine kopyala. */
+        /* If the source is in the game root (read-only), copy instead of moving. */
         if (g_wroot[0] && strncmp(a, g_wroot, strlen(g_wroot)) != 0) r = (uint32_t)copy_file(a, b);
         else r = (rename(a,b)==0);
     }
@@ -435,7 +436,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
         char a[1024],b[1024]; resolve(GS(A(c,0)),a,sizeof a); resolve_w(GS(A(c,1)),b,sizeof b);
         r = (uint32_t)copy_file(a, b);
     }
-    /* --- dizin tarama: WIN32_FIND_DATAA (320 bayt), +0 attr, +44 ad --- */
+    /* --- directory scan: WIN32_FIND_DATAA (320 bytes), +0 attr, +44 name --- */
     else if (!strcmp(n,"FindFirstFileA")){
         const char *spec = GS(A(c,0));
         char win[1024]; snprintf(win,sizeof win,"%s",spec);
@@ -443,8 +444,8 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
         char *sep = bs>fs2?bs:fs2;
         char pat[128]="*";
         if (sep){ snprintf(pat,sizeof pat,"%s",sep+1); *sep=0; } else { snprintf(pat,sizeof pat,"%s",win); win[0]=0; }
-        /* Kayit katmani etkinse once yazma kokundeki, sonra oyun
-         * kokundeki dizin taranir (ayni ad iki kez verilmez). */
+        /* If the save layer is active, the directory in the write root is scanned
+         * first, then the one in the game root (the same name isn't given twice). */
         char real[1024], wreal[1024]; wreal[0] = 0;
         if (win[0]) resolve_in(g_root, win, real, sizeof real); else snprintf(real,sizeof real,"%s",g_root);
         if (g_wroot[0]){
@@ -481,9 +482,9 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
 
 void fileio_report(void){
     if (g_overlapped_reads)
-        fprintf(stderr,"  dosya: %llu asenkron (overlapped) okuma\n",
+        fprintf(stderr,"  file: %llu asynchronous (overlapped) reads\n",
                 (unsigned long long)g_overlapped_reads);
-    fprintf(stderr,"  dosya: %llu acildi, %llu acilamadi, %llu okuma, %.1f MB\n",
+    fprintf(stderr,"  file: %llu opened, %llu could not be opened, %llu reads, %.1f MB\n",
             (unsigned long long)g_file_open,(unsigned long long)g_file_fail,
             (unsigned long long)g_file_read,(double)g_bytes_read/1048576.0);
 }

@@ -1,1953 +1,2041 @@
-# NFSU2 → macOS ARM64 Native Port (statik rekompilasyon)
+# NFSU2 → macOS ARM64 Native Port (static recompilation)
 
-`SPEED2.EXE` (32-bit x86 Windows PE) makine kodunu C'ye lift edip **native ARM64
-Mach-O** olarak yeniden derleme projesi. Wine yok, emülasyon yok, Windows yok.
+A project that lifts the machine code of `SPEED2.EXE` (32-bit x86 Windows PE) to
+C and recompiles it as a **native ARM64 Mach-O**. No Wine, no emulation, no
+Windows.
 
-Yöntem: N64Recomp (Zelda MM) ve XenonRecomp (Sonic Unleashed) portlarındaki
-statik rekompilasyon tekniği — x86 için uyarlanmış.
+Method: the static recompilation technique used in the N64Recomp (Zelda MM) and
+XenonRecomp (Sonic Unleashed) ports, adapted for x86.
 
-> **Bu belge kronolojik bir mühendislik günlüğüdür.** Güncel özet, derleme
-> tarifi ve ilgili çalışmalar `README.md`'de. Eski bölümlerdeki sayılar (test
-> adedi, trap sayısı, kaynak boyutu) yazıldıkları günkü durumu gösterir.
-> Güncel değerler (2026-10-12): 23.278 fonksiyon, 132,5 MB üretilmiş C,
-> 400 statik trap, 169 ISA testi / 439 denetim.
+> **This document is a chronological engineering log.** The current summary,
+> build recipe and related work are in `README.md`. Numbers in older sections
+> (test counts, trap counts, source size) reflect the state on the day they
+> were written. Current values (2026-10-12): 23,278 functions, 132.5 MB of
+> generated C, 400 static traps, 169 ISA tests / 439 checks.
 
-## Hedef binary
+## Target binary
 
 | | |
 |---|---|
 | SHA-256 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` |
-| Biçim | PE32, Intel 80386, GUI, ImageBase `0x400000` |
+| Format | PE32, Intel 80386, GUI, ImageBase `0x400000` |
 | Entry | `0x0075bcc7` |
-| `.text` | 3.676.913 bayt (~1,13 M komut, 337 farklı opcode) |
-| Paketli/korumalı | **Hayır** — import tablosu tam ve okunabilir |
+| `.text` | 3,676,913 bytes (~1.13 M instructions, 337 distinct opcodes) |
+| Packed/protected | **No** — the import table is complete and readable |
 
-### Kritik keşif: relocation tablosu sağlam
-PE'nin `BASERELOC` dizin girişi sıfırlanmış ve `RELOCS_STRIPPED` bayrağı set
-(no-CD exe'lerde tipik), **ama veri fiziksel olarak duruyor** — isimsiz 5. bölümde
-(`0x8f5000`, 240.664 bayt). Elle ayrıştırıldı:
+### Key discovery: the relocation table is intact
+The PE's `BASERELOC` directory entry is zeroed and the `RELOCS_STRIPPED` flag
+is set (typical for no-CD exes), **but the data is still physically there** — in
+the unnamed 5th section (`0x8f5000`, 240,664 bytes). Parsed by hand:
 
-* 999 blok, 91.616 giriş, **91.106 HIGHLOW mutlak adres**
-* Doğrulama: **91.106/91.106'sı geçerli image adresine işaret ediyor (%100)**
-* Dağılım: `.text` 71.094 · `.rdata` 14.601 · `.data` 5.411
+* 999 blocks, 91,616 entries, **91,106 HIGHLOW absolute addresses**
+* Validation: **91,106/91,106 point to a valid image address (100%)**
+* Distribution: `.text` 71,094 · `.rdata` 14,601 · `.data` 5,411
 
-Bu, x86 statik rekompilasyonun en büyük problemini çözüyor: *hangi 4 bayt
-işaretçi, hangisi sayı?* RISC ISA'larda (MIPS/PPC) sabit 4 baytlık komutlar
-sayesinde bu sorun yok; x86'nın değişken uzunluklu (1–15 bayt) komutlarında
-kesin çözüm genel halde karar verilemez. Reloc tablosu bunu aşıyor.
+This solves the biggest problem of x86 static recompilation: *which 4 bytes are
+a pointer and which are a number?* RISC ISAs (MIPS/PPC) don't have this problem
+thanks to fixed 4-byte instructions; with x86's variable-length (1–15 byte)
+instructions an exact solution is undecidable in general. The reloc table gets
+around it.
 
-## Ölçülen durum
+## Measured state
 
-| Metrik | Değer |
+| Metric | Value |
 |---|---|
-| `.text` kod kapsamı (reloc destekli recursive descent) | **%96,08** |
-| Açıklanan toplam (kod + hizalama + jump table + veri) | **%98,71** |
-| Gerçek belirsizlik | **%1,29** (47.451 bayt / 1.546 blok) |
-| Bulunan fonksiyon | **23.274** |
-| **Tam lift edilen fonksiyon** | **23.046 / 23.274 = %99,0** |
-| **Komut bazında lift kapsamı** | **%98,5** |
-| Desteklenmeyen komut trap'i (statik) | 914 (başlangıçta 30.783) |
-| Dolaylı çağrı bölgesi (`call reg/[mem]`) | 6.279 |
-| Dolaylı atlama | 763 (446 jump table çözüldü) |
+| `.text` code coverage (reloc-assisted recursive descent) | **96.08%** |
+| Total explained (code + alignment + jump tables + data) | **98.71%** |
+| True uncertainty | **1.29%** (47,451 bytes / 1,546 blocks) |
+| Functions found | **23,274** |
+| **Fully lifted functions** | **23,046 / 23,274 = 99.0%** |
+| **Lift coverage by instruction** | **98.5%** |
+| Unsupported-instruction traps (static) | 914 (initially 30,783) |
+| Indirect call sites (`call reg/[mem]`) | 6,279 |
+| Indirect jumps | 763 (446 jump tables resolved) |
 
-### Komut karışımı
-`mov` %27,6 · `push` %13,6 · `call` %6,1 · **x87 %9,86** · SSE/MMX %1,25
+### Instruction mix
+`mov` 27.6% · `push` 13.6% · `call` 6.1% · **x87 9.86%** · SSE/MMX 1.25%
 
-## Çalışma zamanı mimarisi
+## Runtime architecture
 
-**Bellek:** guest 32-bit adres alanı `mmap` ile ayrılır; guest adres → host adres
-çevirisi ARM64'ün `uxtw` adresleme kipiyle **tek komutta, sıfır ek maliyetle**:
+**Memory:** the guest 32-bit address space is reserved with `mmap`; guest
+address → host address translation uses ARM64's `uxtw` addressing mode, **in a
+single instruction, at zero extra cost**:
 
 ```asm
 ldr w8, [x_base, w_addr, uxtw]     ; MR32(guest_addr)
 ```
 
-> Not: guest'i kendi adresine (`0x400000`) doğrudan haritalamak denendi —
-> `__PAGEZERO` 0x4000'e küçültülse bile macOS ARM64 süreci SIGKILL ediyor.
-> Taban+offset yaklaşımı zaten bedava olduğu için bu bir kayıp değil.
+> Note: mapping the guest directly at its own address (`0x400000`) was tried —
+> even with `__PAGEZERO` shrunk to 0x4000, macOS ARM64 SIGKILLs the process.
+> Since the base+offset approach is free anyway, this is no loss.
 
-**CPU durumu:** `runtime/cpu.h` — 8 GPR, bayraklar ayrı `uint32_t` alanlarda
-(clang'ın DCE'si fonksiyon içinde kullanılmayan bayrak hesaplarını eliyor),
-8 elemanlı x87 yığını, 8 XMM.
+**CPU state:** `runtime/cpu.h` — 8 GPRs, flags in separate `uint32_t` fields
+(clang's DCE eliminates flag computations not used within a function), an
+8-entry x87 stack, 8 XMM registers.
 
-## Dosyalar
+## Files
 
 ```
-tools/analyze.py    PE bölümleri, recursive descent, kapsam
-tools/reloc2.py     sıfırlanmış reloc tablosunu elle ayrıştır  -> out/relocs.txt
-tools/profile.py    komut histogramı, x87/SSE oranı
-tools/lift.py       x86-32 -> C lifter (çekirdek)
-tools/liftall.py    23k fonksiyonu dene, eksik komutları raporla
-runtime/cpu.h       CPU durumu, bellek makroları, bayrak/x87/string yardımcıları
-runtime/mem.c       PE bölümlerini guest belleğe yükler
-tests/harness.c     tamsayı testleri (22 test)
-tests/fptest.c      x87 testleri (30 test)
+tools/analyze.py    PE sections, recursive descent, coverage
+tools/reloc2.py     parse the zeroed reloc table by hand  -> out/relocs.txt
+tools/profile.py    instruction histogram, x87/SSE ratio
+tools/lift.py       x86-32 -> C lifter (core)
+tools/liftall.py    try all 23k functions, report missing instructions
+runtime/cpu.h       CPU state, memory macros, flag/x87/string helpers
+runtime/mem.c       loads PE sections into guest memory
+tests/harness.c     integer tests (22 tests)
+tests/fptest.c      x87 tests (30 tests)
 ```
 
-Kurulum: `python3 -m venv .venv && PIP_USER=0 .venv/bin/pip install capstone pefile`
+Setup: `python3 -m venv .venv && PIP_USER=0 .venv/bin/pip install capstone pefile`
 
 ```bash
 ./.venv/bin/python tools/lift.py <SPEED2.EXE> 48b1e0 631d30 > gen/funcs.c
 clang -O2 -Iruntime -o out/test tests/harness.c gen/funcs.c runtime/mem.c -lm
 ```
 
-## Doğrulanmış (52/52 test geçiyor, native arm64)
+## Verified (52/52 tests pass, native arm64)
 
-* `sub_0048b1e0` — dizi indeksleme, `imul`+`add`, 6 vaka
-* `sub_0075dc4b` — `_finite(double)`; C `isfinite()`'e karşı **bit-birebir**
-  (inf, -inf, nan, subnormal dahil 8 vaka)
-* `sub_00631d30` — 6 bloklu CFG, koşullu dallanma, `ret 8` stdcall temizliği,
-  alt fonksiyon çağrısı, yığın dengesi
+* `sub_0048b1e0` — array indexing, `imul`+`add`, 6 cases
+* `sub_0075dc4b` — `_finite(double)`; **bit-exact** against C `isfinite()`
+  (8 cases including inf, -inf, nan, subnormal)
+* `sub_00631d30` — 6-block CFG, conditional branches, `ret 8` stdcall cleanup,
+  sub-function call, stack balance
 * `sub_0077b970` / `sub_0077b950` — `fld` + 3× `fadd`/`fsub` + `fstp`,
-  image'deki gerçek sabitlerle, float sonuç bit-birebir
-* `sub_006e1c00` — `fild` int→float, `INT32_MIN`/`INT32_MAX` dahil 7 vaka
-* `sub_0040ffd0` — float kopyalama, inf/nan roundtrip
+  with the real constants from the image, float result bit-exact
+* `sub_006e1c00` — `fild` int→float, 7 cases including `INT32_MIN`/`INT32_MAX`
+* `sub_0040ffd0` — float copy, inf/nan roundtrip
 
 
-## Aşama 2 sonuçları: dolaylı dispatch + tam derleme
+## Phase 2 results: indirect dispatch + full build
 
-### Dolaylı çağrı dispatch'i
-`.text` boyutunda doğrudan indeks tablosu (14 MB `uint32`), guest adres → native
-fonksiyon işaretçisi, **O(1)**. 23.278 fonksiyon kayıtlı, çakışma/aralık dışı yok.
-Doğrulandı: aynı fonksiyon doğrudan çağrıldığında ve guest adresi üzerinden
-dispatch edildiğinde **birebir aynı sonucu** veriyor. Boot çalıştırmasında
-çözülemeyen dolaylı çağrı **0**.
+### Indirect call dispatch
+A direct index table the size of `.text` (14 MB of `uint32`), guest address →
+native function pointer, **O(1)**. 23,278 functions registered, no collisions or
+out-of-range entries. Verified: the same function gives **exactly the same
+result** whether called directly or dispatched via its guest address. Unresolved
+indirect calls in the boot run: **0**.
 
-### Tam derleme
+### Full build
 | | |
 |---|---|
-| Üretilen fonksiyon | **23.278** |
-| C kaynak | **115,6 MB** (128 shard) |
-| Üretim süresi | 21 s (10 çekirdek) |
-| Derleme | **130/130 shard, hatasız**, 66 s (571 CPU-s, `-O2`) |
+| Functions generated | **23,278** |
+| C source | **115.6 MB** (128 shards) |
+| Generation time | 21 s (10 cores) |
+| Compilation | **130/130 shards, error-free**, 66 s (571 CPU-s, `-O2`) |
 | Link | 43 MB **Mach-O 64-bit arm64** |
-| Kesilmiş dallanma hedefi | 0 |
-| Eksik sembol (stub) | 4 |
-| Desteklenmeyen komut trap'i | 30.783 (yalnız MMX/SSE/3DNow) |
+| Truncated branch targets | 0 |
+| Missing symbols (stubs) | 4 |
+| Unsupported-instruction traps | 30,783 (MMX/SSE/3DNow only) |
 
-Üretim sırasında bulunan ve düzeltilen üç lifter hatası:
-1. `.text` dışına `call` → var olmayan `sub_XXXX` sembolü (artık dispatch'e gider)
-2. `.text` dışına koşullu dallanma → var olmayan etiket (artık trap)
-3. Kesinti nedeniyle üretilmeyen dallanma hedefleri → stub etiket
+Three lifter bugs found and fixed during generation:
+1. `call` outside `.text` → nonexistent `sub_XXXX` symbol (now goes to dispatch)
+2. Conditional branch outside `.text` → nonexistent label (now a trap)
+3. Branch targets not generated because of truncation → stub label
 
-### fs:/gs: segment desteği (doğruluk düzeltmesi)
-Statik tarama `fs:` önekinin **3.698 kez** kullanıldığını gösterdi (3.613'ü `mov`)
-— SEH zinciri `fs:[0]` ve TLS `fs:[0x2c]`. Lifter bunları sessizce yok sayıyordu,
-yani `mov eax, fs:[0]` yanlış çevriliyordu. Artık `c->fs_base` ekleniyor.
-`es:/ds:/ss:` düz bellek modelinde taban 0 olduğu için yok sayılmaya devam ediyor
-(4.097 `es:` erişiminin tamamı string komutlarının örtük segmenti).
+### fs:/gs: segment support (correctness fix)
+A static scan showed the `fs:` prefix used **3,698 times** (3,613 of them `mov`)
+— the SEH chain `fs:[0]` and TLS `fs:[0x2c]`. The lifter was silently ignoring
+them, so `mov eax, fs:[0]` was translated wrongly. Now `c->fs_base` is added.
+`es:/ds:/ss:` keep being ignored since their base is 0 in the flat memory model
+(all 4,097 `es:` accesses are the implicit segment of string instructions).
 
-### Guest bellek modeli
-4 GB adres alanı `PROT_NONE` olarak rezerve edilir, kullanılan bölgeler commit
-edilir. Böylece hatalı guest erişimi host'u çökertmek yerine
-`SIGSEGV` → guest adresi olarak teşhis edilir. Boot sırasında yığın taşması tam
-olarak `0x00cfffec`'te (yığın sınırının 20 bayt altı) yakalandı.
+### Guest memory model
+The 4 GB address space is reserved as `PROT_NONE` and the regions in use are
+committed. This way a bad guest access is diagnosed as `SIGSEGV` → guest
+address instead of crashing the host. During boot a stack overflow was caught at
+exactly `0x00cfffec` (20 bytes below the stack limit).
 
-## Aşama 3 tohumu: Win32 katmanı ve boot keşfi
+## Phase 3 seed: Win32 layer and boot exploration
 
-252 IAT girişi, 242'si çağrılıyor, **613 çağrı sitesi**:
+252 IAT entries, 242 of them called, **613 call sites**:
 KERNEL32 469 · USER32 62 · WS2_32 22 · ADVAPI32 17 · GDI32 14 · WINMM 11 · TAPI32 9
 
-**stdcall argüman sayıları:** çağrı sitelerindeki `push` dizilerinden çıkarım
-denendi — bilinen 183 fonksiyona karşı yalnız **%74,9 doğru**. Yanlış her sayı
-`esp`'i kaydırıp yığını bozduğu için bu yeterli değil; 183 fonksiyon için
-otoriter tablo elle girildi (`tools/argcount.py`), kalan ~59 çıkarımı kullanıyor.
+**stdcall argument counts:** inferring them from `push` sequences at call sites
+was tried — only **74.9% correct** against 183 known functions. That is not good
+enough, since every wrong count shifts `esp` and corrupts the stack; an
+authoritative table was entered by hand for 183 functions (`tools/argcount.py`),
+the remaining ~59 use the inference.
 
-**Boot durumu:** entry point `0x0075bcc7`'den başlayarak MSVC CRT başlangıcı
-**73 Win32 çağrısı** derinliğe kadar doğru çalışıyor:
+**Boot state:** starting from the entry point `0x0075bcc7`, the MSVC CRT startup
+runs correctly up to a depth of **73 Win32 calls**:
 
 ```
 GetVersionExA → HeapCreate → 17× InitializeCriticalSection → TlsAlloc/TlsSetValue
-→ GetStartupInfoA → stdio handle'lari → GetCommandLineA → ortam degiskenleri
+→ GetStartupInfoA → stdio handles → GetCommandLineA → environment variables
 → GetACP/GetCPInfo → GetStringTypeW → MultiByteToWideChar → LCMapStringW
-→ WideCharToMultiByte   (locale/codepage baslatmasi TAM)
+→ WideCharToMultiByte   (locale/codepage initialization COMPLETE)
 ```
 
-Implemente edilenler: heap (bump ayırıcı), TLS, kritik bölümler, zaman
-(`QueryPerformanceCounter`, `GetTickCount`), `GetStringTypeW` (C1_* bayrakları),
-`LCMapStringW/A` (büyük/küçük harf), `GetLocaleInfoA/W`, `MultiByteToWideChar`,
-`WideCharToMultiByte`, `GetProcAddress` (isimle çözümleme), `MessageBoxA`.
+Implemented: heap (bump allocator), TLS, critical sections, time
+(`QueryPerformanceCounter`, `GetTickCount`), `GetStringTypeW` (C1_* flags),
+`LCMapStringW/A` (upper/lower case), `GetLocaleInfoA/W`, `MultiByteToWideChar`,
+`WideCharToMultiByte`, `GetProcAddress` (resolution by name), `MessageBoxA`.
 
-**Mevcut engel:** CRT `/GS` yığın güvenlik çerezi kontrolü başarısız oluyor ve
-oyun kendi hata kutusunu gösteriyor:
+**Current blocker:** the CRT `/GS` stack security cookie check fails and the
+game shows its own error box:
 
 > *Buffer overrun detected! — Microsoft Visual C++ Runtime Library*
 
-Teşhis edilenler:
-* Çerez global'i **guest `0x81a1d0`**, değeri `0xBB40E64E` (MSVC link-zamanı
-  varsayılanı) — çalışma boyunca hiç değişmiyor, yani `__security_init_cookie`
-  çalışmamış. Global sabit olduğu için tutarsızlık **yığın kopyasında**.
-* `__security_check_cookie` `0x76115e`'de; `__report_gsfailure` `0x76112d`'de ve
-  ona **tek bir referans** var (`0x761167`'deki `jmp`).
-* Boot yolundaki 27 import'un **tamamı** otoriter argüman sayısına sahip, yani
-  bozulmanın kaynağı yanlış stdcall temizliği **değil** — lift edilmiş kodun
-  kendisinde.
+Diagnosed so far:
+* The cookie global is at **guest `0x81a1d0`**, value `0xBB40E64E` (the MSVC
+  link-time default) — it never changes during the run, so
+  `__security_init_cookie` did not run. Since the global is constant, the
+  inconsistency is in the **stack copy**.
+* `__security_check_cookie` is at `0x76115e`; `__report_gsfailure` is at
+  `0x76112d` and has **a single reference** (the `jmp` at `0x761167`).
+* **All** 27 imports on the boot path have authoritative argument counts, so the
+  source of the corruption is **not** wrong stdcall cleanup — it is in the lifted
+  code itself.
 
-### Yapısal bulgu: temel bloklar fonksiyonlar arasında kopyalanıyor
-Bir fonksiyon başka bir fonksiyona `jmp` ile geçtiğinde (tail-call), lifter hedef
-blokları çağıranın gövdesine kopyalıyor. `__security_check_cookie` blokları hem
-`sub_0076115e` hem de `sub_00743cd0` içinde ayrı ayrı bulunuyor. Anlamsal olarak
-doğru ama **sembol bazlı müdahale tüm yolları yakalayamıyor** — hata ayıklarken
-ve ileride fonksiyon yamalarken bunu hesaba katmak gerek.
+### Structural finding: basic blocks are duplicated across functions
+When a function passes to another function with `jmp` (tail call), the lifter
+copies the target blocks into the caller's body. The `__security_check_cookie`
+blocks exist separately in both `sub_0076115e` and `sub_00743cd0`. Semantically
+correct, but **symbol-based intervention cannot catch every path** — this has to
+be taken into account when debugging and when patching functions later.
 
-### Yeni araçlar
+### New tools
 ```
-tools/genall.py     23k fonksiyonu paralel uret, shard'lara bol, fntab uret
-tools/imports.py    IAT cikar, import basina cagri sitesi say
-tools/argcount.py   stdcall arguman sayilari (otoriter tablo + cikarim)
-tools/disasm.py     adres araligi sok
-runtime/dispatch.c  O(1) dolayli cagri tablosu + guest yigin izleyici
-runtime/win32.c     Win32 API katmani (boot alt kumesi)
-build.sh            paralel shard derlemesi
-tests/main_all.c    tam derleme dogrulama paketi (15 test)
-tests/boot.c        entry point calistirma + izleme
+tools/genall.py     generate 23k functions in parallel, split into shards, generate fntab
+tools/imports.py    extract the IAT, count call sites per import
+tools/argcount.py   stdcall argument counts (authoritative table + inference)
+tools/disasm.py     disassemble an address range
+runtime/dispatch.c  O(1) indirect call table + guest stack tracer
+runtime/win32.c     Win32 API layer (boot subset)
+build.sh            parallel shard compilation
+tests/main_all.c    full-build verification suite (15 tests)
+tests/boot.c        entry point execution + tracing
 ```
 
 ```bash
 ./.venv/bin/python tools/genall.py <SPEED2.EXE> 128 && OPT=-O2 ./build.sh
 ```
 
-### Sıradaki adımlar
-1. `/GS` çerez bozulmasının kaynağını bul — lifter'ın bayrak/yığın semantiğinde
-   bir hata olma ihtimali yüksek. Şüpheliler: `inc`/`dec` CF koruma hilesi,
-   kaydırma bayrakları, `rep` string komutları, 16/8-bit kısmi kayıt yazmaları.
-   Yöntem: guest yürütmesini adım adım izleyip yığın çerezinin hangi komutta
-   değiştiğini bulan bir izleyici (watchpoint) yaz.
-2. MMX/SSE/3DNow ekle → 30.783 trap'i sıfırla.
-3. Kalan ~59 import için otoriter argüman sayısı.
+### Next steps
+1. Find the source of the `/GS` cookie corruption — most likely a bug in the
+   lifter's flag/stack semantics. Suspects: the `inc`/`dec` CF-preservation
+   trick, shift flags, `rep` string instructions, 16/8-bit partial register
+   writes. Method: write a tracer (watchpoint) that steps through guest
+   execution and finds the instruction at which the stack cookie changes.
+2. Add MMX/SSE/3DNow → bring the 30,783 traps to zero.
+3. Authoritative argument counts for the remaining ~59 imports.
 
-## Yol haritası
+## Roadmap
 
-**Aşama 1 — lifter tamamlama** *(tamamlandı)*
-- [x] Tamsayı çekirdeği, bayraklar, CFG, `call`/`ret`
-- [x] x87 FPU yığını + 80-bit `tbyte` dönüşümü
-- [x] String komutları (`rep movs/stos/lods/scas/cmps`, `df` yönü)
-- [x] MMX (paket tamsayı, doyma, kaydırma, punpck, pack, pcmpeq/gt, pmaddwd, pmulhw)
+**Phase 1 — complete the lifter** *(done)*
+- [x] Integer core, flags, CFG, `call`/`ret`
+- [x] x87 FPU stack + 80-bit `tbyte` conversion
+- [x] String instructions (`rep movs/stos/lods/scas/cmps`, `df` direction)
+- [x] MMX (packed integer, saturation, shifts, punpck, pack, pcmpeq/gt, pmaddwd, pmulhw)
 - [x] SSE/SSE2 (movaps/movups/movdqa, movss/movsd, add/sub/mul/div ps+ss+sd,
       shufps, unpck, sqrt/max/min, cvt*, ucomis*, movhlps/movlhps)
 - [x] 3DNow! (pfadd/pfsub/pfmul/pfcmp*/pi2fd/pf2id)
-- [x] `pushal`/`popal`, `rcl`/`rcr`, `bt` ailesi, `pushfd`/`popfd`, `sahf`/`lahf`
-- [x] Segment kayıtları (düz modelde sabit selektör), ayrıcalıklı komutlar (etkisiz)
-- [ ] Kalan %1,5: `pandn` bazı operand biçimleri, `packssdw`, `movq2dq` (9 fonksiyon)
+- [x] `pushal`/`popal`, `rcl`/`rcr`, `bt` family, `pushfd`/`popfd`, `sahf`/`lahf`
+- [x] Segment registers (fixed selector in the flat model), privileged instructions (no-ops)
+- [ ] Remaining 1.5%: some operand forms of `pandn`, `packssdw`, `movq2dq` (9 functions)
 
-**Aşama 2 — çalıştırılabilirlik**
-- [x] Dolaylı çağrı dispatch tablosu (O(1), 23.278 fonksiyon, doğrulandı)
-- [ ] SEH (MSVC `__try/__except`) analizi ve desteği
-- [x] fs:/gs: segment tabanı (TEB/TLS)
-- [ ] Thread'ler → pthreads
-- [x] Tüm 23k fonksiyonu üret + derle + link (43 MB arm64 Mach-O, 66 s)
+**Phase 2 — runnability**
+- [x] Indirect call dispatch table (O(1), 23,278 functions, verified)
+- [ ] SEH (MSVC `__try/__except`) analysis and support
+- [x] fs:/gs: segment base (TEB/TLS)
+- [ ] Threads → pthreads
+- [x] Generate + compile + link all 23k functions (43 MB arm64 Mach-O, 66 s)
 
-**Aşama 3 — Win32 katmanı** *(230 import)*
-- [ ] KERNEL32 (152) — dosya G/Ç → POSIX, sanal bellek, thread, TLS, zaman
-- [ ] USER32 (38) — pencere/mesaj döngüsü → Cocoa veya SDL3
+**Phase 3 — Win32 layer** *(230 imports)*
+- [ ] KERNEL32 (152) — file I/O → POSIX, virtual memory, threads, TLS, time
+- [ ] USER32 (38) — window/message loop → Cocoa or SDL3
 - [ ] GDI32 (12), ADVAPI32 (6, registry → plist), WINMM (6)
-- [ ] WS2_32 → BSD socket · SHELL32/SHFOLDER → yol eşleme
-- [ ] TAPI32 (9) / NETAPI32 (1) → büyük ihtimalle stub
+- [ ] WS2_32 → BSD sockets · SHELL32/SHFOLDER → path mapping
+- [ ] TAPI32 (9) / NETAPI32 (1) → most likely stubs
 
-**Aşama 4 — COM/grafik** *(en büyük tek kalem)*
-- [ ] **D3D9 → Metal**: `Direct3DCreate9` tek import, geri kalan vtable üzerinden.
-      IDirect3DDevice9 + kaynak tipleri, Shader Model 1.1/2.0 → MSL çevirisi.
+**Phase 4 — COM/graphics** *(the single biggest item)*
+- [ ] **D3D9 → Metal**: `Direct3DCreate9` is the only import, the rest goes through vtables.
+      IDirect3DDevice9 + resource types, Shader Model 1.1/2.0 → MSL translation.
 - [ ] DirectInput8 → GameController / IOKit
 - [ ] DirectSound → CoreAudio
-- [ ] DirectDraw (`DirectDrawCreate` tek çağrı, muhtemelen GPU tespiti)
+- [ ] DirectDraw (`DirectDrawCreate` is a single call, probably GPU detection)
 
-**Aşama 5 — doğruluk**
-- [ ] x87 80-bit ↔ ARM64 64-bit sapması: fizik/determinizm etkisi ölçülmeli
-- [ ] Referans karşılaştırmalı test (aynı girdi → aynı çıktı)
+**Phase 5 — correctness**
+- [ ] x87 80-bit ↔ ARM64 64-bit deviation: the effect on physics/determinism must be measured
+- [ ] Reference-comparison testing (same input → same output)
 
-## Dürüst kapsam değerlendirmesi
+## Honest scope assessment
 
-Aşama 1–2 mekanik ve öngörülebilir. **Aşama 4 projenin ağırlık merkezi** —
-D3D9→Metal çevirisi tek başına büyük bir iş; DXVK yıllar aldı, ancak tek bir
-oyunun kullandığı SM2.0 alt kümesi çok daha dar.
+Phases 1–2 are mechanical and predictable. **Phase 4 is the project's center of
+gravity** — D3D9→Metal translation is a big job on its own; DXVK took years,
+but the SM2.0 subset a single game uses is much narrower.
 
-Tek kişi için gerçekçi tahmin: **ciddi yarı zamanlı 12–24 ay**, tam zamanlı 6–9 ay.
-x86 statik rekompilasyonu yeni değil ve bu proje ilk örneği değil:
-[M-HT/SR](https://github.com/M-HT/SR) DOS/Windows oyunlarını (Septerra Core,
-Battle Isle 3) assembly düzeyinde çevirip macOS arm64 dahil birçok hedefe
-taşıyor; [sp00nznet/xboxrecomp](https://github.com/sp00nznet/xboxrecomp)
-orijinal Xbox (x86) oyunlarını aynı Python + Capstone → C yöntemiyle lift
-ediyor (Burnout 3, 22.097 fonksiyon). Akademik tarafta McSema, rev.ng, RetDec,
-BinRec gibi IR tabanlı ikili çeviri çalışmaları yıllardır var.
+A realistic estimate for one person: **12–24 months of serious part-time work**,
+6–9 months full time. Static recompilation of x86 is not new and this project is
+not the first example: [M-HT/SR](https://github.com/M-HT/SR) translates
+DOS/Windows games (Septerra Core, Battle Isle 3) at assembly level and brings
+them to many targets including macOS arm64;
+[sp00nznet/xboxrecomp](https://github.com/sp00nznet/xboxrecomp) lifts original
+Xbox (x86) games with the same Python + Capstone → C method (Burnout 3, 22,097
+functions). On the academic side, IR-based binary translation work such as
+McSema, rev.ng, RetDec and BinRec has existed for years.
 
-Bu projenin kendine özgü katkıları daha dar:
-(a) dizin girişi sıfırlanmış ama fiziksel olarak duran reloc tablosunu kurtarıp
-işaretçi/sabit ayrımında kullanmak, (b) Rosetta 2'yi oracle olarak kullanan
-diferansiyel ISA fuzzer'ı (`tools/fuzzisa.py`), (c) oyunun çalışma anında
-yığına yazdığı x86 kodu için hibrit yorumlayıcı (`runtime/genexec.c`),
-(d) Win32 + Direct3D 9 hedefinden macOS ARM64 / Metal'e uçtan uca oynanabilir
-port. Reloc tablosunun sağlam çıkması bu projeyi "araştırma problemi"nden
-"çok zor ama çözülebilir mühendislik"e taşıyan şey oldu.
+This project's own contributions are narrower:
+(a) recovering a reloc table whose directory entry was zeroed but which is
+physically still present, and using it to separate pointers from constants,
+(b) a differential ISA fuzzer that uses Rosetta 2 as the oracle
+(`tools/fuzzisa.py`), (c) a hybrid interpreter for the x86 code the game writes
+to its stack at run time (`runtime/genexec.c`), (d) an end-to-end playable port
+from a Win32 + Direct3D 9 target to macOS ARM64 / Metal. The reloc table turning
+out intact is what moved this project from "research problem" to "very hard but
+solvable engineering".
 
 ---
 
-# Aşama 3–4: Win32 + D3D9 katmanları, oyun `main()`'e ulaştı
+# Phases 3–4: Win32 + D3D9 layers, the game reached `main()`
 
-## Nerede duruyoruz
+## Where we stand
 
-Oyun artık **çalışıyor**: CRT başlangıcı, C++ global kurucuları, `main()`, pencere/registry/dosya
-katmanı, 6 guest thread, **Direct3D9 cihazı oluşturuluyor**, ilk kare `Present` ediliyor ve
-gömülü shader efektleri (`IDI_WORLD_FX` vb.) yükleniyor.
+The game now **runs**: CRT startup, C++ global constructors, `main()`, the
+window/registry/file layer, 6 guest threads, **the Direct3D9 device is created**,
+the first frame is `Present`ed and the embedded shader effects (`IDI_WORLD_FX`
+etc.) are loaded.
 
-Tek kalan tıkanma noktası: **D3DX efekt parametre ağacı çevrimli ayrıştırılıyor** (aşağıda).
+The only remaining blocker: **the D3DX effect parameter tree is parsed as a
+cycle** (below).
 
-| Aşama | Durum |
+| Stage | State |
 |---|---|
-| CRT başlangıcı (heap, TLS, locale, stdio) | ✅ tam |
-| C++ statik kurucular (`_initterm`) | ✅ tam |
-| `main()` / oyun init | ✅ çalışıyor |
-| Registry / pencere / senkronizasyon / thread | ✅ çalışıyor |
-| Dosya G/Ç + PE kaynakları | ✅ çalışıyor |
-| Direct3D9 cihaz + state block + shader nesneleri | ✅ çalışıyor |
-| Efekt (.efx) parametre ağacı | ❌ **çevrimli — tıkanma** |
-| Metal ile gerçek çizim | ⬜ başlanmadı |
+| CRT startup (heap, TLS, locale, stdio) | ✅ complete |
+| C++ static constructors (`_initterm`) | ✅ complete |
+| `main()` / game init | ✅ working |
+| Registry / window / synchronization / threads | ✅ working |
+| File I/O + PE resources | ✅ working |
+| Direct3D9 device + state blocks + shader objects | ✅ working |
+| Effect (.efx) parameter tree | ❌ **cyclic — blocker** |
+| Real drawing with Metal | ⬜ not started |
 
-## Doğrulama altyapısı
+## Verification infrastructure
 
-### ISA semantik test paketi — `tools/isatest.py`
-Elle kodlanmış x86 makine kodu + Intel spec'inden türetilmiş beklenen sonuçlar.
-**158 vaka, 417 doğrulama, hepsi geçiyor.** Kapsam: kaydırma/döndürme ve bayrakları,
-bit testleri, 8/16/32-bit aritmetik ve bayraklar, çarpma/bölme, işaret genişletme,
-tüm `setcc` koşulları, bellek adresleme kipleri, yığın işlemleri, string komutları
-(`rep movs/stos/cmps/scas/lods`, `df` yönü dahil), x87 (yükleme/saklama/aritmetik/
-karşılaştırma/`fnstsw`/`fistp` yuvarlama), MMX/SSE taşıma.
+### ISA semantics test suite — `tools/isatest.py`
+Hand-encoded x86 machine code + expected results derived from the Intel spec.
+**158 cases, 417 checks, all passing.** Coverage: shifts/rotates and their flags,
+bit tests, 8/16/32-bit arithmetic and flags, multiply/divide, sign extension,
+all `setcc` conditions, memory addressing modes, stack operations, string
+instructions (`rep movs/stos/cmps/scas/lods`, including the `df` direction), x87
+(load/store/arithmetic/compare/`fnstsw`/`fistp` rounding), MMX/SSE moves.
 
-Bu paket **beş gerçek lifter hatası buldu** (aşağıda). Her derlemede otomatik koşuyor.
+This suite **found five real lifter bugs** (below). It runs automatically on
+every build.
 
-### Bulunan ve düzeltilen lifter hataları
+### Lifter bugs found and fixed
 
-1. **`PUSH32` değerlendirme sırası** — makro `esp`'yi azalttıktan *sonra* operandı
-   okuyordu. `push [esp+8]` bir slot kayıyordu. MSVC argüman aktarımının temel kalıbı;
-   her yeri etkiliyordu.
-2. **Dolaylı `call` operand sırası** — `call [esp+0x24]` hedefi dönüş adresi
-   itilmeden önce okunmalı. `qsort` gibi geri çağrılar yanlış adrese gidiyordu.
-3. **Giriş bloğu sıralaması** — bloklar adrese göre basıldığı için, giriş bloğu en
-   düşük adresli olmayan **fonksiyonların %25,2'si yanlış yerden başlıyordu**.
-   `__security_check_cookie` doğrudan `__report_gsfailure`'a düşüyor ve oyun
-   *"Buffer overrun detected!"* hatası veriyordu.
-4. **`shl` OF bayrağı** — sonucun MSB'si yerine orijinalin MSB'si kullanılıyordu.
-5. **`fxch` hiç takas etmiyordu** — capstone bu komut için `(st(0), st(i))` verir;
-   ilk operand alınınca `ST(0)` kendisiyle takas ediliyordu. x87 hesaplarını
-   sessizce bozan bir hata. Ayrıca capstone `fcomip`'i `fcompi` olarak adlandırıyor,
-   o dal hiç eşleşmiyordu.
+1. **`PUSH32` evaluation order** — the macro read the operand *after*
+   decrementing `esp`. `push [esp+8]` was off by one slot. This is the basic
+   pattern of MSVC argument passing; it affected everything.
+2. **Indirect `call` operand order** — the target of `call [esp+0x24]` must be
+   read before the return address is pushed. Callbacks such as `qsort` were
+   going to the wrong address.
+3. **Entry block ordering** — because blocks were emitted by address, **25.2% of
+   functions whose entry block is not the lowest-addressed one started in the
+   wrong place**. `__security_check_cookie` fell straight into
+   `__report_gsfailure` and the game reported *"Buffer overrun detected!"*.
+4. **`shl` OF flag** — the MSB of the original was used instead of the MSB of
+   the result.
+5. **`fxch` never swapped** — capstone gives `(st(0), st(i))` for this
+   instruction; taking the first operand meant `ST(0)` was swapped with itself.
+   x87 calculations
+   were being silently corrupted. Capstone also names `fcomip` as `fcompi`, so
+   that branch never matched.
 
-Ek düzeltmeler: `sar` 8/16-bit işaret genişletme, `rol`/`ror` operand boyutu,
-`xchg` değerlendirme sırası, `.text` dışına `call`/`jcc`.
+Additional fixes: `sar` 8/16-bit sign extension, `rol`/`ror` operand size,
+`xchg` evaluation order, `call`/`jcc` outside `.text`.
 
-### Ekranı kesen çizgiler — örnekleme koordinatı doğrudan interpolant olmalı
+### Lines cutting across the screen — the sampling coordinate must be the interpolant itself
 
-Her dörtgenin çerçevesinde ve iki üçgenin paylaştığı köşegende 2 piksellik
-çizgi vardı (giriş ekranında köşeden köşeye, yarışta gökyüzünde, harflerin
-üzerinde en belirgin).
+Every quad had a 2-pixel line around its frame and along the diagonal shared by
+its two triangles (corner to corner on the splash screen, in the sky during
+races, most visible over letters).
 
-**Ölçüm zinciri:** mip'i kapatınca (`MIPOFF=1`) çizgi tamamen kayboluyordu →
-`lodMaxClamp=1` de siliyordu, yani kenarda LOD **1'in çok üstüne** fırlıyor.
-Mip içerikleri eksiksiz (`mip seviyeleri: 0 EKSIK`), üç seviyeli filtre
-(`MIPLIN`) ve anizotropi (`NOANISO`) etkisiz, yarım piksel kaydırması
-(`HALFPX`) etkisiz.
+**Measurement chain:** turning mips off (`MIPOFF=1`) made the line disappear
+completely → `lodMaxClamp=1` also removed it, so at the edge the LOD shoots
+**far above 1**. The mip contents are complete (`mip levels: 0 MISSING`), the
+trilinear filter (`MIPLIN`) and anisotropy (`NOANISO`) have no effect, the
+half-pixel offset (`HALFPX`) has no effect.
 
-**Kök neden:** piksel gölgelendiricisinde koordinat `TCRD(k)` makrosuyla
-üretiliyordu — dört yollu ternary zinciri artı `abs(w)<1e-6 ? 1.0 : w`
-koşullu bölmesi. Türev dörtgeni üçgen kenarına taştığında yardımcı
-piksellerin koordinatı bu koşulda ziplayıp altı büyüklük mertebesi
-kayıyor, LOD patlıyor ve kenar boyunca çok kaba bir mip seçiliyor.
+**Root cause:** in the pixel shader the coordinate was produced by the
+`TCRD(k)` macro — a four-way ternary chain plus a conditional division
+`abs(w)<1e-6 ? 1.0 : w`. When the derivative quad spilled over a triangle edge,
+the helper pixels' coordinates jumped in this condition and shifted by six
+orders of magnitude, the LOD blew up and a very coarse mip was selected along
+the edge.
 
-**Düzeltme:** `D3DTSS_TEXCOORDINDEX` seçimi **köse gölgelendiricisine**
-taşındı (seçici `VSPar.tsel`'de 2'şer bit). Piksel tarafında aşama k artık
-doğrudan `i.uvk` okuyor; yansıtmalı bölme tek ve sürekli. Yalnızca gerçekten
-örnekleme yapılan aşamalar için hesaplanır (dördünü birden üretmek yarış
-karesini 15,7 → 18,7 ms yapıyordu). CPU köse yolu aynı permütasyonu uygular.
+**Fix:** the `D3DTSS_TEXCOORDINDEX` selection was moved **into the vertex
+shader** (selector in `VSPar.tsel`, 2 bits each). On the pixel side stage k now
+reads `i.uvk` directly; the projective division is single and continuous. It is
+computed only for stages that actually sample (producing all four made the race
+frame go from 15.7 → 18.7 ms). The CPU vertex path applies the same permutation.
 
-### Sis (D3DRS_FOGENABLE) — hiç uygulanmamıştı
+### Fog (D3DRS_FOGENABLE) — had never been implemented
 
-`RSLOG=1` ölçtü: oyun `FOGENABLE`'ı 5,3 milyon, `FOGCOLOR`'u 1,9 milyon kez
-kuruyor; 18 köse gölgelendiricisinden **6'sı `oFog` yazıyor** ama MSL
-çevirisinde `oFog` `dummy`'ye gidiyordu. Uzak geometri hiç solmuyordu.
-Artık `oFog` tek float varying olarak taşınıyor ve piksel çıkışında
-`mix(fogColor, color, saturate(fog))` uygulanıyor (`NOFOG=1` kapatır).
-Not: `D3DRS_DEPTHBIAS` ölçüldü — oyun **hiç kurmuyor**, uygulanması gereksiz.
+`RSLOG=1` measured it: the game sets `FOGENABLE` 5.3 million times and
+`FOGCOLOR` 1.9 million times; **6 of the 18 vertex shaders write `oFog`**, but in
+the MSL translation `oFog` went to `dummy`. Distant geometry never faded.
+Now `oFog` is carried as a single float varying and
+`mix(fogColor, color, saturate(fog))` is applied at the pixel output (`NOFOG=1`
+turns it off). Note: `D3DRS_DEPTHBIAS` was measured — the game **never sets it**,
+so implementing it is unnecessary.
 
-### StretchRect mozaiği — drawable'dan örneklenmemeli
+### StretchRect mosaic — must not sample from the drawable
 
-Gökyüzünde ve cam cephelerde 32/64 piksel ızgaralı dikdörtgen mozaik vardı.
-Kök neden: sahne kopyası, tam ekran dörtgenle **drawable'dan örnekleyerek**
-yapılıyordu; karo sınırlarında bayat içerik geliyordu (blok kenarları tam
-32/64 katlarında ölçüldü — Apple GPU karo boyutu). 1:1 kopyalarda artık
-`MTLBlitCommandEncoder copyFromTexture` kullanılıyor; ölçekli kopyada önce
-gerçek kopyayla ara dokuya alınıyor. `BLITQUAD=1` eski yolu geri getirir.
+There was a rectangular mosaic on a 32/64-pixel grid in the sky and on glass
+facades. Root cause: the scene copy was done with a fullscreen quad **sampling
+from the drawable**; stale content came through at tile boundaries (the block
+edges were measured at exact multiples of 32/64 — the Apple GPU tile size). 1:1
+copies now use `MTLBlitCommandEncoder copyFromTexture`; for a scaled copy the
+source is first taken into an intermediate texture with a real copy.
+`BLITQUAD=1` brings back the old path.
 
-### Z yüzeyleri — ışıklar ve arabalar duvar arkasından görünüyordu (2026-09-24)
+### Z surfaces — lights and cars were visible through walls (2026-09-24)
 
-Başından beri şehir ışıklarının parlamaları (ve bazı arabalar) duvarın
-arkasından görünüyordu. Oyun görünürlük sorgusu (occlusion query) HİÇ
-kullanmıyor (`CreateQuery` 0 kez); parlamalar sıradan Z testiyle gizleniyor.
-Kök neden Metal katmanındaydı: **tek bir Z dokusu** vardı ve hedefin boyutu her
-değiştiğinde yeniden yaratılıyordu. Bir yarış karesi (`ZSEQ=<kare>` ile ölçüldü):
-320x240 ışık hedefi (kendi Z'si) → 6 x 128x128 yansıma küpü yüzü (her birinin
-kendi Z'si) → ekran → 640x480 bulanıklık geçişleri (Z yok) ile ekran arasında
-gidip gelme. Ekrana her dönüşte Z yeni, tanımsız bir dokudan yükleniyordu;
-bulanıklıktan sonra çizilen parlamalar çöp Z'ye karşı test ediliyordu.
+From the very beginning the glows of the city lights (and some cars) were
+visible through walls. The game NEVER uses occlusion queries (`CreateQuery`
+0 times); glows are hidden by the ordinary Z test. The root cause was in the
+Metal layer: there was **a single Z texture**, recreated every time the target
+size changed. One race frame (measured with `ZSEQ=<frame>`): a 320x240 light
+target (its own Z) → 6 x 128x128 reflection cube faces (each with its own Z) →
+screen → back and forth between 640x480 blur passes (no Z) and the screen. On
+every return to the screen Z was loaded from a new, undefined texture; glows
+drawn after the blur were tested against garbage Z.
 
-Düzeltme D3D9 semantiği:
-* `CreateDepthStencilSurface` yüzeye kimlik veriyor (+52, işaret +56);
-  1 = örtük yüzey, `GetDepthStencilSurface` bağlı olanı döndürüyor.
-* `SetDepthStencilSurface` bağlı yüzeyi seçiyor; NULL → Z testi/yazması kapalı.
-* `Clear` bayrağında ZBUFFER (2) varsa o yüzey bir sonraki geçişte verilen Z
-  değerine temizleniyor; içerik kareler arası korunuyor (eskiden hedefin
-  karedeki ilk kullanımında koşulsuz temizleniyordu).
-* `metal.m`: `g_ztex[zid]`, çizim kaydının `depth` alanı bit 8+ = zid; geçiş
-  (hedef, Z) değişince yeniden açılıyor. Boyut uyuşmazlığında karalama doku +
-  Z kapalı (sayaç raporda: `Z yuzeyi: ... boyut uyumsuz`, ölçülen 0).
-Performans değişmedi (yarış 8.34 → 8.34 ms/kare).
+The fix is D3D9 semantics:
+* `CreateDepthStencilSurface` gives the surface an id (+52, marker +56);
+  1 = the implicit surface, `GetDepthStencilSurface` returns the bound one.
+* `SetDepthStencilSurface` selects the bound surface; NULL → Z test/write off.
+* If the `Clear` flags contain ZBUFFER (2), that surface is cleared to the given
+  Z value in the next pass; the content is preserved across frames (previously
+  it was cleared unconditionally on the target's first use in a frame).
+* `metal.m`: `g_ztex[zid]`, bits 8+ of the draw record's `depth` field = zid;
+  the pass is reopened when (target, Z) changes. On a size mismatch, a scratch
+  texture + Z off (counter in the report: `Z surface: ... size mismatch`,
+  measured 0).
+Performance unchanged (race 8.34 → 8.34 ms/frame).
 
-### Ayar menüsünden çözünürlük (2026-09-27)
+### Resolution from the settings menu (2026-09-27)
 
-Oyunun Display → Resolution satırı artık altı gerçek seçenek sunuyor:
-`720p`, `1080p`, `1440p`, görünümün kendi piksel sayısı (ör. `3024x1836`),
-`4K`, `1600x1200` (orijinal 4:3). Ölçülenler:
-* Menüdeki yazı `.rdata`'daki hazır metinlerden geliyor (`sub_0049b690`,
-  satır `[0x870d1c]` → `0x78fa1c`..`0x78f9e4`; yalnızca gösterim). Metinler
-  bellekte yeniden yazılıyor; ilk iki yuva 7 karakter, bu yüzden "720p".
-* `EnumAdapterModes` listesi yalnızca SEÇİLEBİLİRLİĞİ belirliyor (oyun
-  tablo değerini listede arıyor) → liste oyunun kendi tablosu kalmalı.
-  Masaüstü modu 1920x1080 bildirildiği için 1600x1200 satırı (eski "1080p")
-  hiç seçilemiyordu; artık ≥1600x1200.
-* Satırlar GÖRÜNÜMÜN oranından üretiliyor ("1080p" = pencere oranında 1080
-  satır), pencere boyutu sabit; çözünürlük yalnızca kaliteyi değiştiriyor.
-  Pencere ilk açılışta kullanılabilir alana göre bir kez boyutlanıyor;
-  elle boyutlandırılınca cihaz yeniden kuruluyor.
-* Reset'te eski render hedefleri (D3D9'da oyun hepsini bırakmak zorunda)
-  3 kare sonra Metal tarafında bırakılıyor; eskiden her değişim ~6 RT
-  sızdırıyordu (4K'da >100 MB). Tanı sayacı: bırakılmış RT sonradan
-  kullanılırsa rapora `UYARI` düşer (ölçülen 0).
+The game's Display → Resolution row now offers six real options: `720p`,
+`1080p`, `1440p`, the view's own pixel count (e.g. `3024x1836`), `4K`,
+`1600x1200` (the original 4:3). Measured:
+* The menu text comes from ready-made strings in `.rdata` (`sub_0049b690`,
+  row `[0x870d1c]` → `0x78fa1c`..`0x78f9e4`; display only). The strings are
+  rewritten in memory; the first two slots are 7 characters, hence "720p".
+* The `EnumAdapterModes` list only decides SELECTABILITY (the game looks up the
+  table value in the list) → the list must stay the game's own table. Since the
+  desktop mode was reported as 1920x1080, the 1600x1200 row (the old "1080p")
+  could never be selected; now it is ≥1600x1200.
+* The rows are generated from the VIEW's aspect ratio ("1080p" = 1080 lines at
+  the window's aspect ratio), the window size is fixed; the resolution only
+  changes quality. The window is sized once on first launch to the available
+  area; when resized by hand the device is rebuilt.
+* On Reset the old render targets (in D3D9 the game must release them all) are
+  released on the Metal side 3 frames later; previously every change leaked
+  ~6 RTs (>100 MB at 4K). Diagnostic counter: if a released RT is used later a
+  `WARNING` lands in the report (measured 0).
 
-### Tam ekran (2026-09-24)
+### Fullscreen (2026-09-24)
 
-Yeşil düğme / `Cmd+F` / menüdeki "Tam Ekran" artık gerçek tam ekran: çizim
-yüzeyi ekranın **piksel** boyutuna çıkıyor (14" MBP, çentik altı: 3024x1898),
-oyunun 4:3 isteği Hor+ ile düzeltiliyor (aspfix 0.837), arayüz ortadaki 4:3
-alanda (HUDFIX). Eskiden yüzey 4:3'te kalıp kenarlarda bantla ~1.03x
-büyütülüyordu.
+The green button / `Cmd+F` / "Full Screen" in the menu is now real fullscreen:
+the drawing surface goes to the screen's **pixel** size (14" MBP, below the
+notch: 3024x1898), the game's 4:3 request is corrected with Hor+ (aspfix
+0.837), and the UI sits in the centered 4:3 area (HUDFIX). Previously the
+surface stayed 4:3 and was scaled ~1.03x with bars at the sides.
 
-**Çözünürlük çalışırken nasıl değişiyor:** oyunun render hedefleri cihaz
-boyutuna bağlı; boyutu ancak oyunun kendisi `Reset` ile değiştirebilir.
-Windows'taki alt-tab yolu kullanılıyor: geçişte `com_request_reset()` →
-`Present` `D3DERR_DEVICELOST`, `TestCooperativeLevel` `D3DERR_DEVICENOTRESET`
-döner; oyun (her karede TCL çağırıyor) kaynaklarını bırakıp `Reset` çağırıyor,
-`res_pick` → `metal_native_size` tam ekranda ekran boyutunu seçiyor. Menüde ve
-yarışta ölçüldü (`RESETAT`, `FSTOGGLE`): oyun iki kez Reset yapıp aynen devam
-ediyor. Fare, arayüzün daraltılmış alanına eşleniyor (`metal_set_ui_aspect`).
-Tercih `NSUserDefaults` `NFSUFullScreen` ile hatırlanıyor.
+**How the resolution changes at run time:** the game's render targets are tied
+to the device size; only the game itself can change the size, with `Reset`. The
+alt-tab path from Windows is used: on the transition `com_request_reset()` →
+`Present` returns `D3DERR_DEVICELOST` and `TestCooperativeLevel` returns
+`D3DERR_DEVICENOTRESET`; the game (which calls TCL every frame) releases its
+resources and calls `Reset`, and `res_pick` → `metal_native_size` picks the
+screen size in fullscreen. Measured in the menu and in a race (`RESETAT`,
+`FSTOGGLE`): the game does two Resets and carries on as before. The mouse is
+mapped to the UI's narrowed area (`metal_set_ui_aspect`). The preference is
+remembered in `NSUserDefaults` as `NFSUFullScreen`.
 
-**Girdi (2026-09-27 düzeltmesi):** olay döngüsü tüm sol tıkları oyuna
-yutuyordu; başlık çubuğundaki yeşil/kırmızı/sarı düğmeler ve pencere
-sürükleme hiç çalışmıyordu. Artık oyun alanı dışındaki fare olayları
-AppKit'e gidiyor. `fn/Globe+F` (Command taşımadığı için oyuna "F" olarak
-gidiyordu) doğrudan yakalanıyor, `Ctrl+Cmd+F` için gizli menü eşi var
-(`Cmd+F` de duruyor). `FSSIM` ile üç yol da doğrulandı.
-Performans: yarış 8.35 (pencere) / 8.40 ms (tam ekran), GPU 4.9 → 5.1 ms.
+**Input (2026-09-27 fix):** the event loop swallowed every left click into the
+game; the green/red/yellow buttons in the title bar and window dragging never
+worked. Now mouse events outside the game area go to AppKit. `fn/Globe+F`
+(which went to the game as "F" because it carries no Command) is caught
+directly, and there is a hidden menu equivalent for `Ctrl+Cmd+F` (`Cmd+F`
+remains too). All three paths verified with `FSSIM`.
+Performance: race 8.35 (windowed) / 8.40 ms (fullscreen), GPU 4.9 → 5.1 ms.
 
-### İki imleç / kayma (2026-09-27)
+### Two cursors / offset (2026-09-27)
 
-Oyun imleci DirectInput'tan değil `GetCursorPos`'tan geliyor; oyun konumu
-`GetClientRect`'e göre kendi arayüz uzayına ölçekliyor. Bu çağrılar sabit
-1280x720 dönüyordu; 1280x960'ta imleç dikeyde 1.33x kayıyordu (`MOUSEAT` ile
-ölçüldü: (1100,800) ekrandan taşıyordu). Artık oyunun boyutu dönülüyor ve
-macOS imleci oyun alanında gizleniyor.
+The game cursor comes from `GetCursorPos`, not DirectInput; the game scales the
+position into its own UI space based on `GetClientRect`. These calls returned a
+fixed 1280x720; at 1280x960 the cursor drifted vertically by 1.33x (measured
+with `MOUSEAT`: (1100,800) went off screen). Now the game's size is returned and
+the macOS cursor is hidden over the game area.
 
 ### 4K
 
-`NFSRES=3840x2160` çalışıyor (görüntü temiz). M1 Pro yarış: 8.36 → 8.82 ms/kare,
-GPU 4.9 → 6.0 ms. Tam ekranda boyut ekran pikseline eşit ama `NFSMAXPIX`
-varsayılanı 6 MP; 4K monitörde tam ekran 3266x1837'ye iniyor.
+`NFSRES=3840x2160` works (clean image). M1 Pro race: 8.36 → 8.82 ms/frame,
+GPU 4.9 → 6.0 ms. In fullscreen the size equals the screen pixels, but the
+`NFSMAXPIX` default is 6 MP; on a 4K monitor fullscreen drops to 3266x1837.
 
-### 1080p / geniş ekran — `NFSRES`
+### 1080p / widescreen — `NFSRES`
 
-Oyunun kendi çözünürlük tablosu 6 satır ve tamamı 4:3; menüden 1080p
-seçilemiyor (indeks 6+ diziyi taşırır). `NFSRES=1920x1080` (ya da
-`./run.sh 1080p`) cihazı istenen boyutta açar. Cihaz oranı oyunun oranından
-farklıysa görüntü **yatayda gerilirdi** (ölçüldü: 1080p kare, 4:3 karenin saf
-gerdirilmişi — fark 2,03; dikey kırpma varsayımı 34,2), bu yüzden:
+The game's own resolution table has 6 rows, all 4:3; 1080p cannot be selected
+from the menu (index 6+ overflows the array). `NFSRES=1920x1080` (or
+`./run.sh 1080p`) opens the device at the requested size. If the device aspect
+ratio differs from the game's, the image **would be stretched horizontally**
+(measured: the 1080p frame is a pure stretch of the 4:3 frame — difference
+2.03; vertical-crop hypothesis 34.2), therefore:
 
-* **Hor+ düzeltme:** perspektif çizimlerde kırpma uzayı x'i
-  `oyun_oranı / cihaz_oranı` ile ölçeklenir. Oranlar düzelir, yatayda daha
-  çok sahne görünür.
-* **Perspektif/arayüz ayrımı:** konum matrisinin sabit yazmacı gölgelendirici
-  başına bytecode'dan çözülür (`vs_pos_creg`) — c0..c3'te olduğu varsayımı
-  YANLIŞ (vs_9'da c10..c13). Ayrım `c[cw].xyz == 0` ile yapılır; `c[cw].w`
-  kamera uzaklığıdır, sıfır değildir (ölçüldü: 5,79 / 222,0 / −86,5).
-* **Arayüz:** merkeze göre aynı oranla ölçeklenir, daireler dairesel kalır
-  (`HUDFIX=0` kapatır).
-* **Render hedefleri** cihaz boyutuna çekilir, yoksa son-işlem zinciri
-  1280x1024'te kalıp ölçekli blite ve mozaiğe dönüyordu.
+* **Hor+ correction:** in perspective draws, clip-space x is scaled by
+  `game_aspect / device_aspect`. Proportions are fixed and more of the scene is
+  visible horizontally.
+* **Perspective/UI split:** the constant register of the position matrix is
+  decoded per shader from the bytecode (`vs_pos_creg`) — the assumption that it
+  is in c0..c3 is WRONG (c10..c13 in vs_9). The split uses `c[cw].xyz == 0`;
+  `c[cw].w` is the camera distance, not zero (measured: 5.79 / 222.0 / −86.5).
+* **UI:** scaled about the center by the same ratio, circles stay circular
+  (`HUDFIX=0` turns it off).
+* **Render targets** are pulled to the device size, otherwise the post-process
+  chain stayed at 1280x1024 and turned into a scaled blit and a mosaic.
 
-Ölçüldü: 1920x1080 ile 1280x1024 **aynı hızda** (15,73 vs 15,72 ms) —
-darboğaz GPU değil, yeniden derlenmiş x86 kodu.
+Measured: 1920x1080 and 1280x1024 run **at the same speed** (15.73 vs 15.72 ms)
+— the bottleneck is not the GPU but the recompiled x86 code.
 
-### Tembel EFLAGS (bayrak canlılık analizi) — `tools/lift.py`
+### Lazy EFLAGS (flag liveness analysis) — `tools/lift.py`
 
-x86'nın 6 aritmetik bayrağı komut başına eager hesaplanıyordu; oysa çoğu asla
-okunmuyor. `flag_liveness()` her fonksiyonun CFG'si üzerinde **geriye doğru
-canlılık** çözüyor ve her komut için "bundan sonra hangi bayraklar canlı"
-maskesini çıkarıyor. `cpu.h`'deki `FLAGS_*_M` / `SETZSP_M` makroları maskeyi
-alıp yalnızca gerekli bayrağı yazıyor.
+x86's 6 arithmetic flags were computed eagerly per instruction, even though
+most are never read. `flag_liveness()` solves **backward liveness** over each
+function's CFG and derives, for every instruction, the mask of "which flags are
+live after this". The `FLAGS_*_M` / `SETZSP_M` macros in `cpu.h` take the mask
+and write only the flags that are needed.
 
-**Ölçüm:** 385.701 bayrak-yazma yerinde ortalama 6 yerine 2,66 bayrak
-(**%56 daha az**), yerlerin %24'ü hiç bayrak hesaplamıyor.
-Yoğun sahne kare süresi **18,68 → 15,66 ms (53,5 → 63,9 fps, %19)**.
-`FLAGOPT=0` ile kapatılıp A/B yapılabilir.
+**Measurement:** across 385,701 flag-writing sites, 2.66 flags on average
+instead of 6 (**56% fewer**), and 24% of the sites compute no flags at all.
+Heavy scene frame time **18.68 → 15.66 ms (53.5 → 63.9 fps, 19%)**.
+It can be turned off with `FLAGOPT=0` for A/B testing.
 
-**Tuzaklar — hepsi gerçek çökmeye yol açtı, hepsi `_flag_defuse()`'da ele alınıyor:**
+**Pitfalls — every one of these caused a real crash, all handled in `_flag_defuse()`:**
 
-* **capstone x87'de `eflags` alanını FPU durum bitleri (C0–C3) için yeniden
-  kullanıyor** — `insn.eflags` ile `insn.fpu_flags` aynı alan. `fld` 0xd002,
-  `fcom` 0x2d döndürüyor; olduğu gibi alınırsa her `fld` "CF yazdı", her
-  `fcom` "ZF/SF/AF/OF yazdı" sanılır, o bayrakların gerçek hesabı yukarıda
-  atlanır → bayat değer. Oyun x87 dolu olduğu için bu tek başına 12 saniyede
-  çökme veriyordu. `f` ile başlayan tüm mnemonic'ler es geçiliyor (capstone'un
-  `fpu` grubu güvenilmez: `fldln2` ve `fstp st(0)` grupsuz görünüyor).
-  Tek istisna `fcomi`/`fucomi` ailesi — onlar gerçekten 6 bayrağı da yazar.
-* **Sayacı 0 olan kaydırma/döndürme bayraklara dokunmaz** (`shl/shr/sar`,
-  `rol/ror`, `shld/shrd`; lift'te gövde zaten `if(_s){...}` korumalı).
-  capstone yine "yazar" diyor. Sayaç derleme anında sabit ve sıfırdan
-  farklıysa güvenilir, aksi halde `def=0`.
-* **`rep` önekli `cmps`/`scas` ECX=0 iken hiç çalışmaz** → `def=0`. Ayrıca
-  döngü koşulu `if(!c->zf) break;` **kendi yazdığı** ZF'yi okuduğu için ZF
-  maskeye zorlanır (`|F_ZF`).
-* **capstone bazı bayrak OKUMALARINI hiç bildirmiyor**: `pushfd` (6'sı da),
+* **Capstone reuses the `eflags` field for the FPU status bits (C0–C3) on
+  x87** — `insn.eflags` and `insn.fpu_flags` are the same field. `fld` returns
+  0xd002, `fcom` 0x2d; taken at face value, every `fld` looks like it "wrote
+  CF" and every `fcom` like it "wrote ZF/SF/AF/OF", so the real computation of
+  those flags above is skipped → stale values. Since the game is full of x87,
+  this alone caused a crash within 12 seconds. All mnemonics starting with `f`
+  are skipped (capstone's `fpu` group is unreliable: `fldln2` and
+  `fstp st(0)` show up without a group). The only exception is the
+  `fcomi`/`fucomi` family — they really do write all 6 flags.
+* **Shifts/rotates with a count of 0 don't touch the flags** (`shl/shr/sar`,
+  `rol/ror`, `shld/shrd`; in the lift the body is already guarded by
+  `if(_s){...}`). Capstone still says "writes". Trusted if the count is a
+  compile-time constant and non-zero, otherwise `def=0`.
+* **`cmps`/`scas` with a `rep` prefix never execute when ECX=0** → `def=0`.
+  Also, since the loop condition `if(!c->zf) break;` reads the ZF **it wrote
+  itself**, ZF is forced into the mask (`|F_ZF`).
+* **Capstone doesn't report some flag READS at all**: `pushfd` (all 6),
   `lahf`, `salc`, `rcl`/`rcr`, `cmc`, `daa`/`das`/`aaa`/`aas` → `_EXTRA_USE`.
-* **Lifter capstone'un iddiasından az yazıyorsa** bayrak yukarıda öldürülüp
-  burada da yazılmaz: `imul`/`mul` yalnızca CF+OF yazıyor → `_DEF_CLAMP`.
-* `UNDEFINED_*` **"yazar" sayılmaz** — sayılsaydı bayrağı ölü kabul edip
-  gerçek hesabı atlardık ama lift o bayrağı yazmayabilirdi.
-* Bilinmeyen sıçrama hedefi / `ret` → `live_out = F_ALL` (muhafazakâr).
+* **If the lifter writes less than capstone claims**, the flag is killed above
+  and not written here either: `imul`/`mul` only write CF+OF → `_DEF_CLAMP`.
+* `UNDEFINED_*` **does not count as "writes"** — if it did we would treat the
+  flag as dead and skip the real computation, but the lift might not write that
+  flag.
+* Unknown jump target / `ret` → `live_out = F_ALL` (conservative).
 
-**Denetim aracı:** `tools/flagaudit.py` — capstone'un "yazar" dediği ama
-lift'in gerçekten yazmadığı her komut biçimini listeler. Bu sınıfın boş
-olması gerekiyor (`call`/`ret` hariç, onlar bilerek opak). Tembel bayraklarla
-ilgili her hatayı bulan tek araç bu oldu; kör bisect hedefi kaydırıyordu.
+**Audit tool:** `tools/flagaudit.py` — lists every instruction form that
+capstone says "writes" but the lift doesn't actually write. This class must be
+empty (except `call`/`ret`, which are opaque on purpose). This was the only tool
+that found every lazy-flag bug; blind bisection kept moving the target.
 
-### Hata ayıklama araçları
-* **Komut izleyici** — son 64K guest komut adresi; çökme anında "buraya nasıl geldik".
-* **Watchpoint** — bir guest adresine yazan komutu yakalar (`WATCH_ADDR=0x...`).
-* **Guest yığın izi** — `.text` aralığındaki dönüş adreslerini fonksiyon+ofset olarak çözer.
-* **Komut kancaları** — `HOOKS=addr,...` ile üretim zamanında istenen adreslere kanca.
-* **Fonksiyon override** — `OVERRIDE=addr,...` fonksiyonu `sub_XXXX_orig` olarak üretir,
-  runtime `sub_XXXX` sarmalayıcısı sağlar (döngü kırma / hedefli yama).
-* **Commit bitmap** — 16 KB sayfa çözünürlüğünde haritalama takibi; hata ayıklayıcının
-  haritalanmamış belleğe dokunup ikinci kez çökmesini önler.
+### Debugging tools
+* **Instruction tracer** — the last 64K guest instruction addresses; "how did we get here" at crash time.
+* **Watchpoint** — catches the instruction that writes to a guest address (`WATCH_ADDR=0x...`).
+* **Guest stack trace** — resolves return addresses in the `.text` range as function+offset.
+* **Instruction hooks** — `HOOKS=addr,...` hooks the requested addresses at generation time.
+* **Function override** — `OVERRIDE=addr,...` generates the function as `sub_XXXX_orig`,
+  the runtime provides a `sub_XXXX` wrapper (loop breaking / targeted patching).
+* **Commit bitmap** — mapping tracking at 16 KB page granularity; prevents the debugger
+  from touching unmapped memory and crashing a second time.
 
-## Çalışma zamanı mimarisi (eklenenler)
+## Runtime architecture (additions)
 
-**Guest bellek haritası**
+**Guest memory map**
 ```
-0x00400000-0x00930000  image            0x10000000-0x2F000000  CRT heap (496 MB, baslikli)
-0x00900000+            dosya handle'lari 0x30000000-0x38000000  COM nesneleri
-0x00A00000+            nesne handle'lari 0x38000000-0x60000000  guest tamponlar (doku/VB)
-0x00C00000-0x00D00000  TEB'ler           0x60000000-0x70000000  thread yiginlari (1 MB/thread)
-                                         0x7F000000-0x7FF00000  ana yigin (15 MB)
+0x00400000-0x00930000  image            0x10000000-0x2F000000  CRT heap (496 MB, with headers)
+0x00900000+            file handles     0x30000000-0x38000000  COM objects
+0x00A00000+            object handles   0x38000000-0x60000000  guest buffers (texture/VB)
+0x00C00000-0x00D00000  TEBs             0x60000000-0x70000000  thread stacks (1 MB/thread)
+                                        0x7F000000-0x7FF00000  main stack (15 MB)
 ```
-4 GB `PROT_NONE` rezerve, kullanılan bölgeler commit edilir.
+4 GB reserved as `PROT_NONE`, the regions in use are committed.
 
-**Büyük guest kilidi (GIL)** — guest kodu aynı anda tek thread çalıştırır; kilit yalnız
-bloklayan çağrılarda (`Sleep`, `SleepEx`, `WaitFor*`) bırakılır. Bu sayede lift edilmiş
-kodun paylaştığı bellek/allocator'lar güvenli, komut izi tutarlı kalır.
+**Big guest lock (GIL)** — guest code runs on only one thread at a time; the
+lock is released only in blocking calls (`Sleep`, `SleepEx`, `WaitFor*`). This
+keeps the memory/allocators shared by the lifted code safe and the instruction
+trace consistent.
 
-**Guest thread'leri gerçek pthread** — her biri kendi CPU durumu, guest yığını ve TEB'i ile.
-Lift edilmiş kod yeniden girişli olduğu için bu doğrudan çalışıyor. Guest çağrı zinciri host
-C yığınında taşındığı için ana guest thread'i **1 GB yığınla** çalıştırılıyor; her thread
-kendi `sigaltstack`'ini kurar.
+**Guest threads are real pthreads** — each with its own CPU state, guest stack
+and TEB. Since the lifted code is reentrant this works directly. Because the
+guest call chain is carried on the host C stack, the main guest thread runs
+with **a 1 GB stack**; every thread sets up its own `sigaltstack`.
 
-## Win32 katmanı (`runtime/win32.c`, `win32_ext.c`, `fileio.c`, `res.c`)
+## Win32 layer (`runtime/win32.c`, `win32_ext.c`, `fileio.c`, `res.c`)
 
-251/251 import **kesin stdcall argüman sayısına** sahip. (Çağrı sitesindeki `push`
-dizisinden çıkarım denendi — bilinen fonksiyonlara karşı yalnız **%74–77 doğru**; her yanlış
-sayı `esp`'yi kaydırıp yığını bozduğu için otoriter tablo elle girildi. `wsprintfA` gibi
-cdecl variadic'ler 0 olarak işaretli.)
+251/251 imports have **exact stdcall argument counts**. (Inference from the
+`push` sequence at the call site was tried — only **74–77% correct** against
+known functions; since every wrong count shifts `esp` and corrupts the stack,
+an authoritative table was entered by hand. cdecl variadics such as
+`wsprintfA` are marked as 0.)
 
-İmplemente edilenler: heap (başlıklı, `HeapSize`/`ReAlloc` doğru), sanal bellek, TLS,
-kritik bölümler, zaman, locale/kod sayfası (`GetStringTypeW` C1_* bayrakları,
+Implemented: heap (with headers, correct `HeapSize`/`ReAlloc`), virtual memory,
+TLS, critical sections, time, locale/code page (`GetStringTypeW` C1_* flags,
 `LCMapStringW`, `GetLocaleInfo`), `MultiByteToWideChar`/`WideCharToMultiByte`,
-`GetProcAddress` (isimle çözümleme), registry (bellek içi, "bulunamadı" varsayılanı →
-oyun kendi varsayılanlarını kullanır), pencere/imleç/mesaj döngüsü, event/mutex/semafor,
-`CreateThread`, **gerçek dosya G/Ç** (Windows yolları → oyun dizini, büyük-küçük harf
-duyarsız çözümleme, dizin tarama), **PE kaynak dizini** (`FindResource`/`LoadResource`/
-`LockResource` — gömülü `.efx` shader efektleri buradan geliyor).
+`GetProcAddress` (resolution by name), registry (in memory, "not found" default
+→ the game uses its own defaults), window/cursor/message loop,
+event/mutex/semaphore, `CreateThread`, **real file I/O** (Windows paths → game
+directory, case-insensitive resolution, directory enumeration), **PE resource
+directory** (`FindResource`/`LoadResource`/`LockResource` — the embedded `.efx`
+shader effects come from here).
 
-## COM / D3D9 katmanı (`runtime/com.c`, `d3d9_tables.h`)
+## COM / D3D9 layer (`runtime/com.c`, `d3d9_tables.h`)
 
-Guest'e native implementasyonlu COM nesnesi sunan köprü: nesnenin vtable'ı guest belleğinde
-`0xE0000000|(arayüz<<16)|metot` sihirli adresleriyle doldurulur, `dispatch_indirect` bunları
-`com_call`'a yönlendirir. Arayüzler ve **tam metot tabloları** (ad + argüman sayısı):
-`IDirect3D9` (17), `IDirect3DDevice9` (119), `Texture9`, `VertexBuffer9`, `IndexBuffer9`,
-`Surface9`, `VertexShader9`, `VertexDeclaration9`, `StateBlock9`, `SwapChain9`, `Query9`.
+A bridge that offers the guest COM objects with native implementations: the
+object's vtable is filled in guest memory with the magic addresses
+`0xE0000000|(interface<<16)|method`, and `dispatch_indirect` routes them to
+`com_call`. Interfaces and **full method tables** (name + argument count):
+`IDirect3D9` (17), `IDirect3DDevice9` (119), `Texture9`, `VertexBuffer9`,
+`IndexBuffer9`, `Surface9`, `VertexShader9`, `VertexDeclaration9`,
+`StateBlock9`, `SwapChain9`, `Query9`.
 
-Oyunun fiilen kullandığı yol doğrulandı: `Direct3DCreate9` → `GetDeviceCaps` →
-`GetAdapterIdentifier` → `EnumAdapterModes` → `CheckDeviceMultiSampleType` →
-**`CreateDevice`** → `BeginScene`/`Clear`/`EndScene`/**`Present`** →
-`CreateVertexDeclaration` → `CreateVertexShader`/`CreatePixelShader` →
+The path the game actually uses was verified: `Direct3DCreate9` →
+`GetDeviceCaps` → `GetAdapterIdentifier` → `EnumAdapterModes` →
+`CheckDeviceMultiSampleType` → **`CreateDevice`** →
+`BeginScene`/`Clear`/`EndScene`/**`Present`** → `CreateVertexDeclaration` →
+`CreateVertexShader`/`CreatePixelShader` →
 `BeginStateBlock`/`SetVertexShader`/`EndStateBlock` → `StateBlock::Apply`.
 
-Shader nesneleri gerçek bytecode'u saklıyor (token akışını `0x0000FFFF` END token'ına kadar
-tarayarak) ve `GetFunction` onu geri veriyor.
+Shader objects keep the real bytecode (scanning the token stream up to the
+`0x0000FFFF` END token) and `GetFunction` returns it.
 
-## AÇIK SORUN: efekt parametre ağacı çevrimli
+## OPEN ISSUE: the effect parameter tree is cyclic
 
-`sub_0065ae35` bir parametre ağacını dolaşıyor (arg3 = ±1, referans sayacı benzeri).
-Ağaç **çevrimli**: düğüm 6'nın çocukları 4,5,6,7,8 — yani kendisi. Sonuç: sınırsız
-özyineleme, 286.134 çağrıda 15 MB guest yığını tükeniyor.
+`sub_0065ae35` walks a parameter tree (arg3 = ±1, like a reference counter).
+The tree is **cyclic**: node 6's children are 4,5,6,7,8 — i.e. itself. Result:
+unbounded recursion, exhausting the 15 MB guest stack after 286,134 calls.
 
-Kesin olarak elenenler:
-* Efekt verisi sağlam — `IDI_WORLD_FX` imzası `0xFEFF0901`, başlık 14 parametre / 2 teknik / 9 nesne.
-* Shader yeteneklerine bağlı değil — `D3D_SM=0/11/14` üçünde de **birebir aynı** 286.134 çağrı.
-* Kaynak yükleme doğru, dosya G/Ç doğru.
-* ISA semantiği 367 testle doğrulanmış.
-* Fonksiyon kesintisi yok (`discover` limiti hiçbir fonksiyonu kesmiyor, 0 "kesildi" stub).
-* Çözülemeyen dolaylı çağrı 0, desteklenmeyen komut trap'i 0.
+Ruled out for certain:
+* The effect data is intact — `IDI_WORLD_FX` signature `0xFEFF0901`, header 14 parameters / 2 techniques / 9 objects.
+* It doesn't depend on shader capabilities — **exactly the same** 286,134 calls with `D3D_SM=0/11/14`.
+* Resource loading is correct, file I/O is correct.
+* ISA semantics verified with 367 tests.
+* No function truncation (the `discover` limit truncates no function, 0 "truncated" stubs).
+* 0 unresolved indirect calls, 0 unsupported-instruction traps.
 
-İzlenen zincir: `edi = [eax+0x48] + [esi]`, `[edi]` = çocuk taban indeksi.
-`[eax+0x48]` ayrıştırıcıda `sub_00667d61` içinde `0x6688cc`'de yazılıyor
-(`esi = [ebp-0x40] + word[edi+6]*4`), `[ebp-0x40]` ise `0x6682e9`'da kuruluyor.
-Sorunlu düğümde tüm sayaçlar 0 → tüm ofsetler 0 → `[edi]` blob'un başını gösteriyor.
-Blob'a değer `0x6688de`'de yazılıyor: `blob[[edx+0x48]] = word[eax+0x44] + 1`.
+The traced chain: `edi = [eax+0x48] + [esi]`, `[edi]` = child base index.
+`[eax+0x48]` is written in the parser in `sub_00667d61` at `0x6688cc`
+(`esi = [ebp-0x40] + word[edi+6]*4`), and `[ebp-0x40]` is set up at `0x6682e9`.
+At the problem node all counters are 0 → all offsets are 0 → `[edi]` points to
+the start of the blob. The value is written into the blob at `0x6688de`:
+`blob[[edx+0x48]] = word[eax+0x44] + 1`.
 
-**Geçici önlem:** `runtime/overrides.c` iki koruma uyguluyor — özyineleme derinliği 32 ile
-sınırlı, ve sayaç>0 iken indeks dizisi NULL olan düğümler güvenle atlanıyor. Bu çökmeyi
-önlüyor ama çağıran fonksiyon sonsuz tekrar denediği için oyun bu noktayı geçemiyor
-(koruma tavanı 200.000'de temiz çıkış yapıyor).
+**Temporary measure:** `runtime/overrides.c` applies two guards — recursion
+depth is capped at 32, and nodes whose index array is NULL while the counter is
+>0 are skipped safely. This prevents the crash, but since the calling function
+retries forever the game can't get past this point (the guard exits cleanly at
+a ceiling of 200,000).
 
-### Bağımsız efekt ayrıştırıcı — `tools/efxparse.py`
-D3DX9 `.efx` ikili formatını Python'da ayrıştırır (yer doğrulaması için referans).
-`IDI_WORLD_FX` çıktısı:
+### Standalone effect parser — `tools/efxparse.py`
+Parses the D3DX9 `.efx` binary format in Python (a reference for checking
+locations). Output for `IDI_WORLD_FX`:
 
 ```
-parametre=14 teknik=2 nesne=9
-  0 SCALAR  INT    5 eleman   BlendState :BLENDSTATE      <- TEK dizi parametresi
+parameters=14 techniques=2 objects=9
+  0 SCALAR  INT    5 elements BlendState :BLENDSTATE      <- the ONLY array parameter
   1 SCALAR  INT    0          BaseMinTextureFilter
   ...
-  6 MATRIX_ROWS FLOAT 0       TextureOffsetMatrix         <- cevrimde suclanan dugum
+  6 MATRIX_ROWS FLOAT 0       TextureOffsetMatrix         <- the node blamed for the cycle
   ...
  13 OBJECT  SAMPLER 0         samp
 ```
 
-**Hiçbir parametre STRUCT değil; yalnız parametre 0 dizi (5 eleman).** Yani doğru
-ayrıştırmada düğüm 6'nın hiç çocuğu olmamalı. Yürüyücünün okuduğu `[edi]=5, icSayi=5`
-tam olarak parametre 0'ın eleman sayısı — yani yanlış girdiye bakıyor.
+**No parameter is a STRUCT; only parameter 0 is an array (5 elements).** So in a
+correct parse node 6 should have no children at all. The `[edi]=5, childCount=5`
+the walker reads is exactly parameter 0's element count — i.e. it is looking at
+the wrong entry.
 
-### İzin son halkası (bulundu)
-Çocuk taban indeksi zinciri sonuna kadar sürüldü:
+### The last link of the trace (found)
+The child base index chain was followed to the end:
 
 ```
-0x0066fbf8  mov ax, word [ebx+0x30]      ; ebx = efekt nesnesi, +0x30 = tahsis sayaci
-0x0066fbfc  mov word [edi+0x44], ax      ; her dugume "cocuklarim buradan baslar"
+0x0066fbf8  mov ax, word [ebx+0x30]      ; ebx = effect object, +0x30 = allocation counter
+0x0066fbfc  mov word [edi+0x44], ax      ; "my children start here" for every node
 0x006688d3  mov cx, word [eax+0x44]
-0x006688de  mov word [blob + ofset], cx+1
-0x0065aecd  movzx ecx, word [edi]        ; yuruyucu bunu okur
-0x0065aed3  lea eax, [ecx+eax-1]         ; cocuk = [edi] + i - 1
+0x006688de  mov word [blob + offset], cx+1
+0x0065aecd  movzx ecx, word [edi]        ; the walker reads this
+0x0065aed3  lea eax, [ecx+eax-1]         ; child = [edi] + i - 1
 ```
 
-Ölçüm: `[ebx+0x30]` sayacı gerçekten artıyor (0→1→2→3→4→…→8, artiran komutlar
-`0x0066b7cb`, `0x006655df`, `0x00665305`), **ama 14 düğümün tamamına yazma işlemi
-sayaç 3'teyken yapılıyor.** Yani tüm düğümler "çocuklarım 3'ten başlar" diyor; düğüm 6
-de 4..8 aralığını kendine çocuk sayıyor ve çevrim oluşuyor.
+Measurement: the `[ebx+0x30]` counter really does increase (0→1→2→3→4→…→8,
+incremented by the instructions at `0x0066b7cb`, `0x006655df`, `0x00665305`),
+**but the writes to all 14 nodes happen while the counter is at 3.** So every
+node says "my children start at 3"; node 6 also counts the range 4..8 as its
+children, and the cycle forms.
 
-### Mekanizma çözüldü (ama hata hâlâ açık)
+### Mechanism solved (but the bug is still open)
 
-İlgili fonksiyonlar:
+Functions involved:
 
-| Adres | Fonksiyon | Rol |
+| Address | Function | Role |
 |---|---|---|
-| `0x0066fbfc` | `sub_0066f6ac` | `[edi+0x44] = [ebx+0x30]` — düğüme "çocuklarım buradan başlar" yazar |
-| `0x0066fc10` | → `sub_0066549b` | hemen ardından çocukları tahsis eder, sayacı ilerletir |
-| `0x006655df` | `sub_0066549b` | `add word [edi+0x30], si` — si = çocuk sayısı |
+| `0x0066fbfc` | `sub_0066f6ac` | `[edi+0x44] = [ebx+0x30]` — writes "my children start here" to the node |
+| `0x0066fc10` | → `sub_0066549b` | allocates the children right after, advances the counter |
+| `0x006655df` | `sub_0066549b` | `add word [edi+0x30], si` — si = number of children |
 | `0x00665305` | `sub_0066521d` | `inc word [esi+0x30]` |
 | `0x0066b7cb` | `sub_0066b61d` | `inc word [ebx+0x30]` |
 
-Tasarım **doğru**: önce mevcut taban kaydedilir, sonra çocuklar tahsis edilip sayaç
-ilerletilir. Ölçüm de bunu doğruluyor — sayaç 3'ten 8'e çıkıyor, tam olarak
-`BlendState`'in **5 elemanı** kadar (`0x006655df`'de +1, `0x00665305`'te 4 kez +1).
-Elemanı olmayan 13 parametre için `si=0` olduğundan sayaç ilerlemez; bu da doğru.
+The design is **correct**: first the current base is saved, then the children
+are allocated and the counter is advanced. The measurement confirms it too — the
+counter goes from 3 to 8, exactly as many as `BlendState`'s **5 elements** (+1 at
+`0x006655df`, +1 four times at `0x00665305`). For the 13 parameters without
+elements `si=0`, so the counter doesn't advance; that is also correct.
 
-Sayaç 8'e ulaşıyor ve efektte **9 nesne** var — yani `[ebx+0x30]` nesne/eleman sayacı
-ve `[this+0x2c]` 9 elemanlı nesne dizisi. Yürüyücünün gezdiği indeks aralığı (0..8) buna oturuyor.
+The counter reaches 8 and the effect has **9 objects** — so `[ebx+0x30]` is the
+object/element counter and `[this+0x2c]` the 9-entry object array. The index
+range the walker visits (0..8) fits this.
 
-**Açık kalan:** Çocuğu olmayan düğümlerde de taban 3 (veya 4) olarak yazılı kalıyor ve
-yürüyücü `icSayi==0` durumunda onu **1'e zorluyor** (`0x0065aeb8`–`0x0065aebe`), sonra
-`cocuk = taban + i - 1` ile özyineleniyor. Yani elemanı olmayan bir düğüm bile bir
-çocuğa iniyor. Doğru davranışta bu düğümlerin `[edi]` girdisi 0 olup
-`0x0065aea4`'teki `cmp word [edi], dx; je` ile atlanmalıydı — ama blob girdileri
-çakıştığı için 0 yerine 5 okunuyor.
+**Still open:** nodes without children also keep a base of 3 (or 4) written to
+them, and when `childCount==0` the walker **forces it to 1**
+(`0x0065aeb8`–`0x0065aebe`), then recurses with `child = base + i - 1`. So even
+a node without elements descends into a child. In correct behavior these nodes'
+`[edi]` entry would be 0 and they would be skipped by the
+`cmp word [edi], dx; je` at `0x0065aea4` — but because the blob entries overlap,
+5 is read instead of 0.
 
-**Sonraki adım (net):** Blob girdilerinin neden çakıştığını bulmak. `[edx+0x48]`
-ofsetleri düğüm başına ayrı olmalı; ölçümde 0 ve 4 değerleri **aynı blob içinde iki
-farklı düğüme** yazılıyor ama üçüncü düğüm yine ofset 0'ı okuyor. `sub_00667d61`
-içindeki 4 yollu tip anahtarının (`0x0066888e` sonrası: `0x668b62`/`0x668ab7`/
-`0x668934`/düşme) hangi dalının hangi parametre sınıfı için çalıştığını
-`tools/efxparse.py` çıktısıyla eşleştirmek gerekiyor — 14 parametrenin sınıfları
-biliniyor (SCALAR/VECTOR/MATRIX_ROWS/OBJECT), dolayısıyla beklenen dal dizisi
-hesaplanabilir ve gerçekle karşılaştırılabilir.
+**Next step (clear):** find out why the blob entries overlap. The `[edx+0x48]`
+offsets should be separate per node; in the measurement the values 0 and 4 are
+written to **two different nodes in the same blob**, but a third node reads
+offset 0 again. We need to match which branch of the 4-way type switch in
+`sub_00667d61` (after `0x0066888e`: `0x668b62`/`0x668ab7`/`0x668934`/fall-through)
+runs for which parameter class against the output of `tools/efxparse.py` — the
+classes of the 14 parameters are known (SCALAR/VECTOR/MATRIX_ROWS/OBJECT), so the
+expected branch sequence can be computed and compared with the real one.
 
-## Komutlar
+## Commands
 
-**Sürümler:** depo kökündeki `SURUM` dosyası (şu an `2`). Paket bunu sürüm
-bilgisine yazar (Finder'da "2.0"), ikili açılışta günlüğe yazar, oturum kayıtları
-`~/nfs_oturum/<tarih>_v2` diye etiketlenir.
-- **v1:** temel çevirici, `-fno-strict-aliasing` yok. Arşiv: `arsiv/v1/` (git dışı,
-  içeriği `arsiv/v1/OKUBENI.txt`).
-- **v2 (2026-10-18):** FLAGABI + X87OPT + RETEIP=0 + MEMARG=1, her şey
-  `-fno-strict-aliasing` ile. Oyun kodu kare başına −%22 işlemci süresi
-  (`LIFTER_VERIMLILIK.md`).
+**Versions:** the `VERSION` file at the repository root (currently `2`). The
+package writes it into its version info ("2.0" in Finder), the binary writes it
+to the log at startup, and session recordings are labelled
+`~/nfs_sessions/<date>_v2`.
+- **v1:** the base translator, no `-fno-strict-aliasing`. Archive: `arsiv/v1/`
+  (outside git, contents described in `arsiv/v1/OKUBENI.txt`).
+- **v2 (2026-10-18):** FLAGABI + X87OPT + RETEIP=0 + MEMARG=1, everything with
+  `-fno-strict-aliasing`. Game code −22% CPU time per frame
+  (`LIFTER_EFFICIENCY.md`).
 
-Yeni bir lifter adımı önce ayrı bir `gen/<ad>` dizininde denenir. Ana sürüme
-alınınca eski sürüm `arsiv/vN/` altına taşınır ve `SURUM` bir artırılır.
+A new lifter step is first tried in a separate `gen/<name>` directory. When it
+is promoted to the main version, the old version is moved under `arsiv/vN/` and
+`VERSION` is incremented by one.
 
-### Çalıştırma
+### Running
 ```bash
-./run.sh window      # pencereli (Metal)
-./run.sh headless    # penceresiz, 60 sn
-./run.sh profile     # ornekleyici profil
-./run.sh test        # 439 ISA + 15 fonksiyon testi
-./run.sh hd          # HD build: grafik iyilestirmeleri (NFSHD=1 her modla calisir)
+./run.sh window      # windowed (Metal)
+./run.sh headless    # no window, 60 s
+./run.sh profile     # sampling profiler
+./run.sh test        # 439 ISA + 15 function tests
+./run.sh hd          # HD build: graphics enhancements (NFSHD=1 works with every mode)
 ```
 
-**İki build:** `out/nfsu2_boot` oyunun orijinal görüntüsü, `out/nfsu2_hd_boot`
-grafik iyileştirmeleri. Lift edilmiş shard'lar ortak; yalnızca runtime
-`-DNFS_ENHANCED=1` ile ikinci kez derlenir (`./link.sh [orig|hd]`). Orijinal
-build'de iyileştirme kodu derlenmez. Paket: `./pack.sh --hd` → `NFSU2 HD.app`.
-Ayrıntı ve sonuçlar: `GRAFIK_ARASTIRMA.md` §6 (yansıma çözünürlüğü), §7 (MSAA),
-§8 (SSR + yansıma ayrıştırma), §10 (ışın izlemeli yansıma + sabit sahne önbelleği).
+**Two builds:** `out/nfsu2_boot` is the game's original look, `out/nfsu2_hd_boot`
+has graphics enhancements. The lifted shards are shared; only the runtime is
+compiled a second time with `-DNFS_ENHANCED=1` (`./link.sh [orig|hd]`). The
+enhancement code is not compiled into the original build. Package:
+`./pack.sh --hd` → `NFSU2 HD.app`. Details and results: `GRAPHICS_RESEARCH.md`
+§6 (reflection resolution), §7 (MSAA), §8 (SSR + reflection separation), §10
+(ray-traced reflections + static scene cache).
 
 ```bash
-# tam yeniden uretim + derleme (~2.5 dk).  Depo kokunden calistirin.
-# 1) reloc tablosu -> out/relocs.txt  (genall.py ve argcount.py bunu okur)
+# full regeneration + build (~2.5 min).  Run from the repository root.
+# 1) reloc table -> out/relocs.txt  (genall.py and argcount.py read it)
 ./.venv/bin/python tools/reloc2.py <SPEED2.EXE>
-# 2) v2: bayrak canliligi + 23k fonksiyonu C'ye cevir -> gen/all/, import
-#    arguman tablosu -> gen/all/impargs.c.  Hepsi tek betikte; tarif gen/all'i
-#    birebir uretir (2026-10-18 dogrulandi: 131 dosya, 0 fark).
-# DIKKAT: betikteki OVERRIDE listesi runtime/overrides.c + runtime/d3dx_hle.c
-# ile AYNI olmali, yoksa sub_XXXX_orig sembolleri uretilmez ve link kirilir.
-# d3dx_hle.c sarmalayicilari makroyla uretiyor (grep bulamaz); guncel liste
-# D3DX_HLE.md "Yeniden uretim" bolumunde.
-tools/uret_v2.sh <SPEED2.EXE>
-# 3) derle + linkle
+# 2) v2: flag liveness + translate 23k functions to C -> gen/all/, import
+#    argument table -> gen/all/impargs.c.  All in one script; the recipe
+#    reproduces gen/all exactly (verified 2026-10-18: 131 files, 0 differences).
+# CAUTION: the OVERRIDE list in the script must be the SAME as runtime/overrides.c
+# + runtime/d3dx_hle.c, otherwise the sub_XXXX_orig symbols aren't generated and
+# the link breaks. d3dx_hle.c generates its wrappers with a macro (grep won't find
+# them); the current list is in the "Regeneration" section of D3DX_HLE.md.
+tools/gen_v2.sh <SPEED2.EXE>
+# 3) compile + link
 ./build.sh && ./link.sh          # OPT: -O3 -mcpu=apple-m1 -fno-strict-aliasing
 
-# sadece runtime degistiyse (~10 sn)
+# if only the runtime changed (~10 s)
 ./link.sh
 
-# calistir / teshis
-./diag.sh                          # cokme adresini bul + cevresini sok
-ALARM=60 ./out/nfsu2_boot <EXE>    # zaman asimli calistirma
-ITRACE=40 ./out/nfsu2_boot <EXE>   # son 40 guest komutu
-WATCH_ADDR=0x... ./out/nfsu2_boot  # bellek watchpoint
-COMTRACE=1 ./out/nfsu2_boot        # D3D9 cagri izi
-./out/isatest                      # 367 ISA semantik testi
-./out/nfsu2_all <EXE>              # 15 fonksiyon dogrulama testi
+# run / diagnose
+./diag.sh                          # find the crash address + disassemble around it
+ALARM=60 ./out/nfsu2_boot <EXE>    # run with a timeout
+ITRACE=40 ./out/nfsu2_boot <EXE>   # last 40 guest instructions
+WATCH_ADDR=0x... ./out/nfsu2_boot  # memory watchpoint
+COMTRACE=1 ./out/nfsu2_boot        # D3D9 call trace
+./out/isatest                      # 367 ISA semantics tests
+./out/nfsu2_all <EXE>              # 15 function verification tests
 ```
 
 ---
 
-# DÖNÜM NOKTASI: oyun çalışıyor ve kare üretiyor
+# MILESTONE: the game runs and produces frames
 
-25 Ağustos 2026 sabahı itibarıyla **NFSU2 motoru native ARM64 kodunda çalışıyor**:
-CRT → statik kurucular → `main()` → D3D9 cihazı → efekt sistemi → veri yükleme →
-**oyun döngüsü ve ön yüz (menü)**.
+As of the morning of 25 August 2026 **the NFSU2 engine runs as native ARM64
+code**: CRT → static constructors → `main()` → D3D9 device → effect system →
+data loading → **game loop and front end (menu)**.
 
-## Ölçülen çalışma durumu (60 sn'lik koşu)
+## Measured run state (60 s run)
 
 | | |
 |---|---|
-| **Render edilen kare (`Present`)** | **373** |
-| **Çizim çağrısı (`Draw*`)** | **69.540** |
-| Toplam COM/D3D9 çağrısı | **1.729.435** |
-| Toplam Win32 çağrısı | 54.369 |
-| Açılan veri dosyası | **64** (12,7 MB okundu) |
-| Guest thread | 9 başlatıldı, 5 sonlandı |
-| Yürütülen guest komutu | ~1,1 milyar |
-| Çözülemeyen dolaylı çağrı | 0 |
-| Desteklenmeyen komut trap'i | 0 |
+| **Frames rendered (`Present`)** | **373** |
+| **Draw calls (`Draw*`)** | **69,540** |
+| Total COM/D3D9 calls | **1,729,435** |
+| Total Win32 calls | 54,369 |
+| Data files opened | **64** (12.7 MB read) |
+| Guest threads | 9 started, 5 terminated |
+| Guest instructions executed | ~1.1 billion |
+| Unresolved indirect calls | 0 |
+| Unsupported-instruction traps | 0 |
 
-Yüklenen gerçek oyun verisi: `GLOBAL/GLOBALA.BUN`, `GLOBAL/GLOBALB.LZC`,
-`GLOBAL/GLOBALTEXTURESROW.BIN`, **`FRONTEND/FRONTB.LZC`** (menü),
-`LANGUAGES/ENGLISH.BIN`, `memcard/LOCALE_ENGLISH.loc`, `sdata/sdat.viv` (ses),
+Real game data loaded: `GLOBAL/GLOBALA.BUN`, `GLOBAL/GLOBALB.LZC`,
+`GLOBAL/GLOBALTEXTURESROW.BIN`, **`FRONTEND/FRONTB.LZC`** (menu),
+`LANGUAGES/ENGLISH.BIN`, `memcard/LOCALE_ENGLISH.loc`, `sdata/sdat.viv` (sound),
 `Global/FrontEndMemoryFile.bin`, `Global/CarHeadersMemoryFile.bin`.
 
-CPU kullanımı %2 — oyun çizim döngüsünde girdi bekleyerek boşta dönüyor,
-yani menüde duruyor.
+CPU usage 2% — the game is idling in its draw loop waiting for input, i.e. it is
+sitting in the menu.
 
-## Bu aşamada bulunan ve düzeltilen hatalar
+## Bugs found and fixed at this stage
 
-**Lifter (6. ve 7. gerçek hata):**
-6. **`int3` blok sonlandırıcı sanılıyordu.** Assertion amaçlı tek `int3`'ten sonraki
-   epilog hiç üretilmiyordu ve yürütme bir sonraki fonksiyonun gövdesine düşüyordu.
-   Artık tek `int3` etkisiz sayılıp devam ediliyor; ardışık `0xCC` dizisi (fonksiyonlar
-   arası dolgu) hâlâ blok sonu.
+**Lifter (real bugs no. 6 and 7):**
+6. **`int3` was taken for a block terminator.** The epilogue after a single
+   `int3` used for assertions was never generated and execution fell into the
+   body of the next function. Now a single `int3` is treated as a no-op and
+   execution continues; a run of consecutive `0xCC` (padding between functions)
+   is still a block end.
 
 **Runtime:**
-* **`ExitThread` gerçekten sonlandırmıyordu.** `_endthreadex` sonunda `ExitThread`
-  çağrılıyor; stub sadece dönünce yürütme `_threadstartex` prologuna **düşüyor** ve
-  thread kendini yeniden başlatıyordu. Artık `pthread_exit` ile sonlanıyor.
-* **TLS thread'e özel değildi.** `TlsGetValue`/`TlsSetValue` global bir dizi
-  kullanıyordu; artık TEB'deki per-thread dizi (`fs:[0x2c]`) kullanılıyor.
-* **`CREATE_SUSPENDED` yok sayılıyordu.** Artık thread `ResumeThread`'e kadar bekliyor.
-* **Büyük guest kilidi (GIL) açlığa yol açıyordu.** Oyun `EnterCriticalSection` ile
-  dönen bir bekleme döngüsündeydi; kilit yalnız `Sleep`/`Wait` çağrılarında
-  bırakıldığı için beklenen thread hiç çalışamıyordu (188 milyon boş çağrı).
-  Artık her 1024 Win32 çağrısında bir kilit adilce bırakılıyor.
-* **`GetCurrentThreadId` tüm thread'ler için 1 dönüyordu** — artık TEB'den okunuyor.
+* **`ExitThread` didn't really terminate.** `_endthreadex` calls `ExitThread` at
+  the end; when the stub simply returned, execution **fell** into the
+  `_threadstartex` prologue and the thread restarted itself. It now terminates
+  with `pthread_exit`.
+* **TLS wasn't per-thread.** `TlsGetValue`/`TlsSetValue` used a global array;
+  now the per-thread array in the TEB (`fs:[0x2c]`) is used.
+* **`CREATE_SUSPENDED` was ignored.** Now the thread waits until `ResumeThread`.
+* **The big guest lock (GIL) caused starvation.** The game was in a wait loop
+  spinning on `EnterCriticalSection`; since the lock was only released in
+  `Sleep`/`Wait` calls, the awaited thread could never run (188 million empty
+  calls). Now the lock is released fairly once every 1024 Win32 calls.
+* **`GetCurrentThreadId` returned 1 for all threads** — it is now read from the TEB.
 
-**Yeni katmanlar:** `IDirectInput8` + `IDirectInputDevice8` (11 + 32 metot),
-`IDirectSound` + `IDirectSoundBuffer` (11 + 21 metot), gerçek dosya G/Ç, PE kaynakları.
+**New layers:** `IDirectInput8` + `IDirectInputDevice8` (11 + 32 methods),
+`IDirectSound` + `IDirectSoundBuffer` (11 + 21 methods), real file I/O, PE
+resources.
 
-## Yeni araçlar
+## New tools
 
-* **Örnekleyici profil** (`SAMPLE=1`) — ayrı thread periyodik olarak çalışan guest
-  komutunu örnekler. Sonsuz döngüleri ve sıcak noktaları saniyeler içinde bulur;
-  GIL açlığını bununla yakaladık.
-* **Çalışma zamanı yama tablosu** (`dispatch_patch`) — dolaylı çağrılan bir guest
-  fonksiyonunu, **yeniden üretim/derleme gerektirmeden** C sarmalayıcısıyla
-  değiştirir. İterasyonu 5 dakikadan 10 saniyeye indirdi.
-* **Heap blok sınır denetimi** — bir guest adresini içeren heap bloğunu başlıktan
-  bulur; dizi taşmalarını kesin tespit eder.
+* **Sampling profiler** (`SAMPLE=1`) — a separate thread periodically samples
+  the running guest instruction. Finds infinite loops and hot spots within
+  seconds; this is how we caught the GIL starvation.
+* **Run-time patch table** (`dispatch_patch`) — replaces an indirectly called
+  guest function with a C wrapper **without regenerating/recompiling**. Cut the
+  iteration time from 5 minutes to 10 seconds.
+* **Heap block bounds check** — finds the heap block containing a guest address
+  from its header; detects array overruns with certainty.
 
-## AÇIK: D3DX efekt ağacı çevrimli (geçici koruma ile aşıldı)
+## OPEN: the D3DX effect tree is cyclic (bypassed with a temporary guard)
 
-Ağaç düğüm 0 → 6 → 4..8 → 6 şeklinde kendine dönüyor ve düğüm dizisi kapasitesi 8
-iken indeks 8 isteniyor. `runtime/overrides.c` iki koruma uyguluyor: dizi sınırı ve
-**ziyaret edilmiş düğüm kümesi** (her düğüm üst-seviye yürüyüşte bir kez). Koruma
-60 sn'lik koşuda yalnız 1.295 kez devreye giriyor, yani sınırlı ve oyun ilerliyor.
-Kök neden hâlâ açık — ayrıntılı iz yukarıdaki bölümde.
+The tree loops back on itself as node 0 → 6 → 4..8 → 6, and index 8 is requested
+while the node array capacity is 8. `runtime/overrides.c` applies two guards:
+the array bound and a **set of visited nodes** (each node once per top-level
+walk). In the 60 s run the guard kicks in only 1,295 times, so it is bounded and
+the game progresses. The root cause is still open — the detailed trace is in the
+section above.
 
-## SONRAKİ AŞAMA: D3D9 → Metal
+## NEXT PHASE: D3D9 → Metal
 
-Oyunun **fiilen kullandığı** D3D9 yüzeyi ölçüldü (60 sn, tek menü ekranı):
+The D3D9 surface the game **actually uses** was measured (60 s, a single menu
+screen):
 
-| Metot | Çağrı |
+| Method | Calls |
 |---|---|
-| `SetRenderState` | 646.609 |
-| `SetSamplerState` | 360.874 |
-| `SetTextureStageState` | 243.416 |
-| `SetTexture` | 69.779 |
-| `SetVertexShader` / `SetPixelShader` | ~69.700 |
-| **`DrawPrimitiveUP`** | **69.526** |
-| `SetVertexShaderConstantF` | 69.257 |
-| `StateBlock::Capture` / `Apply` | ~11.300 |
-| `SetRenderTarget` / `SetDepthStencilSurface` | 1.386 |
-| `CreateTexture` + `LockRect`/`UnlockRect` | 776 / 1.205 |
-| `SetViewport`, `SetTransform` | 1.064 / 966 |
+| `SetRenderState` | 646,609 |
+| `SetSamplerState` | 360,874 |
+| `SetTextureStageState` | 243,416 |
+| `SetTexture` | 69,779 |
+| `SetVertexShader` / `SetPixelShader` | ~69,700 |
+| **`DrawPrimitiveUP`** | **69,526** |
+| `SetVertexShaderConstantF` | 69,257 |
+| `StateBlock::Capture` / `Apply` | ~11,300 |
+| `SetRenderTarget` / `SetDepthStencilSurface` | 1,386 |
+| `CreateTexture` + `LockRect`/`UnlockRect` | 776 / 1,205 |
+| `SetViewport`, `SetTransform` | 1,064 / 966 |
 | `Present` / `BeginScene` | 372 |
 
-**Kritik kolaylık:** ana çizim yolu `DrawPrimitiveUP` — köşe verisi doğrudan bir
-bellek işaretçisinden geliyor, vertex buffer yönetimi yok. Metal'de her çizimde
-tamponu yükleyip çizmek yeterli.
+**Key simplification:** the main draw path is `DrawPrimitiveUP` — vertex data
+comes straight from a memory pointer, there is no vertex buffer management. In
+Metal it is enough to upload the buffer and draw on every draw call.
 
-Gereken sıra:
-1. ✅ **Gerçek `NSWindow` + `CAMetalLayer`** — `runtime/metal.m`. Ana thread
-   NSApplication döngüsünü sürer, guest ayrı thread'de çalışır.
-2. ✅ **`Clear` + `Present` → Metal render pass.** Oyunun `Present()` çağrıları
-   gerçek `CAMetalDrawable`'ları sürüyor: 30 sn'de 456 oyun karesi, **138 Metal
-   sunumu** (Apple M1 Pro). Pencere şu an yalnız oyunun `Clear` rengini gösteriyor.
+Required order:
+1. ✅ **Real `NSWindow` + `CAMetalLayer`** — `runtime/metal.m`. The main thread
+   drives the NSApplication loop, the guest runs on a separate thread.
+2. ✅ **`Clear` + `Present` → Metal render pass.** The game's `Present()` calls
+   drive real `CAMetalDrawable`s: 456 game frames in 30 s, **138 Metal
+   presentations** (Apple M1 Pro). The window currently shows only the game's
+   `Clear` color.
 3. ✅ **`CreateTexture`/`LockRect`/`UnlockRect` → `MTLTexture`.**
-   A8R8G8B8→BGRA8Unorm, DXT1→BC1, DXT3→BC2, DXT5→BC3 (Apple Silicon BC destekliyor).
-   Mip seviyeleri ve blok-sıkıştırılmış pitch hesabı dahil.
-   30 sn'de **767 doku oluşturuldu, 1.186 yükleme**.
-4. ✅ **`DrawPrimitiveUP` → Metal çizim yolu.** Köşe düzeni ölçülerek çıkarıldı:
-   `POSITION float3 @0, COLOR D3DCOLOR @12, TEXCOORD float2 @16`, adım 32 bayt,
-   `FVF=0x142` (XYZ|DIFFUSE|TEX1). **Köşeler zaten NDC'de (-1..1)**, yani vertex
-   shader çevrilmeden geometri doğrudan çizilebiliyor. Metal'de triangle fan
-   olmadığı için fan/strip/list → üçgen listesine dönüştürülüyor.
-   30 sn'de **41.126 üçgen** ekrana çizildi.
-5. ⬜ Shader Model 2.0 bytecode → MSL çevirisi (en büyük kalan kalem).
-   Şu an sabit bir vertex/fragment shader çifti kullanılıyor: pozisyon geçişli,
-   `renk × doku` ile alpha blend.
+   A8R8G8B8→BGRA8Unorm, DXT1→BC1, DXT3→BC2, DXT5→BC3 (Apple Silicon supports BC).
+   Including mip levels and the block-compressed pitch calculation.
+   **767 textures created, 1,186 uploads** in 30 s.
+4. ✅ **`DrawPrimitiveUP` → Metal draw path.** The vertex layout was derived by
+   measurement: `POSITION float3 @0, COLOR D3DCOLOR @12, TEXCOORD float2 @16`,
+   stride 32 bytes, `FVF=0x142` (XYZ|DIFFUSE|TEX1). **The vertices are already
+   in NDC (-1..1)**, so the geometry can be drawn directly without translating
+   the vertex shader. Since Metal has no triangle fans, fan/strip/list are
+   converted to triangle lists. **41,126 triangles** drawn to the screen in 30 s.
+5. ⬜ Shader Model 2.0 bytecode → MSL translation (the biggest remaining item).
+   For now a fixed vertex/fragment shader pair is used: position pass-through,
+   `color × texture` with alpha blending.
 6. ⬜ `SetRenderState`/`SetSamplerState` → `MTLRenderPipelineState` /
-   `MTLSamplerState` önbelleği (çağrı sayıları yüksek, önbellek şart).
-7. ✅ **Girdi: `NSEvent` → DirectInput klavyesi.** macOS sanal tuş kodları
-   DirectInput `DIK_*` tarama kodlarına eşleniyor (harfler, rakamlar, oklar,
-   Enter/Space/Esc/Tab/Shift/Ctrl). Oyun `GetDeviceState`'i **her karede**
-   çağırıyor (30 sn'de 399 kez) ve 256 baytlık tabloyu okuyor.
-   Cmd+Esc pencereyi kapatır.
+   `MTLSamplerState` cache (call counts are high, a cache is a must).
+7. ✅ **Input: `NSEvent` → DirectInput keyboard.** macOS virtual key codes are
+   mapped to DirectInput `DIK_*` scan codes (letters, digits, arrows,
+   Enter/Space/Esc/Tab/Shift/Ctrl). The game calls `GetDeviceState` **every
+   frame** (399 times in 30 s) and reads the 256-byte table.
+   Cmd+Esc closes the window.
 
-### Ölçülen DirectInput/DirectSound kullanımı
+### Measured DirectInput/DirectSound usage
 ```
 IDirectInput8        CreateDevice 1, EnumDevices 1, EnumDevicesBySemantics 1
 IDirectInputDevice8  SetDataFormat 1, SetCooperativeLevel 1, Acquire 1,
-                     GetDeviceState 399      <- her kare klavye yoklamasi
+                     GetDeviceState 399      <- keyboard poll every frame
 IDirectSound         CreateSoundBuffer 7, GetCaps 1, SetCooperativeLevel 2
 ```
 
-### Render mimarisi
-macOS pencereyi ana thread'de ister; guest zaten ayrı thread'de çalışıyor.
-Guest thread çizimleri çift tamponlu bir komut kuyruğuna biriktirir
-(`BeginScene` sıfırlar, `Present` tamponu ana thread'e devreder), ana thread
-`CAMetalDrawable` üzerine encode eder. Kilit yalnız kuyruk devrinde tutulur.
+### Render architecture
+macOS wants the window on the main thread; the guest already runs on a separate
+thread. The guest thread accumulates draws into a double-buffered command queue
+(`BeginScene` resets, `Present` hands the buffer over to the main thread), and
+the main thread encodes onto the `CAMetalDrawable`. The lock is held only during
+the queue handover.
 
 ---
 
-# Performans: 60.3 → 98.8 fps (yarış karesi 16.59 → 10.12 ms)
+# Performance: 60.3 → 98.8 fps (race frame 16.59 → 10.12 ms)
 
-**Uçtan uca rakam** A/B/A/B dönüşümlü ölçüldü (eski = `PACE60=1`, yeni =
-varsayılan), yani ısıl sürükleme iki yapılandırmaya eşit dağıldı:
-eşleştirilmiş kare süresi **−%39.2**. Sanal/gerçek saat oranı 0.998 vs 0.999
-— **oyun hızı değişmiyor**, yalnızca akıcılık artıyor.
+**The end-to-end figure** was measured alternating A/B/A/B (old = `PACE60=1`,
+new = default), so thermal drift was spread evenly over both configurations:
+paired frame time **−39.2%**. Virtual/real clock ratio 0.998 vs 0.999 — **game
+speed doesn't change**, only smoothness improves.
 
-> Ardışık ölçümlere dikkat: makine saatlerce yük altında kalınca ısıl
-> sürükleme %3–4'e ulaşıyor. Aşağıdaki adım adım tablo saatler içine yayılmış
-> koşulardan; adımların *sırası* ve *büyüklük mertebesi* güvenilir, mutlak
-> değerleri dönüşümlü ölçümle karşılaştırmayın.
+> Beware of back-to-back measurements: when the machine stays under load for
+> hours, thermal drift reaches 3–4%. The step-by-step table below comes from
+> runs spread over hours; the *order* and *order of magnitude* of the steps are
+> reliable, but don't compare their absolute values with the alternating
+> measurement.
 
-Ölçüm penceresi: yarışın ortası, `cizim > 400` olan kareler, gerçek-zaman
-kovalarına eşleştirilmiş (bkz. "Ölçüm yöntemi"). Sıra, uygulanma sırası:
+Measurement window: the middle of the race, frames with `draws > 400`, paired
+by real-time buckets (see "Measurement method"). In the order applied:
 
-| adım | ms | fps |
+| step | ms | fps |
 |---|---|---|
-| başlangıç (60 Hz freni açık) | 15.70 | 63.7 |
-| kare freni kaldırıldı | 12.60 | 79.4 |
-| COM dağıtımı isim → sayısal kimlik | 11.06 | 90.4 |
-| üçgen listesinde tek blok köşe kopyası | 10.84 | 92.3 |
-| zincir sırası + küp doku koşul sırası | 10.63 | 94.1 |
-| `restrict`, kodlama kilidi, `rs_apply` kirli bayrağı | 9.82 | **101.8** |
+| baseline (60 Hz limiter on) | 15.70 | 63.7 |
+| frame limiter removed | 12.60 | 79.4 |
+| COM dispatch name → numeric id | 11.06 | 90.4 |
+| single-block vertex copy for triangle lists | 10.84 | 92.3 |
+| chain order + cube texture condition order | 10.63 | 94.1 |
+| `restrict`, encoding lock, `rs_apply` dirty flag | 9.82 | **101.8** |
 
-## 1. Kare freni: karenin %61'i uykuydu
+## 1. Frame limiter: 61% of the frame was sleep
 
-`frame_pace()` (`runtime/win32_ext.c`) kareyi 60 Hz'e sabitliyordu. Gerekçesi
-şuydu: sanal saat kare başına TAM 16.667 ms ilerlediği için oyun hızı =
-(gerçek fps / 60). **O gerekçe artık geçersiz** — sanal saat `VCLOCK=real`
-moduna geçtiğinden oyun gerçek zamanda akıyor.
+`frame_pace()` (`runtime/win32_ext.c`) locked the frame to 60 Hz. The rationale
+was: since the virtual clock advanced EXACTLY 16.667 ms per frame, game speed =
+(real fps / 60). **That rationale no longer holds** — since the virtual clock
+switched to `VCLOCK=real` mode, the game flows in real time.
 
-Profil bunu doğrudan gösterdi: konuk thread'in 18671 örneğinin **11438'i**
-(%61) `frame_pace` → `nanosleep` → `__semwait_signal` idi.
+The profile showed it directly: **11438** of the guest thread's 18671 samples
+(61%) were `frame_pace` → `nanosleep` → `__semwait_signal`.
 
-Fren artık **varsayılan olarak kapalı**; `PACE60=1` eskisini geri getirir.
-Oyun hızlanmıyor: sanal/gerçek oranı 63.7 fps'te de 101.8 fps'te de **0.999**.
-Kaçak fps'i vsync kesiyor (menülerde 120 fps = ekran tazeleme sınırı) ve sanal
-saatin kare başı artışı 4 ms'de (250 fps) tabanlı.
+The limiter is now **off by default**; `PACE60=1` brings back the old one. The
+game doesn't speed up: the virtual/real ratio is **0.999** at both 63.7 fps and
+101.8 fps. Runaway fps is cut by vsync (120 fps in the menus = the display
+refresh limit), and the virtual clock's per-frame increment is floored at 4 ms
+(250 fps).
 
-> Bu, oturumun ilk yarısındaki bütün "optimizasyon hiçbir şey değiştirmedi"
-> sonuçlarını da açıklıyor: karenin %61'i uyku olduğu için her CPU tasarrufu
-> frenleyici tarafından yutuluyordu. **Fren varken CPU ölçümü yapılamaz.**
+> This also explains all the "the optimization changed nothing" results in the
+> first half of the session: since 61% of the frame was sleep, every CPU saving
+> was swallowed by the limiter. **You can't measure CPU with the limiter on.**
 
-## 2. COM dağıtımı: isim karşılaştırmasından sayısal kimliğe
+## 2. COM dispatch: from name comparison to numeric ids
 
-Bir yarış koşusunda **377 milyon `com_call`** var (kare başına ~43, çizim
-başına ~43). Dağıtım metot ADINI karşılaştırıyordu. Önce `NMEQ` (ilk harf
-kontrolü + `strcmp`) denendi, **hiçbir şey kazandırmadı**: D3D9 cihaz
-metotlarının neredeyse hepsi `Set`/`Get`/`Draw` ile başlıyor, yani ilk-harf
-filtresi elemiyor ve her adımda yine tam `strcmp` çalışıyor. Profilde konuk
-thread'in %11'i `strcmp`'ti, 2335 örneği `com_call`'dan.
+A race run has **377 million `com_call`s** (~43 per frame, ~43 per draw). The
+dispatch compared the method NAME. First `NMEQ` (first-letter check + `strcmp`)
+was tried, and it **gained nothing**: almost all D3D9 device methods start with
+`Set`/`Get`/`Draw`, so the first-letter filter doesn't eliminate anything and a
+full `strcmp` still runs at every step. In the profile 11% of the guest thread
+was `strcmp`, 2335 samples from `com_call`.
 
-Çözüm: her metoda bir `MID_*` sabiti; kimlik `(iface, slot) → id` önbelleğiyle
-metot başına **bir kez** çözülüyor, zincir tamamen tamsayı karşılaştırması.
-Ağırlıklı zincir derinliği 26.4 karşılaştırma/çağrı, toplam **9.9 milyar**
-karşılaştırma idi.
+Solution: a `MID_*` constant per method; the id is resolved **once** per method
+with an `(iface, slot) → id` cache, and the chain is pure integer comparisons.
+The weighted chain depth was 26.4 comparisons/call, **9.9 billion** comparisons
+in total.
 
-Ardından zincir çağrı sıklığına göre yeniden sıralandı (en sıcak 11 segment
-öne). Güvenlik ölçütü: `MID` testleri karşılıklı dışlayan; taşınabilmesi için
-segmentin `strncmp(nm,"Draw",4)` / `strncmp(nm,"Get",3)` önek bloklarının
-üzerinden atlamaması gerekiyor — `Draw*` bloğu bütün olarak taşındı.
+Then the chain was reordered by call frequency (the 11 hottest segments to the
+front). Safety criterion: the `MID` tests are mutually exclusive; for a segment
+to be movable it must not jump over the `strncmp(nm,"Draw",4)` /
+`strncmp(nm,"Get",3)` prefix blocks — the `Draw*` block was moved as a whole.
 
-## 3. Ölçüm yöntemi (bu kadar önemli olduğu ortaya çıktı)
+## 3. Measurement method (turned out to matter this much)
 
-Tek koşu karşılaştırmaları **±%7 gürültülüydü** — bir değişikliğin 94.1'den
-87.6'ya "düşürdüğü" görüldü, oysa o değişiklik ancak yardım edebilirdi.
-Sebep: koşular arası sahne farkı.
+Single-run comparisons were **±7% noisy** — a change was seen to "drop" from
+94.1 to 87.6 even though that change could only have helped. Cause: scene
+differences between runs.
 
-Denenen ve **elenen** yol: `VCLOCK=fixed` ile kare-indeksine göre eşleştirme.
-Sabit saatte oyun 2× hızlanıyor, AUTOKEY dizisi yarışa hiç girmiyor (kare
-başına 83 çizim = menü).
+The path tried and **rejected**: pairing by frame index with `VCLOCK=fixed`.
+With a fixed clock the game runs 2× faster and the AUTOKEY sequence never
+reaches the race (83 draws per frame = menu).
 
-Kullanılan yol: gerçek saatte oyun durumu **geçen gerçek zamana** bağlı, yani
-aynı saniye = aynı sahne. Kareler 0.5 sn'lik kovalara atılıp kova başına
-medyan alınıyor, iki yapı kova kova eşleştiriliyor. Koşu tekrarı: **10.32 /
-10.33 ms** (%0.1). Betikler: `scratchpad/bench.sh`, `bcmp.py`.
+The path used: with the real clock the game state depends on **elapsed real
+time**, so the same second = the same scene. Frames are put into 0.5 s buckets,
+the median is taken per bucket and the two builds are paired bucket by bucket.
+Run repeatability: **10.32 / 10.33 ms** (0.1%). Scripts:
+`scratchpad/bench.sh`, `bcmp.py`.
 
-## 4. Küçük ama gerçek olanlar
+## 4. Small but real ones
 
-- **Tek blok köşe kopyası** (`metal_draw_raw`): üçgen listesinde kaynak zaten
-  bitişik, oysa KÖŞE BAŞINA `memcpy` çağrılıyordu (~112 bin küçük çağrı/kare).
-  `_platform_memmove` %4.6 → %2.8.
-- **`restrict`** (`tools/lift.py` artık `CPU *restrict c` üretiyor): konuk
-  kayıtları `CPU` yapısında, `MR32()` ise `g_mem`'e AYNI türden (`uint32_t`)
-  yazıyor; derleyici bu yüzden her konuk bellek yazmasından sonra `c->eax`
-  gibi alanları yeniden yüklemek zorundaydı. CPU yapısı `g_mem`'in içinde
-  olmadığı için `restrict` doğru. −%1.7.
-- **Kodlama kilidi** (`runtime/metal.m`): ana thread `g_qlock`'u TÜM kare
-  kodlaması boyunca (0.4–2 ms) tutuyordu; `metal_draw_raw` çizim başına aynı
-  kilidi istediği için konuk thread o pencerede her çizimde blokluyordu — çift
-  tamponlamanın amacı tam da bu örtüşmeydi. Kilit artık yalnızca `g_ready`
-  okuması/yazması için. Kilit beklemesi %2.2 → %1.2.
-- **`rs_apply` kirli bayrağı**: `SetRenderState` koşuda 110M kez çağrılıyor ve
-  **%96.5'i aynı değeri yeniden yazıyor**. `rs_apply` tamamen `g_rs[]`'ten
-  türediği için atlamak birebir aynı sonucu verir; 110M → 3.85M uygulama.
-  (Bayrak kalıcı: metal hazır değilken yapılan değişiklikler cihaz gelince
-  yine uygulanır.)
-- **`is_cube_tex` koşul sırası**: konuk BELLEĞİ okuyan bu test her doku
-  çağrısında çalışıyordu; `IDirect3DTexture9` AddRef+Release tek başına 96.8M
-  çağrı. Ucuz metot kimliği testi öne alındı.
-- **`ENVC()` / `mem_is_committed` satır içi**: `getenv` ve `strcmp` profilden
-  tamamen kayboldu.
+- **Single-block vertex copy** (`metal_draw_raw`): for triangle lists the source
+  is already contiguous, yet `memcpy` was called PER VERTEX (~112 thousand
+  small calls/frame). `_platform_memmove` 4.6% → 2.8%.
+- **`restrict`** (`tools/lift.py` now emits `CPU *restrict c`): the guest
+  registers are in the `CPU` struct, and `MR32()` writes the SAME type
+  (`uint32_t`) into `g_mem`; so after every guest memory write the compiler had
+  to reload fields like `c->eax`. Since the CPU struct is not inside `g_mem`,
+  `restrict` is correct. −1.7%.
+- **Encoding lock** (`runtime/metal.m`): the main thread held `g_qlock` for the
+  WHOLE frame encoding (0.4–2 ms); since `metal_draw_raw` takes the same lock per
+  draw, the guest thread blocked on every draw in that window — and that overlap
+  was exactly the point of double buffering. The lock is now only for reading
+  and writing `g_ready`. Lock wait 2.2% → 1.2%.
+- **`rs_apply` dirty flag**: `SetRenderState` is called 110M times in a run and
+  **96.5% of the calls rewrite the same value**. Since `rs_apply` derives
+  entirely from `g_rs[]`, skipping it gives exactly the same result; 110M →
+  3.85M applications. (The flag is sticky: changes made while Metal isn't ready
+  are still applied when the device arrives.)
+- **`is_cube_tex` condition order**: this test, which reads guest MEMORY, ran on
+  every texture call; `IDirect3DTexture9` AddRef+Release alone is 96.8M calls.
+  The cheap method-id test was moved to the front.
+- **`ENVC()` / `mem_is_committed` inline**: `getenv` and `strcmp` disappeared
+  from the profile completely.
 
-## 5. Ölçülüp ELENENLER (tekrar denemeyin)
+## 5. Measured and REJECTED (don't try again)
 
-- **PGO** (`-fprofile-generate` → `llvm-profdata` → `-fprofile-use`): `restrict`
-  üzerine yalnızca **%0.9**. İki aşamalı derleme + yeniden üretimde bayatlayan
-  profil dosyası buna değmiyor. Altyapı duruyor: `link.sh` `$LDOPT` alıyor,
-  `QUITFRAMES=<n>` temiz çıkış veriyor (ALARM yolu sinyal işleyicisinden
-  `_exit` ediyor ve `atexit`'i atlıyor), `tests/boot.c` profili `dlsym` ile
-  yazıyor (`weak_import` Mach-O'da link hatası veriyor).
-- **`NOVSYNC=1`**: 15.71 → 15.95 ms, yani hiçbir şey. Vsync bizi hiç
-  kısıtlamıyor (`nextDrawable` 0.02 ms/kare).
-- **`dispatch_indirect` yama tablosu sırası** ve **`mem_is_committed` satır
-  içi**: +%0.3, gürültü içinde. `g_patch_n` aslında 1; kaldırılan tarama iki
-  komuttu. (Değişiklikler kod olarak doğru, duruyorlar.)
+- **PGO** (`-fprofile-generate` → `llvm-profdata` → `-fprofile-use`): only
+  **0.9%** on top of `restrict`. A two-stage build + a profile file that goes
+  stale on regeneration isn't worth it. The infrastructure remains: `link.sh`
+  takes `$LDOPT`, `QUITFRAMES=<n>` gives a clean exit (the ALARM path calls
+  `_exit` from the signal handler and skips `atexit`), `tests/boot.c` writes the
+  profile via `dlsym` (`weak_import` gives a link error on Mach-O).
+- **`NOVSYNC=1`**: 15.71 → 15.95 ms, i.e. nothing. Vsync doesn't constrain us at
+  all (`nextDrawable` 0.02 ms/frame).
+- **`dispatch_indirect` patch table order** and **inline `mem_is_committed`**:
+  +0.3%, within noise. `g_patch_n` is actually 1; the removed scan was two
+  instructions. (The changes are correct as code and remain.)
 
-- **Metal sistem iş parçacıkları (2026-10-18, v2).** Yarışta süreç işlemcisinin
-  ~%30'u macOS'un Metal/CoreAnimation GCD iş parçacıklarında (0.34–0.39 çekirdek,
-  %90'ı çekirdek modu; `sample`: `IOGPUCommandQueueSubmitCommandBuffers`). Denenenler:
-  - **Kalıcı yerleşim kümesi** (`MTLResidencySet`, tüm doku ve tamponlar): etki yok
-    (0.384/0.389 → 0.380/0.362, dönüşümlü 2+2).
-  - **Kareye +20/+40 boş geçiş:** +0.04 / +0.01 çekirdek, yani geçiş başına teslim
-    maliyeti küçük.
-  - **Mikro karşılaştırma** (oyunun deseni: 1400 çizim, 25 geçiş, 200 doku, satır içi
-    548 B sabit, tam ekran hedef + derinlik, 120 Hz `CAMetalLayer` sunumu): 0.39–0.41
-    çekirdek. Bu, oyundaki ~0.45'e (render + GCD) çok yakın; boş kareyi 120 Hz'de
-    sunmak bile 0.15 çekirdek. Yani anormallik yok, desenin bedeli bu.
-  - **`setVertexBufferOffset` + sabitleri kare tamponundan vermek:** en iyi ihtimalle
-    −0.02 çekirdek (~0.05 W), gürültü sınırında; yapılmadı.
+- **Metal system threads (2026-10-18, v2).** In a race ~30% of the process's CPU
+  is in macOS's Metal/CoreAnimation GCD threads (0.34–0.39 cores, 90% kernel
+  mode; `sample`: `IOGPUCommandQueueSubmitCommandBuffers`). Tried:
+  - **Persistent residency set** (`MTLResidencySet`, all textures and buffers):
+    no effect (0.384/0.389 → 0.380/0.362, alternating 2+2).
+  - **+20/+40 empty passes per frame:** +0.04 / +0.01 cores, so the submission
+    cost per pass is small.
+  - **Micro-benchmark** (the game's pattern: 1400 draws, 25 passes, 200 textures,
+    548 B of inline constants, fullscreen target + depth, 120 Hz `CAMetalLayer`
+    presentation): 0.39–0.41 cores. This is very close to the ~0.45 in the game
+    (render + GCD); even presenting an empty frame at 120 Hz costs 0.15 cores. So
+    nothing abnormal; this is the cost of the pattern.
+  - **`setVertexBufferOffset` + supplying constants from a frame buffer:** at
+    best −0.02 cores (~0.05 W), at the noise limit; not done.
 
-  Bulunan tek gerçek kirlilik ölçüm aracıydı: PERFLOG ekran görüntüsü GPU'nun
-  sıkıştırdığı dokuyu satır satır `getBytes` ile okuyordu (~0.08 çekirdek, yalnızca
-  kayıt sırasında). Artık doğrusal `MTLBuffer`'a kopyalanıyor.
+  The only real pollution found was the measurement tool: the PERFLOG screenshot
+  read the GPU-compressed texture row by row with `getBytes` (~0.08 cores, only
+  while recording). It is now copied to a linear `MTLBuffer`.
 
-- **GEÇİŞ YÜKLEMESİ ve Z SAKLAMA (2026-10-18):** render geçişlerinde gereksiz
-  görünen renk/Z yükleme-saklamayı kesmek. Koşu içi A/B'de GPU enerjisi ve DRAM
-  trafiği değişmedi (Apple GPU bunları zaten atlıyor); Z saklama D3D9 sözleşmesine
-  aykırı (oyun örtük Z'yi kareler arası koruyor). Ayrıntı: "GPU enerjisi ve bellek
-  trafiği".
+- **PASS LOAD and Z STORE (2026-10-18):** cutting color/Z load-store that looks
+  unnecessary in render passes. In an in-run A/B, GPU energy and DRAM traffic
+  didn't change (the Apple GPU already skips them); dropping the Z store violates
+  the D3D9 contract (the game preserves the implicit Z across frames). Details:
+  "GPU energy and memory traffic".
 
-## 6. Şu anki profil (konuk thread, yarış)
+## 6. Current profile (guest thread, race)
 
 ```
-79.1%  lifted x86 (oyunun kendisi)
+79.1%  lifted x86 (the game itself)
  8.5%  com_call
  3.4%  _platform_memmove
  3.0%  dispatch_indirect
  1.2%  __psynch_cvwait
 ```
 
-Konuk thread beklemesi 0.29 ms/kare, ana thread kare gelsin diye 9.88 ms/kare
-BOŞ bekliyor, GPU 2.19 ms, CPU kodlama 0.60 ms. **Darboğaz tamamen konuk
-thread**; grafik katmanı bedava. Sıradaki gerçek kaldıraç `com_call`'ın kalan
-gövdesi (%8.5, 377M çağrı) ya da lifter'ın kod üretimi.
+Guest thread wait 0.29 ms/frame, the main thread waits IDLE 9.88 ms/frame for a
+frame to arrive, GPU 2.19 ms, CPU encoding 0.60 ms. **The bottleneck is entirely
+the guest thread**; the graphics layer is free. The next real lever is the
+remaining body of `com_call` (8.5%, 377M calls) or the lifter's code generation.
 
-## 6b. D3DX efekt kütüphanesi: konuk sürenin %47'si (2026-09-23)
+## 6b. The D3DX effect library: 47% of guest time (2026-09-23)
 
-Yeni profilde çevrilmiş kodun büyük kısmı oyunun kendi mantığı değil, oyuna
-statik bağlı **D3DX9 efekt çerçevesi** çıktı: `ID3DXEffect::BeginPass`
-(vtable 0x7b6fe8, yuva 66) alt çağrılarıyla konuk thread'in %48'i. Oyun her
-çizimde BeginPass çağırıyor (1398/kare), D3DX de her seferinde ~20 durumu ve
-~8.5 preshader ifadesini yeniden hesaplıyor. Oysa ifade girdilerinin %95.8'i
-bir önceki değerlendirmeyle aynı.
+In the new profile most of the translated code turned out to be not the game's
+own logic but the **D3DX9 effect framework** statically linked into the game:
+`ID3DXEffect::BeginPass` (vtable 0x7b6fe8, slot 66) with its subcalls is 48% of
+the guest thread. The game calls BeginPass on every draw (1398/frame), and D3DX
+recomputes ~20 states and ~8.5 preshader expressions every time. Yet 95.8% of
+the expression inputs are the same as in the previous evaluation.
 
-İlk HLE adımı (durum değeri notu, `runtime/d3dx_hle.c`) konuk CPU süresini
-yarışta **10.9–12.0 → 8.1 ms/kare (−%29)** indirdi; GPU boşken yarış
-90 → 118.9 fps (120 Hz sınırı). Bellek karşılaştırmalı doğrulamada 2.4M+
-kontrol, 0 fark.
+The first HLE step (state value memo, `runtime/d3dx_hle.c`) cut guest CPU time
+in a race from **10.9–12.0 → 8.1 ms/frame (−29%)**; with an idle GPU the race
+went 90 → 118.9 fps (the 120 Hz limit). In memory-comparison verification 2.4M+
+checks, 0 differences.
 
-Aşama 2 (durum atama notu) D3DX'in geçiş başına ~27 cihaz çağrısına
-dayanıyor; bunların %96'sı gereksiz. Kaydedilen çağrılar şu an etkisizse
-durum atlanıyor. 60 fps'e sabitlenmiş ölçümde konuk CPU'yu bir %5 daha
-indirdi; 120 Hz'de yarış zaten sınırda olduğu için fps değişmedi. 6.6M+
-doğrulama kontrolü, 0 fark.
+Stage 2 (state assignment memo) relies on D3DX's ~27 device calls per pass; 96%
+of them are redundant. If the recorded calls currently have no effect, the state
+is skipped. In a measurement locked to 60 fps it cut guest CPU by another 5%; at
+120 Hz the race is already at the limit, so fps didn't change. 6.6M+
+verification checks, 0 differences.
 
-Aşama 3 (parametre sürümleriyle geçiş düzeyinde atlama) olumsuz çıktı.
-Dokular parametre verisinden değil efektin nesne tablosundan geliyor ve oyun
-her çizimde doku değiştiriyor; doğrulamada tahmini isabetlerin %78'i yanlıştı.
-Kod duruyor, varsayılan kapalı.
+Stage 3 (pass-level skipping with parameter versions) turned out negative.
+Textures come not from parameter data but from the effect's object table, and
+the game changes textures on every draw; in verification 78% of the predicted
+hits were wrong. The code remains, off by default.
 
-Harita, veri yapıları, aşamalar ve ilerleme günlüğü: **`D3DX_HLE.md`**.
+Map, data structures, stages and progress log: **`D3DX_HLE.md`**.
 
-## 7. `sub_0050d510` hatası: oyun hatası DEĞİL, kapanış yarışı
+## 7. The `sub_0050d510` error: NOT a game bug, a shutdown race
 
-Koşuların bir kısmında görülen
+The error seen in some of the runs
 
 ```
-*** HATA GUEST FONKSIYONU: sub_0050d510
-*** HOST SEGV: 0x... (guest alani disi)
+*** FAULTING GUEST FUNCTION: sub_0050d510
+*** HOST SEGV: 0x... (outside guest space)
 ```
 
-**oyun sırasında değil, `ALARM` kapanışında** oluyor. Kanıt: hata çıktısının
-hemen ardından rapor dökümü geliyor, ve çöken koşu en FAZLA kareyi üreten
-koşu. `on_alarm` sinyal işleyicisinden `all_reports()` çağrılıyor ve konuk
-thread'ler hâlâ koşarken COM/rapor yapıları geziliyor.
+happens **not during the game but at the `ALARM` shutdown**. Evidence: the
+report dump comes right after the error output, and the run that crashes is the
+one that produced the MOST frames. `all_reports()` is called from the `on_alarm`
+signal handler and walks COM/report structures while guest threads are still
+running.
 
-Ölçüm: temiz çıkışta (`QUITFRAMES=<n>`) **5/5 koşu, 0 hata** (üçü birebir
-10301 kare); `ALARM` ile 7 koşunun 2'si çöküyor. Bildirilen fonksiyon adı da
-yanıltıcı — `sub_0050d510` `overrides.c`'deki bir C override'ı, host PC ondan
-sonraki fonksiyonlara düşünce ona atfediliyor.
+Measurement: with a clean exit (`QUITFRAMES=<n>`) **5/5 runs, 0 errors** (three of
+them exactly 10301 frames); with `ALARM`, 2 of 7 runs crash. The reported
+function name is misleading too — `sub_0050d510` is a C override in
+`overrides.c`, and when the host PC falls into the functions after it, the crash
+is attributed to it.
 
-**Sonuç:** ölçüm ve otomatik koşularda `ALARM` yerine `QUITFRAMES` kullanın.
-(Ayrıca bu oturumda konuk işçi thread'lerinin yığını 512 KB → 256 MB
-yapıldı; `CreateThread` `pthread_create(...,0,...)` ile macOS varsayılanını
-alıyordu, oysa ana konuk thread 1 GB alıyor. Doğru bir düzeltme ama bu
-hatanın nedeni o değildi.)
+**Conclusion:** use `QUITFRAMES` instead of `ALARM` in measurements and automated
+runs. (Also in this session the stack of the guest worker threads was raised from
+512 KB → 256 MB; `CreateThread` got the macOS default via
+`pthread_create(...,0,...)`, whereas the main guest thread gets 1 GB. A correct
+fix, but it wasn't the cause of this error.)
 
-## 8. Menüde 1920x1080
+## 8. 1920x1080 in the menu
 
-Vanilya NFSU2'nin kendi çözünürlük tablosu 6 satır ve tamamı 4:3.
-`EnumAdapterModes` ile **7.** bir mod ilan etmek menüyü o satırı seçebilir
-hale getiriyor ama oyun kendi dizisini taşırıyor ve çöp boyut üretiyor (her
-seferinde tam olarak `8126268x268571776`). Çöp yalnızca `CreateDevice`'a
-gelmiyor — oyun onu **saklıyor** ve render hedeflerini de o boyutla yaratmaya
-çalışıyor (Metal doku doğrulaması patlıyor).
+Vanilla NFSU2's own resolution table has 6 rows, all 4:3. Advertising a **7th**
+mode with `EnumAdapterModes` makes the menu able to select that row, but the game
+overflows its own array and produces a garbage size (exactly
+`8126268x268571776` every time). The garbage doesn't only reach `CreateDevice` —
+the game **stores** it and tries to create its render targets at that size too
+(Metal texture validation blows up).
 
-Tabloyu konuk bellekte yamalamak temiz çözüm olurdu; **bulunamadı** (hem
-12-uint32 dizisi araması hem taşma imzası `1600,1200,0x007C08FC,0x10021C00`
-arandı, ikisi de tutmadı — tablo bitişik bir `{w,h}` dizisi olarak durmuyor).
+Patching the table in guest memory would have been the clean solution; **it
+wasn't found** (both a 12-uint32 array search and the overflow signature
+`1600,1200,0x007C08FC,0x10021C00` were searched for, neither matched — the table
+isn't stored as a contiguous `{w,h}` array).
 
-Uygulanan çözüm: taşma **hiç tetiklenmiyor**. Menüdeki 6. satır oyuna
-`1600x1200`, kullanıcıya `1920x1080` olarak görünüyor; oyun kendi tablosundan
-geçerli 4:3 değeri okumaya devam ettiği için iç durumu tutarlı kalıyor, biz
-cihazı 1920x1080'e kurup farkı kırpma uzayında telafi ediyoruz — `NFSRES`
-yolunun aynısı. `NOWIDE=1` gerçek 1600x1200'e döner. Ölçüm: 97.6 vs 99.1 fps,
-yani bedava.
+The applied solution: the overflow is **never triggered**. The 6th row in the
+menu appears to the game as `1600x1200` and to the user as `1920x1080`; since
+the game keeps reading a valid 4:3 value from its own table, its internal state
+stays consistent, and we set the device up at 1920x1080 and compensate for the
+difference in clip space — the same as the `NFSRES` path. `NOWIDE=1` goes back
+to a real 1600x1200. Measurement: 97.6 vs 99.1 fps, i.e. free.
 
-## 9. Ölçüm tuzağı: `$OPT` boşsa `-O0`
+## 9. Measurement trap: `-O0` if `$OPT` is empty
 
-`build.sh` derleme komutunu `xargs -I{} sh -c "..."` ile kuruyor ve `$OPT`'a
-uzun bir bayrak eklenince "command line cannot be assembled, too long" hatası
-veriyor; bu yüzden sarmalayıcı betik (`scratchpad/cc1.sh`) yazıldı. Betik
-`$OPT`'u **doğrudan** kullanıyordu, yani `unset OPT` ile çalıştırılınca
-shard'lar sessizce **`-O0`** derlendi: yarış karesi 10 ms yerine 37 ms
-(3.7x), ve bir saatlik ölçüm çöpe gitti.
+`build.sh` builds the compile command with `xargs -I{} sh -c "..."`, and when a
+long flag is added to `$OPT` it fails with "command line cannot be assembled,
+too long"; so a wrapper script (`scratchpad/cc1.sh`) was written. The script used
+`$OPT` **directly**, so when run with `unset OPT` the shards were silently
+compiled at **`-O0`**: race frame 37 ms instead of 10 ms (3.7x), and an hour of
+measurements went in the bin.
 
-Belirtisi profilde nettir: `parity8`, `x87_r2`, `fcompare` **ayrı fonksiyon
-olarak** görünüyorsa shard'lar optimize edilmemiştir (optimize halde satır
-içi olurlar). Betik artık `${OPT:--O3 -mcpu=native}` kullanıyor.
+The symptom is clear in the profile: if `parity8`, `x87_r2`, `fcompare` appear
+**as separate functions**, the shards are not optimized (when optimized they are
+inlined). The script now uses `${OPT:--O3 -mcpu=native}`.
 
-## 10. Bayrak canlılığı: ölçüldü, KAZANÇ YOK
+## 10. Flag liveness: measured, NO GAIN
 
-Üretilen kodda `FLAGS_*` çağrılarının **%37.8'i `0x3f` maskesiyle altı
-bayrağı birden** hesaplıyor, yalnızca %25.3'ü bedava. Sebep: canlılık analizi
-`call`'ı "tüm bayrakları okur" sayıyor, yani bayraklar her çağrı sınırında
-canlı kalıyor.
+In the generated code **37.8% of `FLAGS_*` calls compute all six flags** with the
+`0x3f` mask, and only 25.3% are free. Reason: the liveness analysis counts
+`call` as "reads all flags", so the flags stay live at every call boundary.
 
-`call`'ı "bayrak okumaz" yapmak statik dağılımı ciddi biçimde düzeltiyor
-(bedava %25.3 → %35.6, altı-bayrak %37.8 → %16.8) ama **kare süresine
-etkisi yok**: 10.02 → 10.24 ms. Sebep: clang zaten okunmayan bayrak
-yazmalarını kendisi eliyor; lifter'ın maskesi büyük ölçüde onunla mükerrer.
+Making `call` "reads no flags" fixes the static distribution considerably (free
+25.3% → 35.6%, six-flag 37.8% → 16.8%) but **has no effect on frame time**:
+10.02 → 10.24 ms. Reason: clang already eliminates unread flag writes by itself;
+the lifter's mask largely duplicates that.
 
-> İlk deneme bunun 3.3x yavaşlattığını gösterdi — o ölçüm `-O0` kazasıydı
-> (yukarı bkz.), sonuç geçersizdi. Doğru derlemeyle kazanç sıfır.
+> The first attempt showed it slowing things down 3.3x — that measurement was the
+> `-O0` accident (see above), the result was invalid. With a correct build the
+> gain is zero.
 
-**Sonuç:** bayrak emülasyonunu daha agresif budamak yol haritasından
-çıkarıldı. Kalan maliyet çevirinin doğasında: konuk kayıtları bellekte,
-konuk bellek erişimi `g_mem + ofset`, ve oyunun kendi çok konuşkan
-render'ı (kare başına ~1250 çizim, ~62 bin COM çağrısı).
+**Conclusion:** pruning flag emulation more aggressively was removed from the
+roadmap. The remaining cost is inherent to the translation: guest registers live
+in memory, guest memory access is `g_mem + offset`, and the game's own very
+chatty renderer (~1250 draws, ~62 thousand COM calls per frame).
 
-## 11. Yeni ortam anahtarları
+## 11. New environment switches
 
-| anahtar | işlev |
+| switch | function |
 |---|---|
-| `PACE60=1` | eski 60 Hz kare frenini geri getirir (varsayılan: fren yok) |
-| `SPINSLEEP=<µs>` | oyunun 120 fps kare sınırlayıcısı (`sub_0057eae0`) dönme yerine uyur, son pay (varsayılan 200 µs) dönerek, uyku `kevent` `NOTE_CRITICAL` ile; `0` kapatır. Yarışta −1.2 W (bkz. `D3DX_HLE.md`) |
-| `QPCWHO=1` | QueryPerformanceCounter çağıranlarının dökümü (tanı) |
-| `PERFLOG=<dizin>` | gerçek oyun oturumu kaydı (kullanıcı oynarken); bkz. "Gerçek oturum kaydı" |
-| `NOVSYNC=1` | vsync'i kapatır — YALNIZCA ölçüm için, görüntü yırtılır |
-| `QUITFRAMES=<n>` | n kare sonra TEMİZ çıkar (PGO/ölçüm için) |
-| `LDOPT=...` | `link.sh`'in son link satırına eklenir |
-| `NOWIDE=1` | menüdeki 1920x1080 satırını gerçek 1600x1200 yapar |
-| `ZSEQ=<kare>` | o karede SetRenderTarget / SetDepthStencilSurface / Clear / Z durumu sırasını basar |
-| `NFSFULL=1/0` | tam ekranda / pencerede başlat (hatırlanan tercihi geçersiz kılar, değiştirmez) |
-| `FSTOGGLE=<kare>[,...]` | o karelerde tam ekran geçişi (test) |
-| `FSSIM=<kare>:<k\|m\|c>[,...]` | o karede sentetik girdi: `k` fn+F, `m` Ctrl+Cmd+F, `c` yeşil düğmeye tık (olay döngüsünden geçer) |
-| `RESETAT=<kare>` | o karede cihaz kaybı üret; oyunun Reset yolunu test eder |
-| `MOUSEAT=x,y[@kare,x,y]` | oyunun gördüğü imleç konumunu sabitle (imleç eşleme testi) |
-| `NOFOCUS=1` | pencereyi arkada aç, odağı çalma (kullanıcı çalışırken test) |
-| `NOSOUND=1` | ses çıkışı yok |
-| `NORTFREE=1` | Reset'te eski render hedeflerini bırakmayı kapat (tanı) |
-| `NORTRESET=1` | Reset'te hedefi/Z'yi geri tampona döndürme (eski davranış; araba bozulur) |
-| `NORSRESET=1` | Reset'te render/sampler/aşama durumlarını varsayılana çekme (eski davranış) |
-| `NOTEXZERO=1` | yeni dokuların yalnız 0. seviyesini sil, küpü hiç silme (eski davranış) |
-| `FSFAKE=<kare>[,...]` | pencereye dokunmadan tam ekran geçişini oyunun gözünden taklit et (test) |
+| `PACE60=1` | brings back the old 60 Hz frame limiter (default: no limiter) |
+| `SPINSLEEP=<µs>` | the game's 120 fps frame limiter (`sub_0057eae0`) sleeps instead of spinning, the final margin (default 200 µs) by spinning, sleep via `kevent` `NOTE_CRITICAL`; `0` turns it off. −1.2 W in a race (see `D3DX_HLE.md`) |
+| `QPCWHO=1` | dump of QueryPerformanceCounter callers (diagnostic) |
+| `PERFLOG=<dir>` | real game session recording (while the user plays); see "Real session recording" |
+| `NOVSYNC=1` | turns vsync off — ONLY for measurement, the image tears |
+| `QUITFRAMES=<n>` | exits CLEANLY after n frames (for PGO/measurement) |
+| `LDOPT=...` | appended to `link.sh`'s final link line |
+| `NOWIDE=1` | makes the 1920x1080 row in the menu a real 1600x1200 |
+| `ZSEQ=<frame>` | prints the sequence of SetRenderTarget / SetDepthStencilSurface / Clear / Z state in that frame |
+| `NFSFULL=1/0` | start fullscreen / windowed (overrides the remembered preference without changing it) |
+| `FSTOGGLE=<frame>[,...]` | fullscreen toggle at those frames (test) |
+| `FSSIM=<frame>:<k\|m\|c>[,...]` | synthetic input at that frame: `k` fn+F, `m` Ctrl+Cmd+F, `c` click on the green button (goes through the event loop) |
+| `RESETAT=<frame>` | produce a device loss at that frame; tests the game's Reset path |
+| `MOUSEAT=x,y[@frame,x,y]` | pin the cursor position the game sees (cursor mapping test) |
+| `NOFOCUS=1` | open the window in the background, don't steal focus (testing while the user works) |
+| `NOSOUND=1` | no sound output |
+| `NORTFREE=1` | turn off releasing old render targets on Reset (diagnostic) |
+| `NORTRESET=1` | don't return the target/Z to the back buffer on Reset (old behavior; the car breaks) |
+| `NORSRESET=1` | don't reset render/sampler/stage states to defaults on Reset (old behavior) |
+| `NOTEXZERO=1` | clear only level 0 of new textures, never clear cubes (old behavior) |
+| `FSFAKE=<frame>[,...]` | imitate a fullscreen transition from the game's point of view without touching the window (test) |
 
-### Reset sonrası içi dışına dönük araba (2026-09-27) — ÇÖZÜLDÜ
+### Inside-out car after Reset (2026-09-27) — SOLVED
 
-Belirti: tam ekrana girip çıktıktan (ya da çözünürlük değiştirdikten) sonra
-ana menüdeki araba içi dışına dönük/saydam (fren diskleri gövdeden görünüyor),
-döner zemin kara. Bazen oluyor, bazen olmuyordu.
+Symptom: after entering and leaving fullscreen (or changing resolution) the car
+in the main menu was inside-out/transparent (the brake discs visible through the
+body), the turntable black. Sometimes it happened, sometimes it didn't.
 
-**Kök neden:** D3D9 `Reset` render hedefi 0'ı geri tampona, Z yüzeyini örtük
-Z'ye döndürür; oyun buna güvenip ikisini bir daha kurmuyor. Bizde Metal
-tarafında son hedef/Z olduğu gibi kalıyordu. Tam ekran geçişi cihaz kaybı
-yolundan Reset'i **kare ortasında** yakalıyor: o an doku 7'ye Z'siz (NULL)
-çizim yapılıyordu (ölçüldü, `com: Reset: bagli ...` satırları). Sonrasında
-ana sahne Z testi olmadan çiziliyordu.
+**Root cause:** D3D9 `Reset` returns render target 0 to the back buffer and the
+Z surface to the implicit Z; the game relies on this and never sets them again.
+On our Metal side the last target/Z stayed as they were. The fullscreen
+transition catches Reset **mid-frame** through the device-loss path: at that
+moment a draw to texture 7 without Z (NULL) was in progress (measured,
+`com: Reset: bound ...` lines). Afterwards the main scene was drawn without a Z
+test.
 
-**Ölçüm:** aynı tam ekran + 8 çözünürlük değişimi senaryosu; eski davranış
-(`NORTRESET=1`) 3/3 bozuk (parlaklık 29.97), düzeltme 7/7 sağlam (37.2).
-İkiye bölme: yalnız hedef/Z sıfırlaması belirleyici.
+**Measurement:** the same fullscreen + 8 resolution changes scenario; the old
+behavior (`NORTRESET=1`) broken 3/3 (brightness 29.97), the fix intact 7/7
+(37.2). Bisection: only the target/Z reset is decisive.
 
-**Tuzak (zaman kaybettirdi):** Bash kabuğu zsh; tırnaksız `$E` kelimelere
-**bölünmüyor**. `E="NFSFULL=1 NORTFREE=1"` tek argüman olup
-`NFSFULL="1 NORTFREE=1"` oldu, yani "karşılaştırma" koşuları aslında aynı
-yapılandırmaydı ve hatanın rastgele olduğu sanıldı. Anahtarları ayrı argüman
-olarak geçir.
+**Trap (cost time):** the Bash tool's shell is zsh; an unquoted `$E` is **not
+split** into words. `E="NFSFULL=1 NORTFREE=1"` became a single argument,
+`NFSFULL="1 NORTFREE=1"`, so the "comparison" runs were actually the same
+configuration and the bug was thought to be random. Pass switches as separate
+arguments.
 
-### 32. çözünürlük değişiminde çökme (2026-09-27) — ÇÖZÜLDÜ
+### Crash on the 32nd resolution change (2026-09-27) — SOLVED
 
-Kullanıcı serbest dolaşımda 720p↔4K arasında defalarca gidip gelince oyun
-çöktü (`sub_005b9920`, adres 0x80). Logda tam **64 Reset** vardı.
+When the user switched back and forth between 720p↔4K many times in free roam,
+the game crashed (`sub_005b9920`, address 0x80). The log had exactly **64 Resets**.
 
-**Kök neden:** küp doku kaydı (`g_cube_obj`) 64 girişle sınırlıydı ve her
-değişim (iki Reset) 2 küp dokuyu yeniden yaratıyor: 2 + 32×2 = 66. Kayda
-girmeyen küp "2B" sanılıyor, `GetCubeMapSurface` 2B arg sayısıyla dönüyor,
-yığın kayıyor → çökme. Yarışta çevre haritası her kare çizildiği için orada
-çıkıyor; menüde küp hiç çizilmediğinden görünmüyordu.
+**Root cause:** the cube texture registry (`g_cube_obj`) was limited to 64
+entries, and every change (two Resets) recreates 2 cube textures: 2 + 32×2 = 66.
+A cube that didn't make it into the registry is taken for "2D",
+`GetCubeMapSurface` returns with the 2D argument count, the stack shifts → crash.
+It shows up in a race because the environment map is drawn every frame there; in
+the menu the cube is never drawn, so it didn't show.
 
-**Düzeltme:** kayıt bit haritası (COM nesneleri hiç bırakılmıyor, adres
-yeniden kullanılmıyor → sınırsız ve O(1)). `MAXTEX` 4096 → 16384 (kullanıcı
-oturumu 2504 doku yaratmıştı).
+**Fix:** a registry bitmap (COM objects are never released, addresses are never
+reused → unbounded and O(1)). `MAXTEX` 4096 → 16384 (a user session had created
+2504 textures).
 
-**Tekrar üretim:** Quick Race tarifi + yarışta `RESETAT` ile 35 cihaz kaybı
-(6000'den 40 karede bir). Eski: 64. Reset'ten sonra aynı fonksiyon/adres/
-yazmaçlarla çöktü. Yeni: 90 Reset, çökme yok, görüntü Reset öncesiyle aynı.
-Ders: Reset başına yeniden yaratılan her şey için sabit boyutlu tablo = saatli
-bomba; uzun oturum testini `RESETAT` listesiyle yap.
+**Reproduction:** the Quick Race recipe + 35 device losses in the race with
+`RESETAT` (every 40 frames from 6000). Old: crashed after the 64th Reset with the
+same function/address/registers. New: 90 Resets, no crash, the image identical to
+before the Reset. Lesson: a fixed-size table for anything recreated per Reset = a
+time bomb; do long-session testing with a `RESETAT` list.
 
-Aynı yolda düzeltilen iki D3D9 kuralı daha (gözle görülür fark ölçülmedi):
-- Reset tüm render/sampler/aşama durumlarını varsayılana döndürür.
-- Yeni doku içeriği tanımsız: artık **tüm** mip seviyeleri ve küpün 6 yüzü
-  sıfırlanıyor. Menüde araba çevre haritası (256/128 küp RT) hiç çizilmiyor
-  ama gövde onu örnekliyor (ps 265, aşama 0); eskiden küp hiç silinmiyordu ve
-  bellek yeniden kullanılırsa çöp taşıyabilirdi (kasıtlı çöple doğrulandı:
-  gövdede gürültü).
+Two more D3D9 rules fixed along the same path (no visible difference measured):
+- Reset returns all render/sampler/stage states to their defaults.
+- New texture contents are undefined: now **all** mip levels and the cube's 6
+  faces are zeroed. In the menu the car environment map (256/128 cube RT) is
+  never drawn, but the body samples it (ps 265, stage 0); previously the cube was
+  never cleared and could carry garbage if memory was reused (verified with
+  deliberate garbage: noise on the body).
 
 ---
 
-# Araba yansımaları (küp doku) — ÇÖZÜLDÜ
+# Car reflections (cube textures) — SOLVED
 
-Kullanıcının kayıtlı ayarında `g_CarEnvironmentMapEnable=3` zaten AÇIKTI;
-yansımalar isteniyordu ama yanlış çıkıyordu. Eski notlardaki "1 yapınca
-çöküyor" durumu ise önceki oturumların küp-vtable düzeltmeleriyle kapanmış
-(bu oturumda 2959 kare sorunsuz koştu).
+`g_CarEnvironmentMapEnable=3` was already ON in the user's saved settings; the
+reflections were requested but came out wrong. The "crashes when set to 1"
+situation in older notes was closed by the cube-vtable fixes of earlier sessions
+(2959 frames ran without problems in this session).
 
-**Ölçülen gerçek durum:** oyun çevre haritasını **6 küp yüzüne ayrı ayrı
-çiziyor** (`SetRenderTarget` 6 farklı küp yüzeyiyle), sonra dokuyu aşama 0'a
-bağlayıp örnekliyor. Bizde ise:
+**Measured actual state:** the game **draws the environment map to the 6 cube
+faces separately** (`SetRenderTarget` with 6 different cube surfaces), then binds
+the texture to stage 0 and samples it. On our side:
 
-1. `CreateCubeTexture` **düz 2B** Metal dokusu yaratıyordu → altı yüz üst üste
-   aynı yüzeye yazılıyordu.
-2. Piksel gölgelendiricisinde tüm yuvalar `texture2d<float>` bildiriliyordu →
-   küp doku bağlanınca Metal çizimi reddediyor
+1. `CreateCubeTexture` created a **flat 2D** Metal texture → the six faces were
+   written on top of each other to the same surface.
+2. In the pixel shader all slots were declared as `texture2d<float>` → when a
+   cube texture was bound, Metal rejected the draw
    (`validateCommonDrawErrors`).
 
-**Yapılanlar:**
-- `metal_create_texture_cube()` — gerçek `MTLTextureTypeCube`.
-- Render hedefi artık `doku | ((yüz+1) << 16)`; render geçişi
-  `colorAttachments[0].slice`'ı kuruyor. `touched[]` (temizle/yükle kararı)
-  artık `(doku, yüz)` çiftine göre.
-- `GetCubeMapSurface` yüz indeksini yüzey nesnesinde (+44) saklıyor.
-- `metal_upload_texture_face()` — küp dokuda `replaceRegion` **dilim**
-  ister; ayrıca depolama `Private` olamaz (oyun yüzlere `LockRect` ile de
-  yazıyor → `_validateReplaceRegion` assert'i, 9. karede çökme).
-- **Küp gölgelendirici varyantı:** D3D9'da `ps_1_x` doku TİPİNİ bildirmez,
-  tip bağlamadan gelir. Bu yüzden her ps iki kez üretiliyor: normal ve
-  `psid + PSCUBE` (256). Çizim anında bağlı doku küpse varyant seçiliyor.
-  `ps_to_msl_ex(..., cubemask)` yuvaları `texturecube<float>` bildiriyor ve
-  `SMP<k>(uv2, uv3)` makrosu 2B'de `.xy`, küpte `.xyz` örnekliyor.
-- Yol boyunca: **`com_new` artık fazladan alanı sıfırlıyor.** Nesne alanları
-  hep "0 = kurulmadı" varsayımıyla okunuyor; çöp değer okumak bir hata
-  sınıfıydı (küp yüz indeksi bunu ilk yakalayan oldu).
+**What was done:**
+- `metal_create_texture_cube()` — a real `MTLTextureTypeCube`.
+- The render target is now `texture | ((face+1) << 16)`; the render pass sets
+  `colorAttachments[0].slice`. `touched[]` (the clear/load decision) is now keyed
+  on the `(texture, face)` pair.
+- `GetCubeMapSurface` stores the face index in the surface object (+44).
+- `metal_upload_texture_face()` — `replaceRegion` on a cube texture needs a
+  **slice**; also the storage can't be `Private` (the game also writes to the
+  faces with `LockRect` → `_validateReplaceRegion` assert, crash on frame 9).
+- **Cube shader variant:** in D3D9 `ps_1_x` doesn't declare the texture TYPE,
+  the type comes from the binding. So every ps is generated twice: normal and
+  `psid + PSCUBE` (256). At draw time the variant is selected if the bound
+  texture is a cube. `ps_to_msl_ex(..., cubemask)` declares slots as
+  `texturecube<float>` and the `SMP<k>(uv2, uv3)` macro samples `.xy` in 2D and
+  `.xyz` for cubes.
+- Along the way: **`com_new` now zeroes the extra area.** Object fields are
+  always read assuming "0 = not set up"; reading garbage values was a class of
+  bug (the cube face index was the first to catch it).
 
-**Maliyet: sıfır.** Dönüşümlü ölçüm (NOCUBE=1 ile düz 2B'ye karşı):
-9.90 vs 9.89 ms, eşleştirilmiş +%0.0.
+**Cost: zero.** Alternating measurement (against flat 2D with NOCUBE=1):
+9.90 vs 9.89 ms, paired +0.0%.
 
-`dcl` örnekleyici tipi de artık okunuyor (`p->smptype[]`) — ölçüldü: oyunun
-34 piksel gölgelendiricisinden **hiçbiri** küp bildirmiyor, hepsi `ps_1_x`.
-Tuzak: tip **DCL token'ının** 27-30. bitlerinde, dst token'ında değil
-(SM2+'da dst'in 28-30. bitleri kayıt tipinin üst bitleri; oradan okuyunca
-her şey "4" çıkıyor).
+The `dcl` sampler type is now read too (`p->smptype[]`) — measured: **none** of
+the game's 34 pixel shaders declares a cube, they are all `ps_1_x`. Trap: the
+type is in bits 27-30 of the **DCL token**, not the dst token (in SM2+ bits 28-30
+of dst are the high bits of the register type; reading from there gives "4" for
+everything).
 
-| anahtar | işlev |
+| switch | function |
 |---|---|
-| `NOCUBE=1` | küp dokuyu düz 2B yapar (eski davranış, karşılaştırma için) |
-| `CUBELOG=1` | küp yüzeyi render hedefi ve küp doku bağlamalarını basar |
-| `SMPTYPE=1` | her ps için `dcl` örnekleyici tiplerini basar |
+| `NOCUBE=1` | makes cube textures flat 2D (old behavior, for comparison) |
+| `CUBELOG=1` | prints cube surface render targets and cube texture bindings |
+| `SMPTYPE=1` | prints the `dcl` sampler types for every ps |
 
-## Kalan grafik maddeleri: neyin ölçülebildiği, neyin ölçülemediği
+## Remaining graphics items: what could be measured and what could not
 
-Bu oturumda araba yansımaları çözüldü (yukarı bkz.). Diğer dört madde için o
-zaman **nesnel bir sinyal bulunamadı**. 2026-10-17 güncellemesi: Windows
-referansı (aşağıda "Windows referansıyla karşılaştırma") geldikten sonra
-HUD dikişleri ve ışık çizgileri kapandı. Kalabalık ve TRAX hâlâ açık.
+Car reflections were solved in this session (see above). For the other four
+items **no objective signal was found** at the time. 2026-10-17 update: after the
+Windows reference arrived (below, "Comparison with the Windows reference") the
+HUD seams and light streaks were closed. Crowds and TRAX are still open.
 
-Çalışma raporu bu sahnede tamamen temiz: 0 desteklenmeyen komut, 0
-çözülemeyen dolaylı çağrı, `[matris] bozuk=0`, `mip seviyeleri: 0 EKSIK`,
-`kose shader: 0 bilinmeyen`, 0 düşen kare, Metal doğrulama katmanı sessiz.
+The run report is completely clean in this scene: 0 unsupported instructions, 0
+unresolved indirect calls, `[matrix] broken=0`, `mip levels: 0 MISSING`,
+`vertex shader: 0 unknown`, 0 dropped frames, the Metal validation layer silent.
 
-- **HUD satır dikişleri — KAPANDI (2026-10-17): tasarım, hata değil.**
-  Windows referans karesi (NFSRef, kare 5800, 1280x960) ile tur listesi 2x
-  büyütülüp yan yana kondu: yatay satır ayraçları ve numara/isim sütunu
-  arasındaki dikey dikiş Windows'ta da aynı yerde, aynı yoğunlukta var.
-- **Kalabalık / karakterler düz levha.** Kemikli (skinned) mesh gerekir; bu
-  sahnede kalabalık gölgelendiricisi HİÇ yüklenmiyor (`VSDUMP` çıktısında
-  BLENDINDICES/BLENDWEIGHT yok, yalnızca 2 köşe gölgelendiricisi dökülüyor).
-  Otomatik tuş sürücüsü arabayı hareket ettiremiyor (gaz tuşu DirectInput
-  eylem eşlemesinden geliyor, DIK_UP çalışmıyor), yani kalabalığın olduğu
-  yere programatik olarak ulaşılamıyor. **Oynayarak ulaşmak gerekiyor.**
-- **Işık çizgilerinin aşırı kaplaması — KAPANDI (2026-10-17): fark yok.**
-  Windows yarış karesiyle (5800) lamba bölgeleri yan yana kondu. Hale ve
-  çizgi boyu/yoğunluğu aynı: >200 parlaklıkta piksel sayısı iki bölgede
-  664'e 695 ve 146'ya 119. Trafik lambasının yanıp yanmaması faz farkı
-  (Windows'un kendi iki koşusunda da değişiyor).
-- **TRAX hayalet dikdörtgeni — hâlâ AÇIK.** Kutu, müzik başlarken geri
-  sayımda çıkıyor (~kare 4100–4700). Windows referans setinde 3050 ile 5000
-  arasında kare yok, kare 5000'de iki koşuda da kutu yok. Ayrıca port
-  koşuları `NOSOUND=1`, yani müzik ve TRAX tetiklenmeyebilir. Doğrulamak
-  için o aralıkta ve sesli bir referans karesi gerekiyor.
+- **HUD row seams — CLOSED (2026-10-17): by design, not a bug.**
+  The Windows reference frame (NFSRef, frame 5800, 1280x960) and ours were put
+  side by side with the lap list scaled 2x: the horizontal row separators and the
+  vertical seam between the number/name columns exist on Windows too, in the same
+  place and with the same intensity.
+- **Crowds / characters are flat sheets.** Requires skinned meshes; in this scene
+  the crowd shader is NEVER loaded (no BLENDINDICES/BLENDWEIGHT in the `VSDUMP`
+  output, only 2 vertex shaders are dumped). The automatic key driver can't move
+  the car (the throttle key comes from the DirectInput action mapping, DIK_UP
+  doesn't work), so the place where the crowd is can't be reached
+  programmatically. **It has to be reached by playing.**
+- **Over-coverage of light streaks — CLOSED (2026-10-17): no difference.**
+  The lamp regions were put side by side with the Windows race frame (5800). Halo
+  and streak length/intensity are the same: pixel counts above 200 brightness are
+  664 vs 695 and 146 vs 119 in the two regions. Whether the traffic light is lit
+  or not is a phase difference (it varies between Windows's own two runs too).
+- **TRAX ghost rectangle — still OPEN.** The box appears in the countdown when
+  the music starts (~frame 4100–4700). The Windows reference set has no frames
+  between 3050 and 5000, and at frame 5000 there is no box in either run. Also the
+  port runs use `NOSOUND=1`, so the music and TRAX may not be triggered. Verifying
+  it needs a reference frame in that range and with sound.
 
-**Sonraki oturum için en verimli yol:** kullanıcıdan Windows'ta aynı
-sahnelerin ekran görüntüsü, ya da oyunu o noktaya sürüp `DUMPFRAME` ile
-kare aldırmak.
+**The most productive path for the next session:** screenshots of the same scenes
+on Windows from the user, or driving the game to that point and taking a frame
+with `DUMPFRAME`.
 
-## Windows referansıyla karşılaştırma (NFSRef, 2026-10-17)
+## Comparison with the Windows reference (NFSRef, 2026-10-17)
 
-`tools/nfsref/` Windows'ta oyunun yanına konan bir ASI eklentisi (Ultimate
-ASI Loader / `dinput8.dll`). Sanal saat (kare x 16667 µs), DirectInput
-eylem eşlemesi üzerinden tuş sentezi ve `kare_NNNNN.bmp` dökümü yapıyor.
-Port aynı koşullarda koşturuluyor: `NFSRES=1280x960 VCLOCK=fixed PACE60=1`,
-aynı `AUTOSEQ`, aynı `DUMPFRAME` listesi. Windows menüleri deterministik.
-Yarış kareleri Windows'un **kendi** iki koşusu arasında da değişiyor
-(yükleme süresi, RNG): parlaklık Y 74.8'e karşı 67.1. Yarışta piksel farkı
-değil, görsel öğelerin varlığı karşılaştırılmalı.
+`tools/nfsref/` is an ASI plugin placed next to the game on Windows (Ultimate
+ASI Loader / `dinput8.dll`). It does a virtual clock (frame x 16667 µs), key
+synthesis through the DirectInput action mapping, and `frame_NNNNN.bmp` dumps.
 
-Bulunan ve düzeltilen iki gerçek hata:
+The port is run under the same conditions: `NFSRES=1280x960 VCLOCK=fixed
+PACE60=1`, the same `AUTOSEQ`, the same `DUMPFRAME` list. The Windows menus are
+deterministic. Race frames vary between Windows's **own** two runs too (loading
+time, RNG): brightness Y 74.8 vs 67.1. In races, compare the presence of visual
+elements, not pixel differences.
 
-1. **Küp doku yüz yüklemesi** (`com.c`, commit dbd21e0). `UnlockRect`
-   küp dokuda yüzü yok sayıp her şeyi 0. yüze yazıyordu.
-   `GetCubeMapSurface` yüz indisini yüzeye kaydetmiyordu. Menüdeki araba
-   yansıması bu yüzden yanlıştı.
-2. **Ekran dışı hedefler karenin ilk kullanımında temizleniyordu**
-   (`metal.m`, ana geçişin yükleme eylemi). D3D9'da render hedefi kareler
-   arasında **korunur**, yalnızca açık `Clear` temizler. Oyunun parlama
-   zinciri bir geri besleme: RT4 her kare (0.47, 0.35, 0.67) tonuyla
-   çarpılıp üstüne ekleniyor. Port her kare `MTLLoadActionClear` verdiği
-   için geri besleme sıfırlanıyordu. Sonuç: pembe/mor haleler ve lavanta
-   yansımalar yoktu. Artık hedef ancak bu çizim açık bir renk `Clear`'ı ise
-   ve onun rengiyle temizleniyor, aksi halde `Load`. `OFFCLEAR=1` eski
-   davranışı geri getirir (A/B için).
-3. **Yarım piksel: D3D9 piksel merkezi tam sayıda, Metal'de +0.5'te**
-   (`metal.m`, ana geçiş kodlayıcısında `setViewport`). Oyun tam ekran
-   dörtgenlerini D3D9 kuralına göre −0.5 kaydırıyor. Kaydırmasız Metal'de
-   iki sonucu vardı:
-   - Her son işlem geçişi texel'lerin **arasından** örnekliyor ve bilinear
-     filtre her geçişte yarım texel bulanıklık ekliyordu. Zincirde birkaç
-     geçiş var, sonuç tüm görüntünün yumuşaması.
-   - Son satır ve sütun hiç yazılmıyordu. Çeyrek çözünürlüklü parlama
-     hedefinde bu, büyütmeden sonra alt ve sağ kenarda 4 piksellik
-     kararmaydı (yarışta alt satır 96'ya karşı 49).
+Real bugs found and fixed:
 
-   Düzeltme: viewport kökeni (0.5, 0.5). Bu, D3D9 kapsama ve interpolasyon
-   kuralını kaydırıcı eklemeden birebir verir. Port'un kendi blit
-   dörtgenleri ayrı kodlayıcıda, onlar kaydırılmıyor. `HALFPX=0` eski
-   davranış.
+1. **Cube texture face upload** (`com.c`, commit dbd21e0). `UnlockRect` ignored
+   the face on a cube texture and wrote everything to face 0.
+   `GetCubeMapSurface` didn't record the face index on the surface. This is why
+   the car reflection in the menu was wrong.
+2. **Offscreen targets were cleared on their first use in a frame** (`metal.m`,
+   the load action of the main pass). In D3D9 a render target is **preserved**
+   across frames; only an explicit `Clear` clears it. The game's glow chain is a
+   feedback loop: RT4 is multiplied by the tint (0.47, 0.35, 0.67) every frame
+   and added on top. Since the port gave `MTLLoadActionClear` every frame, the
+   feedback was reset. Result: the pink/purple halos and lavender reflections
+   were missing. Now a target is cleared only if this draw is an explicit color
+   `Clear`, and with its color; otherwise `Load`. `OFFCLEAR=1` brings back the
+   old behavior (for A/B).
+3. **Half pixel: the D3D9 pixel center is at the integer, in Metal at +0.5**
+   (`metal.m`, `setViewport` in the main pass encoder). The game offsets its
+   fullscreen quads by −0.5 according to the D3D9 rule. Without an offset, in
+   Metal this had two consequences:
+   - Every post-process pass sampled **between** texels and the bilinear filter
+     added half a texel of blur in every pass. There are several passes in the
+     chain; the result is a softening of the whole image.
+   - The last row and column were never written. In the quarter-resolution glow
+     target this was a 4-pixel darkening at the bottom and right edges after
+     upscaling (in a race the bottom row 96 vs 49).
 
-   Ölçüm, kenar ve son işlem zinciri olan karelerin keskinliğinin
-   (ortalama |gradyan|) Windows'unkine eşitlendiğini gösteriyor:
+   Fix: viewport origin (0.5, 0.5). This gives the D3D9 coverage and
+   interpolation rule exactly without adding a shifter. The port's own blit
+   quads are in a separate encoder and are not shifted. `HALFPX=0` is the old
+   behavior.
 
-   | kare | Windows | port eski | port yeni | piksel farkı eski → yeni |
+   The measurement shows the sharpness (mean |gradient|) of frames with edges
+   and a post-process chain now matches Windows:
+
+   | frame | Windows | port old | port new | pixel difference old → new |
    |---|---|---|---|---|
-   | 1300 (2B, zincirsiz) | 1.31 | 1.31 | 1.31 | 1.09 → 0.10 |
-   | 1650 menü | 3.22 | 2.51 | 3.20 | 6.79 → **0.70** |
-   | 2000 menü | 2.98 | 2.27 | 2.98 | 6.62 → **0.31** |
-   | 3050 menü | 3.16 | 2.57 | 3.14 | 6.75 → **0.44** |
-   | 5800 yarış | 4.39 | 2.96 | 4.39 | 19.0 → 18.3 |
+   | 1300 (2D, no chain) | 1.31 | 1.31 | 1.31 | 1.09 → 0.10 |
+   | 1650 menu | 3.22 | 2.51 | 3.20 | 6.79 → **0.70** |
+   | 2000 menu | 2.98 | 2.27 | 2.98 | 6.62 → **0.31** |
+   | 3050 menu | 3.16 | 2.57 | 3.14 | 6.75 → **0.44** |
+   | 5800 race | 4.39 | 2.96 | 4.39 | 19.0 → 18.3 |
 
-   Daha önce menüdeki ~6.7'lik farkı "döner tabladaki arabanın açısı"
-   sanmıştım. **Yanlıştı**: farkın tamamı bu bulanıklıktı. Yarışta kalan
-   fark, Windows'un kendi iki koşusu arasındaki farkla aynı türden (farklı
-   rakipler, farklı ışık anı); keskinlik orada da birebir.
-   (Not: `HALFPX` adı daha önce "ekranı kesen çizgiler" için denenip etkisiz
-   bulunmuştu. O hata başkaydı; bu anahtar yeniden ve varsayılan açık
-   eklendi.)
+   Earlier I had thought the ~6.7 difference in the menu was "the angle of the
+   car on the turntable". **That was wrong**: the whole difference was this blur.
+   The difference remaining in races is of the same kind as the difference
+   between Windows's own two runs (different opponents, a different moment of
+   lighting); the sharpness matches exactly there too.
+   (Note: the name `HALFPX` had been tried earlier for "lines cutting across the
+   screen" and found to have no effect. That bug was something else; this switch
+   was added again and is on by default.)
 
-Sonuç olarak menü ortalama renkleri birebir tutuyor (R G B):
+As a result the menu mean colors match exactly (R G B):
 
-| kare | Windows | port |
+| frame | Windows | port |
 |---|---|---|
 | 1650 | 45 43 39 | 45 43 39 |
 | 2000 | 44 42 37 | 44 42 38 |
 | 3050 | 43 41 40 | 43 41 40 |
 
-**Ölçüm tuzağı — `DUMPTEX` alfa karışımı:** eski doku dökümü dokuyu
-alfa karışımlı `g_pso` ile çiziyordu. Alfası < 1 olan hedefler (RT4/RT5)
-bu yüzden **siyah** görünüyordu ve yanlış bir "t2 siyah" teorisine götürdü.
-Döküm artık ham blit kopyası alıyor, alfa istatistiğini de basıyor.
-`DUMPOLD=1` eski yolu verir.
+**Measurement trap — `DUMPTEX` alpha blending:** the old texture dump drew the
+texture with the alpha-blended `g_pso`. Targets with alpha < 1 (RT4/RT5)
+therefore looked **black**, which led to a wrong "t2 is black" theory. The dump
+now takes a raw blit copy and also prints alpha statistics. `DUMPOLD=1` gives the
+old path.
 
-Yeni teşhis anahtarları:
+New diagnostic switches:
 
-| anahtar | işlev |
+| switch | function |
 |---|---|
-| `PSMSL=<id>[,..]` | ps'nin disasm + üretilen MSL'ini basar (küp varyantı `id+256`) |
-| `DUMPFACE=<0..5>` | `DUMPTEX` küp dokuda hangi yüzü döksün |
-| `SKIPDRAW=a-b,n` | çizim atlama artık aralık ve liste kabul ediyor |
-| `OFFCLEAR=1` | ekran dışı hedefleri her kare temizle (eski, yanlış davranış) |
-| `HALFPX=0` | D3D9 yarım piksel kaydırmasını kapat (eski, bulanık davranış) |
-| `DUMPOLD=1` | eski (alfa karışımlı) doku dökümü |
+| `PSMSL=<id>[,..]` | prints the ps disassembly + generated MSL (cube variant `id+256`) |
+| `DUMPFACE=<0..5>` | which face `DUMPTEX` should dump for a cube texture |
+| `SKIPDRAW=a-b,n` | draw skipping now accepts ranges and lists |
+| `OFFCLEAR=1` | clear offscreen targets every frame (old, wrong behavior) |
+| `HALFPX=0` | turn off the D3D9 half-pixel offset (old, blurry behavior) |
+| `DUMPOLD=1` | old (alpha-blended) texture dump |
 
-## macOS uygulama paketi (`./pack.sh`)
+## macOS application bundle (`./pack.sh`)
 
-Port artik cift tiklanabilir bir `.app` olarak paketleniyor: `./pack.sh`
-`out/NFSU2.app` (44 MB), `out/NFSU2-dagitim/` ve `--zip` ile 15 MB'lik
-`out/NFSU2.zip` uretir.  `run.sh` gelistirme yolu olarak aynen duruyor.
+The port is now packaged as a double-clickable `.app`: `./pack.sh` produces
+`out/NFSU2.app` (44 MB), `out/NFSU2-dist/`, and with `--zip` a 15 MB
+`out/NFSU2.zip`. `run.sh` stays as it is as the development path.
 
-**`runtime/bundle.m`** paket ici davranisi topluyor.  Her yol once
-"paketten mi calisiyoruz" diye bakar (`_NSGetExecutablePath` ->
-`.../X.app/Contents/MacOS`), degilse hemen doner -- terminalden calistirma
-hicbir sekilde degismedi.
+**`runtime/bundle.m`** gathers the in-bundle behavior. Every path first checks
+"are we running from a bundle" (`_NSGetExecutablePath` ->
+`.../X.app/Contents/MacOS`) and returns immediately if not — running from the
+terminal didn't change in any way.
 
-* **Ayarlar.**  `run.sh`'in export ettigi degiskenler (`WINDOW`, `FIXMAT=1`,
-  `FIXMAT_MODE=3`, `NOMOVIES`, `SNDSYNC`, `GPUVS`) paket icinde
-  kendiliginden kurulur.  `ALARM` ozellikle **0**: `boot.c`'nin 20 sn'lik
-  tani zaman asimi oyunu kullanicinin elinden alirdi.
-* **Oyun verisi.**  Sirasiyla `NFSU2_DATA`, daha once secilmis yol
-  (NSUserDefaults), paketin ici, `.app`'in yani ve bir ust dizini, ev
-  dizinindeki birkac aday; bulunamazsa NSOpenPanel ile kullaniciya sorulur
-  ve secim saklanir.
-* **Log.**  Finder'dan acilinca stderr `/dev/null`'a gider ve elde hicbir
-  tani kalmaz; `~/Library/Logs/NFSU2/nfsu2.log`'a yaziliyor (bir onceki
-  kosu `nfsu2-onceki.log`).  stderr bir tty ise dokunulmuyor.
+* **Settings.** The variables `run.sh` exports (`WINDOW`, `FIXMAT=1`,
+  `FIXMAT_MODE=3`, `NOMOVIES`, `SNDSYNC`, `GPUVS`) are set automatically inside
+  the bundle. `ALARM` is deliberately **0**: `boot.c`'s 20 s diagnostic timeout
+  would take the game out of the user's hands.
+* **Game data.** In order: `NFSU2_DATA`, a previously selected path
+  (NSUserDefaults), inside the bundle, next to the `.app` and its parent
+  directory, a few candidates in the home directory; if not found the user is
+  asked with an NSOpenPanel and the choice is stored.
+* **Log.** When opened from Finder stderr goes to `/dev/null` and no
+  diagnostics are left at all; it is written to `~/Library/Logs/NFSU2/nfsu2.log`
+  (the previous run is `nfsu2-previous.log`). If stderr is a tty it is left
+  alone.
 
-### Dagitim: iki sessiz engel
+### Distribution: two silent blockers
 
-Ikisi de "calisiyor" gorunen ama baska makinede oyunu hic acmayan turden:
+Both are of the kind that look like they "work" but never open the game on
+another machine:
 
-1. **`minos 26.0`.**  `-mmacosx-version-min` verilmezse ikili derleyen
-   makinenin OS surumuyle damgalanir.  macOS 26'dan eskisinde uygulama
-   hic baslamaz ("daha yeni bir surum gerekiyor").  Taban **11.0**'e
-   cekildi; kullanilan hicbir API'de erisilebilirlik uyarisi yok.
-2. **`-mcpu=native`.**  Bu makine M1 Pro oldugu icin `apple-m1` cozuluyor
-   ve sorun gorunmuyordu; port yeni bir Mac'te derlenirse uretilen ikili
-   M1'de gecersiz komutla coker.  `MCPU` varsayilani **`apple-m1`** yapildi
-   (M1'de olculen fark sifir; `MCPU=native` ile eski davranis).
+1. **`minos 26.0`.** If `-mmacosx-version-min` isn't given, the binary is stamped
+   with the OS version of the machine that compiled it. On anything older than
+   macOS 26 the application never starts ("requires a newer version"). The floor
+   was lowered to **11.0**; none of the APIs used produce an availability
+   warning.
+2. **`-mcpu=native`.** Since this machine is an M1 Pro it resolves to
+   `apple-m1` and no problem was visible; if the port is compiled on a newer Mac,
+   the binary produced crashes with an illegal instruction on an M1. The `MCPU`
+   default was made **`apple-m1`** (measured difference on M1 is zero; the old
+   behavior with `MCPU=native`).
 
-Ikisi de `build.sh` ve `link.sh`'te varsayilan.  `$OPT` uzadigi icin
-`build.sh`'teki `xargs -I{}` yine "command line too long" verdi; `$OPT`
-artik komut satirina gomulmuyor, ortamla gecirilip ic kabukta genisliyor.
+Both are defaults in `build.sh` and `link.sh`. Since `$OPT` got longer,
+`xargs -I{}` in `build.sh` gave "command line too long" again; `$OPT` is no longer
+embedded in the command line, it is passed through the environment and expanded
+in the inner shell.
 
-**Gatekeeper.**  Ad-hoc imza notarizasyon degildir: indirilen paket icin
-`spctl` **rejected** verir (olculdu).  Kullanicinin
-`xattr -dr com.apple.quarantine` calistirmasi gerekiyor; `OKUBENI.txt`
-bunu ilk adim olarak yaziyor.  Apple Developer hesabi varsa
-`SIGN_ID="Developer ID Application: ..." ./pack.sh` gercek sertifikayla
-imzalar.
+**Gatekeeper.** An ad-hoc signature is not notarization: `spctl` gives
+**rejected** for a downloaded bundle (measured). The user needs to run
+`xattr -dr com.apple.quarantine`; `README.txt` gives this as the first step. With
+an Apple Developer account, `SIGN_ID="Developer ID Application: ..." ./pack.sh`
+signs with a real certificate.
 
-**Veri paketin ICINE degil YANINA.**  `--with-data` oyunu `.app`'in
-yanindaki klasore kopyalar.  Bundle'in icine koymak iki seyi bozardi:
-kayitli oyunlar (`memcard/`) imzali bir pakete yazilamaz ve yazma imzayi
-gecersiz kilar.  Uygulama zaten `.app`'in yanini tariyor.
+**Data NEXT TO the bundle, not INSIDE it.** `--with-data` copies the game into
+the folder next to the `.app`. Putting it inside the bundle would break two
+things: saved games (`memcard/`) can't be written into a signed bundle, and
+writing invalidates the signature. The application already scans next to the
+`.app`.
 
-### Kisisel tek parca uygulama (`./pack.sh --embed`)
+### Personal single-piece app (`./pack.sh --embed`)
 
-`./pack.sh --embed` (ve `--embed --hd`) oyun verisini paketin ICINE
-(`Contents/Resources/Game`) gomup `out/kisisel/` altina kurar (~1.5 GB;
-`cp -Rc` APFS klonu, ayni diskte ek yer kaplamaz).  **Oyunun kendisini
-icerdigi icin dagitilamaz**; betik `--zip` / `--with-data` ile birlikte
-calismayi reddeder ve dagitim klasoru uretmez.  MOVIES (kod cozucu yok) ve
-Windows eklentileri (SCRIPTS, dinput8.dll, server.*) gomulmez.
+`./pack.sh --embed` (and `--embed --hd`) embeds the game data INSIDE the bundle
+(`Contents/Resources/Game`) and installs it under `out/personal/` (~1.5 GB;
+`cp -Rc` APFS clone, takes no extra space on the same disk). **It cannot be
+distributed because it contains the game itself**; the script refuses to run
+together with `--zip` / `--with-data` and doesn't produce a distribution folder.
+MOVIES (no decoder) and the Windows plugins (SCRIPTS, dinput8.dll, server.*) are
+not embedded.
 
-Imzali bir paketin icine yazmak imzayi bozar, bu yuzden `fileio.c`'ye bir
-**yazma koku** eklendi (`fileio_set_write_root`): yazma / olusturma / silme
-`~/Library/Application Support/NFSU2 Kayitlar`'a gider, okuma once oraya
-sonra oyun kokune bakar, dizin listesi ikisinin birlesimidir.  Yalnizca
-veri paketin icinden bulundugunda (ya da `NFSU2_SAVEDIR` verilince) etkin;
-terminalden calistirma ve verisi disarida olan paket eskisi gibi tek kokte
-kalir.  Gomulu veri, kayitli klasor tercihinden once gelir.
+Writing inside a signed bundle breaks the signature, so a **write root** was
+added to `fileio.c` (`fileio_set_write_root`): writes / creates / deletes go to
+`~/Library/Application Support/NFSU2 Kayitlar` (the folder name is Turkish for
+"NFSU2 Saves" and is kept as-is so existing saves keep working), reads look
+there first and then in the game root, and directory listings are the union of
+both. Active only when the data is found inside the bundle (or when
+`NFSU2_SAVEDIR` is given); running from the terminal and a bundle with its data
+outside stay on a single root as before. Embedded data comes before the saved
+folder preference.
 
-Dogrulama: paket proje agacinin disina kopyalanip `AUTOSEQ` ile yarisa
-sokuldu (6000 kare, 0 cozulemeyen cagri; acilamayan 12 dosya normal kosuyla
-ayni: filmler ve oyunun kendi yoklamalari).  Oyun kayit klasorunu dis
-dizinde yaratti; kosudan sonra `codesign --verify` gecerli, paket icinde
-degisen dosya yok.  Gercek profil kaydetme/yukleme denenmedi.
+Verification: the bundle was copied outside the project tree and driven into a
+race with `AUTOSEQ` (6000 frames, 0 unresolved calls; the 12 files that couldn't
+be opened are the same as in a normal run: movies and the game's own probes).
+The game created its save folder in the external directory; after the run
+`codesign --verify` is valid, no file inside the bundle changed. Real profile
+save/load was not tried.
 
-### `.app` olmak icin gereken davranislar
+### Behaviors needed to be an `.app`
 
-`metal_run_main_loop` olay dongusunu elle surdugu icin AppKit'in normalde
-`[NSApp run]` icinde yaptigi isler yapilmiyordu:
+Since `metal_run_main_loop` drives the event loop by hand, the work AppKit
+normally does inside `[NSApp run]` wasn't being done:
 
-* **Menu cubugu yoktu** -> Cmd-Q, Cmd-H, Cmd-M calismiyordu.  Menu eklendi;
-  ayrica Cmd'li tuslar artik oyuna degil `[NSApp sendEvent:]`'e gidiyor.
-* **`[NSApp finishLaunching]` cagrilmiyordu** -> AppleEvent isleyicileri
-  hic kaydedilmiyor, uygulama "Cik" komutuna (Dock > Cik, oturum kapatma)
-  yanit vermiyor, surec asili kaliyordu.
-* **Run loop pompalanmiyordu** -> yalnizca `nextEventMatchingMask`
-  cagriliyordu; AppleEvent'ler olay kuyrugundan degil run loop
-  kaynaklarindan gelir.
+* **There was no menu bar** -> Cmd-Q, Cmd-H, Cmd-M didn't work. A menu was
+  added; also, keys with Cmd now go to `[NSApp sendEvent:]` instead of the game.
+* **`[NSApp finishLaunching]` wasn't called** -> AppleEvent handlers were never
+  registered, the application didn't respond to the "Quit" command (Dock > Quit,
+  logging out), and the process hung.
+* **The run loop wasn't pumped** -> only `nextEventMatchingMask` was called;
+  AppleEvents come from run loop sources, not the event queue.
 
-`applicationShouldTerminate:` **`NSTerminateCancel`** donuyor: `g_should_quit`
-kuruluyor, cizim dongusu cikiyor, `main()` raporu yazip sonlaniyor.
-**`NSTerminateLater` denendi ve kullanilamaz** -- AppKit onayi beklerken
-kendi run loop'unu suruyor, bizim dongumuz hic geri donmuyor, kapanis
-asiliyor.  Cancel'in tek yan etkisi oturum kapatmada bir uyari; uygulama
-zaten hemen ardindan kendi kendine cikiyor.
+`applicationShouldTerminate:` returns **`NSTerminateCancel`**: `g_should_quit` is
+set, the draw loop exits, `main()` writes the report and terminates.
+**`NSTerminateLater` was tried and is unusable** — while waiting for the reply
+AppKit drives its own run loop, our loop never returns, and shutdown hangs. The
+only side effect of Cancel is a warning on logout; the application quits by
+itself right after anyway.
 
-Yol boyunca cikan gercek hata: **fare Y'si `720.0 - pt.y` ile sabit
-yaziliydi.**  1080p secilince (menuden secilebilir hale geldiginden beri)
-imlec ekranin disina dusuyordu.  Pencerenin icerik yuksekligine baglandi.
+A real bug that came up along the way: **the mouse Y was hard-coded as
+`720.0 - pt.y`.** When 1080p was selected (since it became selectable from the
+menu), the cursor fell off the screen. It is now tied to the window's content
+height.
 
-Ayrica: `NSHighResolutionCapable` olmadan pencere 1x cizilip WindowServer
-tarafindan buyutulurdu; tam ekranda `kCAGravityResizeAspect` en-boy oranini
-koruyor (5:4 goruntu genis ekranda yayilmiyor).
+Also: without `NSHighResolutionCapable` the window would be drawn at 1x and
+scaled up by WindowServer; in fullscreen `kCAGravityResizeAspect` keeps the
+aspect ratio (a 5:4 image isn't stretched on a widescreen).
 
-**Olcum.**  Tasinabilir bayraklarla tam yeniden derleme sonrasi 900 kare
-7.91 sn -- degisiklik oncesiyle ayni (7.9 sn).  Baslik ekraninda 2077 kare
-/ 17.6 sn (118 fps), sanal saat 0.998, 0 desteklenmeyen komut, 0
-cozulemeyen dolayli cagri.  439 ISA + 15 fonksiyon testi geciyor.
+**Measurement.** After a full rebuild with portable flags, 900 frames 7.91 s —
+the same as before the change (7.9 s). On the title screen 2077 frames / 17.6 s
+(118 fps), virtual clock 0.998, 0 unsupported instructions, 0 unresolved
+indirect calls. 439 ISA + 15 function tests pass.
 
-## Retina cozunurlugu: bulaniklik ve `NFSNATIVE`
+## Retina resolution: blurriness and `NFSNATIVE`
 
-**Belirti.**  Oyun en yuksek kipte (1280x960) calisirken goruntu Windows
-ekran goruntulerine gore belirgin bulanikti; en cok yazilarda, farlarda ve
-jant tellerinde.
+**Symptom.** With the game running at its highest mode (1280x960) the image was
+noticeably blurry compared to Windows screenshots; most of all in text,
+headlights and wheel spokes.
 
-**Olculen kok neden.**  Pencere icerigi oyunun cozunurlugu kadar NOKTA,
-`CAMetalLayer.drawableSize` ayni sayida PIKSEL yapiliyordu; `contentsScale`
-1.0 kaliyordu.  14" MacBook Pro'da (1512x982 nokta, 2x) ayri bir sinama
-programiyla olculdu: 1280x960 noktalik icerik ekrana sigmadigi icin
-1280x918'e kirpiliyor, arka alan 2560x1836 piksel oluyor ve 1280x960'lik
-yuzey oraya ~1.91x bilinear buyutuluyor -- her piksel yeniden orneklenip
-yumusuyordu.  (Build'den ya da `.app`'ten calistirmak fark etmiyordu;
-ciplak ikili de 2x olcekli pencere aliyor.)
+**Measured root cause.** The window content was made as many POINTS as the game
+resolution, and `CAMetalLayer.drawableSize` the same number of PIXELS;
+`contentsScale` stayed 1.0. Measured with a separate test program on a 14"
+MacBook Pro (1512x982 points, 2x): since 1280x960 points of content don't fit on
+the screen it is cropped to 1280x918, the backing area becomes 2560x1836 pixels
+and the 1280x960 surface is bilinearly upscaled ~1.91x into it — every pixel was
+resampled and softened. (Running from the build or from the `.app` made no
+difference; the bare binary also gets a 2x-scaled window.)
 
-**Cozum.**
-* `win_apply_size` (metal.m): pencere icerigi = piksel / ekran olcegi,
-  `contentsScale` acikca ayarlaniyor.  Ekrana sigmiyorsa oran korunarak
-  KUCULTULUYOR (buyutme asla).  Log satiri:
-  `cizim WxH piksel, pencere wxh nokta -> 1:1, yeniden ornekleme YOK`.
-* `metal_native_size` + `res_pick` (com.c): oyunun istedigi cozunurluk,
-  indirgenmis oranin TAM kati secilerek ekranin gercek piksel sayisina
-  cikariliyor.  Bu Mac'te 1280x960 -> **2448x1836**, `aspfix=1.0000`;
-  kirpma uzayi duzeltmesi devreye girmiyor, geometriye dokunulmuyor.  Son
-  islem render hedefleri mevcut NFSRES yoluyla ayni boyuta cikiyor.
-  `NFSNATIVE=0` kapatir, `NFSRES` pinler, `NFSMAXPIX` (varsayilan 6 MP)
-  5K/6K ekranlarda ust sinir.
-* CreateDevice ve **Reset ayni kurali** kullaniyor; Reset eskiden ham
-  degeri geciriyordu (oyun icinden cozunurluk degisince duzeltme geri
-  alinirdi).  Gecersiz kilma yoksa `g_req`/`aspfix` sifirlaniyor.
-* `GetDisplayMode` gercek boyutu degil oyunun sectigi boyutu bildiriyor:
-  ayar ekrani bu degeri kendi tablosunda ariyor, 2448x1836 orada yok.
-* Fare: on yuz imleci DirectInput GORELI hareketiyle suruluyor
-  (`GetCursorPos` hic cagrilmiyor, `GetClientRect` sabit 1280x720).
-  Pencere artik oyunun cozunurlugunden bagimsiz oldugu icin deltalar
-  goruntunun kapladigi alana gore olcekleniyor; mutlak esleme de oyunun
-  uzayina cevrildi.  Gercek fareyle test edilmedi.
-* Yer tutucu pencere (CreateDevice'tan once) 1280x960 oraninda native
-  aciliyor; en yaygin durumda pencere ziplamiyor.
+**Solution.**
+* `win_apply_size` (metal.m): window content = pixels / screen scale,
+  `contentsScale` is set explicitly. If it doesn't fit on the screen it is SHRUNK
+  keeping the aspect ratio (never enlarged). Log line:
+  `drawing WxH pixels, window wxh points -> 1:1, NO resampling`.
+* `metal_native_size` + `res_pick` (com.c): the resolution the game asks for is
+  raised to the screen's real pixel count by choosing an EXACT multiple of the
+  reduced ratio. On this Mac 1280x960 -> **2448x1836**, `aspfix=1.0000`; the
+  clip-space correction doesn't kick in and geometry isn't touched. The
+  post-process render targets go to the same size through the existing NFSRES
+  path. `NFSNATIVE=0` turns it off, `NFSRES` pins it, `NFSMAXPIX` (default 6 MP)
+  is the upper limit on 5K/6K screens.
+* CreateDevice and **Reset use the same rule**; Reset used to pass the raw value
+  through (when the resolution was changed in-game the correction was undone). If
+  there is no override, `g_req`/`aspfix` are reset.
+* `GetDisplayMode` reports the size the game chose, not the real size: the
+  settings screen looks this value up in its own table, and 2448x1836 isn't
+  there.
+* Mouse: the front-end cursor is driven by DirectInput RELATIVE motion
+  (`GetCursorPos` is never called, `GetClientRect` is a fixed 1280x720). Since
+  the window is now independent of the game resolution, the deltas are scaled to
+  the area the image covers; the absolute mapping was also converted to the
+  game's space. Not tested with a real mouse.
+* The placeholder window (before CreateDevice) opens natively at the 1280x960
+  aspect ratio; in the most common case the window doesn't jump.
 
-**Tuzak: baslik cubugu tahmini.**  Ilk surumde kullanilabilir yukseklik
-tahminle (menu + 28 nokta baslik) hesaplandi; centikli ekranda baslik
-cubugu **32 nokta**.  3 noktalik fark pencereyi 921 -> 918'e kirpti ve
-yeniden ornekleme geri geldi.  Artik alan ana thread'de AppKit ile
-olculuyor (`scr_cache`; `metal_early_init` guest thread'den once cagriliyor).
+**Trap: the title bar estimate.** In the first version the usable height was
+computed with an estimate (menu + 28-point title); on a notched screen the title
+bar is **32 points**. The 3-point difference cropped the window 921 -> 918 and
+resampling came back. Now the area is measured on the main thread with AppKit
+(`scr_cache`; `metal_early_init` is called before the guest thread).
 
-**Olcum (M1 Pro, 120 Hz ekran, en yuksek grafik ayarlari).**  `AUTOSEQ` ile
-Quick Race'e (Resort Loop) girildi; akis deterministik, iki kosu kare kare
-ayni ekranlardan geciyor:
+**Measurement (M1 Pro, 120 Hz screen, highest graphics settings).** Quick Race
+(Resort Loop) was entered with `AUTOSEQ`; the flow is deterministic, the two runs
+go through the same screens frame by frame:
 
-| bolum | native kapali (1280x960) | native acik (2448x1836) |
+| section | native off (1280x960) | native on (2448x1836) |
 |---|---|---|
-| menuler, 3000-3499. kare | ort 8.34 ms, p95 8.48 | ort 8.34 ms, p95 8.50 |
-| yaris, 5000-6999. kare (~1300 cizim/kare) | ort 10.47-10.64 ms, p95 11.5-11.8 | ort 10.56-10.77 ms, p95 11.6-11.9 |
-| GPU mesgul (tum kosu) | ort 2.00 ms, en fazla 3.95 | ort 4.88 ms, en fazla 9.35 |
+| menus, frames 3000-3499 | mean 8.34 ms, p95 8.48 | mean 8.34 ms, p95 8.50 |
+| race, frames 5000-6999 (~1300 draws/frame) | mean 10.47-10.64 ms, p95 11.5-11.8 | mean 10.56-10.77 ms, p95 11.6-11.9 |
+| GPU busy (whole run) | mean 2.00 ms, max 3.95 | mean 4.88 ms, max 9.35 |
 
-Kare suresini CPU (lifted kod) belirliyor; 3.66x piksel kareyi uzatmadi.
-**Olcum tuzagi:** ilk karsilastirmada native'de 170-220 ms sicramalar
-goruldu -- hepsi `DUMPFRAME` karelerine denk geliyordu (PNG yazimi, piksel
-sayisiyla olcekleniyor).  Olcumde dokum karelerini disarida birakin.
+The frame time is set by the CPU (lifted code); 3.66x the pixels didn't lengthen
+the frame. **Measurement trap:** in the first comparison 170-220 ms spikes were
+seen in native — all of them coincided with `DUMPFRAME` frames (PNG writing,
+scales with the pixel count). Leave dump frames out of measurements.
 
-**Sinirlar.**  Arayuz fontlari sabit cozunurluklu dokular: ikinci ornekleme
-kalktigi icin keskinlesiyorlar ama dokunun kendi detayini asamazlar.  Daha
-zayif GPU'lu Mac'lerde olculmedi; GPU suresi kare butcesini asarsa
-`NFSNATIVE=0` ya da `NFSMAXPIX` ile dusurulebilir.
+**Limits.** The UI fonts are fixed-resolution textures: they get sharper since
+the second resampling is gone, but they can't exceed the texture's own detail.
+Not measured on Macs with weaker GPUs; if GPU time exceeds the frame budget it
+can be lowered with `NFSNATIVE=0` or `NFSMAXPIX`.
 
-**Test notu.**  Test pencereleri odak aliyor; oyunun ayarlari
-`~/.nfsu2_registry`'de.  Bu calisma sirasinda `g_RacingResolution` bir kez
-3'ten (1280x960) 4'e (1280x1024) kaydi ve kontrollu kosularda tekrar
-uretilemedi (en olasi neden test penceresine gelen gercek klavye girisi).
-Cok kosulu testlerden once dosyayi yedekleyin.
+**Test note.** Test windows take focus; the game's settings are in
+`~/.nfsu2_registry`. During this work `g_RacingResolution` once slipped from 3
+(1280x960) to 4 (1280x1024) and couldn't be reproduced in controlled runs (most
+likely cause: real keyboard input reaching the test window). Back up the file
+before multi-run tests.
 
-## Gerçek oturum kaydı (`PERFLOG`, `tools/oturum.sh`)
+## Real session recording (`PERFLOG`, `tools/session.sh`)
 
-Otomatik koşular (`AUTOSEQ` yarışı) birebir A/B için; bu kayıt kullanıcının
-kendi oynadığı oturumda (hızlı sürüş, efektler, kaza, menü) yükün **nerede ve
-ne zaman** oluştuğunu görmek için.
+Automated runs (the `AUTOSEQ` race) are for exact A/B; this recording is for
+seeing **where and when** load builds up in a session the user plays themselves
+(fast driving, effects, crashes, menus).
 
 ```bash
-./tools/oturum.sh            # normal sürüm; ./tools/oturum.sh hd
-python3 tools/oturum_analiz.py ~/nfs_oturum/<tarih>   # -> <dizin>/rapor.md
+./tools/session.sh            # standard build; ./tools/session.sh hd
+python3 tools/session_report.py ~/nfs_sessions/<date>   # -> <dir>/report.md
 ```
 
-Betik powermetrics'i (CPU/GPU watt, termal basınç; parola bir kez) ve oyunu
-`open --env PERFLOG=<dizin>` ile başlatır, oyundan çıkınca kapatır.
-`runtime/perflog.c` yazar:
+The script starts powermetrics (CPU/GPU watts, thermal pressure; password once)
+and the game with `open --env PERFLOG=<dir>`, and stops it when the game exits.
+`runtime/perflog.c` writes:
 
-| dosya | içerik |
+| file | contents |
 |---|---|
-| `konuk.csv` | konuk kare başına duvar/CPU süresi, kare sınırlayıcı uykusu (boş pay), Present beklemesi, COM/Win32 çağrıları, VS/PS/PSO derleme, doku yaratma/yükleme |
-| `render.csv` | ana thread kare aralığı, `nextDrawable` beklemesi, kodlama süresi, çizim/köşe, düşen kare |
-| `gpu.csv` | kare başına GPU süresi |
-| `saniye.csv` | süreç enerjisi (`ri_energy_nj`, P çekirdek), komut/çevrim (IPC), termal durum, bellek |
-| `thread.csv` | saniyede bir thread başına kullanıcı/sistem süresi |
-| `ornek.bin` | 1 ms'de bir konuk, 4 ms'de bir ana thread: PC + çerçeve zinciri (`thread_suspend` → durum → `resume`; askıdayken kilit/malloc yok) |
-| `ekran/` | 2 sn'de bir ~480 px JPEG (GPU kopyası, arka planda yazılır) |
-| `sicaklik.csv` | saniyede bir CPU/GPU sıcaklığı, iki fan devri, SMC sistem gücü (`tools/smcoku.c`, sudo gerekmez; `oturum.sh` derler) |
+| `guest.csv` | per guest frame: wall/CPU time, frame limiter sleep (idle margin), Present wait, COM/Win32 calls, VS/PS/PSO compiles, texture creates/uploads |
+| `render.csv` | main thread frame interval, `nextDrawable` wait, encoding time, draws/vertices, dropped frames |
+| `gpu.csv` | GPU time per frame |
+| `seconds.csv` | process energy (`ri_energy_nj`, P cores), instructions/cycle (IPC), thermal state, memory |
+| `thread.csv` | per-thread user/system time once a second |
+| `samples.bin` | guest every 1 ms, main thread every 4 ms: PC + frame chain (`thread_suspend` → state → `resume`; no locks/malloc while suspended) |
+| `screens/` | a ~480 px JPEG every 2 s (GPU copy, written in the background) |
+| `temperature.csv` | CPU/GPU temperature, both fan speeds, SMC system power once a second (`tools/smcread.c`, no sudo needed; `session.sh` compiles it) |
 
-Ek yük (120 fps yarış, `ps -M`): konuk thread +%1.6, süreç +%5 (çoğu
-örnekleyicinin kendisi); fps, en uzun kare ve sapma değişmiyor.
-`task_gpu_utilisation` 0 dönüyor: GPU watt yalnızca powermetrics'ten.
+Overhead (120 fps race, `ps -M`): guest thread +1.6%, process +5% (mostly the
+sampler itself); fps, the longest frame and the variance don't change.
+`task_gpu_utilisation` returns 0: GPU watts come only from powermetrics.
 
 
-## GPU enerjisi ve bellek trafiği (2026-10-18)
+## GPU energy and memory traffic (2026-10-18)
 
-Hedef: 120 fps ve özgün görüntü korunarak watt düşürmek. Yarışta (120 fps)
-GPU ~4.9 W, sistemin ~8.8 W'ının yarısından fazlası.
+Goal: lower watts while keeping 120 fps and the original image. In a race
+(120 fps) the GPU is ~4.9 W, more than half of the system's ~8.8 W.
 
-### Ölçüm: neden yeni yöntem gerekti
+### Measurement: why a new method was needed
 
-- **GPU ms/kare iş ölçüsü değil.** macOS GPU saatini yüke göre ayarlıyor (DVFS):
-  iş azalınca saat düşüyor, aynı kare daha UZUN sürebiliyor (bellek trafiğini
-  kesen bir değişiklikte 5.3 → 5.8 / 7.6 ms ölçüldü).
-- **Ayrı koşuların enerjisi karşılaştırılamaz.** Aynı ayarla üç koşu 30.8 /
-  34.9 / 40.0 mJ/kare verdi (DVFS durumu + sistemin geri kalanı).
-- **Sudo'suz sayaçlar** (IOReport, `runtime/metal.m` `ior_read`):
-  - `Energy Model / GPU Energy` (nJ): GPU çekirdeğinin modellenmiş enerjisi
-    (powermetrics'in "GPU Power"ı). **DRAM'i içermez.**
-  - `AMC Stats / Perf Counters`: bellek denetleyicisinde ajan başına bayt.
-    `GFX RD/WR` = GPU'nun bellek sistemine okuma/yazması, `GFX DCS RD/WR` =
-    bunun DRAM'e giden kısmı. DVFS'ten bağımsız bir iş ölçüsü.
-  - SMC `PSTR` (sistem toplam gücü) de sudo'suz okunuyor ama saniyede bir
-    güncelleniyor; A/B için kaba (araç: scratch `smc.c`, kalıcı değil).
-- **Koşu içi A/B: `ABTEST=AD[,N[,ATLA]]`** (`GPUWIN` penceresinde). Pencere N
-  karelik dilimlere bölünür (varsayılan 120; kısa dilim komşu dilimleri daha iyi
-  eşleştiriyor, ölçümlerde `32,4` kullanıldı). Çift dilimde özellik açık, tek
-  dilimde kapalı. Dilimin ilk ATLA karesi atılır (kuyrukta önceki kipin işi).
-  Komşu dilim çiftlerinin farkı ortalama ± standart hata olarak raporlanır.
-  Özellik kendi anahtarını `abt_off("AD")` ile sorar (`SCRREDIR`, `ALFAVAR`).
-  `GPUWIN` raporu da artık enerji ve MB/kare veriyor.
+- **GPU ms/frame is not a measure of work.** macOS adjusts the GPU clock to the
+  load (DVFS): when work drops the clock drops, and the same frame can take
+  LONGER (5.3 → 5.8 / 7.6 ms was measured for a change that cut memory traffic).
+- **The energy of separate runs can't be compared.** Three runs with the same
+  settings gave 30.8 / 34.9 / 40.0 mJ/frame (DVFS state + the rest of the
+  system).
+- **Counters without sudo** (IOReport, `runtime/metal.m` `ior_read`):
+  - `Energy Model / GPU Energy` (nJ): the modelled energy of the GPU core
+    (powermetrics's "GPU Power"). **Does not include DRAM.**
+  - `AMC Stats / Perf Counters`: bytes per agent at the memory controller.
+    `GFX RD/WR` = the GPU's reads/writes to the memory system, `GFX DCS RD/WR` =
+    the part of that going to DRAM. A measure of work independent of DVFS.
+  - SMC `PSTR` (total system power) can also be read without sudo, but it updates
+    once a second; coarse for A/B (tool: scratch `smc.c`, not permanent).
+- **In-run A/B: `ABTEST=NAME[,N[,SKIP]]`** (in the `GPUWIN` window). The window
+  is split into N-frame slices (default 120; short slices pair neighboring slices
+  better, `32,4` was used in the measurements). The feature is on in even slices
+  and off in odd ones. The first SKIP frames of a slice are dropped (the previous
+  mode's work in the queue). The difference of neighboring slice pairs is
+  reported as mean ± standard error. A feature asks for its own switch with
+  `abt_off("NAME")` (`SCRREDIR`, `ALFAVAR`). The `GPUWIN` report now also gives
+  energy and MB/frame.
 
 ```bash
-# yarış, gerçek çözünürlük, 60 Hz sabit (AUTOSEQ: Quick Race tarifi, gaz basılı)
+# race, real resolution, locked 60 Hz (AUTOSEQ: the Quick Race recipe, throttle held)
 env FIXMAT=1 FIXMAT_MODE=3 NOMOVIES=1 SNDSYNC=1 GPUVS=1 WINDOW=1 ALARM=0 \
     NOFOCUS=2 NOSOUND=1 NFSFULL=0 MOUSEAT=5,5 PACE60=1 \
     AUTOSEQ="1000:0x1C,1350:0x1C,1700:0x1C,2050:0x1C,2400:0x1C,2750:0x1C,3100:0x1C,3700:0x1C,4000:0x1C,4700:0xC8:5300" \
     QUITFRAMES=10000 GPUWIN=6200,9800 ABTEST=ALFAVAR,32,4 \
-    out/nfsu2_boot "<SPEED2.EXE>" 2>&1 | grep -a "ABTEST\|PENCERE"
+    out/nfsu2_boot "<SPEED2.EXE>" 2>&1 | grep -a "ABTEST\|WINDOW"
 ```
 
-### Sonuçlar (normal sürüm, yarış, 3024x1836, 60 fps, 56 dilim çifti)
+### Results (standard build, race, 3024x1836, 60 fps, 56 slice pairs)
 
-| özellik | GPU enerjisi mJ/kare | GPU okuma / yazma MB/kare | DRAM okuma / yazma MB/kare | karar |
+| feature | GPU energy mJ/frame | GPU read / write MB/frame | DRAM read / write MB/frame | decision |
 |---|---|---|---|---|
-| ALFA TESTİ VARYANTI (`ALFAVAR`) | **−6.32 ± 0.48 (−%17)** | −2.8 ± 1.1 / −0.3 ± 0.8 | −1.8 ± 1.7 / +0.8 ± 1.7 | varsayılan açık (HD: −%27) |
-| EKRAN YÖNLENDİRME (`SCRREDIR`) | −0.02 ± 0.88 | −10.7 ± 1.1 / −10.1 ± 0.8 | **−20.4 ± 1.9 / −21.0 ± 1.8** | varsayılan açık |
-| GEÇİŞ YÜKLEMESİ (DontCare / karalama Z) | +0.6 ± 0.8 | +0.9 ± 1.1 / +0.6 ± 0.6 | +1.6 ± 1.8 / +1.2 ± 1.4 | elendi, kod kaldırıldı |
-| SON İŞLEM ZİNCİRİ (`FBZINCIR`), 2 koşu | −1.07 ± 0.53 / +2.39 ± 1.44 (ort. ≈ −0.7 ± 0.5) | −11.1 / −9.6 okuma, −5.8 / −4.2 yazma | **−12.6 / −9.8 okuma, −12.9 / −10.8 yazma** | varsayılan açık |
+| ALPHA TEST VARIANT (`ALFAVAR`) | **−6.32 ± 0.48 (−17%)** | −2.8 ± 1.1 / −0.3 ± 0.8 | −1.8 ± 1.7 / +0.8 ± 1.7 | on by default (HD: −27%) |
+| SCREEN REDIRECT (`SCRREDIR`) | −0.02 ± 0.88 | −10.7 ± 1.1 / −10.1 ± 0.8 | **−20.4 ± 1.9 / −21.0 ± 1.8** | on by default |
+| PASS LOAD (DontCare / scratch Z) | +0.6 ± 0.8 | +0.9 ± 1.1 / +0.6 ± 0.6 | +1.6 ± 1.8 / +1.2 ± 1.4 | rejected, code removed |
+| POST-PROCESS CHAIN (`FBZINCIR`), 2 runs | −1.07 ± 0.53 / +2.39 ± 1.44 (mean ≈ −0.7 ± 0.5) | −11.1 / −9.6 read, −5.8 / −4.2 write | **−12.6 / −9.8 read, −12.9 / −10.8 write** | on by default |
 
-GPU süresi (DVFS'li, yalnız bilgi): `ALFAVAR` açık 5.28 / kapalı 6.08 ms/kare.
+GPU time (with DVFS, for information only): `ALFAVAR` on 5.28 / off 6.08 ms/frame.
 
-### ALFA TESTİ VARYANTI (`ALFAVAR`)
+### ALPHA TEST VARIANT (`ALFAVAR`)
 
-Çevrilen her parça gölgelendiricisi alfa testini kendisi yapıyordu:
-`if (res.a < P.aref) discard_fragment()`. Test kapalıyken (aref 0) hiçbir parça
-atılmaz, ama gölgelendiricide `discard` olduğu için Apple GPU çizimi opak
-saymıyor ve **gizli yüzey elemesi (HSR) kapanıyor**: sonradan örtülecek parçalar
-da gölgeleniyor. Şimdi her ps (ve sabit işlevli `fmain`) bir işlev sabitiyle
-(`kAT`) iki kez özelleştiriliyor; aref 0 olan çizim `discard`'sız varyantla
-çiziliyor (boru hattı anahtarında bit 52). Fark yalnız `res.a < 0` üreten
-parçada olabilirdi; D3D9'da alfa testi kapalıyken o parça zaten yazılır, yani
-yeni varyant D3D9'a daha sadık.
+Every translated fragment shader did the alpha test itself:
+`if (res.a < P.aref) discard_fragment()`. With the test off (aref 0) no fragment
+is discarded, but because the shader contains `discard`, the Apple GPU doesn't
+treat the draw as opaque and **hidden surface removal (HSR) turns off**: fragments
+that will be covered later get shaded too. Now every ps (and the fixed-function
+`fmain`) is specialized twice with a function constant (`kAT`); a draw with aref
+0 is drawn with the variant without `discard` (bit 52 in the pipeline key). A
+difference could only arise for a fragment producing `res.a < 0`; in D3D9 that
+fragment is written anyway when the alpha test is off, so the new variant is more
+faithful to D3D9.
 
-Doğrulama: `ALFAVAR=2` testsiz varyantta "atılacak" parçayı GPU'da bir sayaçla
-sayar (parça tampon 6) ve macenta boyar. Tüm koşu (9000 kare, menü + yarış)
-sonucu **0 parça**. `ALFAVAR=3` pozitif kontrol (alfa testli çizimler de tanı
-varyantıyla) 2.98 milyar parça saydı.
+Verification: `ALFAVAR=2` counts the fragments that "would be discarded" in the
+test-free variant with a counter on the GPU (fragment buffer 6) and paints them
+magenta. Result over a whole run (9000 frames, menu + race): **0 fragments**.
+`ALFAVAR=3`, the positive control (alpha-tested draws also with the diagnostic
+variant), counted 2.98 billion fragments.
 
-**HD sürümü:** kazanç daha büyük (−30.1 ± 1.7 mJ/kare, −%27). `ALFAVAR=2`
-sayacı HD'de önce 12.6 milyon parça farkı buldu. Gölgelendirici başına sayım
-(sayaç dizisi ps kimliğiyle) kaynağı gösterdi: neredeyse tamamı sabit işlevli
-`fmain`, sebep negatif köşe rengi alfası. D3D9 köşe rengini [0,1]'e kırpar
-(aşağıda RENK KIRPMA); kırpmayla HD'de de **0 parça**, iki sürümde açık.
+**HD build:** the gain is larger (−30.1 ± 1.7 mJ/frame, −27%). In HD the
+`ALFAVAR=2` counter first found a difference of 12.6 million fragments. Counting
+per shader (a counter array indexed by ps id) showed the source: almost all of it
+the fixed-function `fmain`, caused by negative vertex color alpha. D3D9 clamps the
+vertex color to [0,1] (below, COLOR CLAMPING); with clamping, HD gives **0
+fragments** as well, on in both builds.
 
-### RENK KIRPMA (`RENKSAT`)
+### COLOR CLAMPING (`RENKSAT`)
 
-D3D9'da ps_1_1 – ps_2_0 köşe rengini (v0/v1) [0,1]'e kırpılmış görür. Microsoft
-belgesi "8 bit unsigned, range (0, +1)" ve "saturated before use by the shader"
-diyor. Bizim köşe gölgelendiricimiz oD0/oD1'i kırpmadan iletiyordu. Tanı
-sayacı yarış + menüde **1.18 milyar parçanın** [0,1] dışı renkle geldiğini
-gösterdi; çoğu araba boyası (ps 265, küp varyantı), sonra ps 7 ve `fmain`.
+In D3D9, ps_1_1 – ps_2_0 see the vertex color (v0/v1) clamped to [0,1]. The
+Microsoft documentation says "8 bit unsigned, range (0, +1)" and "saturated
+before use by the shader". Our vertex shader passed oD0/oD1 through without
+clamping. A diagnostic counter showed **1.18 billion fragments** in race + menu
+arriving with colors outside [0,1]; mostly car paint (ps 265, cube variant), then
+ps 7 and `fmain`.
 
-Kırpma iki yerde yapılıyor:
-- köşe başına: `vsemu.c` `vs_to_msl` ve `com.c` CPU yolu, vs < 3.0. Dönemin
-  donanımında renk enterpolatörleri zaten [0,1] taşıyordu.
-- parçada: `kCS` işlev sabiti; kayan nokta taşmaları ve gözden kaçan yollar için.
+Clamping is done in two places:
+- per vertex: `vsemu.c` `vs_to_msl` and the CPU path in `com.c`, vs < 3.0. The
+  color interpolators of the hardware of the time already carried [0,1].
+- per fragment: the `kCS` function constant; for floating-point overflows and
+  missed paths.
 
-Windows referansı (1280x960, aynı tuş dizisi): menü kareleri değişmedi, Windows'a
-uzaklık öncesiyle aynı (0.1 – 0.5). Yarış kareleri Windows'ta koşudan koşuya
-değiştiği için orada kıyas yok. Bu bir sadakat düzeltmesi: D3D9 sözleşmesine
-uyuyor ve alfa varyantını HD'de birebir yaptı. `RENKSAT=0` eski davranış.
+Windows reference (1280x960, same key sequence): menu frames unchanged, the
+distance to Windows the same as before (0.1 – 0.5). Since race frames vary from
+run to run on Windows, there is no comparison there. This is a fidelity fix: it
+follows the D3D9 contract and made the alpha variant exact in HD. `RENKSAT=0` is
+the old behavior.
 
-**Macentayı görüntüde aramak yarışta kördür:** son işlem renk tablosu (ps 26/28, LUT) macentayı başka renge
-çeviriyor; menü karesi dışında hiç macenta görünmedi. Sayaç bu yüzden var.
+**Looking for magenta in the image is blind in races:** the post-process color
+table (ps 26/28, LUT) turns magenta into another color; magenta never showed up
+outside the menu frame. That is why the counter exists.
 
-### EKRAN YÖNLENDİRME (`SCRREDIR`)
+### SCREEN REDIRECT (`SCRREDIR`)
 
-Yarış (ve menü) karesi sahneyi ekrana çiziyor, sonra aynı boyutta #2'ye
-kopyalıyor (son işlem #2'yi okuyor), ekranı en sonda tam ekran bir dörtgenle
-baştan yazıyor. Kopya 22 MB okuma + 22 MB yazma, 0.59 ms/kare (PASSPROF).
-Koşullar sağlanınca sahne doğrudan #2'ye çiziliyor ve kopya atlanıyor.
-Koşullar: kopya ekranı okuyan ilk blit; hedefi ekranla aynı boyut ve biçimde;
-kopyadan önce #2 ne örnekleniyor ne hedef oluyor; kopyadan sonra ekrana ilk
-dokunan çizim ekranı tamamen eziyor (TAM EKRAN KAPLAMA kuralı). Bu durumda #2
-kopyanın vereceği içeriğin aynısını alıyor: aynı çizimler, boyut, biçim, Z.
+The race (and menu) frame draws the scene to the screen, then copies it at the
+same size to #2 (the post-process reads #2), and at the very end rewrites the
+screen from scratch with a fullscreen quad. The copy is 22 MB read + 22 MB write,
+0.59 ms/frame (PASSPROF). When the conditions are met, the scene is drawn
+directly into #2 and the copy is skipped. Conditions: the copy is the first blit
+reading the screen; its target has the same size and format as the screen;
+before the copy #2 is neither sampled nor a target; after the copy the first draw
+touching the screen completely overwrites it (the FULLSCREEN COVERAGE rule). In
+this case #2 receives exactly the content the copy would give: the same draws,
+size, format, Z.
 
-Doğrulama: `SCRREDIR=2` kopyadan sonraki ilk ekran geçişini macentayla
-temizler. Kaplama yanlışsa macenta son görüntüye sızar; bu test son işlemden
-SONRA ekrana yazılanı sınadığı için kör değil. 16 karede 0 macenta. Görüntü
-ayrıca gözle kontrol edildi. HD'de ekran çok örnekli ve G-tamponlu olduğu için
-orada kapalı.
+Verification: `SCRREDIR=2` clears the first screen pass after the copy with
+magenta. If the coverage is wrong, magenta leaks into the final image; this test
+isn't blind because it checks what is written to the screen AFTER the
+post-process. 0 magenta in 16 frames. The image was also checked by eye. In HD
+it is off, since there the screen is multisampled and has a G-buffer.
 
-Kazanç DRAM'de: kare başına −41 MB (120 fps'te −4.9 GB/s). GPU çekirdek
-enerjisi değişmedi: kopya bellek işi, gölgelendirici işi değil.
+The gain is in DRAM: −41 MB per frame (−4.9 GB/s at 120 fps). GPU core energy
+didn't change: the copy is memory work, not shader work.
 
-### UV ÖLÇEĞİ (`UVFIX`) — yerel çözünürlükte son işlem bulanıklığı (2026-10-19)
+### UV SCALE (`UVFIX`) — post-process blur at native resolution (2026-10-19)
 
-NFSRES / Retina'da oyun 1280x960 sandığı için çiziyor; tam ekran hedefler
-(#2/#3/#4, ekran) ise 3024x1836. Son işlem dörtgenleri D3D9 yarım teksel
-kuralıyla `u = (x + 0.5) / 1280` eşlemesini taşıyor (ölçüldü: u 0.0003906 ..
-1.0003906 = 0.5/1280, v 0.0005208 .. 1.0005208 = 0.5/960). Gerçek hedefte bu,
-piksel merkezini teksel merkezinden (0.68, 0.46) teksel kaydırıyor. Her tam
-çözünürlüklü geçiş görüntüyü kaydırıp bilinear ile yumuşatıyordu; ana görüntü 4
-geçişten geçiyor (renk tablosu zinciri + ekrana kopya). 1280x960'ta (Windows
-kıyas çözünürlüğü) eşleme birebir olduğu için bu hiçbir karşılaştırmada
-görünmemişti.
+With NFSRES / Retina the game draws believing it is at 1280x960, while the
+fullscreen targets (#2/#3/#4, screen) are 3024x1836. The post-process quads carry
+the mapping `u = (x + 0.5) / 1280` from the D3D9 half-texel rule (measured: u
+0.0003906 .. 1.0003906 = 0.5/1280, v 0.0005208 .. 1.0005208 = 0.5/960). On the
+real target this shifts the pixel center from the texel center by (0.68, 0.46)
+texels. Every full-resolution pass shifted the image and softened it with
+bilinear filtering; the main image goes through 4 passes (the color table chain
++ the copy to the screen). At 1280x960 (the Windows comparison resolution) the
+mapping is exact, which is why this never showed up in any comparison.
 
-Düzeltme: oyunun niyetindeki eşleme gerçek boyutta kuruluyor. Köşe
-gölgelendiricisi kalıba uyan koordinat kümesine `0.5/Wgerçek − 0.5/Woyun`
-ekliyor, yani `u = (x + 0.5) / Wgerçek`. Koşullar:
-- dörtgen hedefi tam kaplıyor (NDC ±1);
-- hedef ölçekli (oyun boyutu ≠ gerçek);
-- kümenin köşe UV'leri tam bu kalıpta.
+Fix: the mapping the game intends is set up at the real size. The vertex shader
+adds `0.5/Wreal − 0.5/Wgame` to the coordinate set matching the pattern, i.e.
+`u = (x + 0.5) / Wreal`. Conditions:
+- the quad covers the target completely (NDC ±1);
+- the target is scaled (game size ≠ real);
+- the set's vertex UVs follow exactly this pattern.
 
-Kalıba uymayan kümeye (çok dokunuşlu bulanıklık ofsetleri, 640x480 hedefler)
-dokunulmuyor. Kare başına ~2.5 çizim.
+Sets that don't match the pattern (multi-tap blur offsets, 640x480 targets) are
+left alone. ~2.5 draws per frame.
 
-Sonuç (aynı tuş dizisi, yerel çözünürlük; netlik = ortalama parlaklık
-gradyanı):
+Result (same key sequence, native resolution; sharpness = mean brightness
+gradient):
 
-| kare | önce | sonra |
+| frame | before | after |
 |---|---|---|
-| 1650 (3B menü, araba) | 1.367 | 1.637 (+%20) |
-| 2000 | 1.259 | 1.542 (+%22) |
-| 3050 | 1.359 | 1.590 (+%17) |
-| 5000 / 6200 (yarış) | 2.33 / 2.19 | 3.17 / 2.99 |
-| 1300 (2B menü, son işlem yok) | 0.569 | 0.569 |
+| 1650 (3D menu, car) | 1.367 | 1.637 (+20%) |
+| 2000 | 1.259 | 1.542 (+22%) |
+| 3050 | 1.359 | 1.590 (+17%) |
+| 5000 / 6200 (race) | 2.33 / 2.19 | 3.17 / 2.99 |
+| 1300 (2D menu, no post-process) | 0.569 | 0.569 |
 
-Gözle: kaputun karbon dokusu, jant telleri ve fren diski delikleri artık keskin.
-`UVFIX=0` eski (bulanık) davranış.
+By eye: the carbon texture of the hood, the wheel spokes and the brake disc holes
+are now sharp. `UVFIX=0` is the old (blurry) behavior.
 
-### SIRALI DOKU YÜKLEME (`TEXORD`) — doku yarışı (2026-10-19)
+### ORDERED TEXTURE UPLOADS (`TEXORD`) — a texture race (2026-10-19)
 
-Oyun bazı dokuları her karede yeniden yazıyor: son işlem renk tabloları #8 ve
-#9, 5467 karede 5467 yükleme (`TEXUPSAY=1` sayar). Yükleme `replaceRegion` ile
-anında dokuya gidiyordu. Konuk thread kare N+1'i kaydederken ana thread kare
-N'i kodluyor ya da GPU onu çiziyor. Kare N bu yüzden bazen kare N+1'in
-tablosunu, hatta yarım yazılmış tabloyu görüyordu. D3D9'da her çizim
-gönderildiği andaki içeriği görür.
+The game rewrites some textures every frame: the post-process color tables #8 and
+#9, 5467 uploads in 5467 frames (`TEXUPSAY=1` counts them). The upload went to
+the texture immediately with `replaceRegion`. While the guest thread records
+frame N+1, the main thread is encoding frame N or the GPU is drawing it. So frame
+N sometimes saw frame N+1's table, or even a half-written table. In D3D9 every
+draw sees the content as of the moment it was submitted.
 
-Belirtisi şuydu: aynı karede aynı çizimi iki kez kodlamak bile farklı sonuç
-veriyordu (son işlem zinciri doğrulamasında 0.6 M piksel, en çok 2/255).
+The symptom was: even encoding the same draw twice in the same frame gave
+different results (0.6 M pixels in the post-process chain verification, at most
+2/255).
 
-Düzeltme: bir dokunun ikinci ve sonraki yüklemeleri çizim listesine sıralı kayıt
-olarak giriyor. Veri karenin yükleme alanına kopyalanıyor (çift tampon, 8 MB),
-kodlamada çizimlerle sıralı bir blit (tampondan dokuya) oluyor. İlk yükleme
-(yükleme ekranı, henüz kullanılmamış doku) eskisi gibi anında. Atlanan
-(kodlanmayan) karenin bekleyen yüklemeleri, tampon yeniden kullanılmadan önce
-anında uygulanıyor. Kare başına ~2.3 yükleme, taşma 0. Sonra aynı çizim iki kez
-kodlanınca **0 piksel fark**. `TEXORD=0` eski davranış.
+Fix: the second and later uploads of a texture go into the draw list as ordered
+records. The data is copied into the frame's upload area (double buffered, 8 MB),
+and during encoding it becomes a blit (buffer to texture) ordered with the draws.
+The first upload (loading screen, a texture not used yet) is immediate as before.
+The pending uploads of a skipped (unencoded) frame are applied immediately before
+the buffer is reused. ~2.3 uploads per frame, 0 overflows. After that, encoding
+the same draw twice gives **0 pixel difference**. `TEXORD=0` is the old behavior.
 
-### SON İŞLEM ZİNCİRİ (`FBZINCIR`) — üç geçiş tek geçişte (2026-10-19)
+### POST-PROCESS CHAIN (`FBZINCIR`) — three passes in one (2026-10-19)
 
-Son işlem üç tam ekran geçişle renk tablosu uyguluyor: `#3 = ps28(#2)`,
-`#2 = ps27(#3)`, `#3 = ps26(#2)`. Her adımın girdisi bir öncekinin aynı
-pikseldeki çıktısı. Ölçüldü (`ABTEST=SKIPPS` + `SKIPPS=26,27,28`): üç geçiş GPU
-enerjisinin ~%16'sı, DRAM'de ~33 MB/kare.
+The post-process applies a color table with three fullscreen passes:
+`#3 = ps28(#2)`, `#2 = ps27(#3)`, `#3 = ps26(#2)`. Each step's input is the
+previous step's output at the same pixel. Measured (`ABTEST=SKIPPS` +
+`SKIPPS=26,27,28`): the three passes are ~16% of GPU energy and ~33 MB/frame of
+DRAM.
 
-Zincir şimdi iki hedefi birden bağlayan tek bir geçişte çiziliyor. Her adım
-girdisini dokudan değil karo belleğinden okuyor (`[[color(n)]]`, Apple GPU'da
-çizim sırasıyla). Gölgelendirici varyantı (`vsemu.c` `ps_to_msl_fb`) aşama 0
-örneğini karo bellek girdisiyle değiştiriyor; arka planda derleniyor, hazır
-olana kadar eski yol kullanılıyor.
+The chain is now drawn in a single pass that binds both targets at once. Each step
+reads its input from tile memory instead of a texture (`[[color(n)]]`, in draw
+order on the Apple GPU). A shader variant (`vsemu.c` `ps_to_msl_fb`) replaces the
+stage 0 sample with the tile memory input; it is compiled in the background, and
+the old path is used until it is ready.
 
-Koşullar (kayıt başına):
-- tek dörtgen, hedefi tam kaplıyor;
-- Z, karışım ve alfa testi yok;
-- aşama 0 dokusu diğer zincir hedefi, aynı boyut ve biçimde;
-- UV teksel merkezine 1:1 (UV ÖLÇEĞİ sonrası);
-- ps aşama 0'ı tek yerde `TCRD(0)` ile örnekliyor;
-- diğer aşamalar zincir hedeflerini okumuyor;
-- ardışık kayıtlar iki hedef arasında gidip geliyor.
+Conditions (per record):
+- a single quad covering the target completely;
+- no Z, blending or alpha test;
+- the stage 0 texture is the other chain target, with the same size and format;
+- UV 1:1 to the texel center (after UV SCALE);
+- the ps samples stage 0 in a single place with `TCRD(0)`;
+- the other stages don't read the chain targets;
+- consecutive records alternate between the two targets.
 
-Doğrulama: `FBZINCIR=2` zinciri eski yoldan çiziyor, aynı girdiyle birleşik
-yolu karalama dokularına çiziyor ve ikisini GPU'da piksel piksel
-karşılaştırıyor. Sonuç: 5454 zincirde **0 fark**, hem son çıktıda hem ara
-hedefte. `FBZCTRL=1` yardımcıyı normal boru hattıyla, `FBZCTRL=2` iki kez
-çalıştırıp kendisiyle karşılaştırıyor; determinizm testi bu ikisi.
-Doku yarışı düzeltilmeden önce sonuç 1–3/255'lik farklar veriyordu. O
-farkların kaynağı zincir değil, yukarıdaki yarıştı.
+Verification: `FBZINCIR=2` draws the chain through the old path, draws the merged
+path with the same input into scratch textures, and compares the two pixel by
+pixel on the GPU. Result: **0 differences** in 5454 chains, both in the final
+output and in the intermediate target. `FBZCTRL=1` runs the helper with the normal
+pipeline, `FBZCTRL=2` runs it twice and compares it with itself; these two are the
+determinism test. Before the texture race was fixed, the result showed differences
+of 1–3/255. The source of those differences was not the chain but the race above.
 
-Kazanç: DRAM −23 MB/kare (iki koşu); GPU çekirdek enerjisi ölçüm gürültüsü
-içinde (ort. ≈ −0.7 ± 0.5 mJ/kare). Kare başına ~1.3 zincir (yarış + menü).
+Gain: DRAM −23 MB/frame (two runs); GPU core energy within measurement noise
+(mean ≈ −0.7 ± 0.5 mJ/frame). ~1.3 chains per frame (race + menu).
 
-### Elenenler
+### Rejected
 
-- **GEÇİŞ YÜKLEMESİ:** tam ekran kaplayan çizimle başlayan geçişte renk
-  `Load` → `DontCare`, Z kullanmayan geçişte gerçek Z yerine karalama derinlik.
-  Zehir testiyle doğruydu ama hiçbir ölçüde etkisi yok (tablo). Apple GPU tam
-  örtülen karonun yüklemesini HSR ile zaten atlıyor, dokunulmayan Z'yi de
-  taşımıyor. Kod kaldırıldı; kaplama hesabı (`com.c` → `metal_set_next_cov_clip`)
-  EKRAN YÖNLENDİRME için duruyor.
-- **Z SAKLAMA:** son kullanımdan sonra Z'yi `DontCare` ile saklamamak. Oyun
-  cihazı `D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL` olmadan açıyor (sunum
-  parametreleri: takas 1, Z D24S8, bayrak 0; artık açılışta loglanıyor). Yani
-  örtük Z kareler arası korunmalı; kare içinde sonradan temizlenen Z 0/kare
-  çıktı. Uygulanamaz, kod kaldırıldı.
+- **PASS LOAD:** in a pass that starts with a draw covering the whole screen,
+  color `Load` → `DontCare`; in a pass that doesn't use Z, a scratch depth instead
+  of the real Z. It was correct by the poison test, but it has no effect on any
+  measure (table). The Apple GPU already skips the load of a fully covered tile
+  with HSR, and doesn't move untouched Z either. The code was removed; the
+  coverage computation (`com.c` → `metal_set_next_cov_clip`) remains for SCREEN
+  REDIRECT.
+- **Z STORE:** not storing Z with `DontCare` after its last use. The game opens
+  the device without `D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL` (presentation
+  parameters: swap 1, Z D24S8, flags 0; now logged at startup). So the implicit Z
+  must be preserved across frames; Z cleared later within the frame came out
+  0/frame. Not applicable, code removed.
 
-Yeni anahtarlar:
+New switches:
 
-| anahtar | işlev |
+| switch | function |
 |---|---|
-| `ABTEST=AD[,N[,ATLA]]` | koşu içi A/B (yukarıda) |
-| `SCRREDIR=0/2` | ekran yönlendirmeyi kapat / zehir testi |
-| `ALFAVAR=0/2/3` | testsiz varyantı kapat / sayaçlı tanı (ps başına; ayrıca [0,1] dışı köşe rengi sayımı) / tanının pozitif kontrolü |
-| `RENKSAT=0` | köşe rengi kırpmasını kapat (eski, D3D9'a aykırı) |
-| `UVFIX=0` | ölçekli hedeflerde yarım teksel düzeltmesini kapat (eski, bulanık) |
-| `TEXORD=0` | tekrar yüklenen dokuları anında yaz (eski, yarışlı) |
-| `TEXUPSAY=1` | çıkışta doku başına yükleme sayısı (en çok 12) |
-| `FBZINCIR=0/2` | son işlem zinciri birleştirmesini kapat / birebirlik doğrulaması |
-| `FBZCTRL=1/2` | (`FBZINCIR=2` ile) yardımcıyı normal boru hattıyla çalıştır / kendisiyle karşılaştır |
-| `SKIPPS=…` + `ABTEST=SKIPPS` | o ps'lerin bedelini koşu içinde ölç (yalnız KAPALI dilimlerde atlar) |
+| `ABTEST=NAME[,N[,SKIP]]` | in-run A/B (above) |
+| `SCRREDIR=0/2` | turn off the screen redirect / poison test |
+| `ALFAVAR=0/2/3` | turn off the test-free variant / diagnostic with counter (per ps; also counts vertex colors outside [0,1]) / positive control of the diagnostic |
+| `RENKSAT=0` | turn off vertex color clamping (old, violates D3D9) |
+| `UVFIX=0` | turn off the half-texel fix on scaled targets (old, blurry) |
+| `TEXORD=0` | write re-uploaded textures immediately (old, racy) |
+| `TEXUPSAY=1` | upload count per texture at exit (at most 12) |
+| `FBZINCIR=0/2` | turn off the post-process chain merge / exactness check |
+| `FBZCTRL=1/2` | (with `FBZINCIR=2`) run the helper with the normal pipeline / compare it with itself |
+| `SKIPPS=…` + `ABTEST=SKIPPS` | measure the cost of those ps within a run (skips only in OFF slices) |
 
 
-## 2026-10-20 – 10-24: ısınma, ses perdesi, kariyer kaydı
+## 2026-10-20 – 10-24: heat, audio pitch, career saves
 
-### Kapasite ölçümü: GPU'nun gerçek payı
+### Capacity measurement: the GPU's real share
 
-Oturumlarda GPU "%98 dolu" görünüyordu, ama bu sınırlı (120 fps) koşuda DVFS
-saatini de içeren bir doluluk.  Deterministik ölçüm için yeni üç anahtar:
-`VCLOCK=8333` (oyun saati kare başına sabit 8.333 ms), `NODRAW=1` (ekrana sunmaz,
-vsync beklemez), `LIMFREE=<kare>` (o kareden sonra oyunun 120 fps sınırlayıcısı
-kapalı; menüde kullanmayın).  GPU en yüksek saatte %100 çalışır, kare başına
-meşgul süre tekrarda ±%0.2.  `PENCERE` satırı IOReport'tan GPU doluluğunu ve
-"ms/kare @1296 MHz" değerini yazar; `PASSPROF_CSV=<yol>` kare başına geçiş
-süreleri.  Özellik bedeli aynı koşu içinde `ABTEST=<AD>,32,4` ile (komşu dilim
-çiftleri).  Tuzak: Quick Race kapasite koşularının ~1/3'ünde araba yavaş kalıyor
-(`sahne arasi kopya` sayısı ~1700 yerine ~5500 olmalı) — o koşular geçersiz.
+In sessions the GPU looked "98% full", but in a capped (120 fps) run this is a
+utilization that includes the DVFS clock. Three new switches for deterministic
+measurement: `VCLOCK=8333` (game clock fixed at 8.333 ms per frame), `NODRAW=1`
+(doesn't present to the screen, doesn't wait for vsync), `LIMFREE=<frame>` (the
+game's 120 fps limiter is off after that frame; don't use it in menus). The GPU
+runs 100% at its highest clock, and busy time per frame repeats within ±0.2%. The
+`WINDOW` line writes the GPU utilization from IOReport and the "ms/frame @1296 MHz"
+value; `PASSPROF_CSV=<path>` gives per-frame pass times. A feature's cost is
+measured within the same run with `ABTEST=<NAME>,32,4` (neighboring slice pairs).
+Trap: in ~1/3 of Quick Race capacity runs the car stays slow (the
+`mid-scene copy` count should be ~5500 instead of ~1700) — those runs are invalid.
 
-### HD: neden hep sıcak (86 °C)
+### HD: why it is always hot (86 °C)
 
-Sıcaklık ve fan artık ölçülüyor (`sicaklik.csv`).  Bulgu: yükte fanlar
-~2300/2500 dev/dk'da sabit kalıyor, sıcaklık saniyeler içinde GPU gücünü
-izliyor; GPU sürüşün %50-80'inde en yüksek saatte olduğu sürece 86-90 °C.
-Quick Race kapasite dökümü (en yüksek saatte 8.40 ms/kare, sınır 8.33):
+Temperature and fans are now measured (`temperature.csv`). Finding: under load the
+fans stay fixed at ~2300/2500 rpm, and the temperature follows the GPU power
+within seconds; as long as the GPU is at its highest clock for 50-80% of the
+drive, 86-90 °C. Quick Race capacity breakdown (8.40 ms/frame at the highest
+clock, limit 8.33):
 
-| kalem | ms/kare |
+| item | ms/frame |
 |---|---|
-| MSAA 2x (G-tamponsuz bedeli 0.9) | ~3.0 |
-| ↳ hareket bulanıklığı bölünmesi (MS renk+Z+G sakla/yükle, +176 MB/kare) | ~1.7 |
-| ışın izleme (çekirdek 2.0) | ~2.7 |
-| oyunun kendi tam çözünürlük son işlemi (normal sürümde de var) | ~2.3 |
+| MSAA 2x (cost without G-buffer 0.9) | ~3.0 |
+| ↳ motion blur split (MS color+Z+G store/load, +176 MB/frame) | ~1.7 |
+| ray tracing (kernel 2.0) | ~2.7 |
+| the game's own full-resolution post-process (present in the standard build too) | ~2.3 |
 
-Normal sürüm aynı sahnede 3.0 ms/kare; gerçek oturumda yarışta CPU 2.82 +
-GPU 3.62 = **6.45 W** (16 Ekim v1: 9.17 W), en yüksek 70 °C, fanlar hiç dönmedi.
-Isınma HD'nin eklediği MSAA + ışın izlemenin bedeli; kullanıcı görüntüden
-vermemeyi seçti (MSAA yerine son işlem kenar yumuşatma reddedildi).
+The standard build is 3.0 ms/frame in the same scene; in a real session, racing,
+CPU 2.82 + GPU 3.62 = **6.45 W** (16 October v1: 9.17 W), max 70 °C, the fans
+never spun. The heat is the cost of the MSAA + ray tracing HD adds; the user chose
+not to give up image quality (post-process anti-aliasing instead of MSAA was
+rejected).
 
-### HD: ışın izleme sabit deposu, mekânsal gruplar
+### HD: ray tracing static store, spatial groups
 
-Sabit depo tek yapıdan (30 karede bir +5 ms sıçrama) önce 8 zaman sıralı yuvaya
-geçmişti: yuvalar aynı bölgede üst üste biniyor, ışın çekirdeği +%48, oturumda
-12 ms üstü kare %1.5 → %5.1 (regresyon).  Şimdi (`metal.m` "SABIT DEPO:
-MEKANSAL GRUPLAR + YENI"): depo iki yarı (ping-pong), canlılar en fazla 12
-mekânsal gruba (~16K üçgen) bölünür; birleşmede GPU kopyası + kare başına BİR
-grup kurulumu, hepsi bitince tek karede değişim.  Birleşme sıçraması yok.
-Ayrıca **konum denetimi**: aynı modelin kopyaları (direk, palmiye) başka sırayla
-çizilince anlık yapının refit'i ağacı bozuyordu (çekirdek 1.5 → 15-25 ms);
-çizimin VS matrisinden dünya ötelemesi son tam kurulumla karşılaştırılır,
-4 birimden fazla kayarsa baştan kurulum (`HD_RT_REFIT_MOVE`).
+The static store had moved from a single structure (a +5 ms spike every 30
+frames) to 8 time-ordered slots: the slots overlapped in the same region, the ray
+kernel +48%, frames over 12 ms in a session 1.5% → 5.1% (regression). Now
+(`metal.m` "STATIC STORE: SPATIAL GROUPS + NEW"): the store has two halves
+(ping-pong), the live ones are split into at most 12 spatial groups (~16K
+triangles); on merging, a GPU copy + ONE group build per frame, and a switch in a
+single frame once all are done. No merge spike. Also a **position check**: when
+copies of the same model (poles, palms) were drawn in a different order, the
+refit of the instant structure broke the tree (kernel 1.5 → 15-25 ms); the world
+translation from the draw's VS matrix is compared with the last full build, and
+if it moves more than 4 units, a rebuild from scratch (`HD_RT_REFIT_MOVE`).
 
-### HD: hareket bulanıklığında arabalar MSAA'sız kalıyordu
+### HD: cars lost MSAA during motion blur
 
-Hızlı sürerken oyun uzak sahneyi çizip ekranı kopyalıyor, bulanıklaştırıp
-harmanlıyor, SONRA arabaları ve yakın sahneyi çiziyor.  HD bu ilk kopyayı sahne
-sonu sayıyordu: arabalar MSAA'sız ve ışın izlemesiz.  `metal.m` "SAHNE ARASI
-KOPYA": böyle bir kopyada sahne çok örnekli devam eder (`HD_MBFIX=0` eski).
-Bedeli hızlı sürüşte ~+1.5-2 W GPU; kullanıcı düzeltmeyi korumayı seçti.
-Denenip reddedilen: bölünmede yansımaları erken birleştirip G'yi taşımamak
-(`ABTEST`: +%7.5 iş).
+When driving fast the game draws the distant scene, copies the screen, blurs and
+blends it, and THEN draws the cars and the near scene. HD counted this first copy
+as the end of the scene: cars without MSAA and without ray tracing. `metal.m`
+"MID-SCENE COPY": on such a copy the scene continues multisampled (`HD_MBFIX=0`
+is the old behavior). It costs ~+1.5-2 W of GPU when driving fast; the user chose
+to keep the fix. Tried and rejected: merging the reflections early at the split
+and not carrying G (`ABTEST`: +7.5% work).
 
-### HD: ayrı G-tamponu geçişi (`HD_GSEP`)
+### HD: separate G-buffer pass (`HD_GSEP`)
 
-Sahne MSAA geçişi artık G-tamponsuz; yansıyan çizimler orada oyunun kendi
-gölgelendiricisiyle (varyantın c0'ı ile birebir aynı).  Sahne bitince tek
-örnekli bir G geçişi yalnız opak yansıma varyantlarını yeniden çizer (Z ikizi,
-`<=` testi, eğim sapması -1).  `ABTEST=GSEP`: GPU işi -%5.5, enerji -%5.9, DRAM
--28 MB/kare; doğrulama katmanı temiz, menüde fark ≤ 4/255.  Tek fark: yol üstü
-çıkartmalara (başlangıç çizgisi) artık ışın yansıması eklenmiyor.  Ölçülüp
-varsayılan KAPALI bırakılanlar: `HD_RT_FAR` (ışın mesafe sınırı, -0.1 ms) ve
-`HD_RT_BMIN` (yansıma ağırlığı eşiği, görünmez eşikte -%0.8).
+The scene MSAA pass is now without a G-buffer; reflective draws there use the
+game's own shader (exactly the same as the variant's c0). When the scene ends, a
+single-sampled G pass redraws only the opaque reflection variants (Z twin, `<=`
+test, slope bias -1). `ABTEST=GSEP`: GPU work -5.5%, energy -5.9%, DRAM -28
+MB/frame; the validation layer is clean, the difference in the menu ≤ 4/255. The
+only difference: on-road decals (the start line) no longer get ray-traced
+reflections. Measured and left OFF by default: `HD_RT_FAR` (ray distance limit,
+-0.1 ms) and `HD_RT_BMIN` (reflection weight threshold, -0.8% at an invisible
+threshold).
 
-### Ses: müzik 40-50 sn %3 yavaş/hızlı çalıyordu (2026-10-22)
+### Audio: music played 3% slow/fast for 40-50 s (2026-10-22)
 
-Kullanıcı: "arada bir şey oluyor, o andan itibaren müzik daha ağır akıyor"
-(hoparlörde de).  `SNDMUTE=1` (yeni: karıştırma ve servo çalışır, aygıta
-sessizlik gider) + `SNDCSV` ile Quick Race 3 dk: her yükleme/takılmada oyunun
-yazma payı yeni bir düzeye oturuyor, `audio.m`'deki yazma imleci servosu bunu
-hata sanıp hızı kelepçeye (±%3) itiyor ve 40-50 sn orada kalıyordu; çağrıların
-%95'inde hız ±%1'den fazla sapıyordu.  Neden kapanmıyordu: oyun yazdığı yeri
-bizim bildirdiğimiz GERÇEK oynatma imlecine göre seçiyor (`GetCurrentPosition`
-→ `audio_cursors`), çalma hızı değişince üretim de değişir.  Servo varsayılan
-KAPALI (`SNDPLL=1` eski): sapma %0.56 (yalnız takılma anları), sessiz okuma
-aynı, imleç aşımı 4 → 0.
+The user: "every now and then something happens, and from that moment the music
+flows slower" (on the speakers too). `SNDMUTE=1` (new: mixing and the servo run,
+silence goes to the device) + `SNDCSV` over a 3-minute Quick Race: on every
+load/stutter the game's write lead settles at a new level, and the write cursor
+servo in `audio.m` took this for an error and pushed the rate to the clamp (±3%),
+staying there for 40-50 s; in 95% of the calls the rate deviated by more than ±1%.
+Why it didn't close: the game chooses where it writes based on the REAL playback
+cursor we report (`GetCurrentPosition` → `audio_cursors`), so when the playback
+rate changes, production changes too. The servo is OFF by default (`SNDPLL=1` is
+the old behavior): deviation 0.56% (only at stutter moments), silent reads the
+same, cursor overruns 4 → 0.
 
-### Kariyer: profil adı ve kayıt (2026-10-24)
+### Career: profile name and saving (2026-10-24)
 
-O güne kadar hiç profil kaydedilemiyordu; zincir beş ayrı Win32 eksiğiydi:
-metin girişi `WM_CHAR` ile geliyor (üretmiyorduk; `metal.m` karakter halkası →
-`PeekMessageA`), `GetFullPathNameA` yoktu, `FindFirstFile` özniteliği hep dosya
-diyordu (profiller KLASÖR olarak aranıyor; joker deseni de yok sayılıyordu),
-`FileTimeToLocalFileTime`/`FileTimeToSystemTime` yoktu (kayıt varken çökme),
-`RemoveDirectoryA`/`GetTimeZoneInformation` eklendi.  Kayıtlar her pakette
-`~/Library/Application Support/NFSU2 Kayitlar`; testlerde MUTLAKA
-`NFSU2_SAVEDIR=<karalama>`.  Test: `AUTOTEXT='1650:\b\b\b\bTalha\n'` ile isim
-yazma, `FILEOPLOG=1` dosya işlemleri.
+Until then no profile could ever be saved; the chain was five separate Win32 gaps:
+text input arrives with `WM_CHAR` (we didn't generate it; `metal.m` character ring
+→ `PeekMessageA`), `GetFullPathNameA` was missing, `FindFirstFile` always reported
+the attribute as a file (profiles are looked up as FOLDERS; the wildcard pattern
+was ignored too), `FileTimeToLocalFileTime`/`FileTimeToSystemTime` were missing (a
+crash when a save existed), `RemoveDirectoryA`/`GetTimeZoneInformation` were
+added. Saves are in `~/Library/Application Support/NFSU2 Kayitlar` for every
+bundle; in tests ALWAYS use `NFSU2_SAVEDIR=<scratch>`. Test:
+`AUTOTEXT='1650:\b\b\b\bTalha\n'` types a name, `FILEOPLOG=1` logs file operations.
 
-### Sistem kısayolları ve Space geçişi donması
+### System shortcuts and the Space switch freeze
 
-0.54 sn'lik tek tük donmalar oyunun değil: Ctrl+ok macOS masaüstü değiştiriyor
-(`FullscreenGameMode=0`, sistem günlüğünde görünür).  Oyun öndeyken Space /
-Mission Control kısayolları kapatılır (`SLSSetSymbolicHotKeyEnabled`), arkaya
-geçince ve çıkışta açılır; küresel ve SIGKILL'den sonra kapalı kaldığı için
-aynı ikiliden doğan bir bekçi süreç çökmede geri açar (`tests/boot.c`).
-Cmd+Tab, Spotlight, ekran görüntüsü kısayollarına dokunulmaz.  `NFSKISAYOL=0`
-kapatır.
+The occasional 0.54 s freezes aren't the game's: Ctrl+arrow switches the macOS
+desktop (`FullscreenGameMode=0`, visible in the system log). While the game is in
+front the Space / Mission Control shortcuts are disabled
+(`SLSSetSymbolicHotKeyEnabled`), and re-enabled when it goes to the background and
+at exit; since this is global and stays disabled after a SIGKILL, a guard process
+spawned from the same binary re-enables them on a crash (`tests/boot.c`).
+Cmd+Tab, Spotlight and the screenshot shortcuts are left alone. `NFSKISAYOL=0`
+turns it off.
 
-### Yakalama kısayolu
+### Capture shortcut
 
-Oyun içinde **Cmd+Shift+D**: sonraki kare PNG + `DRAWLIST` + `DRAWSUM`
-(`PERFLOG` dizinine, yoksa `~/Library/Logs/NFSU2/`).  Otomatik testle
-üretilemeyen sahneler (kariyer yarış sonu) için.  Test kancası
-`YAKALAKARE=<kare>`.  Açık madde: kariyerde yarış sonu sahnesi (sonuç panelinin
-arkası) kullanıcıda siyah kalıyor; Quick Race drag kaybında aynı sahne doğru.
+In game, **Cmd+Shift+D**: the next frame as PNG + `DRAWLIST` + `DRAWSUM` (to the
+`PERFLOG` directory, otherwise `~/Library/Logs/NFSU2/`). For scenes that automated
+tests can't produce (the end of a career race). Test hook `YAKALAKARE=<frame>`.
+Open item: in career mode the post-race scene (behind the results panel) stays
+black for the user; after a Quick Race drag loss the same scene is correct.
 

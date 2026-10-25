@@ -1,4 +1,4 @@
-/* Win32 katmani - 2. tur: registry, pencere, senkronizasyon, thread */
+/* Win32 layer - second round: registry, window, synchronization, threads */
 #include <strings.h>
 #include "cpu.h"
 #include <stdio.h>
@@ -16,14 +16,14 @@ uint32_t res_find(uint32_t,uint32_t,int);
 uint32_t res_data(uint32_t);
 uint32_t res_size(uint32_t);
 
-/* ---- nesne tablosu (HANDLE -> tur/durum) ---- */
+/* ---- object table (HANDLE -> type/state) ---- */
 #define H_BASE 0x00A00000u
 typedef enum { OB_NONE=0, OB_EVENT, OB_MUTEX, OB_THREAD, OB_FILE, OB_KEY, OB_SEM } ObKind;
 typedef struct {
     ObKind kind; int signaled; int manual;
     pthread_mutex_t mtx; pthread_cond_t cv;
     uint32_t guest_arg, guest_entry, tid;
-    uint32_t owner_tid; int rec;      /* MUTEX: sahiplik + ozyineleme */
+    uint32_t owner_tid; int rec;      /* MUTEX: ownership + recursion */
     pthread_t th; int started; void *pending;
     char name[64];
 } Obj;
@@ -34,16 +34,16 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct { uint64_t waits, sets; uint32_t waiter_tid, setter_tid; } WStat;
 static WStat g_wstat[64];
 
-/* ---- BUYUK GUEST KILIDI ------------------------------------------------
- * Guest kodu ayni anda tek thread calistirir. Boylece hem lift edilmis kodun
- * paylastigi guest bellek/allocator'lar guvenli olur, hem de komut izi tutarli
- * kalir. Kilit yalnizca bloklayan cagrilarda (Sleep/Wait*) birakilir.      */
+/* ---- BIG GUEST LOCK ----------------------------------------------------
+ * Guest code runs on only one thread at a time. This keeps the guest
+ * memory/allocators shared by the lifted code safe and the instruction trace
+ * consistent. The lock is released only in blocking calls (Sleep/Wait*).  */
 static pthread_mutex_t g_guest = PTHREAD_MUTEX_INITIALIZER;
 extern CPU *g_cur_cpu;
 static _Thread_local CPU *tl_cpu = 0;
-static _Thread_local void *tl_obj = 0;   /* bu thread'in nesnesi */
-/* Tum guest thread'lerinin CPU durumu: takilma aninda HEPSININ yigin izini
- * dokebilmek icin (tek thread'inki yaniltici olabiliyor). */
+static _Thread_local void *tl_obj = 0;   /* this thread's object */
+/* CPU state of all guest threads: to be able to dump the stack traces of ALL
+ * of them at stall time (a single thread's can be misleading). */
 #define MAXCPUS 32
 CPU *g_all_cpus[MAXCPUS];
 uint32_t g_all_tids[MAXCPUS];
@@ -56,11 +56,12 @@ static void reg_cpu(CPU *c){
         g_all_n++;
     }
 }
-/* --- buyuk kilidin (GIL) TUTMA SURESI olcumu --------------------------
- * Guest thread'i Win32 cagrisi yapmadigi surece GIL'i birakmaz; uzun bir
- * hesaplama (ornek: ses akisi cozme) diger thread'leri aclikta birakir.
- * Ses her 30 sn'de bir ~50 ms sessizlik yaziyor -- suclunun bu olup
- * olmadigini olcuyoruz.  GILLOG=<ms> esigi asan her tutusu bildirir. */
+/* --- measuring the HOLD TIME of the big lock (GIL) ---------------------
+ * A guest thread doesn't release the GIL as long as it makes no Win32 call; a
+ * long computation (example: decoding the audio stream) starves the other
+ * threads.  The audio writes ~50 ms of silence every 30 s -- we measure
+ * whether this is the culprit.  GILLOG=<ms> reports every hold above the
+ * threshold. */
 static uint64_t gil_now_us(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec*1000000ull + (uint64_t)ts.tv_nsec/1000ull;
@@ -84,7 +85,7 @@ static void gil_gave(void){
         static int shown = 0;
         if (shown < 80){ shown++;
             double audio_time(void);
-            fprintf(stderr, "  [GIL] t=%.3f sn  kilit %.1f ms tutuldu  guest eip=%08x\n",
+            fprintf(stderr, "  [GIL] t=%.3f s  lock held %.1f ms  guest eip=%08x\n",
                     audio_time(), d/1000.0, tl_cpu ? tl_cpu->eip : 0u);
         }
     }
@@ -93,11 +94,12 @@ void guest_lock(CPU *c){ pthread_mutex_lock(&g_guest); tl_cpu=c; g_cur_cpu=c; re
 void guest_unlock(void){ gil_gave(); pthread_mutex_unlock(&g_guest); }
 static void guest_yield_begin(void){ gil_gave(); pthread_mutex_unlock(&g_guest); }
 static void guest_yield_end(void){ pthread_mutex_lock(&g_guest); g_cur_cpu = tl_cpu; gil_took(); }
-/* Buyuk kilidi birakarak uyu (win32.c: oyunun kare bekleme dongusu). */
-uint64_t g_sleep_late_ns, g_sleep_gil_ns, g_sleep_n;    /* tani: uyku gecikmesi / kilit bekleme */
-/* nanosleep macOS'ta zamanlayici birlestirme payiyla uyaniyor: oyunda 3 ms
- * istekte ortalama 447 us gec (ayri olcum: medyan ~770 us, QoS fark etmiyor).
- * kevent zamanlayicisi NOTE_CRITICAL ile birlestirilmez: medyan ~45 us. */
+/* Sleep while releasing the big lock (win32.c: the game's frame wait loop). */
+uint64_t g_sleep_late_ns, g_sleep_gil_ns, g_sleep_n;    /* diagnostics: sleep latency / lock wait */
+/* On macOS nanosleep wakes up with a timer coalescing margin: in the game a
+ * 3 ms request is on average 447 us late (separate measurement: median ~770 us,
+ * QoS makes no difference).  A kevent timer with NOTE_CRITICAL isn't
+ * coalesced: median ~45 us. */
 static void sleep_precise_ns(long ns){
     static _Thread_local int kq = -1;
     if (kq < 0) kq = kqueue();
@@ -120,14 +122,14 @@ void guest_sleep_ns(long ns){
     g_sleep_late_ns += sl > 0 ? (uint64_t)sl : 0; g_sleep_gil_ns += (uint64_t)gl; g_sleep_n++;
 }
 
-/* --- kare hizi sabitleme (60 Hz) ------------------------------------
- * Sanal saat kare basina TAM 16.667 ms ilerliyor, yani oyunun hizi =
- * (gercek fps / 60).  Emulator 117 fps yapinca oyun %195 hizda
- * kosuyordu.  Kareyi 60 Hz'e sabitlemek hizi FPS'ten bagimsiz kilar.
- * Uyku sirasinda buyuk kilit BIRAKILIR, yoksa isci thread'ler durur. */
-/* TIMELOG=1: saniyede bir sanal/gercek zaman orani ve kare sayisi.
- * "Oyun ara sahnelerde gereksiz hizlaniyor" sikayetini olcmek icin --
- * oran 1.0'in uzerine cikiyorsa oyun gercekten hizli kosuyor demektir. */
+/* --- frame rate locking (60 Hz) ---------------------------------------
+ * The virtual clock advances EXACTLY 16.667 ms per frame, so the game speed =
+ * (real fps / 60).  When the emulator did 117 fps the game ran at 195% speed.
+ * Locking the frame to 60 Hz makes the speed independent of FPS.
+ * The big lock is RELEASED during the sleep, otherwise the worker threads stop. */
+/* TIMELOG=1: the virtual/real time ratio and frame count once a second.
+ * For measuring the complaint "the game speeds up needlessly in cutscenes" --
+ * if the ratio goes above 1.0 the game really is running fast. */
 static void timelog_tick(void){
     static int on = -1;
     if (on < 0){ const char *e = getenv("TIMELOG"); on = (e && *e && *e != '0'); }
@@ -139,7 +141,7 @@ static void timelog_tick(void){
     long f = metal_frames();
     if (!lr){ lr = r; lv = v; lf = f; return; }
     if (r - lr < 1000000ull) return;
-    fprintf(stderr, "  [zaman] gercek %.2f sn, sanal %.2f sn, oran %.3f, %ld kare (%.1f fps)\n",
+    fprintf(stderr, "  [time] real %.2f s, virtual %.2f s, ratio %.3f, %ld frames (%.1f fps)\n",
             (r-lr)/1e6, (v-lv)/1e6, (double)(v-lv)/(double)(r-lr),
             f-lf, (f-lf)*1e6/(double)(r-lr));
     lr = r; lv = v; lf = f;
@@ -147,13 +149,14 @@ static void timelog_tick(void){
 
 void frame_pace(void){
     timelog_tick();
-    /* VARSAYILAN: FREN YOK.  Yukaridaki 60 Hz gerekcesi ARTIK GECERSIZ --
-     * sanal saat VCLOCK=real'e gectiginden oyun hizi gercek fps'ten
-     * bagimsiz (olculdu: 63.7 fps'te de 99 fps'te de sanal/gercek =
-     * 0.999).  Fren acikken yaris karesinin %61'i nanosleep'ti; kapaninca
-     * yaris 63.7 -> 79.4 fps, menuler 120 fps (ekran tazeleme siniri).
-     * PACE60=1 eski davranisi geri getirir.  Kacak fps'i vsync zaten
-     * kesiyor; sanal saat kare basi artisi 4 ms'de (250 fps) tabanli. */
+    /* DEFAULT: NO LIMITER.  The 60 Hz rationale above NO LONGER HOLDS --
+     * since the virtual clock switched to VCLOCK=real, the game speed is
+     * independent of the real fps (measured: virtual/real = 0.999 at both
+     * 63.7 fps and 99 fps).  With the limiter on, 61% of the race frame was
+     * nanosleep; with it off the race went 63.7 -> 79.4 fps and the menus to
+     * 120 fps (the display refresh limit).
+     * PACE60=1 brings back the old behavior.  Runaway fps is cut by vsync
+     * anyway; the virtual clock's per-frame increment is floored at 4 ms (250 fps). */
     static int off = -1;
     if (off < 0){ const char *e = getenv("PACE60");
                   off = !(e && *e && *e != '0'); }
@@ -162,7 +165,7 @@ void frame_pace(void){
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = (uint64_t)ts.tv_sec*1000000ull + (uint64_t)ts.tv_nsec/1000ull;
-    if (!deadline || now > deadline + 200000ull) deadline = now;   /* cok geride: sifirla */
+    if (!deadline || now > deadline + 200000ull) deadline = now;   /* far behind: reset */
     deadline += 16667ull;
     if (now < deadline){
         uint64_t d = deadline - now;
@@ -173,17 +176,17 @@ void frame_pace(void){
     }
 }
 
-/* Adil GIL: guest kodu bloklamayan Win32 cagrilarinda da donebilir
- * (ornek: EnterCriticalSection ile donen bekleme dongusu). Periyodik
- * olarak kilidi birakip diger guest thread'lerine sira veriyoruz.     */
-/* ---- GERCEK kritik bolumler ------------------------------------------
- * Onceden EnterCriticalSection/LeaveCriticalSection etkisiz stub'di.  Tek
- * buyuk kilit (GIL) cogu zaman ortuyordu AMA guest_fair_yield her 1024
- * Win32 cagrisinda GIL'i birakiyor: bir thread kritik bolumun ICINDEYKEN
- * kilidi kaybedebiliyor ve baska bir thread ayni bolume girebiliyordu.
- * Oyunun yukleyici/ses/video kuyruklari boyle sessizce bozulur.
+/* Fair GIL: guest code can also spin in non-blocking Win32 calls
+ * (example: a wait loop spinning on EnterCriticalSection). We periodically
+ * release the lock and give the other guest threads a turn.            */
+/* ---- REAL critical sections -------------------------------------------
+ * EnterCriticalSection/LeaveCriticalSection used to be no-op stubs.  The single
+ * big lock (GIL) covered for them most of the time, BUT guest_fair_yield
+ * releases the GIL every 1024 Win32 calls: a thread could lose the lock while
+ * INSIDE a critical section and another thread could enter the same section.
+ * The game's loader/audio/video queues get silently corrupted that way.
  *
- * Kilidi beklerken GIL BIRAKILMALI, yoksa kilitlenme olur.              */
+ * The GIL MUST BE RELEASED while waiting for the lock, otherwise deadlock.  */
 #define MAXCS 512
 static struct { uint32_t key; pthread_mutex_t m; int used; } g_cs[MAXCS];
 static pthread_mutex_t g_cs_tab = PTHREAD_MUTEX_INITIALIZER;
@@ -196,7 +199,7 @@ static int cs_disabled(void){
     return v;
 }
 static pthread_mutex_t *cs_for(uint32_t key){
-    if (cs_disabled()) return 0;          /* eski davranis: etkisiz stub */
+    if (cs_disabled()) return 0;          /* old behavior: no-op stub */
     pthread_mutex_lock(&g_cs_tab);
     unsigned h = (key >> 2) % MAXCS;
     for (unsigned i = 0; i < MAXCS; i++){
@@ -215,11 +218,11 @@ static pthread_mutex_t *cs_for(uint32_t key){
         }
     }
     pthread_mutex_unlock(&g_cs_tab);
-    return 0;                      /* tablo doldu: eski davranisa don */
+    return 0;                      /* table full: fall back to the old behavior */
 }
 
 uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args);
-int metal_take_char(int remove);            /* metal.m: WM_CHAR kuyrugu */
+int metal_take_char(int remove);            /* metal.m: WM_CHAR queue */
 static uint32_t g_wndproc = 0;
 static uint32_t g_hwnd    = 0x00B00001u;
 #define WMQ 8
@@ -247,19 +250,19 @@ static uint32_t cur_tid(CPU *c){
 }
 
 void guest_fair_yield(void){
-    if (tl_cs_depth) return;          /* kritik bolum icinde sira verme */
+    if (tl_cs_depth) return;          /* yielding inside a critical section */
     static _Thread_local uint32_t n = 0;
-    if ((++n & 0x3FFu) != 0) return;          /* her 1024 cagrida bir */
+    if ((++n & 0x3FFu) != 0) return;          /* once every 1024 calls */
     guest_yield_begin();
     sched_yield();
-    /* DIKKAT: burada her seferinde nanosleep(50us) vardi.  macOS'ta 50 us
-     * istenen bir uyku gercekte ~1-2 ms surer (zamanlayici kuantumu +
-     * timer coalescing).  Yarisdan onceki ara sahnede guest bir Win32
-     * fonksiyonunu kare basina ~110 bin kez cagiriyor; bu da kare basina
-     * ~110 uyku = ~165 ms demekti.  Olculdu: guest is parcaciginin %70'i
-     * __semwait_signal icinde, yani hesap degil UYKU.  Kare suresi 235 ms
-     * (4.6 fps).  sched_yield adilligi zaten sagliyor; uykuyu seyreltiyoruz
-     * (yalnizca diger is parcaciklarinin ilerlemesini garantilemek icin). */
+    /* CAUTION: there used to be a nanosleep(50us) here every time.  On macOS a
+     * sleep of 50 us really takes ~1-2 ms (scheduler quantum + timer
+     * coalescing).  In the pre-race cutscene the guest calls a Win32 function
+     * ~110 thousand times per frame; that meant ~110 sleeps = ~165 ms per frame.
+     * Measured: 70% of the guest thread was in __semwait_signal, i.e. SLEEP,
+     * not computation.  Frame time 235 ms (4.6 fps).  sched_yield already
+     * provides fairness; we thin out the sleeps (only to guarantee the other
+     * threads make progress). */
     if ((n & 0x7FFFu) == 0){
         struct timespec ts = {0, 50000L}; nanosleep(&ts, 0);
     }
@@ -275,7 +278,7 @@ static uint32_t obj_new(ObKind k){
     pthread_mutex_init(&o->mtx,0); pthread_cond_init(&o->cv,0);
     return H_BASE + (uint32_t)i;
 }
-/* fileio.c'nin overlapped tamamlanma olayini sinyallemesi icin. */
+/* for fileio.c to signal the overlapped completion event. */
 void win32_signal_event(uint32_t h);
 
 static Obj *obj_get(uint32_t h){
@@ -292,20 +295,19 @@ uint64_t g_threads_started = 0, g_threads_exited = 0;
 typedef struct { uint32_t entry, arg, teb; Obj *ob; } TArg;
 
 void mem_altstack_install(void);
-/* Konuk thread'leri BUYUK yigin ister: lift edilmis kodda her konuk cagrisi
- * bir host C cagrisi, ve lifted cerceveler genis.  Ana konuk thread'e
- * (tests/boot.c) 1 GB veriliyordu ama oyunun CreateThread ile actigi isci
- * thread'leri `pthread_create(...,0,...)` ile macOS varsayilani 512 KB
- * aliyordu -> derin ozyinelemede HOST YIGIN TASMASI (SIGSEGV, guest alani
- * disinda bir adres).  Rezervasyon sanal adres alani; ancak kullanildikca
- * commit edilir. */
+/* Guest threads need a BIG stack: in lifted code every guest call is a host C
+ * call, and lifted frames are wide.  The main guest thread (tests/boot.c) got
+ * 1 GB, but the worker threads the game opens with CreateThread got the macOS
+ * default of 512 KB via `pthread_create(...,0,...)` -> a HOST STACK OVERFLOW in
+ * deep recursion (SIGSEGV, an address outside guest space).  The reservation
+ * is virtual address space; it is only committed as it gets used. */
 static int guest_pthread_create(pthread_t *th, void *(*fn)(void*), void *arg){
     pthread_attr_t at;
     if (pthread_attr_init(&at) != 0) return pthread_create(th, 0, fn, arg);
     pthread_attr_setstacksize(&at, 256ull*1024ull*1024ull);
     int rc = pthread_create(th, &at, fn, arg);
     pthread_attr_destroy(&at);
-    if (rc != 0) rc = pthread_create(th, 0, fn, arg);   /* son care */
+    if (rc != 0) rc = pthread_create(th, 0, fn, arg);   /* last resort */
     return rc;
 }
 
@@ -325,15 +327,15 @@ static void *guest_thread_main(void *p){
     MR32(t->teb+0x00)=0xFFFFFFFFu; MR32(t->teb+0x04)=stack_hi; MR32(t->teb+0x08)=stack_lo;
     MR32(t->teb+0x18)=t->teb; MR32(t->teb+0x24)=t->ob?t->ob->tid:0;
     MR32(t->teb+0x2C)=t->teb+0x1000u; MR32(t->teb+0x30)=0x00C10000u;
-    /* stdcall: arg, sonra donus adresi */
+    /* stdcall: arg, then the return address */
     { CPU *c=&cpu; PUSH32(t->arg); PUSH32(0xDEAD7EADu); }
     __sync_fetch_and_add(&g_threads_started, 1);
     { static int sh=0; if (getenv("VERBOSE") && sh<40){ sh++;
-        fprintf(stderr,"      [thread] BASLADI entry=0x%08x arg=0x%08x teb=0x%08x tid=%u\n",
+        fprintf(stderr,"      [thread] STARTED entry=0x%08x arg=0x%08x teb=0x%08x tid=%u\n",
                 t->entry, t->arg, t->teb, t->ob?t->ob->tid:0); } }
     tl_obj = t->ob;
-    /* tani: thread listelerinde (perflog thread.csv, sample) taninsin */
-    { char nm[32]; snprintf(nm, sizeof nm, "konuk %u @%06x", t->ob ? t->ob->tid : 0u, t->entry & 0xFFFFFFu);
+    /* diagnostics: so it is recognizable in thread lists (perflog thread.csv, sample) */
+    { char nm[32]; snprintf(nm, sizeof nm, "guest %u @%06x", t->ob ? t->ob->tid : 0u, t->entry & 0xFFFFFFu);
       pthread_setname_np(nm); }
     guest_lock(&cpu);
     dispatch_indirect(&cpu, t->entry);
@@ -353,17 +355,16 @@ void win32_signal_event(uint32_t h){
     pthread_mutex_unlock(&o->mtx);
 }
 
-/* ---- WINMM coklu ortam zamanlayicisi -----------------------------------
- * NFSU2 on yuzunun guncelleme dongusunu timeSetEvent geri cagirmasindan
- * suruyor; stub birakilirsa menu animasyonlari ilerlemez ve girdi
- * islenmez.  Oyun tek-seferlik zamanlayiciyi geri cagirma icinde yeniden
- * kuruyor, bu yuzden zamanlayici basina thread acmak olmaz: TEK bir
- * zamanlayici thread'i tum kayitlari sirayla isler.                     */
+/* ---- WINMM multimedia timer -------------------------------------------
+ * The NFSU2 front end drives its update loop from a timeSetEvent callback; if
+ * left as a stub the menu animations don't advance and input isn't processed.
+ * The game re-arms the one-shot timer inside the callback, so opening a thread
+ * per timer doesn't work: a SINGLE timer thread processes all entries in turn. */
 #define MAXTIMER 32
 typedef struct {
     uint32_t proc, user, id;
-    uint64_t due_us;          /* 0 = bos */
-    uint32_t period_us;       /* 0 = tek seferlik */
+    uint64_t due_us;          /* 0 = empty */
+    uint32_t period_us;       /* 0 = one-shot */
 } Timer;
 
 static Timer    g_tm[MAXTIMER];
@@ -371,8 +372,8 @@ static uint32_t g_timer_next_id = 1;
 static int      g_timer_running = 0;
 uint64_t        g_timer_ticks = 0;
 
-/* Zamanlayicilar da OYUN zamanini kullanmali; yoksa emulator yavas
- * oldugunda geri cagirmalar oyunun kendi zamanina gore cok sik calisir. */
+/* Timers must also use GAME time; otherwise when the emulator is slow the
+ * callbacks run far too often relative to the game's own time. */
 uint64_t host_us(void);
 static uint64_t now_us(void){ return host_us(); }
 
@@ -403,12 +404,12 @@ static void *timer_thread_main(void *p){
             if (!g_tm[i].due_us || g_tm[i].due_us > now){ pthread_mutex_unlock(&g_lock); continue; }
             proc = g_tm[i].proc; user = g_tm[i].user; id = g_tm[i].id;
             if (g_tm[i].period_us) g_tm[i].due_us = now + g_tm[i].period_us;
-            else                   g_tm[i].due_us = 0;      /* tek seferlik biter */
+            else                   g_tm[i].due_us = 0;      /* a one-shot ends */
             pthread_mutex_unlock(&g_lock);
 
             cpu.esp = stack_hi - 0x1000u;
             { CPU *c=&cpu;
-              /* stdcall: dw2, dw1, dwUser, uMsg, uTimerID  (sagdan sola) */
+              /* stdcall: dw2, dw1, dwUser, uMsg, uTimerID  (right to left) */
               PUSH32(0u); PUSH32(0u); PUSH32(user); PUSH32(0u); PUSH32(id);
               PUSH32(0xDEAD7EADu); }
             guest_lock(&cpu);
@@ -420,17 +421,17 @@ static void *timer_thread_main(void *p){
     return 0;
 }
 
-/* ---- registry: bellek ici, "bulunamadi" varsayilani ---- */
-/* Oyun degeri bulamazsa kendi varsayilanini kullanir - istedigimiz bu. */
+/* ---- registry: in memory, "not found" default ---- */
+/* If the game doesn't find a value it uses its own default - which is what we want. */
 #define ERROR_SUCCESS         0u
 #define ERROR_FILE_NOT_FOUND  2u
 
-/* ---- disari acilan API ---- */
+/* ---- exported API ---- */
 static uint32_t A(CPU *c, int i){ return MR32(c->esp + 4u*(uint32_t)i); }
 
-/* --- basit kalici kayit defteri ---------------------------------------
- * Oyunun yazdigi ayarlar (grafik detayi, cozunurluk, ses) eskiden
- * atiliyordu.  Burada tutulup ~/.nfsu2_registry dosyasina yaziliyor. */
+/* --- simple persistent registry ----------------------------------------
+ * The settings the game writes (graphics detail, resolution, sound) used to be
+ * thrown away.  Here they are kept and written to the ~/.nfsu2_registry file. */
 #define MAXREG 128
 static struct { char name[64]; int is_str; uint32_t dw; char sv[128]; } g_reg[MAXREG];
 static int g_regn = 0;
@@ -496,29 +497,29 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     if (!strcmp(n,"RegOpenKeyA")){ uint32_t p=A(c,2); if(p) MR32(p)=obj_new(OB_KEY); r=ERROR_SUCCESS; }
     else if (!strcmp(n,"RegOpenKeyExA")){
         if (getenv("REGLOG")){ uint32_t sp=A(c,1);
-            fprintf(stderr,"  [kayit] OpenKeyEx(\"%s\")\n",
+            fprintf(stderr,"  [registry] OpenKeyEx(\"%s\")\n",
                     (sp && mem_is_committed(sp)) ? (const char*)(g_mem+sp) : "(null)"); }
         uint32_t p=A(c,4); if(p) MR32(p)=obj_new(OB_KEY); r=ERROR_SUCCESS; }
     else if (!strcmp(n,"RegCreateKeyA")){ uint32_t p=A(c,2); if(p) MR32(p)=obj_new(OB_KEY); r=ERROR_SUCCESS; }
     else if (!strcmp(n,"RegCreateKeyExA")){ uint32_t p=A(c,7); if(p) MR32(p)=obj_new(OB_KEY); r=ERROR_SUCCESS; }
     else if (!strcmp(n,"RegQueryValueExA")){
-        /* Bos bir kayit defteri oyunu HER ACILISTA "ilk kurulum" yoluna
-         * sokuyor (NotFirstTime bulunamiyor) ve kurulum bilgisi olmadan
-         * on yuz akisi ilerlemiyor.  Makul bir kurulmus-oyun profili
-         * donduruyoruz. */
+        /* An empty registry sends the game down the "first install" path ON EVERY
+         * LAUNCH (NotFirstTime isn't found), and without install information the
+         * front-end flow doesn't progress.  We return a reasonable
+         * installed-game profile. */
         uint32_t nameptr=A(c,1), ptype=A(c,3), pdata=A(c,4), pcb=A(c,5);
         const char *vn = (nameptr && mem_is_committed(nameptr))
                          ? (const char*)(g_mem+nameptr) : "";
         if (getenv("REGLOG"))
-            fprintf(stderr,"  [kayit] QueryValue(\"%s\")\n", vn);
+            fprintf(stderr,"  [registry] QueryValue(\"%s\")\n", vn);
 
         const char *sval = 0; uint32_t dval = 0; int have_d = 0;
-        { int ri = reg_find(vn);            /* once KAYITLI degere bak */
+        { int ri = reg_find(vn);            /* look at the SAVED value first */
           if (ri >= 0){
               if (g_reg[ri].is_str) sval = g_reg[ri].sv;
               else { dval = g_reg[ri].dw; have_d = 1; }
           } }
-        if (sval || have_d) { /* kayitli deger kullanilacak */ }
+        if (sval || have_d) { /* the saved value will be used */ }
         else if (!strcasecmp(vn,"NotFirstTime")){ dval=1; have_d=1; }
         else if (!strcasecmp(vn,"Language"))      sval="English";
         else if (!strcasecmp(vn,"Install Dir"))   sval="C:\\NFSU2";
@@ -553,9 +554,9 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     }
     else if (!strcmp(n,"RegQueryValueA")){ r=ERROR_FILE_NOT_FOUND; }
     else if (!strcmp(n,"RegSetValueExA")||!strcmp(n,"RegSetValueA")){
-        /* Eskiden yazilanlar SESSIZCE ATILIYORDU: oyunun kaydettigi
-         * grafik/ses ayarlari her acilista sifirlaniyordu.  Artik
-         * saklaniyor ve diske yaziliyor. */
+        /* Writes used to be SILENTLY DROPPED: the graphics/sound settings the game
+         * saved were reset on every launch.  Now they are kept and written to
+         * disk. */
         uint32_t nameptr=A(c,1), type=A(c,3), pdata=A(c,4), cb=A(c,5);
         const char *vn = (nameptr && mem_is_committed(nameptr))
                          ? (const char*)(g_mem+nameptr) : "";
@@ -565,18 +566,18 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             else if (type == 1u && pdata && mem_is_committed(pdata))
                 reg_put_string(vn, (const char*)(g_mem+pdata));
             if (getenv("REGLOG"))
-                fprintf(stderr,"  [kayit] SetValue(\"%s\") tur=%u boyut=%u\n", vn, type, cb);
+                fprintf(stderr,"  [registry] SetValue(\"%s\") type=%u size=%u\n", vn, type, cb);
         }
         r=ERROR_SUCCESS; }
     else if (!strcmp(n,"RegCloseKey")) r=ERROR_SUCCESS;
     else if (!strcmp(n,"RegDeleteKeyA")||!strcmp(n,"RegDeleteValueA")) r=ERROR_SUCCESS;
     else if (!strcmp(n,"RegEnumKeyExA")||!strcmp(n,"RegEnumValueA")) r=259u; /* ERROR_NO_MORE_ITEMS */
-    /* --- pencere / USER32 --- */
-    /* Pencere mesaj yolu.  DirectInput cihazlari yalnizca uygulama ODAK
-     * aldiginda Acquire ediliyor; oyun bunu WM_ACTIVATEAPP/WM_SETFOCUS
-     * mesajlarindan anliyor.  PeekMessage hep 0 dondugu ve DispatchMessage
-     * pencere yordamini hic cagirmadigi icin oyun hicbir zaman "aktifim"
-     * demiyordu -> klavye hic Acquire edilmiyordu.                      */
+    /* --- window / USER32 --- */
+    /* The window message path.  DirectInput devices are only Acquired when the
+     * application gets FOCUS; the game learns this from the
+     * WM_ACTIVATEAPP/WM_SETFOCUS messages.  Since PeekMessage always returned 0
+     * and DispatchMessage never called the window procedure, the game never said
+     * "I'm active" -> the keyboard was never Acquired.                  */
 
     else if (!strcmp(n,"RegisterClassExA")||!strcmp(n,"RegisterClassA")){
         /* WNDCLASSEXA: +8 lpfnWndProc | WNDCLASSA: +4 lpfnWndProc */
@@ -585,7 +586,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             uint32_t off = !strcmp(n,"RegisterClassExA") ? 8u : 4u;
             uint32_t wp = MR32(wc+off);
             if (wp) { g_wndproc = wp;
-                fprintf(stderr,"  [pencere] sinif kaydi, yordam=0x%08x\n", wp); }
+                fprintf(stderr,"  [window] class registered, procedure=0x%08x\n", wp); }
         }
         r=0xC001u; }
     else if (!strcmp(n,"UnregisterClassA")) r=1;
@@ -593,7 +594,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         r = g_hwnd;
         if (!g_wm_activated){ g_wm_activated = 1;
             wm_push(0x0018u, 1u, 0u);   /* WM_SHOWWINDOW  */
-            wm_push(0x001Cu, 1u, 0u);   /* WM_ACTIVATEAPP  aktif */
+            wm_push(0x001Cu, 1u, 0u);   /* WM_ACTIVATEAPP  active */
             wm_push(0x0006u, 1u, 0u);   /* WM_ACTIVATE     WA_ACTIVE */
             wm_push(0x0007u, 0u, 0u);   /* WM_SETFOCUS     */
             wm_push(0x000Fu, 0u, 0u);   /* WM_PAINT        */
@@ -615,7 +616,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                         case 32: r=4; case 33: r=4; break; default: r=0; } }
     else if (!strcmp(n,"AdjustWindowRect")){ r=1; }
     else if (!strcmp(n,"GetClientRect")||!strcmp(n,"GetWindowRect")){
-        /* Oyunun gercek cozunurlugu: imlec eslemesi buna gore (bkz.
+        /* The game's real resolution: cursor mapping follows it (see
          * metal_game_size). */
         unsigned gw = 1280, gh = 720; void metal_game_size(unsigned*,unsigned*); metal_game_size(&gw,&gh);
         uint32_t p=A(c,1); if(p){mem_commit(p,16);MR32(p)=0;MR32(p+4)=0;MR32(p+8)=gw;MR32(p+12)=gh;} r=1; }
@@ -636,8 +637,8 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             g_wm_sent++;
             r=1;
         } else if ((wp = (uint32_t)metal_take_char(remove)) != 0xFFFFFFFFu){
-            /* Yazilan karakter (bkz. metal.m char_push).  Windows'ta
-             * TranslateMessage'in uretecegi WM_CHAR; lParam: tekrar=1. */
+            /* A typed character (see metal.m char_push).  The WM_CHAR that Windows's
+             * TranslateMessage would produce; lParam: repeat=1. */
             if (pm){ mem_commit(pm,28);
                 MR32(pm)=g_hwnd; MR32(pm+4)=0x0102u; MR32(pm+8)=wp; MR32(pm+12)=1u;
                 MR32(pm+16)=0; MR32(pm+20)=0; MR32(pm+24)=0; }
@@ -662,7 +663,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"IsIconic")) r=0;
     else if (!strcmp(n,"GetKeyboardState")){ uint32_t p=A(c,0); if(p){mem_commit(p,256);memset(g_mem+p,0,256);} r=1; }
     else if (!strcmp(n,"GetAsyncKeyState")) r=0;
-    /* --- senkronizasyon --- */
+    /* --- synchronization --- */
     else if (!strcmp(n,"CreateEventA")){
         uint32_t h=obj_new(OB_EVENT); Obj*o=obj_get(h);
         if(o){ o->manual=(int)A(c,1); o->signaled=(int)A(c,2); } r=h; }
@@ -689,7 +690,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                        if (--o->rec == 0){ o->owner_tid = 0; o->signaled = 1;
                                            pthread_cond_broadcast(&o->cv); }
                        r=1;
-                   } else r=0;            /* sahibi degiliz */
+                   } else r=0;            /* we aren't the owner */
                } else { o->signaled=1; pthread_cond_broadcast(&o->cv); r=1; }
                pthread_mutex_unlock(&o->mtx); }
     }
@@ -705,7 +706,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                                          g_wstat[h-H_BASE].waiter_tid = tid; }
           static int sh=0;
           if (++sh % 400 == 0){
-            fprintf(stderr,"  [olay] handle  tur  sinyal  bekleme  SetEvent  bekleyen-tid\n");
+            fprintf(stderr,"  [event] handle  type  signal  wait  SetEvent  waiting-tid\n");
             for (int i=0;i<64;i++) if (g_wstat[i].waits || g_wstat[i].sets)
                 fprintf(stderr, "         h%-4d %3d %6d %8llu %9llu  tid=%u\n", i,
                         g_obj[i].kind, g_obj[i].signaled,
@@ -715,9 +716,9 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
           } }
         if(!o){ r=0; }
         else if (o->kind == OB_MUTEX){
-            /* MUTEX: sahiplik + OZYINELEME.  Ayni thread ayni mutex'i tekrar
-             * alabilmeli; yoksa oyunun ic ice kilit alan CRT sarmalayicisi
-             * kendi kendini kilitliyor (video oynatici boyle donuyordu). */
+            /* MUTEX: ownership + RECURSION.  The same thread must be able to take the same
+             * mutex again; otherwise the game's CRT wrapper that takes nested locks
+             * deadlocks itself (this is how the video player froze). */
             uint32_t me = cur_tid(c);
             guest_yield_begin();
             pthread_mutex_lock(&o->mtx);
@@ -778,7 +779,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             t->entry=entry; t->arg=arg; t->teb=teb; t->ob=o;
             o->pending = t;
             if (A(c,4) & 0x4u){                 /* CREATE_SUSPENDED */
-                o->started = 0;                 /* ResumeThread bekleyecek */
+                o->started = 0;                 /* ResumeThread will wait */
             } else {
                 if (guest_pthread_create(&o->th,guest_thread_main,t)==0){
                     o->started=1; o->pending=0; pthread_detach(o->th);
@@ -796,8 +797,8 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         r=1; }
     else if (!strcmp(n,"SuspendThread")) r=0;
     else if (!strcmp(n,"ExitThread")){
-        /* Guest thread'i GERCEKTEN sonlandir. Aksi halde yurutme _endthreadex'ten
-         * _threadstartex prologuna duser ve thread kendini yeniden baslatir.   */
+        /* REALLY terminate the guest thread. Otherwise execution falls from
+         * _endthreadex into the _threadstartex prologue and the thread restarts itself. */
         Obj *o = (Obj*)tl_obj;
         if (o){ pthread_mutex_lock(&o->mtx); o->signaled=1;
                 pthread_cond_broadcast(&o->cv); pthread_mutex_unlock(&o->mtx); }
@@ -812,12 +813,12 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         uint32_t a=A(c,1),b=A(c,2); if(a) MR32(a)=0xFF; if(b) MR32(b)=0xFF; r=1; }
     else if (!strcmp(n,"SetPriorityClass")) r=1;
     else if (!strcmp(n,"GetPriorityClass")) r=0x20;
-    /* --- handle / cesitli --- */
+    /* --- handles / misc --- */
     else if (!strcmp(n,"Sleep")){
         uint32_t ms=A(c,0);
         guest_yield_begin();
         { struct timespec ts={ (time_t)(ms/1000u), (long)((ms%1000u)*1000000u) };
-          if(!ms){ ts.tv_nsec = 200000L; }        /* Sleep(0): sadece yer ver */
+          if(!ms){ ts.tv_nsec = 200000L; }        /* Sleep(0): just yield */
           nanosleep(&ts,0); }
         guest_yield_end();
         r=0; }
@@ -852,7 +853,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"CloseHandle")) r=1;
     else if (!strcmp(n,"DuplicateHandle")){ uint32_t p=A(c,3); if(p) MR32(p)=A(c,1); r=1; }
     else if (!strcmp(n,"SetErrorMode")) r=0;
-    else if (!strcmp(n,"GetLogicalDrives")) r=0x0000000Cu;             /* C: ve D: */
+    else if (!strcmp(n,"GetLogicalDrives")) r=0x0000000Cu;             /* C: and D: */
     else if (!strcmp(n,"GetDriveTypeA")) r=3;                          /* DRIVE_FIXED */
     else if (!strcmp(n,"GetCurrentDirectoryA")){
         uint32_t p=A(c,1); const char*s="C:\\NFSU2"; uint32_t l=(uint32_t)strlen(s);
@@ -863,10 +864,10 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         uint32_t l = src? (uint32_t)strlen((char*)(g_mem+src)) : 0;
         if(dst && sz>l){ memcpy(g_mem+dst, g_mem+src, l+1); }
         r=l; }
-    /* Kayit dosyalarinin tarihleri (WIN32_FIND_DATA FILETIME'lari).  Oyun
-     * profil bulununca bunlari CRT'nin localtime'ina sokuyor; eskiden
-     * uygulanmamislardi -> cop -> localtime NULL -> guest adres 0x14'te
-     * cokme (tm_year).  Bir profil kaydedilene kadar hic cagrilmiyorlardi. */
+    /* The timestamps of save files (the WIN32_FIND_DATA FILETIMEs).  When a profile
+     * is found the game feeds them into the CRT's localtime; they used to be
+     * unimplemented -> garbage -> localtime NULL -> crash at guest address 0x14
+     * (tm_year).  They were never called until a profile had been saved. */
     else if (!strcmp(n,"FileTimeToLocalFileTime")||!strcmp(n,"LocalFileTimeToFileTime")){
         uint32_t s=A(c,0), d=A(c,1); r=0;
         if (s && d && mem_is_committed(s+7)){
@@ -895,8 +896,8 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                     MR16(d+14) = (uint16_t)((ft / 10000ull) % 1000ull);
                     r=1; } } } }
     else if (!strcmp(n,"GetTimeZoneInformation")){
-        /* TIME_ZONE_INFORMATION (172 bayt): +0 Bias (dakika, UTC = yerel + Bias).
-         * Eskiden tampon doldurulmuyordu (cop). */
+        /* TIME_ZONE_INFORMATION (172 bytes): +0 Bias (minutes, UTC = local + Bias).
+         * The buffer used not to be filled (garbage). */
         uint32_t p=A(c,0);
         if (p){ mem_commit(p,172); memset(g_mem+p,0,172);
             time_t t = time(0); struct tm lt; localtime_r(&t, &lt);
@@ -904,19 +905,20 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         r=0; }                                        /* TIME_ZONE_ID_UNKNOWN */
     else if (!strcmp(n,"GetFullPathNameA")){
         /* (lpFileName, nBufferLength, lpBuffer, lpFilePart)
-         * Kariyer kaydi profil yolunu bununla kuruyor
-         * ("C:\NFSU2\NFS Underground 2").  Eskiden uygulanmamisti: 0 donup
-         * tamponu bos birakiyordu, oyun cop bir yola yazmaya calisip
-         * "Unable to save <ad>" diyordu.  Gecerli dizin hep C:\NFSU2. */
+         * The career save builds the profile path with this
+         * ("C:\NFSU2\NFS Underground 2").  It used to be unimplemented: it
+         * returned 0 and left the buffer empty, the game tried to write to a
+         * garbage path and said "Unable to save <name>".  The current
+         * directory is always C:\NFSU2. */
         uint32_t src=A(c,0), sz=A(c,1), dst=A(c,2), fpart=A(c,3);
         const char *in = (src && mem_is_committed(src)) ? (const char*)(g_mem+src) : "";
         char full[1024]; size_t k = 0;
         if (in[0] && in[1] == ':')                    /* "X:..." */
             { full[k++] = in[0]; full[k++] = ':'; in += 2; }
         else { memcpy(full, "C:", 2); k = 2; }
-        if (*in != '\\' && *in != '/'){               /* gorece: gecerli dizin */
+        if (*in != '\\' && *in != '/'){               /* relative: the current directory */
             memcpy(full + k, "\\NFSU2", 6); k += 6; }
-        /* bilesen bilesen: "." atla, ".." bir ust */
+        /* component by component: skip ".", ".." goes one up */
         while (*in && k < sizeof full - 2){
             while (*in == '\\' || *in == '/') in++;
             if (!*in) break;
@@ -930,8 +932,8 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             if (k + 1 + L >= sizeof full - 1) break;
             full[k++] = '\\'; memcpy(full + k, in, L); k += L; in = e2;
         }
-        if (k == 2) full[k++] = '\\';                 /* yalnizca "C:\" */
-        /* sondaki ayirac korunur ("dir\" -> "C:\...\dir\") */
+        if (k == 2) full[k++] = '\\';                 /* only "C:\" */
+        /* the trailing separator is kept ("dir\" -> "C:\...\dir\") */
         { size_t il = src && mem_is_committed(src) ? strlen((const char*)(g_mem+src)) : 0;
           const char *s0 = (const char*)(g_mem+src);
           if (il && (s0[il-1]=='\\' || s0[il-1]=='/') && full[k-1] != '\\') full[k++] = '\\'; }
@@ -942,7 +944,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                 char *ls = strrchr(full, '\\');
                 MR32(fpart) = (ls && ls[1]) ? dst + (uint32_t)(ls + 1 - full) : 0; }
             r = (uint32_t)k;
-        } else r = (uint32_t)k + 1;                   /* gereken boyut (NUL dahil) */
+        } else r = (uint32_t)k + 1;                   /* the required size (including NUL) */
     }
     else if (!strcmp(n,"GetSystemDirectoryA")||!strcmp(n,"GetWindowsDirectoryA")){
         uint32_t p=A(c,0); const char*s="C:\\Windows"; uint32_t l=(uint32_t)strlen(s);
@@ -954,14 +956,14 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"GetLocalTime")||!strcmp(n,"GetSystemTime")){
         uint32_t p=A(c,0); if(p){ mem_commit(p,16); memset(g_mem+p,0,16);
             MR16(p)=2026; MR16(p+2)=8; MR16(p+6)=24; MR16(p+8)=12; } r=0; }
-    /* --- kopya korumasi / anti-debug: basarisiz don --- */
+    /* --- copy protection / anti-debug: return failure --- */
     else if (!strcmp(n,"CreateToolhelp32Snapshot")) r=0xFFFFFFFFu;
     else if (!strcmp(n,"Process32First")||!strcmp(n,"Process32Next")) r=0;
     else if (!strcmp(n,"IsDebuggerPresent")) r=0;
-    /* --- kaynak --- */
+    /* --- resources --- */
     else if (!strcmp(n,"FindResourceA")) r = res_find(A(c,1), A(c,2), 0);
     else if (!strcmp(n,"FindResourceW")) r = res_find(A(c,1), A(c,2), 1);
-    else if (!strcmp(n,"LoadResource"))  r = A(c,1);            /* HRSRC'yi tasi */
+    else if (!strcmp(n,"LoadResource"))  r = A(c,1);            /* carry the HRSRC */
     else if (!strcmp(n,"LockResource"))  r = res_data(A(c,0));
     else if (!strcmp(n,"SizeofResource"))r = res_size(A(c,1));
     else if (!strcmp(n,"FreeResource"))  r = 1;
@@ -999,8 +1001,8 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             }
             pthread_mutex_unlock(&g_lock);
             { static int sh2=0; if (sh2<3){ sh2++;
-                fprintf(stderr,"  [zamanlayici] timeSetEvent %u ms, %s, geri cagirma 0x%08x\n",
-                        delay, (flags&1u)?"periyodik":"tek sefer", proc); } }
+                fprintf(stderr,"  [timer] timeSetEvent %u ms, %s, callback 0x%08x\n",
+                        delay, (flags&1u)?"periodic":"one-shot", proc); } }
         }
         r=id; }
     else if (!strcmp(n,"timeKillEvent")){
@@ -1016,10 +1018,10 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         r=0; }
     else if (!strcmp(n,"timeBeginPeriod")||!strcmp(n,"timeEndPeriod")) r=0;
     else if (!strcmp(n,"joyGetNumDevs")) r=0;
-    /* --- GERCEK kritik bolumler ---------------------------------------
-     * Etkisiz stub birakilirsa GIL'in adil paylasimi (her 1024 Win32
-     * cagrisinda kilidi birakir) karsilikli dislamayi bozuyor: bir thread
-     * kritik bolumun icindeyken kilidi kaybedebiliyor.                  */
+    /* --- REAL critical sections -----------------------------------------
+     * If left as a no-op stub, the GIL's fair sharing (it releases the lock every
+     * 1024 Win32 calls) breaks mutual exclusion: a thread can lose the lock while
+     * inside a critical section.                                        */
     else if (!strcmp(n,"InitializeCriticalSection")||
              !strcmp(n,"InitializeCriticalSectionAndSpinCount")){
         (void)cs_for(A(c,0)); r=1; }
@@ -1029,7 +1031,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             g_cs_enter++;
             if (pthread_mutex_trylock(m) != 0){
                 g_cs_contended++;
-                guest_yield_begin();          /* beklerken GIL'i birak */
+                guest_yield_begin();          /* release the GIL while waiting */
                 pthread_mutex_lock(m);
                 guest_yield_end();
             }
@@ -1045,7 +1047,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         if (m && tl_cs_depth > 0){ tl_cs_depth--; pthread_mutex_unlock(m); }
         r=1; }
     else if (!strcmp(n,"DeleteCriticalSection")) r=1;
-    else return 0;                       /* bu katman ilgilenmiyor */
+    else return 0;                       /* this layer isn't interested */
     *out = r;
     return 1;
 }

@@ -1,12 +1,12 @@
-/* .app paketi destegi
+/* .app bundle support
  *
- * Kabuk betigi olmadan Finder'dan calistirilabilmesi icin gereken uc sey:
- *   1) run.sh'in export ettigi ayarlar (paket icinde kendiliginden kurulur),
- *   2) oyun verisinin nerede oldugu (paket disinda; kullanicidan sorulur),
- *   3) stderr'in bir yere yazilmasi (Finder'dan calisinca terminal yok).
+ * Three things needed to be runnable from Finder without a shell script:
+ *   1) the settings run.sh exports (set automatically inside the bundle),
+ *   2) where the game data is (outside the bundle; the user is asked),
+ *   3) stderr being written somewhere (no terminal when run from Finder).
  *
- * Bu dosyadaki hicbir sey terminalden calistirmayi degistirmez: tum yollar
- * once "paketten mi calisiyoruz" diye bakar, degilse hemen doner.        */
+ * Nothing in this file changes running from the terminal: every path first
+ * checks "are we running from a bundle" and returns immediately if not.  */
 #import <Cocoa/Cocoa.h>
 #include <string.h>
 #include "enhance.h"
@@ -18,12 +18,12 @@
 #include <mach-o/dyld.h>
 
 static char g_exe_dir[1024];      /* .../NFSU2.app/Contents/MacOS      */
-static char g_app_dir[1024];      /* .app dosyasinin BULUNDUGU dizin   */
+static char g_app_dir[1024];      /* the directory CONTAINING the .app */
 static char g_res_dir[1024];      /* .../NFSU2.app/Contents/Resources  */
 static int  g_bundled = -1;
 
-/* Paketten mi calisiyoruz?  Sembolik baglantilari cozulmus gercek yola
- * bakiyoruz: ".../X.app/Contents/MacOS/Y" ise evet.                     */
+/* Are we running from a bundle?  We look at the real path with symbolic links
+ * resolved: yes if it is ".../X.app/Contents/MacOS/Y".                   */
 int app_is_bundled(void){
     if (g_bundled >= 0) return g_bundled;
     char raw[1024]; uint32_t n = sizeof raw;
@@ -38,7 +38,7 @@ int app_is_bundled(void){
     size_t el = strlen(g_exe_dir), tl = strlen(tail);
     if (el <= tl || strcmp(g_exe_dir + el - tl, tail) != 0){ g_bundled = 0; return 0; }
 
-    /* .../X.app  ->  Resources ve .app'in bulundugu dizin */
+    /* .../X.app  ->  Resources and the directory containing the .app */
     char app[1024]; snprintf(app, sizeof app, "%.*s", (int)(el - tl), g_exe_dir);
     snprintf(g_res_dir, sizeof g_res_dir, "%s/Contents/Resources", app);
     snprintf(g_app_dir, sizeof g_app_dir, "%s", app);
@@ -47,10 +47,10 @@ int app_is_bundled(void){
     return 1;
 }
 
-/* run.sh'teki export'larin paket ici karsiligi.  Cevrede zaten varsa
- * dokunmuyoruz: "NFSU2_DATA=... open -a" ile ezmek mumkun kalsin.
- * ALARM ozellikle 0: boot.c'nin 20 sn'lik tani zaman asimi oyunu
- * kullanicinin elinden alirdi.                                          */
+/* The in-bundle equivalent of the exports in run.sh.  If already in the
+ * environment we leave them alone: overriding with "NFSU2_DATA=... open -a"
+ * stays possible.  ALARM is deliberately 0: boot.c's 20 s diagnostic timeout
+ * would take the game out of the user's hands.                          */
 static void setdef(const char *k, const char *v){ if (!getenv(k)) setenv(k, v, 1); }
 void app_set_defaults(void){
     setdef("WINDOW", "1");
@@ -62,21 +62,21 @@ void app_set_defaults(void){
     setdef("GPUVS", "1");
 }
 
-/* Finder'dan calisinca stderr /dev/null'a gider; hata raporu isteyince
- * elimizde hicbir sey olmaz.  Terminalden calistirildiginda (stderr bir
- * tty ise) dokunmuyoruz.                                                */
+/* When run from Finder stderr goes to /dev/null; when an error report is
+ * wanted we have nothing.  When run from the terminal (stderr is a tty) we
+ * leave it alone.                                                       */
 void app_open_log(void){
     if (isatty(2)) return;
     const char *home = getenv("HOME"); if (!home) return;
     char dir[1024], pth[1200];
     snprintf(dir, sizeof dir, "%s/Library/Logs/NFSU2", home);
     mkdir(dir, 0755);
-    /* HD build ayri log yazar: iki surum yan yana calistirilinca birbirinin
-     * logunu ezmesin. */
+    /* The HD build writes a separate log: so the two versions run side by side
+     * don't overwrite each other's log. */
     const char *lg = NFS_ENHANCED ? "nfsu2-hd" : "nfsu2";
     snprintf(pth, sizeof pth, "%s/%s.log", dir, lg);
-    /* "w": her calistirmada bastan.  Onceki kosu tanida lazim olabilir. */
-    char prev[1300]; snprintf(prev, sizeof prev, "%s/%s-onceki.log", dir, lg);
+    /* "w": from scratch on every run.  The previous run may be needed for diagnosis. */
+    char prev[1300]; snprintf(prev, sizeof prev, "%s/%s-previous.log", dir, lg);
     rename(pth, prev);
     freopen(pth, "w", stderr);
     setvbuf(stderr, NULL, _IOLBF, 0);
@@ -93,9 +93,9 @@ static int has_exe(const char *dir, char *out, size_t osz){
     return 0;
 }
 
-/* Secilen dizin ya SPEED2.EXE'yi dogrudan icerir ya da bir ust dizindir
- * ("Need for Speed Underground 2 - Clean Edition" gibi).  Iki seviye
- * asagi bakiyoruz; daha derini kullaniciya sormaya deger.               */
+/* The selected directory either contains SPEED2.EXE directly or is a parent
+ * directory (like "Need for Speed Underground 2 - Clean Edition").  We look
+ * two levels down; anything deeper is worth asking the user about.       */
 static int find_under(const char *dir, char *out, size_t osz, int depth){
     if (has_exe(dir, out, osz)) return 1;
     if (depth <= 0) return 0;
@@ -112,14 +112,14 @@ static int find_under(const char *dir, char *out, size_t osz, int depth){
 }
 
 static NSString *const kPrefKey = @"OyunDizini";
-static int g_embedded = 0;        /* veri paketin icinden bulundu */
+static int g_embedded = 0;        /* the data was found inside the bundle */
 
-/* Kayitlarin (kariyer profilleri) yazilacagi dizin.  HER ZAMAN oyun ve
- * uygulama klasorlerinin disinda: yeni bir surum dagitilip .app ya da oyun
- * klasoru degistirilince oyuncunun ilerlemesi kaybolmasin.  Paketin icine
- * yazmak ayrica imzayi bozardi.  Eski surumlerin oyun klasorune yazdigi
- * kayitlar acilista buraya tasinir (fileio_migrate_saves).
- * NFSU2_SAVEDIR ile degistirilebilir (testler gercek kayitlara dokunmasin). */
+/* The directory saves (career profiles) are written to.  ALWAYS outside the
+ * game and application folders: so the player's progress isn't lost when a new
+ * version is distributed and the .app or game folder is replaced.  Writing
+ * inside the bundle would also break the signature.  Saves that old versions
+ * wrote to the game folder are moved here at startup (fileio_migrate_saves).
+ * Can be changed with NFSU2_SAVEDIR (so tests don't touch real saves). */
 const char *app_save_dir(void){
     static char dir[1200];
     const char *env = getenv("NFSU2_SAVEDIR");
@@ -137,29 +137,30 @@ static void app_alert(const char *title, const char *msg){
     [a runModal];
 }
 
-/* Kullaniciya oyun klasorunu sordur.  Iptal ederse 0 doner.            */
+/* Ask the user for the game folder.  Returns 0 if they cancel.          */
 static int app_ask(char *out, size_t osz){
     NSOpenPanel *op = [NSOpenPanel openPanel];
     [op setCanChooseFiles:NO];
     [op setCanChooseDirectories:YES];
     [op setAllowsMultipleSelection:NO];
     [op setPrompt:@"Sec"];
-    [op setMessage:@"Need for Speed Underground 2 klasorunu sec "
-                   @"(icinde SPEED2.EXE olan klasor)."];
+    [op setMessage:@"Choose the Need for Speed Underground 2 folder "
+                   @"(the folder containing SPEED2.EXE)."];
     [NSApp activateIgnoringOtherApps:YES];
     if ([op runModal] != NSModalResponseOK) return 0;
     NSString *dir = [[op URL] path];
     if (!find_under([dir UTF8String], out, osz, 2)){
-        app_alert("Bu klasorde SPEED2.EXE yok",
-                  "Oyunun kurulu oldugu klasoru sec: icinde SPEED2.EXE ve "
-                  "CARS / TRACKS / SOUND klasorleri bulunur.");
+        app_alert("There is no SPEED2.EXE in this folder",
+                  "Choose the folder where the game is installed: it contains SPEED2.EXE and "
+                  "the CARS / TRACKS / SOUND folders.");
         return 0;
     }
     return 1;
 }
 
-/* Oyun verisini bul.  Sirasiyla: cevre degiskeni, daha once secilmis yol,
- * paketin ici, .app'in yani, ev dizini, sonra kullaniciya sor.          */
+/* Find the game data.  In order: the environment variable, a previously
+ * selected path, inside the bundle, next to the .app, the home directory,
+ * then ask the user.                                                     */
 const char *app_find_game(void){
     static char found[1200];
     char dir[1200];
@@ -170,11 +171,11 @@ const char *app_find_game(void){
         if (stat(env, &st) == 0 && S_ISREG(st.st_mode)){
             snprintf(found, sizeof found, "%s", env); return found; }
         if (find_under(env, found, sizeof found, 2)) return found;
-        fprintf(stderr, "NFSU2_DATA=%s icinde SPEED2.EXE yok\n", env);
+        fprintf(stderr, "no SPEED2.EXE in NFSU2_DATA=%s\n", env);
     }
 
-    /* Paketin icine gomulu veri (./pack.sh --embed) her seyden once gelir:
-     * "tek parca" uygulama, daha once secilmis baska bir klasore kaymasin. */
+    /* Data embedded inside the bundle (./pack.sh --embed) comes before everything:
+     * a "single piece" app shouldn't drift to some other previously chosen folder. */
     if (app_is_bundled()){
         snprintf(dir, sizeof dir, "%s/Game", g_res_dir);
         if (find_under(dir, found, sizeof found, 2)){ g_embedded = 1; return found; }
@@ -184,8 +185,8 @@ const char *app_find_game(void){
     if (saved && find_under([saved UTF8String], found, sizeof found, 2)) return found;
 
     if (app_is_bundled()){
-        /* .app'in yani ve bir ust dizin: kaynak agacinda .app out/ icinde
-         * duruyor, oyun ise proje kokunde. */
+        /* next to the .app and its parent directory: in the source tree the .app is
+         * in out/, while the game is at the project root. */
         if (find_under(g_app_dir, found, sizeof found, 2)) return found;
         snprintf(dir, sizeof dir, "%s", g_app_dir);
         { char *s2 = strrchr(dir, '/'); if (s2 && s2 != dir){ *s2 = 0;
@@ -205,9 +206,9 @@ const char *app_find_game(void){
         }
     }
 
-    /* Bulunamadi: kullaniciya sor.  Sectigi yolu sakla ki bir daha
-     * sorulmasin.  NSOpenPanel icin NSApp gerekli.                      */
-    fprintf(stderr, "oyun bulunamadi -> kullaniciya klasor soruluyor\n");
+    /* Not found: ask the user.  Store the chosen path so they aren't asked
+     * again.  NSOpenPanel needs NSApp.                                   */
+    fprintf(stderr, "game not found -> asking the user for the folder\n");
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     for (int tries = 0; tries < 3; tries++){
@@ -221,10 +222,10 @@ const char *app_find_game(void){
     return NULL;
 }
 
-/* Oyun bulunamadan cikarken kullaniciya sebebini soyle. */
+/* When exiting without finding the game, tell the user why. */
 void app_no_game(void){
-    app_alert("Oyun dosyalari bulunamadi",
-              "NFSU2 bu uygulamanin icinde gelmez; kendi kurulumun gerekli.\n\n"
-              "Oyun klasorunu (icinde SPEED2.EXE olan) uygulamanin yanina "
-              "koyabilir ya da uygulamayi tekrar acip klasoru secebilirsin.");
+    app_alert("Game files not found",
+              "NFSU2 doesn't come inside this app; your own installation is required.\n\n"
+              "You can put the game folder (the one containing SPEED2.EXE) next to the app "
+              "or open the app again and choose the folder.");
 }

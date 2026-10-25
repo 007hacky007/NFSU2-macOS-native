@@ -1,16 +1,16 @@
-/* NFSU2 native port - x86-32 CPU durumu ve guest bellek erisimi (macOS ARM64) */
+/* NFSU2 native port - x86-32 CPU state and guest memory access (macOS ARM64) */
 #ifndef NFSU2_CPU_H
 #define NFSU2_CPU_H
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
 
-/* Guest bellek tabani. Guest 32-bit adres -> host adres tek ARM64 komutunda:
- *   ldr w0, [x_base, w_addr, uxtw]        (sifir ek maliyet)             */
+/* Guest memory base. Guest 32-bit address -> host address in a single ARM64 instruction:
+ *   ldr w0, [x_base, w_addr, uxtw]        (zero extra cost)              */
 extern uint8_t *g_mem;
-/* Tum 32-bit guest adres alani PROT_NONE olarak rezerve edilir; kullanilan
- * bolgeler mem_commit ile RW yapilir. Boylece hatali guest erisimi host'u
- * cokertmek yerine teshis edilebilir bir sinyale donusur.                */
+/* The whole 32-bit guest address space is reserved as PROT_NONE; the regions
+ * in use are made RW with mem_commit. This way a bad guest access turns into a
+ * diagnosable signal instead of crashing the host.                       */
 #define GSZ 0x100000000ull
 
 #define MR8(a)   (*(uint8_t  *)(g_mem + (uint32_t)(a)))
@@ -28,30 +28,30 @@ typedef struct CPU {
         struct { uint32_t eax,ecx,edx,ebx,esp,ebp,esi,edi; };
     };
     uint32_t eip;
-    uint32_t fs_base, gs_base;   /* TEB / TLS tabani (duz model) */
-    /* bayraklar - her biri 0/1 olarak tutulur (clang DCE kullanilmayanlari eler) */
+    uint32_t fs_base, gs_base;   /* TEB / TLS base (flat model) */
+    /* flags - each kept as 0/1 (clang DCE eliminates the unused ones) */
     uint32_t cf,pf,af,zf,sf,of,df;
-    /* x87 yigini */
+    /* x87 stack */
     double   st[8];
     int32_t  top;
     uint16_t fcw, fsw;
-    /* MMX (x87 ile ortak degil, ayri tutuluyor) */
+    /* MMX (not shared with x87, kept separately) */
     uint64_t mm[8];
     /* SSE */
     union { uint8_t b[16]; float f[4]; double d[2]; uint32_t u32[4]; uint64_t u64[2]; } xmm[8];
 } CPU;
 
-/* ---- bayrak yardimcilari ---------------------------------------------- */
+/* ---- flag helpers ----------------------------------------------------- */
 static inline uint32_t parity8(uint32_t v){ v&=0xff; v^=v>>4; v^=v>>2; v^=v>>1; return (~v)&1; }
 
-/* ---- bayrak maskeleri --------------------------------------------------
- * Her aritmetik komut alti bayragi PESINEN hesapliyordu (ZF/SF/PF/CF/OF/AF),
- * ama sonraki dal genelde yalnizca birini okuyor.  Olculdu: uretilen kodda
- * 110k FLAGS_ADD + 130k FLAGS_SUB + 130k FLAGS_LOG var, buna karsilik OF
- * dogrudan yalnizca 22 yerde (CC_O/CC_NO), PF 5.7k yerde okunuyor.
- * Ureteç (tools/lift.py) artik akis grafigi uzerinde bayrak CANLILIGI
- * cozup her cagriya "sonradan okunan bayraklar" maskesini veriyor.  Maske
- * derleme zamani sabiti oldugu icin kullanilmayan dallar tamamen silinir. */
+/* ---- flag masks --------------------------------------------------------
+ * Every arithmetic instruction computed all six flags EAGERLY (ZF/SF/PF/CF/OF/AF),
+ * but the following branch usually reads only one.  Measured: the generated code
+ * has 110k FLAGS_ADD + 130k FLAGS_SUB + 130k FLAGS_LOG, whereas OF is read
+ * directly in only 22 places (CC_O/CC_NO), PF in 5.7k places.
+ * The generator (tools/lift.py) now solves flag LIVENESS over the flow graph
+ * and gives every call a mask of "flags read later".  Since the mask is a
+ * compile-time constant, unused branches are removed entirely. */
 #define F_CF  0x01u
 #define F_PF  0x02u
 #define F_AF  0x04u
@@ -78,8 +78,8 @@ static inline uint32_t parity8(uint32_t v){ v&=0xff; v^=v>>4; v^=v>>2; v^=v>>1; 
     if((M)&F_AF) c->af = ((((a)^(b)^(res))>>4)&1); \
     if((M)&F_OF) c->of = ((((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
 #define FLAGS_SUB(a,b,res,bits) FLAGS_SUB_M(a,b,res,bits,F_ALL)
-/* ADC/SBB: tasima girisi 1 iken sonuc girdiye ESIT olabilir; bu durumda
- * (res<a) testi tasimayi kaciriyordu (ornek: sbb eax,eax  CF=1 -> CF=1). */
+/* ADC/SBB: with a carry-in of 1 the result can EQUAL the input; in that case
+ * the (res<a) test missed the carry (example: sbb eax,eax  CF=1 -> CF=1). */
 #define FLAGS_ADC_M(a,b,cin,res,bits,M) do{ SETZSP_M(res,bits,M); \
     if((M)&F_CF) c->cf = (cin) ? ((uint##bits##_t)(res) <= (uint##bits##_t)(a)) \
                                : ((uint##bits##_t)(res) <  (uint##bits##_t)(a)); \
@@ -92,19 +92,19 @@ static inline uint32_t parity8(uint32_t v){ v&=0xff; v^=v>>4; v^=v>>2; v^=v>>1; 
     if((M)&F_AF) c->af = ((((a)^(b)^(res))>>4)&1); \
     if((M)&F_OF) c->of = ((((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
 #define FLAGS_SBB(a,b,cin,res,bits) FLAGS_SBB_M(a,b,cin,res,bits,F_ALL)
-/* mantiksal: CF=OF=0 */
+/* logical: CF=OF=0 */
 #define FLAGS_LOG_M(res,bits,M) do{ SETZSP_M(res,bits,M); \
     if((M)&F_CF) c->cf=0; if((M)&F_OF) c->of=0; if((M)&F_AF) c->af=0; }while(0)
 #define FLAGS_LOG(res,bits) FLAGS_LOG_M(res,bits,F_ALL)
 
-/* ---- yigin ------------------------------------------------------------ */
-/* KRITIK: operand esp'ye bagli olabilir (ornek: push [esp+8], push esp).
- * x86 semantigi: PUSH once degeri okur, sonra esp'yi azaltir.            */
+/* ---- stack ------------------------------------------------------------ */
+/* CRITICAL: the operand may depend on esp (example: push [esp+8], push esp).
+ * x86 semantics: PUSH first reads the value, then decrements esp.        */
 #define PUSH32(v) do{ uint32_t _pv = (uint32_t)(v); c->esp -= 4; MR32(c->esp) = _pv; }while(0)
-/* POP: once esp artar, hedef adresi YENI esp ile hesaplanir (pop [esp+N]). */
+/* POP: esp is incremented first, the destination address is computed with the NEW esp (pop [esp+N]). */
 #define POP32(d)  do{ uint32_t _qv = MR32(c->esp); c->esp += 4; (d) = _qv; }while(0)
 
-/* ---- kosullar --------------------------------------------------------- */
+/* ---- conditions ------------------------------------------------------- */
 #define CC_O   (c->of)
 #define CC_NO  (!c->of)
 #define CC_B   (c->cf)
@@ -123,55 +123,56 @@ static inline uint32_t parity8(uint32_t v){ v&=0xff; v^=v>>4; v^=v>>2; v^=v>>1; 
 #define CC_G   (!c->zf&&(c->sf==c->of))
 
 
-/* ---- x87 FPU yigini ---------------------------------------------------
- * NOT: ARM64'te 80-bit extended float yok; double (64-bit) kullaniyoruz.
- * Bu, x86'nin 80-bit ara hassasiyetine gore kucuk sapma yaratabilir.     */
+/* ---- x87 FPU stack ----------------------------------------------------
+ * NOTE: ARM64 has no 80-bit extended float; we use double (64-bit).
+ * This can create small deviations from x86's 80-bit intermediate precision. */
 #define ST(n)    (c->st[(c->top + (n)) & 7])
-/* DIKKAT: kaynak deger top DEGISMEDEN once hesaplanmali.  ST(i) top'a
- * gore tanimli oldugu icin "fld st(0)" onceki FPUSH'ta yeni acilan bos
- * yuvayi okuyordu -> kendini kopyalamak yerine cop yukluyordu.  Bu, CRT'nin
- * __ftol rutinini (fld st(0) ile basliyor) bozuyor, yani oyundaki HER
- * float->int donusumunu.  Belirti: kare-farki olcumu hep 1 birim cikiyordu. */
+/* CAUTION: the source value must be computed BEFORE top changes.  Since ST(i)
+ * is defined relative to top, "fld st(0)" read the empty slot just opened by
+ * the preceding FPUSH -> it loaded garbage instead of copying itself.  This
+ * broke the CRT's __ftol routine (which starts with fld st(0)), i.e. EVERY
+ * float->int conversion in the game.  Symptom: the frame-delta measurement
+ * always came out as 1 unit. */
 #define FPUSH(v) do{ double _fpv = (double)(v); \
     c->top = (c->top - 1) & 7; c->st[c->top] = _fpv; }while(0)
 #define FPOP()   do{ c->top = (c->top + 1) & 7; }while(0)
 
-/* x87 karsilastirma -> durum kelimesi C0/C2/C3 bitleri (8/10/14) */
+/* x87 compare -> status word C0/C2/C3 bits (8/10/14) */
 #define FSW_C0 (1u<<8)
 #define FSW_C1 (1u<<9)
 #define FSW_C2 (1u<<10)
 #define FSW_C3 (1u<<14)
-/* fnstsw: gercek donanimda TOP alani (bit 11-13) de okunur. */
+/* fnstsw: on real hardware the TOP field (bits 11-13) is read too. */
 static inline uint16_t fsw_get(const struct CPU *c){
     return (uint16_t)((c->fsw & (uint16_t)~0x3800u) | (uint16_t)((c->top & 7u) << 11));
 }
-/* X87OPT: blok ici x87 yazmac tahsisinde c->top bolge sonunda yazilir;
- * fnstsw o andaki (statik) top'u acikca alir. */
+/* X87OPT: with intra-block x87 register allocation c->top is written at the
+ * end of the region; fnstsw takes the (static) top of that moment explicitly. */
 static inline uint16_t fsw_get_top(const struct CPU *c, uint32_t top){
     return (uint16_t)((c->fsw & (uint16_t)~0x3800u) | (uint16_t)((top & 7u) << 11));
 }
 static inline void fcompare(struct CPU *c, double a, double b){
     c->fsw &= (uint16_t)~(FSW_C0|FSW_C2|FSW_C3);
-    if (a != a || b != b)      c->fsw |= FSW_C0|FSW_C2|FSW_C3;  /* sirasiz (NaN) */
-    else if (a > b)            ;                                 /* hepsi 0 */
+    if (a != a || b != b)      c->fsw |= FSW_C0|FSW_C2|FSW_C3;  /* unordered (NaN) */
+    else if (a > b)            ;                                 /* all 0 */
     else if (a < b)            c->fsw |= FSW_C0;
     else                       c->fsw |= FSW_C3;
 }
-/* FCMPBL: dalsiz fcompare.  Oyun kodunun karsilastirmalari veriye bagli; dalli
- * surum (NaN, >, <) sik yanlis tahmin ediliyordu.  Bitler ayni: sirasiz ->
- * C0|C2|C3, a<b -> C0, a==b -> C3, a>b -> hicbiri. */
+/* FCMPBL: branchless fcompare.  The game code's comparisons are data dependent;
+ * the branchy version (NaN, >, <) was often mispredicted.  Same bits: unordered
+ * -> C0|C2|C3, a<b -> C0, a==b -> C3, a>b -> none. */
 static inline void fcompare_bl(struct CPU *c, double a, double b){
     uint32_t un = (uint32_t)__builtin_isunordered(a, b);
     uint32_t lt = (uint32_t)(a < b), eq = (uint32_t)(a == b);
     c->fsw = (uint16_t)((c->fsw & (uint16_t)~(FSW_C0|FSW_C2|FSW_C3))
                         | ((lt | un) << 8) | (un << 10) | ((eq | un) << 14));
 }
-/* fcomi / fucomi: dogrudan EFLAGS yazar */
+/* fcomi / fucomi: write EFLAGS directly */
 #define FCOMI(a,b) do{ double _x=(a),_y=(b); \
     if(_x!=_x||_y!=_y){ c->zf=1;c->pf=1;c->cf=1; } \
     else { c->pf=0; c->zf=(_x==_y); c->cf=(_x<_y); } c->of=c->sf=c->af=0; }while(0)
 
-/* ---- EFLAGS birlestirme/ayirma (pushfd/popfd/sahf) -------------------- */
+/* ---- EFLAGS packing/unpacking (pushfd/popfd/sahf) --------------------- */
 static inline uint32_t eflags_get(const struct CPU *c){
     return 0x00000202u | (c->cf&1u) | ((c->pf&1u)<<2) | ((c->af&1u)<<4)
          | ((c->zf&1u)<<6) | ((c->sf&1u)<<7) | ((c->df&1u)<<10) | ((c->of&1u)<<11);
@@ -181,15 +182,15 @@ static inline void eflags_set(struct CPU *c, uint32_t f){
     c->zf=(f>>6)&1u; c->sf=(f>>7)&1u; c->df=(f>>10)&1u; c->of=(f>>11)&1u;
 }
 
-/* ---- string komutlari ------------------------------------------------- */
+/* ---- string instructions ---------------------------------------------- */
 #define DFSTEP(n) (c->df ? -(int32_t)(n) : (int32_t)(n))
 
-/* ---- watchpoint: guest bellek adresini izle -------------------------- */
+/* ---- watchpoint: watch a guest memory address ------------------------- */
 extern uint32_t g_watch_addr, g_watch_val, g_watch_prev_ip;
 void watch_report_change(uint32_t culprit_ip, uint32_t oldv, uint32_t newv);
 
-/* Komut seviyesinde yurutme izi: son 64K guest komut adresi.
- * Cokme/hata aninda "buraya nasil geldik" sorusunu kesin cevaplar.        */
+/* Instruction-level execution trace: the last 64K guest instruction addresses.
+ * Answers "how did we get here" exactly at crash/fault time.              */
 #define ITRACE_BITS 16
 #define ITRACE_SIZE (1u << ITRACE_BITS)
 #define ITRACE_MASK (ITRACE_SIZE - 1u)
@@ -210,15 +211,15 @@ static inline void watch_check(uint32_t ip){
 }
 void itrace_dump(int n);
 
-/* ---- fonksiyon kapsama olcumu (COVERAGE=1 ile uretilirse) ------------
- * Amac: "hangi kod HIC calismiyor?" sorusunu cevaplamak.  Belirti
- * kovalamak yerine calismayan alt sistemi dogrudan gostermek icin.     */
-extern uint32_t *g_cov;   /* fonksiyon basina CAGRI SAYISI */
-extern uint32_t g_last_fn;          /* ornekleyici icin: en son girilen fonksiyon */
-extern int      g_prof_on;          /* SAMPLE / COVERAGE aciksa 1 */
-/* DIKKAT: burada g_last_fn KOSULSUZ yaziliyordu.  Bu, HER guest fonksiyon
- * girisinde bir global magaza demek (saniyede milyonlarca).  Yalnizca
- * olcum acikken yaz. */
+/* ---- function coverage measurement (if generated with COVERAGE=1) -----
+ * Goal: answer "which code NEVER runs?".  To show the subsystem that doesn't
+ * run directly instead of chasing symptoms.                              */
+extern uint32_t *g_cov;   /* CALL COUNT per function */
+extern uint32_t g_last_fn;          /* for the sampler: the most recently entered function */
+extern int      g_prof_on;          /* 1 if SAMPLE / COVERAGE is on */
+/* CAUTION: g_last_fn used to be written UNCONDITIONALLY here.  That means a
+ * global store on EVERY guest function entry (millions per second).  Only
+ * write it while measuring. */
 static inline void cov_hit(uint32_t va){
     if (__builtin_expect(g_prof_on, 0)){
         g_last_fn = va;
@@ -228,24 +229,24 @@ static inline void cov_hit(uint32_t va){
 }
 void cov_report(const char *path);
 
-/* x87 yuvarlama: sonuc, kontrol kelimesinin RC alanina (bit 10-11) uyar.
- * 00=en yakina (cift), 01=asagi, 10=yukari, 11=sifira dogru (kesme).
- * CRT'nin __ftol rutini RC'yi 11 yapip fistp cagirir; bunu dikkate almazsak
- * her float->int donusumu kesir >= 0.5 oldugunda bir fazla cikar.        */
+/* x87 rounding: the result honors the RC field of the control word (bits 10-11).
+ * 00=nearest (even), 01=down, 10=up, 11=toward zero (truncate).
+ * The CRT's __ftol routine sets RC to 11 and calls fistp; if we ignore this,
+ * every float->int conversion comes out one too high when the fraction >= 0.5. */
 static inline double x87_round(uint16_t fcw, double v){
     switch ((fcw >> 10) & 3u){
-    case 0:  return nearbyint(v);      /* host modu: en yakina, cift */
+    case 0:  return nearbyint(v);      /* host mode: nearest, even */
     case 1:  return floor(v);
     case 2:  return ceil(v);
     default: return trunc(v);
     }
 }
 
-/* ---- gecersiz islem sonuclari ve aralik disi donusumler --------------
- * x86'da 0/0, sqrt(-x) gibi gecersiz islemler "real indefinite" uretir:
- * isareti NEGATIF olan sessiz NaN.  C'nin sqrt/0.0 sonucu pozitif NaN
- * oldugu icin ayrica duzeltmek gerekir.  Girdilerden biri NaN ise o
- * yayilir.                                                              */
+/* ---- invalid operation results and out-of-range conversions -----------
+ * On x86 invalid operations such as 0/0 and sqrt(-x) produce "real indefinite":
+ * a quiet NaN with a NEGATIVE sign.  Since C's sqrt/0.0 result is a positive
+ * NaN, it must be fixed separately.  If one of the inputs is a NaN, that one
+ * propagates.                                                            */
 #define X87_INDEF (-__builtin_nan(""))
 static inline double x87_r2(double a, double b, double r){
     if (r == r) return r;
@@ -272,7 +273,7 @@ static inline float sse_r1f(float a, float r){
 static inline double sse_r2d(double a, double b, double r){ return x87_r2(a,b,r); }
 static inline double sse_r1d(double a, double r){ return x87_r1(a,r); }
 
-/* Aralik disi / NaN -> "integer indefinite" (en negatif deger). */
+/* Out of range / NaN -> "integer indefinite" (the most negative value). */
 static inline uint32_t x86_cvt_i32(double v){
     if (!(v >= -2147483648.0 && v <= 2147483647.0)) return 0x80000000u;
     return (uint32_t)(int32_t)v;
@@ -287,9 +288,9 @@ static inline uint64_t x86_cvt_i64(double v){
     return (uint64_t)(int64_t)v;
 }
 
-/* ---- 80-bit uzatilmis kayan nokta (x87 tbyte) <-> double ------------- */
+/* ---- 80-bit extended floating point (x87 tbyte) <-> double ------------ */
 static inline void f80_store(uint8_t *p, double v){
-    /* isaret, 15-bit us, 64-bit acik mantis */
+    /* sign, 15-bit exponent, 64-bit explicit mantissa */
     uint64_t bits; memcpy(&bits, &v, 8);
     uint32_t sign = (uint32_t)(bits >> 63);
     int32_t  exp  = (int32_t)((bits >> 52) & 0x7FF);
@@ -330,7 +331,7 @@ void mem_commit(uint32_t addr, uint32_t size);
 int  mem_load_pe(const char *path);
 void mem_fault_handler_install(void);
 void mem_altstack_install(void);
-extern uint8_t g_cbits[1u<<15];   /* commit edilen 16 KB sayfalarin bitmap'i */
+extern uint8_t g_cbits[1u<<15];   /* bitmap of committed 16 KB pages */
 static inline int mem_is_committed(uint32_t addr){
     uint32_t pg = (addr) >> 14;
     return (g_cbits[pg>>3] >> (pg&7)) & 1;

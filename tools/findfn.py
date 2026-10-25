@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lifter'i dogrulamak icin kucuk, yaprak (leaf), tamsayi-only fonksiyonlar bul."""
+"""Find small, leaf, integer-only functions for validating the lifter."""
 import sys,struct,collections
 import pefile
 from capstone import *
@@ -15,7 +15,7 @@ def rd32(a):
     for nm,va,vs,d in secs:
         if va<=a<va+len(d)-3: return struct.unpack_from('<I',d,a-va)[0]
 relocs=[int(x,16) for x in open('out/relocs.txt')]
-# fonksiyon adaylari: call hedefleri
+# function candidates: call targets
 md=Cs(CS_ARCH_X86,CS_MODE_32); md.detail=True
 EP=IB+pe.OPTIONAL_HEADER.AddressOfEntryPoint
 cov=bytearray(TSZ); seen=set(); q=collections.deque(); calls=collections.Counter(); funcs=set()
@@ -48,8 +48,8 @@ while q:
             va=i.address+i.size; continue
         if m in ('ret','retf','int3','hlt','ud2'): break
         va=i.address+i.size
-print(f"toplam fonksiyon adayi: {len(funcs)}, dogrudan cagrilan: {len(calls)}")
-# her fonksiyonu lineer tara, yaprak+tamsayi olanlari sec
+print(f"total function candidates: {len(funcs)}, called directly: {len(calls)}")
+# scan every function linearly, pick the leaf+integer ones
 INT_OK=set('mov push pop add sub cmp test lea xor and or inc dec ret shl shr sar neg not imul mul div idiv movzx movsx setne sete xchg nop leave cdq sbb adc cmovne cmove'.split())
 cands=[]
 for f in sorted(funcs):
@@ -71,14 +71,14 @@ for f in sorted(funcs):
         va=i.address+i.size
     else: ok=False
     if ok and 4<=len(ins)<=25 and ins[-1].mnemonic=='ret':
-        # global bellege dokunmuyor mu? (sadece stack/register)
+        # doesn't touch global memory? (stack/registers only)
         touches_mem = any(o.type==X86_OP_MEM and o.mem.base not in (X86_REG_ESP,X86_REG_EBP) for i2 in ins for o in i2.operands)
         cands.append((len(ins), f, touches_mem, calls[f]))
 cands.sort(key=lambda x:(x[2], -x[3], x[0]))
 print(f"\nuygun aday: {len(cands)}\n")
-print("=== EN IYI 8 ADAY (yaprak, tamsayi, global bellek yok) ===")
+print("=== TOP 8 CANDIDATES (leaf, integer, no global memory) ===")
 for n,f,tm,cc in cands[:8]:
-    print(f"\n--- 0x{f:08x}  ({n} komut, {cc} kez cagriliyor, globalbellek={tm}) ---")
+    print(f"\n--- 0x{f:08x}  ({n} instructions, {cc} calls, globalmem={tm}) ---")
     va=f
     for _ in range(n):
         o=va-TVA; i=next(md.disasm(TDATA[o:o+16],va))

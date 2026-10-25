@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Kapsama sinirini bul: CALISAN koddan cagrilan ama HIC calismayan fonksiyonlar.
+"""Find the coverage frontier: functions called from RUNNING code that NEVER ran.
 
-Belirti kovalamak yerine "hangi kapi hic acilmadi" sorusunu cevaplar."""
+Answers "which door was never opened" instead of chasing symptoms."""
 import sys, struct, re, collections
 
 EXE = "Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2/SPEED2.EXE"
@@ -20,7 +20,7 @@ for i in range(nsec):
     if nm == '.text': text = (imgbase+va, vsz, ra, rsz)
 sva, vsz, ra, rsz = text
 
-# fonksiyon adresleri
+# function addresses
 fn = []
 for m in re.finditer(r'0x([0-9a-f]{8})u', open('gen/all/fntab.c').read()):
     fn.append(int(m.group(1), 16))
@@ -30,10 +30,10 @@ def owner(va):
     i = bisect.bisect_right(fn, va) - 1
     return fn[i] if i >= 0 else None
 
-# bicim: '<adres>' ya da '<adres> <sayac>'
+# format: '<address>' or '<address> <count>'
 hit = set(int(l.split()[0], 16) for l in open(covfile) if l.strip())
 
-# dogrudan call'lari tara
+# scan direct calls
 callers = collections.defaultdict(set)
 for off in range(ra, ra+rsz-5):
     if d[off] != 0xE8: continue
@@ -45,7 +45,7 @@ for off in range(ra, ra+rsz-5):
     if ow is None: continue
     callers[tgt].add(ow)
 
-# calisan cagiranlardan cagrilan ama calismayan hedefler
+# targets called from running callers that never ran
 gap = []
 for tgt, cs in callers.items():
     if tgt in hit: continue
@@ -53,8 +53,8 @@ for tgt, cs in callers.items():
     if live: gap.append((len(live), tgt, sorted(live)[:4]))
 gap.sort(reverse=True)
 
-print("calisan fonksiyon: %d / %d" % (len(hit), len(fn)))
-print("calisan koddan cagrilan ama HIC calismayan hedef: %d\n" % len(gap))
-print("  %-12s %-8s %s" % ("hedef", "cagiran", "ornek cagiranlar"))
+print("functions that ran: %d / %d" % (len(hit), len(fn)))
+print("targets called from running code that NEVER ran: %d\n" % len(gap))
+print("  %-12s %-8s %s" % ("target", "callers", "example callers"))
 for n, tgt, cs in gap[:40]:
     print("  0x%08x  %-8d %s" % (tgt, n, " ".join("0x%08x" % c for c in cs)))

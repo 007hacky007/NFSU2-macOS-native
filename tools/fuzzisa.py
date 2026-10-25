@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
-"""x86 semantigi icin DIFERANSIYEL test: gercek x86 (Rosetta) vs lifter.
+"""DIFFERENTIAL test for x86 semantics: real x86 (Rosetta) vs the lifter.
 
-Ayni komut baytlari iki yerde calistirilir:
-  1) oracle : x86-64 olarak derlenir, Rosetta ile kosar  -> gercek CPU
-  2) guest  : RawLifter ile C'ye cevrilir, ARM64 kosar    -> bizim uretim
-Cikti (6 GPR + bayraklar + 128 baytlik bellek) karsilastirilir.
+The same instruction bytes are run in two places:
+  1) oracle : compiled as x86-64, runs under Rosetta    -> the real CPU
+  2) guest  : translated to C by RawLifter, runs on ARM64 -> our output
+The output (6 GPRs + flags + 128 bytes of memory) is compared.
 
-64-bit modda ayni anlami tasiyan kodlamalar kullanilir:
-  - yalnizca eax..esi (REX yok, r8+ yok)
-  - bellek her zaman N(%rdi) / [edi+N]
-  - edi ve esp hedef olarak KULLANILMAZ
+Encodings that carry the same meaning in 64-bit mode are used:
+  - eax..esi only (no REX, no r8+)
+  - memory is always N(%rdi) / [edi+N]
+  - edi and esp are NOT USED as destinations
 """
 import os, sys, random, struct, subprocess, hashlib
 sys.path.insert(0,'tools')
 from lift import RawLifter, Unsupported
 
-SCRATCH = 0x00A00000          # guest'te bellek tamponunun adresi
+SCRATCH = 0x00A00000          # address of the memory buffer in the guest
 MEMSZ   = 128
 BASE    = 0x00400000
 
 R32 = ['%eax','%ecx','%edx','%ebx','%ebp','%esi']
 R16 = ['%ax','%cx','%dx','%bx','%bp','%si']
-R8  = ['%al','%cl','%dl','%bl','%ah','%ch']      # ah/ch: yuksek bayt formlari
+R8  = ['%al','%cl','%dl','%bl','%ah','%ch']      # ah/ch: high byte forms
 XMM = ['%xmm0','%xmm1','%xmm2','%xmm3']
 
-# bayrak maskesi: CF PF AF ZF SF OF  (+DF ayri tutulur)
+# flag mask: CF PF AF ZF SF OF  (+DF kept separately)
 F_CF,F_PF,F_AF,F_ZF,F_SF,F_OF = 1,4,0x10,0x40,0x80,0x800
 F_ALL = F_CF|F_PF|F_AF|F_ZF|F_SF|F_OF
 
@@ -39,12 +39,12 @@ class Tmpl:
 
 T = []
 def tmpl(name, undef=0, skipmem=False, ptr=False):
-    """skipmem: sonuc 80-bit x87 ile double arasindaki hassasiyet farkindan
-    etkilenir (fprem, fsin...) -- bellek sonucu karsilastirilmaz."""
+    """skipmem: the result is affected by the precision difference between 80-bit
+    x87 and double (fprem, fsin...) -- the memory result isn't compared."""
     def d(f): T.append(Tmpl(name, f, undef, skipmem, ptr)); return f
     return d
 
-# ---------------- tamsayi cekirdegi ----------------
+# ---------------- integer core ----------------
 ARITH = ['add','sub','adc','sbb','and','or','xor','cmp']
 for op in ARITH:
     @tmpl(f"{op} r32,r32")
@@ -77,7 +77,7 @@ def _(rng): return f"{rng.choice(['negl','notl'])} {rng.choice(R32)}"
 @tmpl("neg/not r8")
 def _(rng): return f"{rng.choice(['negb','notb'])} {rng.choice(R8)}"
 
-# ---------------- kaydirma / dondurme ----------------
+# ---------------- shifts / rotates ----------------
 for op in ['shl','shr','sar','rol','ror','rcl','rcr']:
     @tmpl(f"{op} imm,r32", undef=F_OF|F_AF)
     def _(rng, op=op): return f"{op}l ${rng.randrange(0,33)}, {rng.choice(R32)}"
@@ -92,7 +92,7 @@ def _(rng):
     op = rng.choice(['shldl','shrdl'])
     return f"{op} ${rng.randrange(0,32)}, {rng.choice(R32)}, {rng.choice(R32)}"
 
-# ---------------- carpma / bolme ----------------
+# ---------------- multiply / divide ----------------
 @tmpl("imul r32,r32", undef=F_SF|F_ZF|F_AF|F_PF)
 def _(rng): return f"imull {rng.choice(R32)}, {rng.choice(R32)}"
 @tmpl("imul imm,r32,r32", undef=F_SF|F_ZF|F_AF|F_PF)
@@ -106,7 +106,7 @@ def _(rng):
 @tmpl("cdq/cwde/cbw")
 def _(rng): return rng.choice(['cltd','cwtl','cbtw'])
 
-# ---------------- tasima / genisletme ----------------
+# ---------------- moves / extension ----------------
 @tmpl("movzx/movsx 8->32")
 def _(rng):
     op = rng.choice(['movzbl','movsbl'])
@@ -122,14 +122,14 @@ def _(rng):
 def _(rng): return f"bswapl {rng.choice(R32)}"
 @tmpl("lea")
 def _(rng):
-    # %rdi taban olarak KULLANILMAZ: oracle'da 64-bit host isaretcisi tutar,
-    # guest'te 32-bit guest adresi -- sonuclar mesru olarak farkli cikar.
+    # %rdi is NOT USED as a base: in the oracle it holds a 64-bit host pointer,
+    # in the guest a 32-bit guest address -- the results legitimately differ.
     b = rng.choice(['%rax','%rcx','%rdx','%rbx'])
     i = rng.choice(['%rax','%rcx','%rdx','%rbx'])
     sc = rng.choice([1,2,4,8]); d = rng.randrange(-64,64)
     return f"leal {d}({b},{i},{sc}), {rng.choice(R32)}"
 
-# ---------------- kosullar ----------------
+# ---------------- conditions ----------------
 CC = ['o','no','b','ae','e','ne','be','a','s','ns','p','np','l','ge','le','g']
 @tmpl("setcc")
 def _(rng): return f"set{rng.choice(CC)} {rng.choice(R8[:4])}"
@@ -147,18 +147,18 @@ def _(rng):
     return f"{op} {rng.choice(R32)}, {rng.choice(R32)}"
 
 # ---------------- x87 ----------------
-@tmpl("x87 aritmetik -> bellek")
+@tmpl("x87 arithmetic -> memory")
 def _(rng):
     op = rng.choice(['fadds','fsubs','fmuls','fdivs','fsubrs','fdivrs'])
     a,b,d = 0, 8, 64
     return f"flds {a}(%rdi)\n\t{op} {b}(%rdi)\n\tfstps {d}(%rdi)"
-@tmpl("x87 askin (80-bit fark)", skipmem=True)
+@tmpl("x87 transcendental (80-bit difference)", skipmem=True)
 def _(rng):
     op = rng.choice(['fsin','fcos','f2xm1','fptan'])
     return f"flds 0(%rdi)\n\t{op}\n\tfstps 64(%rdi)"
-@tmpl("x87 tekli -> bellek")
+@tmpl("x87 unary -> memory")
 def _(rng):
-    # f2xm1 yalnizca |x|<=1 icin tanimli; rastgele girdiyle karsilastirilamaz
+    # f2xm1 is only defined for |x|<=1; can't be compared with random input
     op = rng.choice(['fabs','fchs','fsqrt','frndint'])
     return f"flds 0(%rdi)\n\t{op}\n\tfstps 64(%rdi)"
 @tmpl("x87 fistp RC")
@@ -177,23 +177,23 @@ def _(rng):
 def _(rng):
     op = rng.choice(['fprem','fprem1','fscale'])
     return f"flds 8(%rdi)\n\tflds 0(%rdi)\n\t{op}\n\tfstps 64(%rdi)\n\tfstp %st(0)"
-@tmpl("x87 fld st(i) - yigin kopyalama")
+@tmpl("x87 fld st(i) - stack copy")
 def _(rng):
-    # "fld %st(i)" kaynagi top DEGISMEDEN once okumali.  Bu sablon
-    # olmadigi icin FPUSH degerlendirme sirasi hatasi gozden kacmisti.
+    # "fld %st(i)" must read the source BEFORE top changes.  Because this template
+    # didn't exist, the FPUSH evaluation order bug went unnoticed.
     i = rng.randrange(0, 3)
     return ("flds 0(%rdi)\n\tflds 8(%rdi)\n\tflds 16(%rdi)\n\t"
             f"fld %st({i})\n\t"
             "fstps 64(%rdi)\n\tfstps 68(%rdi)\n\t"
             "fstps 72(%rdi)\n\tfstps 76(%rdi)")
-@tmpl("x87 fst/fxch st(i) karisik")
+@tmpl("x87 fst/fxch st(i) mixed")
 def _(rng):
     i = rng.randrange(1, 3)
     op = rng.choice([f"fst %st({i})", f"fxch %st({i})", f"fld %st({i})"])
     return ("flds 0(%rdi)\n\tflds 8(%rdi)\n\tflds 16(%rdi)\n\t"
             f"{op}\n\t"
             "fstps 64(%rdi)\n\tfstps 68(%rdi)\n\tfstps 72(%rdi)")
-@tmpl("x87 __ftol benzeri (fld st(0) + fistp qword)")
+@tmpl("x87 __ftol-like (fld st(0) + fistp qword)")
 def _(rng):
     return ("flds 0(%rdi)\n\tfld %st(0)\n\t"
             "fsts 64(%rdi)\n\tfistpq 72(%rdi)\n\t"
@@ -250,13 +250,13 @@ def _(rng):
     return (f"movups 0(%rdi), %xmm0\n\tmovups 16(%rdi), %xmm1\n\t{op} %xmm1, %xmm0")
 
 
-# ---------------- string komutlari (esi = kaynak isaretcisi) ----------------
+# ---------------- string instructions (esi = source pointer) ----------------
 @tmpl("movs/stos/lods", ptr=True)
 def _(rng):
     op = rng.choice(['movsb','movsw','movsl','stosb','stosw','stosl','lodsb','lodsw','lodsl'])
     n  = rng.randrange(1, 5)
     d  = rng.choice(['cld','std'])
-    # std kullanildiginda isaretciler geriye gider; tampon ortasindan basla
+    # with std the pointers move backwards; start from the middle of the buffer
     pre = f"{d}\n\tmovl ${n}, %ecx\n\t"
     rep = 'rep ' if op.startswith(('movs','stos')) and rng.random() < 0.7 else ''
     return pre + rep + op + "\n\tcld"
@@ -267,11 +267,11 @@ def _(rng):
     rep = rng.choice(['', 'repe ', 'repne '])
     return f"cld\n\tmovl ${n}, %ecx\n\t" + rep + op
 
-# ---------------- bolme ----------------
+# ---------------- division ----------------
 @tmpl("div/idiv 32", undef=F_ALL)
 def _(rng):
     op = rng.choice(['divl','idivl'])
-    # bolen sifir olmamali ve bolum tasmamali: kucuk pay, buyuk bolen
+    # the divisor must not be zero and the quotient must not overflow: small dividend, large divisor
     d = rng.randrange(1, 1000)
     return ("movl $0, %edx" + chr(10) + chr(9) + "andl $0xffff, %eax" + chr(10) + chr(9)
             + "movl $" + str(d) + ", %ecx" + chr(10) + chr(9) + op + " %ecx")
@@ -280,7 +280,7 @@ def _(rng):
     op = rng.choice(['mulb','imulb','mulw','imulw'])
     return f"{op} {rng.choice(['%cl','%bl']) if op.endswith('b') else rng.choice(['%cx','%bx'])}"
 
-# ---------------- bayrak tasima ----------------
+# ---------------- flag moves ----------------
 @tmpl("pushf/popf/sahf/lahf")
 def _(rng):
     return rng.choice(["lahf", "sahf", "pushfq\n\tpopq %rax\n\tandl $0x8d5, %eax",
@@ -290,7 +290,7 @@ def _(rng):
     if rng.random() < 0.5:
         return f"xaddl {rng.choice(R32[1:])}, {rng.choice(R32[1:])}"
     return f"cmpxchgl {rng.choice(['%ecx','%edx','%ebx'])}, {rng.choice(['%ecx','%edx','%ebx'])}"
-@tmpl("movzx/movsx kayit")
+@tmpl("movzx/movsx register")
 def _(rng):
     op = rng.choice(['movzbl','movsbl','movzwl','movswl'])
     src = rng.choice(R8) if op.endswith('bl') else rng.choice(R16)
@@ -301,7 +301,7 @@ def _(rng):
     return f"{op} ${rng.randrange(0,32)}, {M(rng)}"
 @tmpl("xchg m32")
 def _(rng): return f"xchgl {rng.choice(R32)}, {M(rng)}"
-@tmpl("mov cesitleri")
+@tmpl("mov variants")
 def _(rng):
     return rng.choice([f"movl {M(rng)}, {rng.choice(R32)}",
                        f"movl {rng.choice(R32)}, {M(rng)}",
@@ -310,11 +310,11 @@ def _(rng):
                        f"movl ${rng.getrandbits(32)}, {M(rng)}"])
 
 def assemble(asm_list, workdir):
-    """Tum test komutlarini tek dosyada assemble et, bayt dizilerini dondur.
+    """Assemble all test instructions in a single file, return the byte arrays.
 
-    Ayirac bayti KULLANILMAZ: bir komutun kendi baytlari ayiracla birlesebilir
-    (ornek: `andb %cl,%ah` -> 20 CC).  Bunun yerine her teste global bir
-    sembol verilir ve sinirlar sembol tablosundan okunur."""
+    A separator byte is NOT USED: an instruction's own bytes can merge with the
+    separator (example: `andb %cl,%ah` -> 20 CC).  Instead every test gets a global
+    symbol and the boundaries are read from the symbol table."""
     src = ['.text']
     for i, a in enumerate(asm_list):
         src.append('.globl _c%d' % i)
@@ -351,7 +351,7 @@ def assemble(asm_list, workdir):
         a0 = addr.get('_c%d' % i)
         a1 = addr.get('_c%d' % (i+1), addr.get('_cend'))
         if a0 is None or a1 is None or a1 <= a0:
-            raise SystemExit('assemble: %d icin sinir bulunamadi' % i)
+            raise SystemExit('assemble: no boundary found for %d' % i)
         out.append(bytes(byts[a0:a1]))
     return out
 
@@ -381,7 +381,7 @@ static void run_one(St *s, unsigned long long rsiv){
     "movl 0(%%r12), %%eax\\n\\tmovl 4(%%r12), %%ecx\\n\\t"
     "movl 8(%%r12), %%edx\\n\\tmovl 12(%%r12), %%ebx\\n\\t"
     "movl 16(%%r12), %%ebp\\n\\tmovl 20(%%r12), %%esi\\n\\t"
-    "fninit\\n\\t"                    /* her vaka temiz FPU ile baslasin */
+    "fninit\\n\\t"                    /* every case starts with a clean FPU */
     "xorps %%xmm0, %%xmm0\\n\\txorps %%xmm1, %%xmm1\\n\\t"
     "xorps %%xmm2, %%xmm2\\n\\txorps %%xmm3, %%xmm3\\n\\t"
     "movl 24(%%r12), %%r11d\\n\\tpushq %%r11\\n\\tpopfq\\n\\t"
@@ -397,8 +397,8 @@ static void run_one(St *s, unsigned long long rsiv){
 }
 int main(void){
   setvbuf(stdout, 0, _IOLBF, 0);
-  /* Bazi rastgele vakalar gercek CPU'da hata verebilir (bolme, erisim);
-   * o vakayi atlayip devam et, tum kosumu kaybetme. */
+  /* Some random cases can fault on the real CPU (division, access);
+   * skip that case and continue, don't lose the whole run. */
   signal(SIGSEGV, onfault); signal(SIGBUS, onfault);
   signal(SIGFPE, onfault);  signal(SIGILL, onfault); signal(SIGTRAP, onfault);
   page = mmap(0, 1<<20, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANON, -1, 0);
@@ -407,11 +407,11 @@ int main(void){
     memcpy(p, CODE + CODE_OFF[i], CODE_LEN[i]);
     p[CODE_LEN[i]] = 0xC3;
     St s; memcpy(&s, INIT + i*sizeof(St), sizeof(St));
-    /* pad != 0 ise esi bir ISARETCI olarak kullanilir (string komutlari) */
+    /* if pad != 0 esi is used as a POINTER (string instructions) */
     unsigned long long rsiv = s.pad ? (unsigned long long)(unsigned long)(s.mem + 64)
                                     : (unsigned long long)s.r[5];
     g_infault = 1;
-    if (sigsetjmp(g_jb, 1) != 0){ g_infault = 0; continue; }   /* vakayi atla */
+    if (sigsetjmp(g_jb, 1) != 0){ g_infault = 0; continue; }   /* skip the case */
     run_one(&s, rsiv);
     g_infault = 0;
     printf("%u", i);
@@ -465,7 +465,7 @@ def gen_guest(cases, chunks, workdir):
         except Unsupported as e:
             names.append(None); skipped.append((i, str(e))); continue
         except Exception as e:
-            names.append(None); skipped.append((i, 'HATA: ' + str(e))); continue
+            names.append(None); skipped.append((i, 'ERROR: ' + str(e))); continue
         bodies.append(code.replace('sub_%08x' % BASE, 't%d' % i))
         names.append('t%d' % i)
     o = [GUEST_HDR, '\n'.join(bodies), 'static CPU cpu; static CPU *const c = &cpu;']
@@ -541,8 +541,8 @@ def main():
 
     ro = subprocess.run([oexe], capture_output=True, text=True)
     rg = subprocess.run([gexe], capture_output=True, text=True)
-    if ro.returncode: print('  UYARI: oracle cikis kodu %d' % ro.returncode)
-    if rg.returncode: print('  UYARI: guest cikis kodu %d  %s' % (rg.returncode, rg.stderr[:200]))
+    if ro.returncode: print('  WARNING: oracle exit code %d' % ro.returncode)
+    if rg.returncode: print('  WARNING: guest exit code %d  %s' % (rg.returncode, rg.stderr[:200]))
     def parse(lines):
         d = {}
         for l in lines:
@@ -561,37 +561,37 @@ def main():
         undef = cases[i]['undef']
         diffs = []
         for j, nm in enumerate(['eax','ecx','edx','ebx','ebp','esi']):
-            if nm == 'esi' and cases[i]['ptr']: continue   # taban adres farkli
-            if o[j] != g[j]: diffs.append('%s: gercek %s != bizim %s' % (nm, o[j], g[j]))
+            if nm == 'esi' and cases[i]['ptr']: continue   # base address differs
+            if o[j] != g[j]: diffs.append('%s: real %s != ours %s' % (nm, o[j], g[j]))
         of_ = int(o[6],16) & ~undef; gf_ = int(g[6],16) & ~undef
-        if of_ != gf_: diffs.append('bayrak: gercek %03x != bizim %03x' % (of_, gf_))
+        if of_ != gf_: diffs.append('flags: real %03x != ours %03x' % (of_, gf_))
         if o[7] != g[7] and not cases[i]['skipmem']:
             for b in range(MEMSZ):
                 a1, b1 = o[7][b*2:b*2+2], g[7][b*2:b*2+2]
                 if a1 != b1:
-                    diffs.append('mem[%d]: gercek %s != bizim %s' % (b, a1, b1)); break
+                    diffs.append('mem[%d]: real %s != ours %s' % (b, a1, b1)); break
         if diffs:
-            inp = 'giris: ' + ' '.join('%s=%08x' % (n, v) for n, v in
+            inp = 'input: ' + ' '.join('%s=%08x' % (n, v) for n, v in
                      zip(['eax','ecx','edx','ebx','ebp','esi'], cases[i]['regs'])) \
-                  + ' bayrak=%03x' % (cases[i]['flags'] & 0x8d5)
+                  + ' flags=%03x' % (cases[i]['flags'] & 0x8d5)
             bad.setdefault(cases[i]['tmpl'], []).append((i, cases[i]['asm'], [inp] + diffs))
 
-    print('\n  denetlenen: %d/%d   lift edilemeyen: %d' % (checked, n, len(skipped)))
+    print('\n  checked: %d/%d   not liftable: %d' % (checked, n, len(skipped)))
     if skipped:
         seen = set()
         for i, e in skipped:
             if e in seen: continue
-            seen.add(e); print('    lift yok: %-28s ornek: %r' % (e, cases[i]['asm']))
-    # Hicbir vaka denetlenmediyse "eslesti" DEME: lifter bastan cokunce
-    # (0/n denetlenen) bu satir yesil cikiyor ve bozuklugu gizliyordu.
+            seen.add(e); print('    no lift: %-28s example: %r' % (e, cases[i]['asm']))
+    # If no case was checked DON'T SAY "matched": when the lifter crashed from the
+    # start (0/n checked) this line came out green and hid the breakage.
     if not checked:
-        print('  \033[31mHICBIR VAKA DENETLENMEDI -- sonuc gecersiz\033[0m'); return 1
+        print('  \033[31mNO CASE WAS CHECKED -- result invalid\033[0m'); return 1
     if not bad:
-        print('  \033[32mTUM SONUCLAR ESLESTI\033[0m'); return 0
-    print('\n  \033[31m%d uyusmazlik, %d sablonda\033[0m'
+        print('  \033[32mALL RESULTS MATCHED\033[0m'); return 0
+    print('\n  \033[31m%d mismatches, in %d templates\033[0m'
           % (sum(len(v) for v in bad.values()), len(bad)))
     for tn, lst in sorted(bad.items(), key=lambda x: -len(x[1])):
-        print('\n  --- %s  (%d vaka) ---' % (tn, len(lst)))
+        print('\n  --- %s  (%d cases) ---' % (tn, len(lst)))
         for i, a, d in lst[:2]:
             print('    #%d  %r' % (i, a))
             for x in d[:4]: print('        ' + x)

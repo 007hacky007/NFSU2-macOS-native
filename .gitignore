@@ -1,21 +1,21 @@
-# --- Oyunun kendisi ve ondan tureyen her sey: ASLA repoya girmez ---
-# Oyun verisi + SPEED2.EXE (EA'nin telifli icerigi)
+# --- The game itself and everything derived from it: NEVER goes into the repo ---
+# Game data + SPEED2.EXE (EA's copyrighted content)
 /Need for Speed Underground 2*/
-# Lift edilmis C kaynagi: SPEED2.EXE'nin makine kodunun cevirisi (turev eser).
-# tools/reloc2.py + tools/genall.py + tools/argcount.py ile birebir yeniden uretilir.
+# Lifted C source: a translation of SPEED2.EXE's machine code (derivative work).
+# Regenerated exactly with tools/reloc2.py + tools/genall.py + tools/argcount.py.
 /gen/
-# Derlenmis ikililer, .app paketleri, dagitim zip'i, gomulu oyun verisi
+# Built binaries, .app bundles, distribution zip, embedded game data
 /out/
 
-# --- Kisisel / oturum kayitlari ---
+# --- Personal / session recordings ---
 /session.jsonl
 /Claude outputs/
-# Ham oturum ekran goruntuleri (secme/ ve rapor/ haric)
-/sunum_ss/*
-!/sunum_ss/secme/
-!/sunum_ss/rapor/
+# Raw session screenshots (except selected/ and report/)
+/screenshots/*
+!/screenshots/selected/
+!/screenshots/report/
 
-# --- Ortam / gecici ---
+# --- Environment / temporary ---
 /.venv/
 __pycache__/
 *.pyc
@@ -23,5 +23,5 @@ __pycache__/
 *.o
 *.log
 
-# Eski surum arsivi (gen/ ve out/ turevleri; bkz. arsiv/v1/OKUBENI.txt)
+# Old version archive (gen/ and out/ derivatives; see arsiv/v1/OKUBENI.txt)
 /arsiv/

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""D3DX9 fx_2_0 efekt ikilisinin (0xFEFF0901) tam ayristiricisi.
+"""Full parser for the D3DX9 fx_2_0 effect binary (0xFEFF0901).
 
-Kullanim:  efxdump.py <blob.efx> [...]      (blob: PE kaynagindan cikarilmis)
-           efxdump.py --exe SPEED2.EXE       (gomulu *_FX kaynaklarinin hepsi)
+Usage:  efxdump.py <blob.efx> [...]        (blob: extracted from the PE resource)
+        efxdump.py --exe SPEED2.EXE         (all the embedded *_FX resources)
 
-Yerel ID3DXEffect (runtime/fxnative.c) icin referans: parametreler,
-teknikler, gecisler, durumlar, nesneler ve kaynaklar (shader bytecode,
-parametre adi, preshader ifadesi).  Ofsetler blob+8'e (veri bolgesi)
-goreli.  Bkz. D3DX_HLE.md, Asama 4.
+Reference for the native ID3DXEffect (runtime/fxnative.c): parameters,
+techniques, passes, states, objects and resources (shader bytecode,
+parameter name, preshader expression).  Offsets are relative to blob+8 (the
+data region).  See D3DX_HLE.md, Stage 4.
 """
 import sys, struct
 
@@ -16,7 +16,7 @@ TYPE  = {0:'VOID',1:'BOOL',2:'INT',3:'FLOAT',4:'STRING',5:'TEXTURE',6:'TEXTURE1D
          7:'TEXTURE2D',8:'TEXTURE3D',9:'TEXTURECUBE',10:'SAMPLER',11:'SAMPLER1D',
          12:'SAMPLER2D',13:'SAMPLER3D',14:'SAMPLERCUBE',15:'PIXELSHADER',
          16:'VERTEXSHADER',17:'PIXELFRAGMENT',18:'VERTEXFRAGMENT'}
-OBJ_TYPES = {4,5,6,7,8,9,15,16}          # nesne kimligi tasiyan turler
+OBJ_TYPES = {4,5,6,7,8,9,15,16}          # types that carry an object id
 SAMPLERS  = {10,11,12,13,14}
 
 
@@ -65,7 +65,7 @@ class Effect:
         return t
 
     def value(s, t, r, top=True):
-        """Ilk deger; eleman dizileri icin liste."""
+        """First value; a list for element arrays."""
         if top and t['elems']:
             return [s.value(t, r, False) for _ in range(t['elems'])]
         c, ty = t['cls'], t['type']
@@ -133,7 +133,7 @@ REGSET = {0:'b', 1:'i', 2:'c', 3:'s'}
 
 
 def ctab(code):
-    """Shader/ifade bytecode'unun CTAB yorumu: [(ad, kume, ilk, adet, sinif, tur, satir, sutun, eleman)]."""
+    """CTAB interpretation of shader/expression bytecode: [(name, set, first, count, class, type, rows, cols, elements)]."""
     n = len(code) // 4
     w = struct.unpack('<%dI' % n, code[:n*4])
     i = 1
@@ -168,34 +168,34 @@ def tstr(t):
 
 def dump(nm, blob):
     e = Effect(blob)
-    print(f"=== {nm}: {len(blob)} bayt, parametre {e.nparam}, teknik {e.ntech}, nesne {e.nobj}, "
-          f"bilinmeyen {e.unk:#x}, okunan {e.end+8}/{len(blob)}")
+    print(f"=== {nm}: {len(blob)} bytes, parameters {e.nparam}, techniques {e.ntech}, objects {e.nobj}, "
+          f"unknown {e.unk:#x}, read {e.end+8}/{len(blob)}")
     for i, p in enumerate(e.params):
         t = p['t']
         print(f"  P{i:<2} {tstr(t):26s} {t['name']}" + (f" :{t['sem']}" if t['sem'] else '')
-              + f"  bayrak={p['flags']:#x} = {fmtv(p['v'])}" + (f"  ann={len(p['anns'])}" if p['anns'] else ''))
+              + f"  flags={p['flags']:#x} = {fmtv(p['v'])}" + (f"  ann={len(p['anns'])}" if p['anns'] else ''))
     for ti, t in enumerate(e.techs):
-        print(f"  T{ti} {t['name']}  ({len(t['passes'])} gecis)")
+        print(f"  T{ti} {t['name']}  ({len(t['passes'])} passes)")
         for pi, ps in enumerate(t['passes']):
-            print(f"    gecis {pi} {ps['name']}: {len(ps['states'])} durum")
+            print(f"    pass {pi} {ps['name']}: {len(ps['states'])} states")
             for si, st in enumerate(ps['states']):
                 print(f"      S{si:<2} op={st['op']:#05x} idx={st['idx']:<2} {tstr(st['t']):22s} {fmtv(st['v'])}")
     for oid in sorted(e.strings):
-        print(f"  dizgi #{oid}: {e.strings[oid][:60]!r}")
+        print(f"  string #{oid}: {e.strings[oid][:60]!r}")
     for r in e.resources:
-        d = r['data']; kind = {0:'ifade/shader', 1:'parametre', 2:'dizi secici'}.get(r['usage'], '?')
+        d = r['data']; kind = {0:'expression/shader', 1:'parameter', 2:'array selector'}.get(r['usage'], '?')
         head = d[:4].hex()
-        txt = d.rstrip(b'\0').decode('latin1') if r['usage'] == 1 else f"{len(d)} bayt {head}"
+        txt = d.rstrip(b'\0').decode('latin1') if r['usage'] == 1 else f"{len(d)} bytes {head}"
         if r['usage'] == 0 and len(d) >= 4:
             ver = struct.unpack_from('<I', d, 0)[0]
-            kind2 = {0xfffe: 'VS', 0xffff: 'PS', 0x4658: 'ifade'}.get(ver >> 16, '?')
+            kind2 = {0xfffe: 'VS', 0xffff: 'PS', 0x4658: 'expression'}.get(ver >> 16, '?')
             cs = ctab(d)
-            txt = f"{kind2} {ver & 0xffff:#06x}, {len(d)} bayt; sabitler: " + ', '.join(
+            txt = f"{kind2} {ver & 0xffff:#06x}, {len(d)} bytes; constants: " + ', '.join(
                 f"{c[0]}->{c[1]}{c[2]}" + (f"..{c[2]+c[3]-1}" if c[3] > 1 else '') + f"({CLASS.get(c[4],c[4])[:6]})"
                 for c in cs)
         where = (f"param P{r['idx']}" + (f"[{r['elem']}]" if r['elem'] != 0xffffffff else '') if r['tech'] == 0xffffffff
-                 else f"T{r['tech']} gecis {r['idx']}")
-        print(f"  kaynak {where} durum S{r['state']}: {kind}: {txt}")
+                 else f"T{r['tech']} pass {r['idx']}")
+        print(f"  resource {where} state S{r['state']}: {kind}: {txt}")
     return e
 
 

@@ -1,17 +1,17 @@
-/* Grafik iyilestirmeleri: YALNIZCA "HD" build'de derlenir.
+/* Graphics enhancements: compiled ONLY in the "HD" build.
  *
- * Iki ayri ikili var (bkz. link.sh):
- *   out/nfsu2_boot     orijinal: oyunun 2004'teki goruntusu, sadik port
- *   out/nfsu2_hd_boot  HD: ayni lift edilmis kod + bu dosyadaki iyilestirmeler
+ * There are two separate binaries (see link.sh):
+ *   out/nfsu2_boot     original: the game's 2004 look, a faithful port
+ *   out/nfsu2_hd_boot  HD: the same lifted code + the enhancements in this file
  *
- * Lift edilmis shard'lar iki build'de ORTAKTIR; fark yalnizca runtime'da.
- * Orijinal build'de NFS_ENHANCED=0 ve buradaki her kanca derleme aninda
- * sabit 0'a duser -- kod yolu bile olusmaz.
+ * The lifted shards are SHARED by both builds; the difference is only in the
+ * runtime.  In the original build NFS_ENHANCED=0 and every hook here folds to
+ * a constant 0 at compile time -- the code path doesn't even exist.
  *
- * Ilke: oyunun mantigina dokunma.  Oyun kendi boyutlarini gormeye devam
- * eder (GetDesc 320x240 der); yalnizca Metal'deki gercek doku buyur.
- * Viewport'u zaten hedefin tamamina kuruyoruz, yani sahne buyuk dokuyu
- * doldurur ve ornekleme UV uzayinda oldugu icin boyuttan bagimsizdir.  */
+ * Principle: don't touch the game's logic.  The game keeps seeing its own
+ * sizes (GetDesc says 320x240); only the real texture in Metal grows.
+ * We already set the viewport to the whole target, so the scene fills the
+ * large texture, and since sampling is in UV space it is size-independent.  */
 #ifndef ENHANCE_H
 #define ENHANCE_H
 #include <stdint.h>
@@ -23,16 +23,16 @@
 enum { ENH_NONE = 0, ENH_ROAD = 1, ENH_MIRROR = 2, ENH_CUBE = 3 };
 
 #if NFS_ENHANCED
-/* Render hedefi boyutu: oyunun istedigi (w,h)'yi CAGIRAN adrese gore
- * buyutur.  ret = COM cagrisinin donus adresi (c->eip).  Hedefin turunu
- * (ENH_*) dondurur; dokunmadiysa ENH_NONE. */
+/* Render target size: enlarges the (w,h) the game asked for based on the
+ * CALLING address.  ret = return address of the COM call (c->eip).  Returns
+ * the target's kind (ENH_*); ENH_NONE if untouched. */
 int  enh_rt_size(uint32_t ret, uint32_t bb_w, uint32_t bb_h,
                  uint32_t *w, uint32_t *h);
-/* Yol yansimasi bulanikligi: 1 = oyunun orijinal genisligi, 0 = keskin. */
+/* Road reflection blur: 1 = the game's original width, 0 = sharp. */
 float enh_blur(void);
-/* Gorunum kurulumu (overrides.c, sub_005c7ed0): id = eView kimligi,
- * m = 48 float (gorunum, projeksiyon, carpim; satir vektoru duzeni),
- * cam = guest Camera* (0 olabilir). */
+/* View setup (overrides.c, sub_005c7ed0): id = eView id,
+ * m = 48 floats (view, projection, product; row-vector layout),
+ * cam = guest Camera* (may be 0). */
 void enh_view_setup(uint32_t id, const float *m, uint32_t cam);
 void enh_report(void);
 const char *enh_build_name(void);
@@ -44,7 +44,7 @@ static inline float enh_blur(void) { return 1.f; }
 static inline void enh_view_setup(uint32_t id, const float *m, uint32_t cam)
 { (void)id; (void)m; (void)cam; }
 static inline void enh_report(void) {}
-static inline const char *enh_build_name(void) { return "orijinal"; }
+static inline const char *enh_build_name(void) { return "original"; }
 #endif
 
 #endif

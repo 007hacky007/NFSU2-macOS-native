@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""23k fonksiyonun tamamini C'ye cevir, shard'lara bol, fonksiyon tablosunu uret."""
+"""Translate all 23k functions to C, split them into shards, generate the function table."""
 import sys, os, struct, collections, time, multiprocessing as mp
 sys.path.insert(0,'tools')
 import pefile
@@ -9,12 +9,12 @@ from lift import Lifter, Unsupported
 
 EXE = sys.argv[1]
 NSHARD = int(sys.argv[2]) if len(sys.argv)>2 else 128
-# GENOUT: cikis dizini (varsayilan gen/all); COMMENTS=1: her x86 komutu yorum
-# olarak yazilir (kod ayni; komut duzeyinde profil icin, bkz. tools/lift_profil.py)
+# GENOUT: output directory (default gen/all); COMMENTS=1: every x86 instruction is
+# written as a comment (same code; for instruction-level profiling, see tools/lift_profile.py)
 OUT = os.environ.get('GENOUT', 'gen/all')
 os.makedirs(OUT, exist_ok=True)
 
-# ---------- Faz 1: kapali fonksiyon kumesi ----------
+# ---------- Phase 1: closed function set ----------
 def discover_all():
     L=Lifter(EXE); pe=pefile.PE(EXE); IB=pe.OPTIONAL_HEADER.ImageBase
     EP=IB+pe.OPTIONAL_HEADER.AddressOfEntryPoint
@@ -52,13 +52,14 @@ def discover_all():
             va=i.address+i.size
     return sorted(funcs)
 
-# ---------- Faz 2: paralel uretim ----------
+# ---------- Phase 2: parallel generation ----------
 _L=None
-# INLINE=<n>: cagri yapmayan, en fazla n x86 komutluk "yaprak" fonksiyonlar her
-# shard'a static inline (always_inline) kopya olarak konur, dogrudan cagrilar
-# onlara yonlendirilir.  Cagri basina sabit bedel (giris/cikis yazmac saklama,
-# c-> alanlarinin bellege yazilip geri okunmasi) yaprak cagrilarda isin kendisi
-# kadar.  Orijinal sub_X tanimlari aynen kalir (fntab, dolayli cagri).
+# INLINE=<n>: "leaf" functions that make no calls and have at most n x86
+# instructions are put into every shard as static inline (always_inline) copies,
+# direct calls are redirected to them.  The fixed cost per call (saving entry/exit
+# registers, writing c-> fields to memory and reading them back) is as large as
+# the work itself for leaf calls.  The original sub_X definitions stay as they are
+# (fntab, indirect calls).
 INLINE_MAX = int(os.environ.get('INLINE','0') or 0)
 _INL = {}
 import re as _re
@@ -66,17 +67,18 @@ _INL_CALL = _re.compile(r'\bsub_([0-9a-f]{8})\(c\)')
 _INL_YASAK = ('dispatch_indirect', 'unsupported_insn', 'cpuid_shim', 'guest_hook', 'rdtsc_shim', 'cov_hit')
 OVERRIDES = {int(x,16) for x in os.environ.get('OVERRIDE','').replace('0x','').split(',') if x.strip()}
 
-# MEMARG=1: misafir bellek tabani PARAMETRE olarak.  Her lift fonksiyonu
+# MEMARG=1: the guest memory base as a PARAMETER.  Every lifted function becomes
 #   void sub_X_m(CPU *restrict c, uint8_t *restrict _mb)
-# olur; lift kodu birbirini _m surumuyle cagirir, g_mem makrolari _mb'ye gider.
-# Disariya acik void sub_X(CPU*) ince sarmalayici olarak kalir (fntab, dolayli
-# cagri, runtime -> lift cagrilari, override'lar degismez).
-# Neden: g_mem bellekten okunan bir isaretci ve c cagrilara gecirildigi icin
-# "kacmis"; derleyici misafir bellegine her yazmadan sonra c-> alanlarini (ve
-# -fno-strict-aliasing ile g_mem'in kendisini) yeniden okumak zorunda.  Iki ayri
-# noalias parametre LLVM'de kesin olarak cakismaz (kacis analizi gerekmez).
-# Dogruluk icin bu uretim -fno-strict-aliasing ile derlenmeli: lift kodu ayni
-# misafir adresine farkli tiplerle erisiyor (MR32 yazip MRF32 okuma).
+# lifted code calls each other through the _m version, the g_mem macros go to _mb.
+# The externally visible void sub_X(CPU*) stays as a thin wrapper (fntab, indirect
+# calls, runtime -> lift calls, overrides don't change).
+# Why: g_mem is a pointer read from memory and c is "escaped" because it is passed
+# to calls; the compiler has to reread the c-> fields (and with
+# -fno-strict-aliasing g_mem itself) after every write to guest memory.  Two
+# separate noalias parameters definitely don't alias in LLVM (no escape analysis
+# needed).
+# For correctness this output must be compiled with -fno-strict-aliasing: lifted
+# code accesses the same guest address with different types (MR32 write, MRF32 read).
 MEMARG = os.environ.get('MEMARG','') == '1'
 _MA_HDR = _re.compile(r'void sub_([0-9a-f]{8})(_orig)?\(CPU \*(?:restrict )?c\) ?\{')
 def _memarg(code):
@@ -99,14 +101,14 @@ def _init(inl=None):
     _L.cov = cov
 
 def _inlprobe(a):
-    """yaprak + kucuk + override degil -> (adres, kod) ya da (adres, None)"""
+    """leaf + small + not overridden -> (address, code) or (address, None)"""
     if a in OVERRIDES: return a, None
     _L.traps = 0
     try:
         code, tg = _L.lift(a)
     except Exception:
         return a, None
-    m = _re.search(r'\((\d+) komut,', code)
+    m = _re.search(r'\((\d+) instructions,', code)
     if not m or int(m.group(1)) > INLINE_MAX: return a, None
     if _INL_CALL.search(code.split('{', 1)[1]) or any(y in code for y in _INL_YASAK): return a, None
     if _L.traps: return a, None
@@ -120,7 +122,7 @@ def _shard(args):
         try:
             code,tg = L.lift(a)
         except Exception as e:
-            fb = f"void sub_{a:08x}(CPU *c){{ unsupported_insn(c,0x{a:x}u,\"lift-hatasi\"); POP32(c->eip); }}"
+            fb = f"void sub_{a:08x}(CPU *c){{ unsupported_insn(c,0x{a:x}u,\"lift-error\"); POP32(c->eip); }}"
             parts.append(_memarg(fb) if MEMARG else fb)
             defined.append(a); kinds[f"<lift:{type(e).__name__}>"]+=1; continue
         if a in OVERRIDES:
@@ -150,39 +152,39 @@ def _shard(args):
 
 if __name__=='__main__':
     t0=time.time()
-    print("Faz 1: fonksiyon kumesi kesfediliyor...")
+    print("Phase 1: discovering the function set...")
     funcs = discover_all()
-    print(f"  {len(funcs)} fonksiyon  ({time.time()-t0:.0f}s)")
+    print(f"  {len(funcs)} functions  ({time.time()-t0:.0f}s)")
 
     chunks=[(i, funcs[i::NSHARD]) for i in range(NSHARD)]
     hk=os.environ.get('HOOKS',''); wt=os.environ.get('WATCH','')
     if OVERRIDES: print(f"  [override: {[hex(a) for a in sorted(OVERRIDES)]}]")
-    print(f"\nFaz 2: {NSHARD} shard, {mp.cpu_count()} cekirdek ile uretiliyor..."
-          + (f"  [kanca: {hk}]" if hk else "")
-          + ("  [KAPSAMA olcumu]" if os.environ.get('COVERAGE','')=='1' else "") + ("  [WATCHPOINT enstrumantasyonu]" if wt=='1' else ""))
+    print(f"\nFaz 2: {NSHARD} shard, {mp.cpu_count()} cores..."
+          + (f"  [hook: {hk}]" if hk else "")
+          + ("  [COVERAGE measurement]" if os.environ.get('COVERAGE','')=='1' else "") + ("  [WATCHPOINT instrumentation]" if wt=='1' else ""))
     t1=time.time()
     inl = {}
     if INLINE_MAX:
         with mp.Pool(mp.cpu_count(), initializer=_init) as pool:
             for a, code in pool.imap_unordered(_inlprobe, funcs, chunksize=64):
                 if code: inl[a] = code
-        print(f"  [satir ici: {len(inl)} yaprak fonksiyon <= {INLINE_MAX} komut]  ({time.time()-t1:.0f}s)")
+        print(f"  [inline: {len(inl)} leaf functions <= {INLINE_MAX} instructions]  ({time.time()-t1:.0f}s)")
     defined=set(); refs=set(); traps=0; trunc=0; kinds=collections.Counter(); bytes_=0
     with mp.Pool(mp.cpu_count(), initializer=_init, initargs=(inl,)) as pool:
         for n,(idx,d,r,tp,tr,kk,sz) in enumerate(pool.imap_unordered(_shard, chunks)):
             defined |= set(d); refs |= set(r); traps+=tp; trunc+=tr
             kinds.update(kk); bytes_+=sz
             if (n+1)%16==0: print(f"  {n+1}/{NSHARD} shard  ({time.time()-t1:.0f}s)")
-    print(f"  uretim bitti ({time.time()-t1:.0f}s)")
+    print(f"  generation done ({time.time()-t1:.0f}s)")
 
     missing = sorted(refs - defined)
-    print(f"\n  tanimli: {len(defined)}   referans verilen: {len(refs)}   EKSIK: {len(missing)}")
+    print(f"\n  defined: {len(defined)}   referenced: {len(refs)}   MISSING: {len(missing)}")
     if missing or (MEMARG and OVERRIDES):
         with open(f"{OUT}/stubs.c",'w') as f:
             f.write('#include "cpu.h"\n#include "decls.h"\n\n')
             for a in missing:
                 f.write(f"void sub_{a:08x}(CPU *c){{ unsupported_insn(c,0x{a:x}u,\"stub\"); POP32(c->eip); }}\n")
-            if MEMARG:   # lift kodu herkesi _m ile cagirir: eksikler ve override'lar icin kopru
+            if MEMARG:   # lifted code calls everyone through _m: a bridge for the missing ones and overrides
                 for a in sorted(set(missing) | OVERRIDES):
                     f.write(f"void sub_{a:08x}_m(CPU *restrict c, uint8_t *restrict _mb){{ (void)_mb; sub_{a:08x}(c); }}\n")
         print(f"  -> stubs.c ({len(missing)} stub)")
@@ -207,9 +209,9 @@ if __name__=='__main__':
         for i in range(0,len(allf),4): f.write("  "+",".join(f"sub_{a:08x}" for a in allf[i:i+4])+",\n")
         f.write("};\n")
     print(f"\n=== URETIM OZETI ({time.time()-t0:.0f}s) ===")
-    print(f"  fonksiyon        : {len(allf)}")
-    print(f"  C kaynak boyutu  : {bytes_/1048576:.1f} MB ({NSHARD} shard)")
-    print(f"  trap (desteklenmeyen komut) : {traps}")
-    print(f"  kesilmis dallanma hedefi    : {trunc}")
-    print("\n  en sik trap nedenleri:")
+    print(f"  functions        : {len(allf)}")
+    print(f"  C source size    : {bytes_/1048576:.1f} MB ({NSHARD} shard)")
+    print(f"  traps (unsupported instruction) : {traps}")
+    print(f"  truncated branch targets        : {trunc}")
+    print("\n  most common trap reasons:")
     for k,v in collections.Counter(kinds).most_common(12): print(f"    {k:16s} {v}")

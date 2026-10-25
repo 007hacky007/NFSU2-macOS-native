@@ -1,79 +1,81 @@
-/* Grafik iyilestirmeleri (yalnizca HD build).  Bkz. enhance.h, GRAFIK_ARASTIRMA.md.
+/* Graphics enhancements (HD build only).  See enhance.h, GRAPHICS_RESEARCH.md.
  *
- * 1) YANSIMA COZUNURLUGU
- *    Oyun uc yansimayi ayri render hedeflerine ciziyor:
- *      yol yansimasi   320x240   (1080p'de yatayda 6x buyutuluyor)
- *      dikiz aynasi    256x256
- *      arac kup harita 128/yuz
- *    Hedefler CAGRI ADRESINDEN taniniyor (bizim exe, SHA 8f6a9ae2...).
- *    Topluluk modlarinin adresleri bu exe'de kayik; buradakiler kendi
- *    ayrıştırmamızdan:
- *      0x5BA0A7  CreateTexture(320,240,RT)   yol yansimasi
- *      0x5BA11D  CreateTexture(320,240,RT)   yol yansimasi bulanikligi
- *                                            (yalnizca yansima seviyesi 3)
- *      0x5BA1DD  CreateTexture([7FEE80],[7FEE84],RT)  dikiz aynasi
- *      0x5BA559  CreateCubeTexture([7FEE6C],RT)       arac cevre haritasi
- *    Z yuzeyleri (0x5BA0E9, 0x5BA21C, 0x5BA5AA) dokunmadan kalir: Metal Z
- *    dokusunu ilk kullanildigi hedefin boyutunda yaratiyor.
+ * 1) REFLECTION RESOLUTION
+ *    The game draws three reflections into separate render targets:
+ *      road reflection    320x240   (upscaled 6x horizontally at 1080p)
+ *      rear-view mirror   256x256
+ *      car cube map       128/face
+ *    The targets are recognized by their CALL ADDRESS (our exe, SHA 8f6a9ae2...).
+ *    The community mods' addresses are shifted in this exe; the ones here come
+ *    from our own parsing:
+ *      0x5BA0A7  CreateTexture(320,240,RT)   road reflection
+ *      0x5BA11D  CreateTexture(320,240,RT)   road reflection blur
+ *                                            (only at reflection level 3)
+ *      0x5BA1DD  CreateTexture([7FEE80],[7FEE84],RT)  rear-view mirror
+ *      0x5BA559  CreateCubeTexture([7FEE6C],RT)       car environment map
+ *    The Z surfaces (0x5BA0E9, 0x5BA21C, 0x5BA5AA) stay untouched: Metal creates
+ *    the Z texture at the size of the target it is first used with.
  *
- *    Ortam:  HDREFL=0       yansima iyilestirmesini kapat (A/B icin)
- *            HD_ROAD=0.5    yol yansimasi: geri tamponun kati.  2026-10-15
- *                           1.0 -> 0.5: 3024x1964 yarista 120 fps'i tutarken
- *                           ~2.5 W az (kare basina enerji -%17); goruntu farki
- *                           yok denecek kadar az (isin izleme acikken bu doku
- *                           yalnizca yedek ve bulanik).  Kup/ayna kucultmek ek
- *                           kazanc getirmedi.
- *            HD_MIRROR=1024 ayna kenari (piksel)
- *            HD_CUBE=512    kup yuzu kenari (piksel)
- *            HD_BLUR=0.5    yol yansimasi bulanikligi: 1 = oyunun kendi
- *                           genisligi, 0 = keskin (bkz. asagi)
+ *    Env:    HDREFL=0       turn the reflection enhancement off (for A/B)
+ *            HD_ROAD=0.5    road reflection: multiple of the back buffer.
+ *                           2026-10-15 1.0 -> 0.5: ~2.5 W less while holding
+ *                           120 fps in a 3024x1964 race (energy per frame -17%);
+ *                           the image difference is next to nothing (with ray
+ *                           tracing on this texture is only a blurry fallback).
+ *                           Shrinking the cube/mirror brought no extra gain.
+ *            HD_MIRROR=1024 mirror edge (pixels)
+ *            HD_CUBE=512    cube face edge (pixels)
+ *            HD_BLUR=0.5    road reflection blur: 1 = the game's own width,
+ *                           0 = sharp (see below)
  *
- * 2) YOL YANSIMASI BULANIKLIGI
- *    Oyun yansimayi ps 19 ile iki gecis bulaniklastiriyor (13->14->13):
- *    4 ornek, ofsetler 320 piksele gore UV'de sabit.  Doku 1920'ye
- *    buyuyunce ornekler 6 piksel aralikli dusuyor ve dikey cizgili desen
- *    cikiyordu.  Cozum: yansima hedeflerine mip zinciri, bulaniklik
- *    gecisinde L seviyesinden oku ve ornek ofsetlerini merkeze gore
- *    s = 2^L / olcek ile olcekle.  Boylece ornek araligi hep ~1 teksel:
- *      HD_BLUR=1 -> L = log2(olcek), s = 1: oyunun bulaniklik genisligi
- *      HD_BLUR=0 -> L = 0, s = 1/olcek: tam cozunurlukte ince bulaniklik
+ * 2) ROAD REFLECTION BLUR
+ *    The game blurs the reflection in two passes with ps 19 (13->14->13):
+ *    4 taps, offsets fixed in UV relative to 320 pixels.  When the texture grew
+ *    to 1920 the taps landed 6 pixels apart and a vertical striped pattern
+ *    appeared.  Solution: a mip chain on the reflection targets; in the blur pass
+ *    read from level L and scale the tap offsets about the center by
+ *    s = 2^L / scale.  This way the tap spacing is always ~1 texel:
+ *      HD_BLUR=1 -> L = log2(scale), s = 1: the game's blur width
+ *      HD_BLUR=0 -> L = 0, s = 1/scale: a fine blur at full resolution
  *
- * 3) MSAA (kodu metal.m'de, "HD: ekran icin MSAA")
- *    HD_MSAA=4 (varsayilan; 2/8 da olur, 0/1 kapali).  Yalnizca EKRAN
- *    gecisleri cok ornekli; her gecis StoreAndMultisampleResolve ile
- *    drawable'a cozulur.  Z'nin cok ornekli ikizi tutulur ve derinligi de
- *    tek ornekli Z'ye COZULUR (HD_ZRESOLVE=0 kapatir): oyunun derinlik
- *    testli tam ekran dortgeni (ps 17 / vs 11, 1920x1080 hedefe) sahnenin
- *    derinligini gormek zorunda.  Cozulmeyince ekran disi hedefte Z testi
- *    yapan cizim sayisi kare basina ~11 olculdu.
+ * 3) MSAA (code in metal.m, "HD: MSAA for the screen")
+ *    HD_MSAA=4 (default; 2/8 also work, 0/1 off).  Only SCREEN passes are
+ *    multisampled; every pass is resolved into the drawable with
+ *    StoreAndMultisampleResolve.  A multisampled twin of Z is kept and its depth
+ *    is also RESOLVED into the single-sampled Z (HD_ZRESOLVE=0 turns it off):
+ *    the game's depth-tested fullscreen quad (ps 17 / vs 11, to a 1920x1080
+ *    target) must see the scene's depth.  Without the resolve, the number of
+ *    draws doing a Z test on an offscreen target was measured at ~11 per frame.
  *
- * 4) SSR + yansima ayristirma (metal.m "HD: SSR", vsemu.c ps_to_msl_ex2,
- *    kamera: overrides.c sub_005c7ed0).  HD_SSR=0 kapali, HD_SSR_DEBUG=1.
- *    Ayrinti: GRAFIK_ARASTIRMA.md §8.
+ * 4) SSR + reflection separation (metal.m "HD: SSR", vsemu.c ps_to_msl_ex2,
+ *    camera: overrides.c sub_005c7ed0).  HD_SSR=0 off, HD_SSR_DEBUG=1.
+ *    Details: GRAPHICS_RESEARCH.md §8.
  *
- * 5) ISIN IZLEMELI YANSIMA (metal.m "RT cekirdegi" + "SABIT SAHNE ONBELLEGI",
- *    vsemu.c vs_to_msl'in vsk_N hesaplama cekirdegi).  macOS 13+.
- *    Yol ve araba pikselleri icin yansima isini gercek sahne geometrisine
- *    atilir; isabet oyunun kendi malzemesiyle golgelenir (doku, kose rengi,
- *    far isigi terimi, sis, alfa testi).  Iska -> oyunun kendi yansimasi.
- *      HD_RT=0         kapali (SSR'ye duser)
- *      HD_RT_SCALE=1..4 isin cozunurlugu boleni; verilmezse OTOMATIK (genislige
- *                      gore: 1080p 2, 2560/3024 3, 4K 4)
- *      HD_RT_CACHE=0   sabit sahne onbellegini kapat (kamera arkasi kaybolur)
- *      HD_RT_MAXD=600  isin menzili (dunya birimi ~ metre)
- *      HD_RT_LOD=0.05  uzakliga gore doku mip'i
- *      HD_RT_FIX=0     kose denetimini kapat (NaN / sonsuz / 100 km'den uzak
- *                      koseli ucgenler ivme yapisini zehirliyor: §11)
- *    Tani: HD_SSR_DEBUG=4 (yalniz yansima), HD_RT_LOG=1/2, HD_RT_DUMPTAB=<kare>,
- *    HD_RT_STRESS=<N>, HD_RT_STAGE/NOTEX/PLAIN, HD_RTPROBE.
- *    Ayrinti: GRAFIK_ARASTIRMA.md §9-§10.
+ * 5) RAY-TRACED REFLECTIONS (metal.m "RT kernel" + "STATIC SCENE CACHE",
+ *    the vsk_N compute kernel from vsemu.c vs_to_msl).  macOS 13+.
+ *    For road and car pixels a reflection ray is cast into the real scene
+ *    geometry; a hit is shaded with the game's own material (texture, vertex
+ *    color, headlight term, fog, alpha test).  Miss -> the game's own reflection.
+ *      HD_RT=0         off (falls back to SSR)
+ *      HD_RT_SCALE=1..4 ray resolution divisor; AUTOMATIC if not given (by width:
+ *                      1080p 2, 2560/3024 3, 4K 4)
+ *      HD_RT_CACHE=0   turn off the static scene cache (what's behind the camera is lost)
+ *      HD_RT_MAXD=600  ray range (world units ~ meters)
+ *      HD_RT_LOD=0.05  texture mip by distance
+ *      HD_RT_FIX=0     turn off the vertex check (triangles with NaN / infinite /
+ *                      farther-than-100-km vertices poison the acceleration
+ *                      structure: §11)
+ *    Diagnostics: HD_SSR_DEBUG=4 (reflection only), HD_RT_LOG=1/2,
+ *    HD_RT_DUMPTAB=<frame>, HD_RT_STRESS=<N>, HD_RT_STAGE/NOTEX/PLAIN, HD_RTPROBE.
+ *    Details: GRAPHICS_RESEARCH.md §9-§10.
  *
- * 6) GPU BUTCESI (metal.m "MSAA: gereksiz saklama / cozme", "SAHNEYI BOLEN ARA
- *    GECISI ERTELE").  Karede 5 cok ornekli ekran gecisi 1'e indirildi.
- *      HD_MSLAZY=0     tembel saklama/cozme kapali (eski davranis)
- *      HD_REORDER=0    ara gecis erteleme kapali
- *    Olcum (iki build'de): GPUWIN=a,b  PASSPROF=N [PASSPROF_MODE=1]
- *    yalniz HD: HD_COMP=0  HD_RT_AB=1.   Ayrinti: GRAFIK_ARASTIRMA.md §11.   */
+ * 6) GPU BUDGET (metal.m "MSAA: unnecessary store / resolve", "DEFER THE
+ *    INTERMEDIATE PASS THAT SPLITS THE SCENE").  5 multisampled screen passes
+ *    per frame were reduced to 1.
+ *      HD_MSLAZY=0     lazy store/resolve off (old behavior)
+ *      HD_REORDER=0    intermediate pass deferral off
+ *    Measurement (both builds): GPUWIN=a,b  PASSPROF=N [PASSPROF_MODE=1]
+ *    HD only: HD_COMP=0  HD_RT_AB=1.   Details: GRAPHICS_RESEARCH.md §11.   */
 #include "enhance.h"
 #if NFS_ENHANCED
 #include <stdio.h>
@@ -86,7 +88,7 @@
 
 static int    g_init, g_refl = 1;
 static double g_road = 0.5, g_blur = 0.5;
-static int    g_road_env;                 /* HD_ROAD verildi: otomatik secim yok */
+static int    g_road_env;                 /* HD_ROAD given: no automatic choice */
 static uint32_t g_mirror = 1024, g_cube = 512;
 static uint32_t g_hits[4];
 static uint32_t g_last_w[4], g_last_h[4];
@@ -109,10 +111,10 @@ static void enh_init(void){
     if (g_blur < 0.0) g_blur = 0.0;
     if (g_blur > 1.0) g_blur = 1.0;
     if (g_road <= 0.0) g_road = 0.5;
-    if (g_road_env) fprintf(stderr, "[HD] yansima: %s  yol=%.2fx geri tampon  bulaniklik=%.2f  ayna=%u  kup=%u\n",
-                            g_refl ? "ACIK" : "KAPALI", g_road, g_blur, g_mirror, g_cube);
-    else fprintf(stderr, "[HD] yansima: %s  yol=%s geri tampon  bulaniklik=%.2f  ayna=%u  kup=%u\n",
-                 g_refl ? "ACIK" : "KAPALI", "otomatik (isin izleme acikken 1/3x, kapaliyken 0.50x)", g_blur, g_mirror, g_cube);
+    if (g_road_env) fprintf(stderr, "[HD] reflection: %s  road=%.2fx back buffer  blur=%.2f  mirror=%u  cube=%u\n",
+                            g_refl ? "ON" : "OFF", g_road, g_blur, g_mirror, g_cube);
+    else fprintf(stderr, "[HD] reflection: %s  road=%s back buffer  blur=%.2f  mirror=%u  cube=%u\n",
+                 g_refl ? "ON" : "OFF", "automatic (1/3x with ray tracing on, 0.50x with it off)", g_blur, g_mirror, g_cube);
 }
 
 const char *enh_build_name(void){ return "HD"; }
@@ -126,16 +128,16 @@ int enh_rt_size(uint32_t ret, uint32_t bb_w, uint32_t bb_h,
     uint32_t nw, nh;
     switch (ret){
     case RET_ROAD: case RET_ROAD_BLUR:
-        /* Beklenen boyut degilse (baska bir surum/yama) dokunma. */
+        /* If it isn't the expected size (another version/patch), don't touch it. */
         if (*w != 320u || *h != 240u) return ENH_NONE;
         k  = (ret == RET_ROAD) ? 0 : 1; kind = ENH_ROAD;
-        /* YOL YANSIMASI OLCEGI: isin izleme acikken oyunun yol yansimasi yalniz
-         * isinin bir seye carpmadigi yerde (gokyuzu, menzil disi) gorunur;
-         * carptigi yerde birlestirme onu G-tamponundaki R0 ile birebir cikarip
-         * RT sonucunu koyar.  Orada 1/3 (3024'te 1008x633, orijinalin 320x240'inin
-         * 3 kati) yeter.  Olculdu (Free Run, sunumsuz kapasite, deterministik):
-         * 5.94 -> 5.72 ms/kare.  Isin izleme kapaliyken (SSR) yansima tum yolda
-         * gorunur: 0.5.  HD_ROAD=<oran> elle. */
+        /* ROAD REFLECTION SCALE: with ray tracing on, the game's road reflection is only
+         * visible where the ray doesn't hit anything (sky, out of range); where it
+         * hits, the composite subtracts it exactly with R0 from the G-buffer and
+         * puts the RT result in.  1/3 is enough there (1008x633 at 3024, 3x the
+         * original's 320x240).  Measured (Free Run, capacity without presenting,
+         * deterministic): 5.94 -> 5.72 ms/frame.  With ray tracing off (SSR) the
+         * reflection is visible on the whole road: 0.5.  HD_ROAD=<ratio> by hand. */
         { int metal_hd_rt_enabled(void);
           double rs = g_road_env ? g_road : (metal_hd_rt_enabled() ? 1.0 / 3.0 : 0.5);
           nw = clampu(bb_w * rs); nh = clampu(bb_h * rs); }
@@ -152,8 +154,8 @@ int enh_rt_size(uint32_t ret, uint32_t bb_w, uint32_t bb_h,
         return ENH_NONE;
     }
     if (g_hits[k] < 3 || g_last_w[k] != nw || g_last_h[k] != nh){
-        static const char *nm[4] = { "yol yansimasi", "yol bulanikligi",
-                                     "dikiz aynasi", "kup haritasi" };
+        static const char *nm[4] = { "road reflection", "road blur",
+                                     "rear-view mirror", "cube map" };
         fprintf(stderr, "[HD] %s %ux%u -> %ux%u\n", nm[k], *w, *h, nw, nh);
     }
     g_hits[k]++; g_last_w[k] = nw; g_last_h[k] = nh;
@@ -161,22 +163,21 @@ int enh_rt_size(uint32_t ret, uint32_t bb_w, uint32_t bb_h,
     return kind;
 }
 
-/* Ana gorunumun (kimlik 1) matrislerini Metal'e kare verisi olarak ver. */
+/* Hand the main view's (id 1) matrices to Metal as frame data. */
 void enh_view_setup(uint32_t id, const float *m, uint32_t cam){
     (void)cam;
-    /* VIEWLOG=1: her gorunum kimliginin gorunum matrisi (3x3 + konum),
-     * kimlik basina 4000. cagridan sonra bir kez.  Kup yuzu kameralarinin
-     * eksenlerini okumak icin. */
+    /* VIEWLOG=1: the view matrix (3x3 + position) of every view id, once after the
+     * 4000th call per id.  For reading the axes of the cube face cameras. */
     { static int vl = -1; static unsigned cnt[32]; static unsigned char done[32];
       if (vl < 0) vl = getenv("VIEWLOG") ? 1 : 0;
       if (vl && id < 32u && !done[id] && ++cnt[id] > 4000u){ done[id] = 1;
-          fprintf(stderr, "[gorunum %u] sag=(%.3f %.3f %.3f) y=(%.3f %.3f %.3f) ileri=(%.3f %.3f %.3f) P00=%.3f P11=%.3f\n",
+          fprintf(stderr, "[view %u] right=(%.3f %.3f %.3f) y=(%.3f %.3f %.3f) fwd=(%.3f %.3f %.3f) P00=%.3f P11=%.3f\n",
                   id, m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10], m[16], m[21]); } }
-    /* Kup harita yuzu kameralari (gorunum 16..21) dunya eksenlerine DEGIL
-     * baska bir cerceveye hizali (olculdu).  Kup ornekleme vektorunu dunyaya
-     * cevirmek icin yuz kameralarinin ileri yonleri: kup +x = gorunum 17,
-     * +y = gorunum 18, +z = gorunum 21 (olculdu: arabada sag/geri/yukari;
-     * HD_SSR_DEBUG=3 normal uyum testiyle dogrulandi). */
+    /* The cube map face cameras (views 16..21) are aligned NOT to the world axes
+     * but to some other frame (measured).  To convert the cube sampling vector to
+     * world space, the forward directions of the face cameras: cube +x = view 17,
+     * +y = view 18, +z = view 21 (measured: right/back/up on the car; verified
+     * with the HD_SSR_DEBUG=3 normal agreement test). */
     static float cube_b[9] = { 1,0,0, 0,1,0, 0,0,1 };
     if (id == 17u || id == 18u || id == 21u){
         int a = (id == 17u) ? 0 : (id == 18u) ? 1 : 2;
@@ -191,8 +192,8 @@ void enh_view_setup(uint32_t id, const float *m, uint32_t cam){
 
 void enh_report(void){
     if (!g_init) return;
-    fprintf(stderr, "[HD] yansima hedefleri: yol=%u bulaniklik=%u ayna=%u kup=%u"
-            " (son: yol %ux%u, ayna %u, kup %u)\n",
+    fprintf(stderr, "[HD] reflection targets: road=%u blur=%u mirror=%u cube=%u"
+            " (last: road %ux%u, mirror %u, cube %u)\n",
             g_hits[0], g_hits[1], g_hits[2], g_hits[3],
             g_last_w[0], g_last_h[0], g_last_w[2], g_last_w[3]);
 }

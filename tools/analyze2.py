@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reloc-destekli recursive descent: gercek kod kapsami olcumu."""
+"""Reloc-assisted recursive descent: measuring real code coverage."""
 import sys, struct, collections
 import pefile
 from capstone import *
@@ -21,10 +21,10 @@ def rd32(a):
 
 relocs=[int(x,16) for x in open('out/relocs.txt')]
 relocset=set(relocs)
-# reloc konumlarindaki degerler = mutlak adresler
+# values at reloc locations = absolute addresses
 targets=[v for a in relocs if (v:=rd32(a)) is not None]
 code_ptrs=sorted({v for v in targets if in_text(v)})
-print(f"reloc'lardan gelen .text hedefi: {len(code_ptrs)} benzersiz adres")
+print(f".text targets from relocs: {len(code_ptrs)} unique addresses")
 
 md=Cs(CS_ARCH_X86,CS_MODE_32); md.detail=True
 covered=bytearray(TSZ); funcs=set(); ind_call=0; ind_jmp=0; badi=0
@@ -73,10 +73,10 @@ def run():
 run()
 
 cov=sum(covered)
-print(f"\n=== 1. GECIS (reloc destekli) ===")
-print(f"  kapsam: {cov}/{TSZ} = {100.0*cov/TSZ:.2f}%   fonksiyon: {len(funcs)}")
+print(f"\n=== PASS 1 (reloc assisted) ===")
+print(f"  coverage: {cov}/{TSZ} = {100.0*cov/TSZ:.2f}%   functions: {len(funcs)}")
 
-# --- 2. GECIS: bosluklarda gomulu VERI mi? (jump table / string / hizalama dolgusu) ---
+# --- PASS 2: is there embedded DATA in the gaps? (jump table / string / alignment padding) ---
 gaps=[];i=0
 while i<TSZ:
     if not covered[i]:
@@ -88,25 +88,25 @@ while i<TSZ:
 pad=0; jt_bytes=0; jt_n=0; strb=0; unknown=[]
 for va,sz in gaps:
     blk=TDATA[va-TVA:va-TVA+sz]
-    # hizalama dolgusu: CC/90/00 tekrari
+    # alignment padding: repeated CC/90/00
     if all(b in (0xCC,0x90,0x00) for b in blk): pad+=sz; continue
-    # .text icindeki jump table: ardisik reloc'lu DWORD dizisi
+    # jump table inside .text: a run of consecutive relocated DWORDs
     if sz>=8 and va%4==0 and all((va+k) in relocset for k in range(0,min(sz,16),4)):
         jt_bytes+=sz; jt_n+=1; continue
     if sum(1 for b in blk if 32<=b<127 or b in (0,9,10,13))/max(len(blk),1) > 0.92:
         strb+=sz; continue
     unknown.append((sz,va))
 
-print(f"\n=== KAPSANMAYAN {TSZ-cov} BAYTIN DOKUMU ===")
-print(f"  hizalama dolgusu (CC/90/00)   : {pad:8d} bayt")
-print(f"  .text ici jump table (reloc'lu): {jt_bytes:8d} bayt ({jt_n} tablo)")
-print(f"  gomulu string/veri            : {strb:8d} bayt")
+print(f"\n=== BREAKDOWN OF THE {TSZ-cov} UNCOVERED BYTES ===")
+print(f"  alignment padding (CC/90/00)  : {pad:8d} bytes")
+print(f"  jump tables in .text (reloc'd): {jt_bytes:8d} bytes ({jt_n} tables)")
+print(f"  embedded string/data          : {strb:8d} bytes")
 unk=sum(s for s,_ in unknown)
-print(f"  SINIFLANDIRILAMAYAN           : {unk:8d} bayt ({len(unknown)} blok)")
+print(f"  UNCLASSIFIABLE                : {unk:8d} bytes ({len(unknown)} blocks)")
 eff=cov+pad+jt_bytes+strb
-print(f"\n  ==> ACIKLANAN TOPLAM: {eff}/{TSZ} = {100.0*eff/TSZ:.2f}%")
-print(f"  ==> gercek belirsizlik: {100.0*unk/TSZ:.2f}%")
+print(f"\n  ==> EXPLAINED TOTAL: {eff}/{TSZ} = {100.0*eff/TSZ:.2f}%")
+print(f"  ==> real uncertainty: {100.0*unk/TSZ:.2f}%")
 unknown.sort(reverse=True)
-print("\n  en buyuk 12 siniflandirilamayan blok:")
-for sz,va in unknown[:12]: print(f"    0x{va:08x}  {sz} bayt")
-print(f"\n  DOLAYLI cagri: {ind_call}   DOLAYLI atlama: {ind_jmp}   gecersiz komut: {badi}")
+print("\n  largest 12 unclassified blocks:")
+for sz,va in unknown[:12]: print(f"    0x{va:08x}  {sz} bytes")
+print(f"\n  INDIRECT calls: {ind_call}   INDIRECT jumps: {ind_jmp}   invalid instructions: {badi}")

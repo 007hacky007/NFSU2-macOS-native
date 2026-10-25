@@ -1,25 +1,25 @@
-/* PERFLOG=<dizin>: GERCEK oyun oturumu kaydi (kullanici oynarken).
+/* PERFLOG=<dir>: recording a REAL game session (while the user plays).
  *
- * Otomatik test kosulari (AUTOSEQ yarisi) birebir karsilastirma icin; bu kayit
- * ise kullanicinin kendi oynadigi oturumda (hizli surus, efektler, kaza, menu)
- * yukun NEREDE ve NE ZAMAN olustugunu gormek icin.  Dusuk yuklu:
+ * Automated test runs (the AUTOSEQ race) are for exact comparisons; this
+ * recording is for seeing WHERE and WHEN load builds up in a session the user
+ * plays themselves (fast driving, effects, crashes, menus).  Low overhead:
  *
- *   konuk.csv   konuk kare basina: duvar/CPU suresi, kare sinirlayici uykusu
- *               (bos pay), Present beklemesi, COM/Win32 cagrilari, derleme ve
- *               doku olaylari
- *   render.csv  ana thread kare basina: kare araligi, nextDrawable beklemesi,
- *               kodlama suresi, cizim/kose sayisi
- *   gpu.csv     kare basina GPU suresi (tamamlanma isleyicisinden)
- *   saniye.csv  saniyede bir: surec enerjisi (CPU, P cekirdek), komut/cevrim,
- *               GPU kullanimi, termal durum
- *   thread.csv  saniyede bir: thread basina kullanici/sistem suresi (birikimli)
- *   ornek.bin   1 ms'de bir konuk thread'i, 4 ms'de bir ana thread'i: PC + cerceve
- *               zinciri (thread_suspend -> durum -> resume; kilit alinmaz)
- *   sembol.txt  ana ikili disindaki PC'lerin dladdr adlari (sistem kutuphaneleri)
- *   ekran/      2 sn'de bir kucuk ekran goruntusu (metal.m, arka planda yazilir)
- *   meta.txt    ikili yolu, kaydirma, saat esleme (powermetrics icin)
+ *   guest.csv    per guest frame: wall/CPU time, frame limiter sleep
+ *                (idle margin), Present wait, COM/Win32 calls, compile and
+ *                texture events
+ *   render.csv   per main thread frame: frame interval, nextDrawable wait,
+ *                encoding time, draw/vertex counts
+ *   gpu.csv      GPU time per frame (from the completion handler)
+ *   seconds.csv  once a second: process energy (CPU, P cores),
+ *                instructions/cycles, GPU utilization, thermal state
+ *   thread.csv   once a second: per-thread user/system time (cumulative)
+ *   samples.bin  guest thread every 1 ms, main thread every 4 ms: PC + frame
+ *                chain (thread_suspend -> state -> resume; no locks taken)
+ *   symbols.txt  dladdr names of PCs outside the main binary (system libraries)
+ *   screens/     a small screenshot every 2 s (metal.m, written in the background)
+ *   meta.txt     binary path, slide, clock mapping (for powermetrics)
  *
- * Cozumleme: tools/oturum_analiz.py <dizin>.  Kayit betigi: tools/oturum.sh. */
+ * Analysis: tools/session_report.py <dir>.  Recording script: tools/session.sh. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +45,7 @@ _Atomic int g_pl_thumb_req = 0;
 char g_pl_dir[900];
 
 static uint64_t t0_us;
-static FILE *f_konuk, *f_render, *f_gpu, *f_sec, *f_thr, *f_samp;
+static FILE *f_guest, *f_render, *f_gpu, *f_sec, *f_thr, *f_samp;
 static pthread_mutex_t g_gpu_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static _Atomic uint64_t ev_n[PL_NEV], ev_ns[PL_NEV], ev_b[PL_NEV];
@@ -63,9 +63,9 @@ void perflog_event(int k, uint64_t ns, uint64_t bytes){
     atomic_fetch_add(&ev_b[k], bytes);
 }
 
-/* ---- ornekleyici ---- */
+/* ---- sampler ---- */
 typedef struct { mach_port_t port; uint64_t lo, hi; } PlThr;
-static PlThr th_konuk, th_render;
+static PlThr th_guest, th_render;
 static _Atomic uint32_t g_gframe;
 
 static void thr_register(PlThr *t){
@@ -79,7 +79,7 @@ static void thr_register(PlThr *t){
 #define PL_DEPTH 28
 typedef struct { uint64_t t_us; uint32_t gframe; uint8_t role, n; uint16_t pad; } PlRec;
 
-/* ana ikili disindaki PC'ler (sistem kutuphaneleri) icin kucuk tablo */
+/* a small table for PCs outside the main binary (system libraries) */
 #define PL_SYS 4096
 static uint64_t pl_sys[PL_SYS]; static int pl_sysn;
 static uint64_t img_lo, img_hi;
@@ -102,7 +102,7 @@ static void pl_sample(PlThr *t, int role){
         uint64_t lr = (uint64_t)arm_thread_state64_get_lr(s);
         uint64_t fp = (uint64_t)arm_thread_state64_get_fp(s);
         st[n++] = pc; st[n++] = lr;
-        /* askidayken yalnizca ham bellek okumasi: kilit/malloc YOK */
+        /* while suspended only raw memory reads: NO locks/malloc */
         while (n < PL_DEPTH && fp >= t->lo && fp + 16 <= t->hi && !(fp & 7)){
             uint64_t nfp = ((uint64_t *)(uintptr_t)fp)[0], ret = ((uint64_t *)(uintptr_t)fp)[1];
             if (!ret) break;
@@ -119,16 +119,16 @@ static void pl_sample(PlThr *t, int role){
     sys_note(st[0]);
 }
 
-/* Diger tum thread'ler (Metal/sistem/ses/konuk yan thread'leri) 10 ms'de bir:
- * rol 2, gframe alani yerine thread kimligi (thread.csv ile eslesir).  Yigin
- * siniri bilinmedigi icin yalniz PC + LR (hangi cagrida/beklemede oldugu). */
+/* All other threads (Metal/system/audio/guest side threads) every 10 ms:
+ * role 2, the thread id instead of the gframe field (matches thread.csv).  Since
+ * the stack bounds are unknown, only PC + LR (which call/wait it is in). */
 static void pl_sample_others(void){
     thread_act_array_t list; mach_msg_type_number_t nl = 0;
     if (task_threads(mach_task_self(), &list, &nl) != KERN_SUCCESS) return;
     mach_port_t self = mach_thread_self();
     for (mach_msg_type_number_t i = 0; i < nl; i++){
         mach_port_t th = list[i];
-        if (th != self && th != th_konuk.port && th != th_render.port){
+        if (th != self && th != th_guest.port && th != th_render.port){
             struct thread_identifier_info ii; mach_msg_type_number_t c2 = THREAD_IDENTIFIER_INFO_COUNT;
             uint64_t tid = 0;
             if (thread_info(th, THREAD_IDENTIFIER_INFO, (thread_info_t)&ii, &c2) == KERN_SUCCESS) tid = ii.thread_id;
@@ -154,7 +154,7 @@ static void pl_sample_others(void){
 }
 
 static void write_syms(void){
-    char p[1024]; snprintf(p, sizeof p, "%s/sembol.txt", g_pl_dir);
+    char p[1024]; snprintf(p, sizeof p, "%s/symbols.txt", g_pl_dir);
     FILE *f = fopen(p, "w"); if (!f) return;
     for (int i = 0; i < PL_SYS; i++){
         if (!pl_sys[i]) continue;
@@ -167,7 +167,7 @@ static void write_syms(void){
     fclose(f);
 }
 
-/* ---- saniyelik ---- */
+/* ---- per second ---- */
 int metal_thermal_state(void);
 static void pl_second(void){
     uint64_t t = perflog_now_us();
@@ -191,10 +191,10 @@ static void pl_second(void){
             struct thread_identifier_info ii; mach_msg_type_number_t c2 = THREAD_IDENTIFIER_INFO_COUNT;
             if (thread_info(list[i], THREAD_EXTENDED_INFO, (thread_info_t)&xi, &c1) == KERN_SUCCESS &&
                 thread_info(list[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&ii, &c2) == KERN_SUCCESS){
-                const char *rol = list[i] == th_konuk.port ? "KONUK" : list[i] == th_render.port ? "ANA" : "";
+                const char *thr_role = list[i] == th_guest.port ? "GUEST" : list[i] == th_render.port ? "MAIN" : "";
                 for (char *q = xi.pth_name; *q; q++) if (*q == ',') *q = ';';
                 fprintf(f_thr, "%.3f,%llu,%s,%s,%llu,%llu\n", t / 1e3, (unsigned long long)ii.thread_id,
-                        rol, xi.pth_name, (unsigned long long)xi.pth_user_time,
+                        thr_role, xi.pth_name, (unsigned long long)xi.pth_user_time,
                         (unsigned long long)xi.pth_system_time);
             }
             mach_port_deallocate(mach_task_self(), list[i]);
@@ -202,7 +202,7 @@ static void pl_second(void){
         vm_deallocate(mach_task_self(), (vm_address_t)list, nl * sizeof(thread_act_t));
     }
     fflush(f_sec); fflush(f_thr); fflush(f_samp);
-    if (f_konuk) fflush(f_konuk);
+    if (f_guest) fflush(f_guest);
     if (f_render) fflush(f_render);
     pthread_mutex_lock(&g_gpu_lock); if (f_gpu) fflush(f_gpu); pthread_mutex_unlock(&g_gpu_lock);
 }
@@ -219,7 +219,7 @@ static void *pl_thread(void *a){
         struct kevent out;
         if (kevent(kq, NULL, 0, &out, 1, NULL) < 1) continue;
         tick++;
-        if (th_konuk.port) pl_sample(&th_konuk, 0);
+        if (th_guest.port) pl_sample(&th_guest, 0);
         if ((tick & 3) == 0 && th_render.port) pl_sample(&th_render, 1);
         if (tick % 10 == 5) pl_sample_others();
         uint64_t t = perflog_now_us();
@@ -243,7 +243,7 @@ static void pl_exit(void){
     if (!g_perflog) return;
     pl_second();
     write_syms();
-    fprintf(stderr, "perflog: kayit kapandi -> %s\n", g_pl_dir);
+    fprintf(stderr, "perflog: recording closed -> %s\n", g_pl_dir);
 }
 
 __attribute__((constructor)) static void perflog_init(void){
@@ -251,23 +251,23 @@ __attribute__((constructor)) static void perflog_init(void){
     if (!e || !*e) return;
     snprintf(g_pl_dir, sizeof g_pl_dir, "%s", e);
     mkdir(g_pl_dir, 0755);
-    char ek[1024]; snprintf(ek, sizeof ek, "%s/ekran", g_pl_dir); mkdir(ek, 0755);
+    char ek[1024]; snprintf(ek, sizeof ek, "%s/screens", g_pl_dir); mkdir(ek, 0755);
     t0_us = mono_us();
-    f_konuk  = pl_open("konuk.csv", "t_ms,gkare,duvar_us,cpu_us,uyku_us,present_bekle_us,com,win32,"
-                                    "vs_n,ps_n,pso_n,derleme_us,doku_n,doku_kb,doku_us");
-    f_render = pl_open("render.csv", "t_ms,kare,aralik_us,drawable_bekle_us,kodlama_us,cizim,kose,dusen,doku_farkli");
-    f_gpu    = pl_open("gpu.csv", "kare,t_ms,gpu_us");
-    f_sec    = pl_open("saniye.csv", "t_ms,enerji_nj,penerji_nj,komut,cevrim,pkomut,pcevrim,"
-                                     "kull_t,sis_t,pkull_t,psis_t,gpu_kullanim,termal,bellek");
-    f_thr    = pl_open("thread.csv", "t_ms,tid,rol,ad,kull_ns,sis_ns");
-    f_samp   = pl_open("ornek.bin", NULL);
-    if (!f_konuk || !f_render || !f_gpu || !f_sec || !f_thr || !f_samp){
-        fprintf(stderr, "perflog: %s yazilamiyor, kayit KAPALI\n", g_pl_dir); return; }
-    /* ana ikili: PC -> sembol icin yol ve kaydirma; saat esleme */
+    f_guest  = pl_open("guest.csv", "t_ms,gframe,wall_us,cpu_us,sleep_us,present_wait_us,com,win32,"
+                                    "vs_n,ps_n,pso_n,compile_us,tex_n,tex_kb,tex_us");
+    f_render = pl_open("render.csv", "t_ms,frame,interval_us,drawable_wait_us,encode_us,draws,verts,dropped,tex_distinct");
+    f_gpu    = pl_open("gpu.csv", "frame,t_ms,gpu_us");
+    f_sec    = pl_open("seconds.csv", "t_ms,energy_nj,penergy_nj,instr,cycles,pinstr,pcycles,"
+                                     "user_t,sys_t,puser_t,psys_t,gpu_util,thermal,memory");
+    f_thr    = pl_open("thread.csv", "t_ms,tid,role,name,user_ns,sys_ns");
+    f_samp   = pl_open("samples.bin", NULL);
+    if (!f_guest || !f_render || !f_gpu || !f_sec || !f_thr || !f_samp){
+        fprintf(stderr, "perflog: cannot write %s, recording OFF\n", g_pl_dir); return; }
+    /* main binary: path and slide for PC -> symbol; clock mapping */
     const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(0);
     intptr_t slide = _dyld_get_image_vmaddr_slide(0);
     img_lo = (uint64_t)(uintptr_t)mh;
-    {   /* __TEXT boyutu */
+    {   /* __TEXT size */
         const uint8_t *p = (const uint8_t *)(mh + 1);
         for (uint32_t i = 0; i < mh->ncmds; i++){
             const struct load_command *lc = (const struct load_command *)p;
@@ -282,14 +282,14 @@ __attribute__((constructor)) static void perflog_init(void){
     mach_timebase_info_data_t tb; mach_timebase_info(&tb);
     FILE *m = pl_open("meta.txt", NULL);
     if (m){
-        fprintf(m, "ikili %s\nkaydirma %lld\nmetin %llx %llx\n", _dyld_get_image_name(0),
+        fprintf(m, "binary %s\nslide %lld\ntext %llx %llx\n", _dyld_get_image_name(0),
                 (long long)slide, (unsigned long long)img_lo, (unsigned long long)img_hi);
-        fprintf(m, "baslangic_epoch_us %llu\n", (unsigned long long)tv.tv_sec * 1000000ull + (unsigned long long)tv.tv_usec);
-        fprintf(m, "zaman_tabani %u %u\n", tb.numer, tb.denom);
-#ifndef NFS_SURUM
-#define NFS_SURUM 0
+        fprintf(m, "start_epoch_us %llu\n", (unsigned long long)tv.tv_sec * 1000000ull + (unsigned long long)tv.tv_usec);
+        fprintf(m, "timebase %u %u\n", tb.numer, tb.denom);
+#ifndef NFS_VERSION
+#define NFS_VERSION 0
 #endif
-        fprintf(m, "surum %d\n", NFS_SURUM);
+        fprintf(m, "version %d\n", NFS_VERSION);
 #if NFS_ENHANCED
         fprintf(m, "build HD\n");
 #else
@@ -304,10 +304,10 @@ __attribute__((constructor)) static void perflog_init(void){
     pthread_t th; pthread_attr_t at; pthread_attr_init(&at);
     pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INTERACTIVE, 0);
     pthread_create(&th, &at, pl_thread, NULL); pthread_detach(th);
-    fprintf(stderr, "perflog: oturum kaydi ACIK -> %s\n", g_pl_dir);
+    fprintf(stderr, "perflog: session recording ON -> %s\n", g_pl_dir);
 }
 
-/* ---- konuk kare (Present sonrasi, konuk thread) ---- */
+/* ---- guest frame (after Present, guest thread) ---- */
 extern uint64_t g_com_calls, g_win32_calls;
 uint64_t spin_slept_us(void);
 unsigned long long metal_wait_present_ns(void);
@@ -315,7 +315,7 @@ long metal_frames_dropped(void);
 void perflog_guest_frame(void){
     static uint64_t lw, lc, ls, lp, lcom, lw32, le[PL_NEV][3];
     static int first = 1;
-    if (first){ first = 0; thr_register(&th_konuk); }
+    if (first){ first = 0; thr_register(&th_guest); }
     struct timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     uint64_t cpu = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
     uint64_t w = perflog_now_us(), sl = spin_slept_us(), pw = metal_wait_present_ns() / 1000ull;
@@ -324,7 +324,7 @@ void perflog_guest_frame(void){
     uint32_t gf = atomic_fetch_add(&g_gframe, 1u) + 1u;
     if (lw){
         uint64_t der_ns = (e[PL_VS][1] - le[PL_VS][1]) + (e[PL_PS][1] - le[PL_PS][1]) + (e[PL_PSO][1] - le[PL_PSO][1]);
-        fprintf(f_konuk, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+        fprintf(f_guest, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
                 w / 1e3, gf, (unsigned long long)(w - lw), (unsigned long long)(cpu - lc),
                 (unsigned long long)(sl - ls), (unsigned long long)(pw - lp),
                 (unsigned long long)(g_com_calls - lcom), (unsigned long long)(g_win32_calls - lw32),
@@ -338,7 +338,7 @@ void perflog_guest_frame(void){
     memcpy(le, e, sizeof le);
 }
 
-/* ---- ana thread kare (commit sonrasi) ---- */
+/* ---- main thread frame (after commit) ---- */
 void perflog_render_frame(long fno, unsigned ntex, uint64_t drawable_ns, uint64_t encode_ns, unsigned draws, unsigned verts){
     static uint64_t lw; static int first = 1;
     if (first){ first = 0; thr_register(&th_render); }
@@ -349,7 +349,7 @@ void perflog_render_frame(long fno, unsigned ntex, uint64_t drawable_ns, uint64_
     lw = w;
 }
 
-/* ---- GPU tamamlanma (Metal tamamlanma thread'i) ---- */
+/* ---- GPU completion (Metal completion thread) ---- */
 void perflog_gpu(long fno, double gpu_ns){
     pthread_mutex_lock(&g_gpu_lock);
     if (f_gpu) fprintf(f_gpu, "%ld,%.3f,%.1f\n", fno, perflog_now_us() / 1e3, gpu_ns / 1e3);

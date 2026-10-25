@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Mevcut gen/all shard'larina OVERRIDE uygula (tam yeniden uretim olmadan).
+"""Apply an OVERRIDE to the existing gen/all shards (without a full regeneration).
 
-genall.py'nin OVERRIDE=... ile uretecegi ciktinin aynisi: secilen
-fonksiyonun tanimi `sub_X_orig` olarak yeniden adlandirilir, decls.h'e
-bildirimi eklenir.  Etkilenen shard adlarini basar; yalnizca onlari
-yeniden derlemek yeter:
+The same as the output genall.py would produce with OVERRIDE=...: the chosen
+function's definition is renamed to `sub_X_orig`, its declaration is added to
+decls.h.  Prints the affected shard names; recompiling only those is enough:
 
     .venv/bin/python tools/override_patch.py 66ace2,6691b1
     -> shard_0085 shard_0101 ...
 
-Zaten _orig olanlar atlanir (tekrar calistirmak guvenli).
-Tam yeniden uretimde ayni adresler genall.py OVERRIDE listesine girmeli.
+Ones already _orig are skipped (safe to run again).
+On a full regeneration the same addresses must go into the genall.py OVERRIDE list.
 """
 import sys, os, re, glob
 
@@ -39,7 +38,7 @@ def main():
         open(decls, 'w').write(d)
     for a in addrs:
         if a not in found:
-            print(f"  (atlandi / zaten override: {a:08x})", file=sys.stderr)
+            print(f"  (skipped / already overridden: {a:08x})", file=sys.stderr)
     print(" ".join(sorted(set(found.values()))))
 
 if __name__ == '__main__':

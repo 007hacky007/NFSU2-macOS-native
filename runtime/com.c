@@ -1,6 +1,6 @@
-/* COM koprusu: guest'e native implementasyonlu COM nesneleri sunar.
- * Guest nesne: [obj+0]=vtable.  vtable girisi: 0xE0000000|(iface<<16)|metot
- * Tum metotlar stdcall, ilk arguman 'this'.                            */
+/* COM bridge: offers the guest COM objects with native implementations.
+ * Guest object: [obj+0]=vtable.  vtable entry: 0xE0000000|(iface<<16)|method
+ * All methods are stdcall, the first argument is 'this'.               */
 #include <time.h>
 #include <stdatomic.h>
 #include "cpu.h"
@@ -10,11 +10,11 @@
 #include <stdlib.h>
 #include <math.h>
 
-/* getenv() her cagrida ortam dizisini TARAR ve kilit alir.  Cizim basina
- * calisan yollarda (ornegin SetVertexShaderConstantF icindeki "PDLIST"
- * kontrolu &&-zincirinin ILK terimiydi) olculebilir maliyeti var:
- * profilde getenv+__findenv_locked konuk thread'in %3'unu yiyordu.
- * Ortam degiskenleri kosu boyunca degismez -> bir kez coz, sakla. */
+/* getenv() SCANS the environment array and takes a lock on every call.  On
+ * per-draw paths (for example the "PDLIST" check in SetVertexShaderConstantF
+ * was the FIRST term of an && chain) it has a measurable cost: in the profile
+ * getenv+__findenv_locked ate 3% of the guest thread.
+ * Environment variables don't change during a run -> resolve once, keep. */
 #define ENVC(nm_) ({ static const char *_ev_; static int _ei_; \
                      if (!_ei_){ _ei_ = 1; _ev_ = getenv(nm_); } _ev_; })
 
@@ -24,7 +24,7 @@ void guest_backtrace(CPU*,int);
 void dispatch_indirect(CPU*,uint32_t);
 static int g_verbose = -1;
 static int VB(void){ if(g_verbose<0) g_verbose = ENVC("VERBOSE")?1:0; return g_verbose; }
-/* Metal koprusu (metal.m) - yoksa etkisiz */
+/* Metal bridge (metal.m) - a no-op if absent */
 int  metal_available(void);
 void metal_set_clear_color(unsigned argb);
 void metal_present(void);
@@ -38,12 +38,12 @@ void metal_begin_frame(void);
 #include "vsemu.h"
 #include "enhance.h"
 
-/* COM dagitimi metot ADINI karsilastiriyor: kosuda 144 MILYON com_call var
- * ve her biri if-else zincirinde onlarca strcmp yapiyordu (profilde
- * strcmp+_platform_strcmp konuk thread'in %3.6'si, com_call kendisi %9.3).
- * Isim zaten (arayuz, yuva) ikilisiyle belli; ama zinciri butunuyle
- * yeniden yazmak yerine karsilastirmayi UCUZLAT: eslesmelerin neredeyse
- * tamami ilk karakterde elenir, o yuzden cagriyi hic yapma. */
+/* The COM dispatch compares the method NAME: a run has 144 MILLION com_calls
+ * and each one did dozens of strcmps in an if-else chain (in the profile
+ * strcmp+_platform_strcmp were 3.6% of the guest thread, com_call itself 9.3%).
+ * The name is already known from the (interface, slot) pair; but instead of
+ * rewriting the whole chain, make the comparison CHEAP: almost all matches are
+ * eliminated at the first character, so don't make the call at all. */
 #define NMEQ(nmv_, lit_) ((nmv_)[0] == (lit_)[0] && !strcmp((nmv_), (lit_)))
 unsigned metal_create_texture(unsigned w, unsigned h, unsigned levels, unsigned d3dfmt);
 unsigned metal_create_texture_ex(unsigned w, unsigned h, unsigned levels,
@@ -69,7 +69,7 @@ static uint32_t com_alloc(uint32_t n){
     if (com_ptr+n > COM_MAX) return 0;
     uint32_t p=com_ptr; com_ptr+=n; mem_commit(p,n); memset(g_mem+p,0,n); return p;
 }
-/* guest tarafi genel ayirici (Lock vb. icin) */
+/* general allocator on the guest side (for Lock etc.) */
 #define GBUF_BASE 0x38000000u
 #define GBUF_MAX  0x60000000u
 static uint32_t gbuf_ptr = GBUF_BASE;
@@ -77,11 +77,11 @@ static uint32_t gbuf_alloc(uint32_t n){
     n=(n+63)&~63u;
     if (gbuf_ptr+n > GBUF_MAX) return 0;
     uint32_t p=gbuf_ptr; gbuf_ptr+=n;
-    /* Tampon basina TAM boyut + emniyet payi commit edilir.  Oyunun
-     * bazi yollari (yuksek doku/LOD ayarlari) hesapladigimizdan biraz
-     * fazla yaziyor; sonrasi commit edilmemis oldugu icin cokuyordu
-     * (olculdu: 0x38098000).  Pay ile bu sinif cokme kalkiyor; mmap
-     * tembel oldugu icin fiziksel bellek harcanmaz. */
+    /* The FULL size + a safety margin is committed per buffer.  Some of the game's
+     * paths (high texture/LOD settings) write a little more than we computed;
+     * since what follows wasn't committed, it crashed (measured: 0x38098000).
+     * The margin removes this class of crash; since mmap is lazy no physical
+     * memory is spent. */
     mem_commit(p, n + (1u<<20));
     return p;
 }
@@ -115,32 +115,32 @@ static uint32_t com_new(uint32_t iface, uint32_t extra){
     uint32_t vt = com_alloc(n*4u);
     for (unsigned i=0;i<n;i++) MR32(vt+4u*i) = COM_MAGIC | (iface<<16) | i;
     uint32_t obj = com_alloc(4u+extra);
-    /* Fazladan alani SIFIRLA.  Nesne alanlari (boyut, format, doku
-     * kimligi, kup yuz indeksi...) hep "0 = kurulmadi" varsayimiyla
-     * okunuyor; com_alloc taze bellek vermezse cop deger okunur. */
+    /* ZERO the extra area.  Object fields (size, format, texture id, cube face
+     * index...) are always read assuming "0 = not set up"; if com_alloc doesn't
+     * give fresh memory, garbage values are read. */
     for (uint32_t q = 0; q < 4u + extra; q += 4u) MR32(obj + q) = 0u;
     MR32(obj) = vt;
     return obj;
 }
 
-#define PSCUBE 256   /* metal.m ile AYNI olmali: kup ps varyanti */
+#define PSCUBE 256   /* must be the SAME as in metal.m: cube ps variant */
 uint64_t g_com_calls=0, g_com_unimpl=0;
-/* metot bazinda cagri sayaci: render katmani icin is listesi */
+/* per-method call counter: a work list for the render layer */
 #define MSTAT_IF 20
 #define MSTAT_M  128
 static uint64_t g_mstat[MSTAT_IF][MSTAT_M];
 static uint64_t g_present=0, g_draw=0;
 static uint32_t g_d3d9=0, g_dev=0, g_cur_decl=0, g_cur_fvf=0, g_cur_tex=0;
 
-/* ---------------- kose shader'i (CPU'da yorumlanir) ----------------
- * NFSU2 tum cizimlerini DrawPrimitiveUP ile yapiyor ve konumlar HAM
- * (POSITION, POSITIONT degil): ekrana dogru yerlestirmek icin kose
- * shader'ini calistirmak sart. Bkz. runtime/vsemu.c                   */
+/* ---------------- vertex shader (interpreted on the CPU) ----------------
+ * NFSU2 does all its draws with DrawPrimitiveUP and the positions are RAW
+ * (POSITION, not POSITIONT): to place them correctly on screen the vertex
+ * shader must be run. See runtime/vsemu.c                              */
 #define MAXVS 1024
 static VSProg  *g_vsprog[MAXVS];
-static unsigned g_vsprogn = 1;          /* 0 = "shader yok" */
+static unsigned g_vsprogn = 1;          /* 0 = "no shader" */
 void mprot_arm(uint32_t);
-/* CoreAudio cikisi (runtime/audio.m) */
+/* CoreAudio output (runtime/audio.m) */
 int      audio_register(uint32_t data, uint32_t bytes, uint32_t rate,
                         uint32_t chans, uint32_t bits);
 void     audio_play(int id, int loop);
@@ -150,7 +150,7 @@ void     audio_set_volume(int id, long millibel);
 void     audio_init(void);
 void     audio_report(void);
 void cov_reset(void);
-static VSConst  g_vsk;                  /* c#/i#/b# sabit dosyasi */
+static VSConst  g_vsk;                  /* c#/i#/b# constant file */
 static unsigned g_cur_vs = 0;
 static uint64_t g_vs_draws = 0, g_ff_draws = 0;
 static uint64_t g_v_in = 0, g_v_out = 0, g_v_badw = 0;
@@ -158,23 +158,23 @@ static uint64_t g_tex_fail = 0;
 static uint64_t g_dikey_calls=0, g_dikey_hits=0;
 static uint64_t g_mat_ok=0, g_mat_bad=0;
 static uint64_t g_di_enum=0, g_di_objs=0;
-/* --- DirectInput eylem haritasi ---------------------------------------
- * Oyun menuyu "action map" ile suruyor: her eyleme birden fazla tus
- * baglaniyor (ornek: ok-yukari ve W -> ayni eylem).  Semantik bicimi:
- *   dwSemantic = 0x81000400 | DIK_taramakodu
- * Oyun eylemleri GetDeviceData ile TAMPONLANMIS olarak okuyor; biz olay
- * uretmezsek menude hicbir sey olmuyor.                                */
+/* --- DirectInput action map -------------------------------------------
+ * The game drives the menu with an "action map": more than one key is bound to
+ * each action (example: arrow-up and W -> the same action).  Semantic format:
+ *   dwSemantic = 0x81000400 | DIK_scancode
+ * The game reads actions BUFFERED with GetDeviceData; if we don't produce
+ * events nothing happens in the menu.                                  */
 #define DI_KB_SEM_BASE 0x81000400u
-/* --- vertex/index buffer cizim yolu (3B modeller) ------------------
- * Oyun 3B geometriyi DrawIndexedPrimitive ile ciziyor; arayuz ise
- * DrawPrimitiveUP ile.  Bu yol uygulanmadigi icin TUM 3B model
- * geometrisi (menudeki araba dahil) sessizce dusuyordu.            */
+/* --- vertex/index buffer draw path (3D models) ------------------
+ * The game draws 3D geometry with DrawIndexedPrimitive; the UI with
+ * DrawPrimitiveUP.  Since this path wasn't implemented, ALL 3D model geometry
+ * (including the car in the menu) was silently dropped.            */
 static uint32_t g_ss_vb = 0, g_ss_off = 0, g_ss_stride = 0;
 static uint32_t g_ib_obj = 0;
 static uint32_t g_idx_scratch = 0;
 static uint64_t g_dip_draws = 0, g_dip_skip = 0, g_dip_tris = 0;
-static uint32_t g_act_of_key[256];      /* DIK -> uAppData (0 = bagli degil) */
-static uint32_t g_act_ofs[256];         /* DIK -> eylem dizisindeki ofset */
+static uint32_t g_act_of_key[256];      /* DIK -> uAppData (0 = not bound) */
+static uint32_t g_act_ofs[256];         /* DIK -> offset in the action array */
 static int      g_act_count = 0;
 static unsigned char g_kb_prev[256];
 static uint32_t g_di_seq = 1;
@@ -184,37 +184,37 @@ static uint32_t *g_lk_tid=0; static unsigned *g_lk_cnt=0; static uint64_t *g_lk_
 static uint32_t *g_lock_obj=0; static unsigned *g_lock_cnt=0; static int g_lock_n=0;
 static uint64_t g_snd_bytes=0, g_snd_nonzero=0, g_snd_zero=0, g_snd_play=0;
 static uint32_t g_cur_rt = 0;
-/* D3DRENDERSTATETYPE degerleri; varsayilanlar D3D9'un baslangic durumu */
-/* Oyunun ayar menusunde sunulacak cozunurlukler (masaustu en sonda). */
-/* Oyunun KENDI ic cozunurluk tablosu.  Deneysel olarak olculdu: kayit
- * defterindeki g_RacingResolution bu tabloya indeks; 6 ve uzeri oyunun
- * kendi dizisini TASIRIYOR (CreateDevice'a 8126268x268571776 gibi cop
- * geliyordu).  Daha once burada 12 mod ilan ediliyordu, yani ayar menusu
- * oyunun destekledigi 6 satirdan fazlasini gosteriyor ve fazladan satiri
- * secmek dizi tasmasina -> cokmeye yol aciyordu.  Vanilya NFSU2 yalnizca
- * 4:3/5:4 destekler; genis ekran yoktur. */
-/* Neden tabloyu genisletmiyoruz: 7. bir mod ILAN etmek oyunun kendi
- * dizisini tasiriyor ve cop boyut (her seferinde 8126268x268571776)
- * uretiyor; oyun onu saklayip render hedeflerini de o boyutla yaratiyor.
- * Tabloyu konuk bellekte yamalamak da denendi, bitisik {w,h} dizisi olarak
- * bulunamadi.  Bu yuzden satir sayisi 6'da kaliyor, yalnizca ETIKETLER ve
- * gercek cihaz boyutu bizim. */
-/* --- Ayar menusundeki cozunurluk satirlari ---------------------------
- * Oyunun ic tablosu (g_RacingResolution 0..5, secili satir [0x870d1c])
- * sabit ve hepsi 4:3.  Menudeki yazi .rdata'daki HAZIR metinlerden geliyor
- * (sub_0049b690: satir -> "640x480".."1600x1200"; yalnizca gosterim, boyut
- * bu metinden okunmuyor).  EnumAdapterModes listesi ise yalnizca hangi
- * satirlarin SECILEBILECEGINI belirliyor: oyun tablo degerini listede
- * ariyor.  Olculdu (2026-09-27, kullanicinin ekrani): liste etiketlerle
- * degistirilince oklar hicbir satira gidemedi; eskiden de masaustu modu
- * 1920x1080 bildirildigi icin 1600x1200 satiri (sozde "1080p") hic
- * secilemiyordu.
+/* D3DRENDERSTATETYPE values; the defaults are D3D9's initial state */
+/* Resolutions to offer in the game's settings menu (desktop last). */
+/* The game's OWN internal resolution table.  Measured experimentally:
+ * g_RacingResolution in the registry is an index into this table; 6 and above
+ * OVERFLOW the game's own array (garbage like 8126268x268571776 reached
+ * CreateDevice).  Previously 12 modes were advertised here, so the settings menu
+ * showed more than the 6 rows the game supports, and selecting an extra row led
+ * to an array overflow -> crash.  Vanilla NFSU2 only supports 4:3/5:4; there is
+ * no widescreen. */
+/* Why we don't extend the table: ADVERTISING a 7th mode overflows the game's own
+ * array and produces a garbage size (8126268x268571776 every time); the game
+ * stores it and creates its render targets at that size too.  Patching the table
+ * in guest memory was also tried; it wasn't found as a contiguous {w,h} array.
+ * So the row count stays at 6, and only the LABELS and the real device size are
+ * ours. */
+/* --- Resolution rows in the settings menu ----------------------------
+ * The game's internal table (g_RacingResolution 0..5, selected row [0x870d1c])
+ * is fixed and all 4:3.  The text in the menu comes from READY-MADE strings in
+ * .rdata (sub_0049b690: row -> "640x480".."1600x1200"; display only, the size
+ * isn't read from this text).  The EnumAdapterModes list only decides which rows
+ * CAN BE SELECTED: the game looks up the table value in the list.  Measured
+ * (2026-09-27, the user's screen): when the list was replaced with the labels,
+ * the arrows couldn't go to any row; previously, too, since the desktop mode was
+ * reported as 1920x1080, the 1600x1200 row (the so-called "1080p") could never
+ * be selected.
  *
- * Duzen: liste = oyunun tablosu (6 satirin hepsi secilebilir), masaustu
- * modu >= 1600x1200, menu metinleri bellekte yeniden yaziliyor ve cihaz
- * satirin GERCEK cozunurlugunde kuruluyor (oran farki Hor+, res_pick).
- * Metin yuvalari 8/8/12/12/12/12 bayt: ilk iki satira kisa etiket.
- * NOWIDE=1: oyunun orijinal tablosu ve metinleri. */
+ * Arrangement: list = the game's table (all 6 rows selectable), desktop mode
+ * >= 1600x1200, the menu strings are rewritten in memory and the device is set up
+ * at the row's REAL resolution (the aspect difference via Hor+, res_pick).
+ * The string slots are 8/8/12/12/12/12 bytes: short labels for the first two rows.
+ * NOWIDE=1: the game's original table and strings. */
 static const uint32_t g_tbl[6][2] = {
     {640,480},{800,600},{1024,768},{1280,960},{1280,1024},{1600,1200},
 };
@@ -227,19 +227,19 @@ static const uint32_t g_lbl_cap[6]  = {8,8,12,12,12,12};
 static void label_put(int row, const char *txt){
     uint32_t a = g_lbl_addr[row], n = (uint32_t)strlen(txt);
     if (n + 1 > g_lbl_cap[row] || !mem_is_committed(a) || !mem_is_committed(a + g_lbl_cap[row] - 1)) return;
-    /* beklenen orijinal metin yerinde mi (baska bir EXE surumune yazmayalim) */
+    /* is the expected original string in place (let's not write into another EXE version) */
     uint8_t c0 = MR8(a);
     if (!(c0 >= '0' && c0 <= '9')) return;
     memset(g_mem + a, 0, g_lbl_cap[row]); memcpy(g_mem + a, txt, n);
 }
-static int g_cur_row = -1;             /* oyunun etkin satiri (-1 = bilinmiyor) */
-static int g_row4_on = 1;              /* 4K satiri secilebilir mi (bkz. modes_refresh) */
+static int g_cur_row = -1;             /* the game's active row (-1 = unknown) */
+static int g_row4_on = 1;              /* is the 4K row selectable (see modes_refresh) */
 static int modemap_on(void){ return !ENVC("NOWIDE"); }
-/* Satirlar GORUNUMUN (pencere / tam ekran) oranindan uretilir: "1080p" =
- * gorunum oraninda 1080 satir.  Boylece cizim yuzeyi pencereyi bantsiz
- * doldurur, cozunurluk yalnizca kaliteyi degistirir.  "Ekran" satiri
- * gorunumun kendi piksel sayisi (1:1, 9 MP ust sinir); 1600x1200 bilerek
- * 4:3 kalir (orijinal gorunum, kenarlarda bant). */
+/* The rows are generated from the VIEW's (window / fullscreen) aspect ratio:
+ * "1080p" = 1080 lines at the view's aspect ratio.  This way the drawing surface
+ * fills the window without bars, and the resolution only changes quality.  The
+ * "Screen" row is the view's own pixel count (1:1, upper limit 9 MP); 1600x1200
+ * deliberately stays 4:3 (the original look, bars at the sides). */
 static void modes_refresh(void){
     unsigned vw = 0, vh = 0;
     void metal_view_size(unsigned*, unsigned*); metal_view_size(&vw, &vh);
@@ -255,16 +255,16 @@ static void modes_refresh(void){
     if (maxpix > 1.0e5 && dw * dh > maxpix){ double k = sqrt(maxpix / (dw * dh)); dw *= k; dh *= k; }
     unsigned w = (unsigned)dw & ~1u, h = (unsigned)dh & ~1u;
     g_modes[ROW_NATIVE][0] = w; g_modes[ROW_NATIVE][1] = h;
-    /* 4K satiri yalnizca ekran onu gosterebiliyorsa (ekran satiri >= 2160).
-     * Daha kucuk ekranda (MacBook ~3K) 4K kucultulerek gosteriliyordu: ~1.6
-     * kat piksel, ekranda kazanc yok, dizustu isiniyor (kullanici istegi
-     * 2026-10-14).  Satir silinemez (tablo 6 satir), oyuna SECILEMEZ
-     * bildiriliyor: EnumAdapterModes 5. kaydinda 1280x1024'u vermiyor.
-     * Oyun kodundan okundu: sub_005be5b0 kullanilabilirligi ([0x86e880+4*satir])
-     * tablo degerini listede arayarak isaretler, sub_0049b600 oklarla
-     * kullanilamayan satiri atlar, sub_005be6a0 kayitli satir kullanilamazsa
-     * bir alttaki kullanilabilir satira iner (4K -> ekran).  Bu satira yine
-     * de gelinirse ekran cozunurlugu ve etiketi kullanilir. */
+    /* The 4K row only if the screen can show it (screen row >= 2160).
+     * On a smaller screen (MacBook ~3K) 4K was being shown downscaled: ~1.6x the
+     * pixels, no gain on screen, the laptop heats up (user request 2026-10-14).
+     * The row can't be deleted (the table has 6 rows); it is reported to the game
+     * as UNSELECTABLE: EnumAdapterModes doesn't give 1280x1024 in its 5th entry.
+     * Read from the game code: sub_005be5b0 marks availability ([0x86e880+4*row])
+     * by looking up the table value in the list, sub_0049b600 skips unavailable
+     * rows with the arrows, sub_005be6a0 drops to the next available row below if
+     * the saved row is unavailable (4K -> screen).  If this row is reached anyway,
+     * the screen resolution and its label are used. */
     g_row4_on = 2160u <= h;
     if (!g_row4_on){ g_modes[4][0] = w; g_modes[4][1] = h; }
     if (!modemap_on()) return;
@@ -285,38 +285,39 @@ static int tbl_row(uint32_t w, uint32_t h){
     return -1;
 }
 
-uint32_t g_rs[256] = {0};        /* d3dx_hle.c satir ici etkisizlik denetimi de okur */
-/* RSLOG=1: oyunun HANGI render state'leri kurdugunu olc.  Ele almadigimiz
- * bir state'i kor tahminle uygulamak yerine once kullanildigini dogrula. */
+uint32_t g_rs[256] = {0};        /* also read by the inline no-effect check in d3dx_hle.c */
+/* RSLOG=1: measure WHICH render states the game sets.  Instead of applying a
+ * state we don't handle by blind guessing, first verify that it is used. */
 static uint32_t g_rs_hits[256] = {0};
-static uint32_t g_rs_vals[256][4];        /* ilk 4 farkli deger */
+static uint32_t g_rs_vals[256][4];        /* the first 4 distinct values */
 static uint8_t  g_rs_nval[256] = {0};
 
-/* ---- D3D9 durum bloklari (state block) ------------------------------
- * Oyun BeginStateBlock/EndStateBlock ile durum kaydediyor, sonra efekt
- * gecisleri etrafinda Capture/Apply ile kaydedip geri yukluyor (izde 367
- * kayit, 418 Capture, 326 Apply).  Bunlar BOS nesne olarak donuyordu, yani
- * Apply hicbir seyi geri yuklemiyordu: karisim kipi, alfa testi, doku asama
- * islemleri bir onceki gecisten sizip kaliyordu -> asiri parlak isik
- * cizgileri ve yanlis karanlik yuzeyler. */
+/* ---- D3D9 state blocks ----------------------------------------------
+ * The game records state with BeginStateBlock/EndStateBlock, then captures and
+ * restores it with Capture/Apply around effect passes (in the trace 367 records,
+ * 418 Captures, 326 Applys).  These were returned as EMPTY objects, so Apply
+ * restored nothing: blend mode, alpha test and texture stage operations leaked
+ * over from the previous pass -> overly bright light streaks and wrongly dark
+ * surfaces. */
 #define MAXSB     512
 #define MAXSBREC  128
 typedef struct { uint32_t magic; uint32_t a[8]; int nargs; } SBRec;
 typedef struct { SBRec r[MAXSBREC]; int n; int used; } SBlock;
 static SBlock  g_sb[MAXSB];
-static int     g_sbn = 1;          /* 0 = gecersiz */
-int     g_sb_rec = 0;       /* kayittaki blok, 0 = kayit yok (d3dx_hle.c okur) */
+static int     g_sbn = 1;          /* 0 = invalid */
+int     g_sb_rec = 0;       /* the block being recorded, 0 = no recording (read by d3dx_hle.c) */
 int     g_sb_replay = 0;
 static uint64_t g_sb_applied = 0, g_sb_captured = 0, g_sb_dropped = 0, g_sb_full = 0;
 
-/* Ham durum golgeleri: Capture bunlardan okur (oyunun VERDIGI degerler). */
+/* Raw state shadows: Capture reads from these (the values the game GAVE). */
 static uint32_t g_raw_vs = 0, g_raw_ps = 0, g_raw_decl = 0, g_raw_fvf = 0;
 static uint32_t g_raw_tex[8] = {0};
-/* D3DTSS_TEXCOORDINDEX'in D3D VARSAYILANI asama numarasidir, 0 DEGIL.
- * Tablo sifirla baslayinca asama 1 ve 2 -- far isigi dokusu ve sonum
- * rampasi -- yolun kendi (tekrarlanan) diffuse UV'siyle orneklendi; far
- * konisi tum yol boyunca kopyalandi ve zemin bastan basa patlak parladi.
- * Oyun bu durumu hic yazmiyor cunku varsayilan zaten dogru olmali. */
+/* The D3D DEFAULT of D3DTSS_TEXCOORDINDEX is the stage number, NOT 0.
+ * When the table started at zero, stages 1 and 2 -- the headlight texture and
+ * the falloff ramp -- were sampled with the road's own (repeating) diffuse UV;
+ * the headlight cone was copied along the whole road and the ground blew out
+ * bright from end to end.  The game never writes this state because the default
+ * should already be right. */
 uint32_t g_tss_raw[8][40] = {
     [0] = { [11] = 0u }, [1] = { [11] = 1u }, [2] = { [11] = 2u },
     [3] = { [11] = 3u }, [4] = { [11] = 4u }, [5] = { [11] = 5u },
@@ -324,15 +325,14 @@ uint32_t g_tss_raw[8][40] = {
 };
 uint32_t g_smp_raw[16][20];
 
-/* Bu metot bir state block'a kaydedilir mi? */
-/* --- metot KIMLIGI ------------------------------------------------------
- * Dagitim eskiden metot ADINI karsilastiriyordu.  NMEQ'in ilk-harf
- * filtresi ise yaramadi: D3D9 cihaz metotlarinin neredeyse hepsi
- * "Set"/"Get"/"Draw" ile basliyor, yani her zincir adiminda yine TAM
- * strcmp calisiyordu (olculdu: konuk thread'in %11'i strcmp, bunun
- * 2335 ornegi com_call'dan).  Kimlik artik metot basina BIR KEZ
- * cozuluyor ((iface,slot) -> id onbellegi), zincir tamamen tamsayi
- * karsilastirmasi.  Kosuda 377 milyon com_call var. */
+/* Is this method recorded into a state block? */
+/* --- method ID ------------------------------------------------------------
+ * The dispatch used to compare the method NAME.  NMEQ's first-letter filter
+ * didn't help: almost all D3D9 device methods start with "Set"/"Get"/"Draw", so a
+ * FULL strcmp still ran at every step of the chain (measured: 11% of the guest
+ * thread was strcmp, 2335 samples of it from com_call).  The id is now resolved
+ * ONCE per method (an (iface,slot) -> id cache), and the chain is pure integer
+ * comparisons.  A run has 377 million com_calls. */
 enum {
     MID__none = 0,
     MID_SetRenderState,
@@ -597,11 +597,11 @@ static const char *const g_midname[MID__count] = {
 static int mid_resolve(const char *nm){
     for (int i = 1; i < MID__count; i++)
         if (nm[0] == g_midname[i][0] && !strcmp(nm, g_midname[i])) return i;
-    return -1;                       /* bilinmiyor: bir daha arama */
+    return -1;                       /* unknown: don't search again */
 }
 #define MIDIF 32
 #define MIDM 160
-static int16_t g_midc[MIDIF][MIDM];  /* 0 = henuz cozulmedi */
+static int16_t g_midc[MIDIF][MIDM];  /* 0 = not resolved yet */
 #define MID(x_) (mid == MID_##x_)
 
 static int sb_recordable(int mid){
@@ -620,51 +620,51 @@ static int sb_recordable(int mid){
 static int g_rs_init = 0;
 /* 19=SRCBLEND 20=DESTBLEND 22=CULLMODE 27=ALPHABLENDENABLE
  * 15=ALPHATESTENABLE 24=ALPHAREF 25=ALPHAFUNC 168=COLORWRITEENABLE 171=BLENDOP */
-/* g_rs[] degismediyse rs_apply() saf israf: oyun kosuda SetRenderState'i
- * 91.5 MILYON kez cagiriyor ve buyuk cogunlugu ayni degeri yeniden
- * yaziyor.  rs_apply tamamen g_rs'ten turedigi icin atlamak birebir
- * ayni sonucu verir.  Bayrak KALICI: metal henuz hazir degilken yapilan
- * degisiklikler cihaz gelince yine uygulanir. */
+/* If g_rs[] didn't change, rs_apply() is pure waste: the game calls
+ * SetRenderState 91.5 MILLION times in a run and the vast majority rewrite the
+ * same value.  Since rs_apply derives entirely from g_rs, skipping it gives
+ * exactly the same result.  The flag is STICKY: changes made while Metal isn't
+ * ready yet are still applied when the device arrives. */
 int g_rs_dirty = 1;
 static uint64_t g_rs_skip = 0, g_rs_run = 0;
 static void rs_apply(void){
     g_rs_run++;
     if (!g_rs_init){ g_rs_init=1;
         g_rs[19]=5; g_rs[20]=6; g_rs[27]=0; g_rs[168]=0xF; g_rs[171]=1;
-        g_rs[22]=3;                            /* CULLMODE varsayilani: CCW */
+        g_rs[22]=3;                            /* CULLMODE default: CCW */
         g_rs[15]=0; g_rs[24]=0; g_rs[25]=8;
-        g_rs[7]=1; g_rs[14]=1; g_rs[23]=4;     /* Z varsayilanlari: acik */
-        g_rs[193]=0xFFFFFFFFu; }               /* BLENDFACTOR varsayilani: beyaz */
+        g_rs[7]=1; g_rs[14]=1; g_rs[23]=4;     /* Z defaults: on */
+        g_rs[193]=0xFFFFFFFFu; }               /* BLENDFACTOR default: white */
     unsigned key = (g_rs[27]?1u:0u)
                  | ((g_rs[19] & 31u) << 1)
                  | ((g_rs[20] & 31u) << 6)
                  | ((g_rs[171] & 7u) << 11)
                  | ((g_rs[168] & 15u) << 14);
-    /* alfa testi: yalnizca "buyuk/buyuk-esit" bicimini destekliyoruz */
+    /* alpha test: we only support the "greater/greater-equal" form */
     float aref = 0.f;
     if (g_rs[15] && (g_rs[25]==5 || g_rs[25]==6 || g_rs[25]==7))
         aref = (float)(g_rs[24] & 0xFFu) / 255.0f;
     metal_set_blend(key, aref);
-    /* D3DRS_BLENDFACTOR (193): SRCBLEND/DESTBLEND = BLENDFACTOR /
-     * INVBLENDFACTOR oldugunda karisim bu SABIT renkle capraz gecis yapar.
-     * Metal'de bu kodlayici durumu (setBlendColor), boru hatti degil. */
+    /* D3DRS_BLENDFACTOR (193): when SRCBLEND/DESTBLEND = BLENDFACTOR /
+     * INVBLENDFACTOR, blending crossfades with this CONSTANT color.
+     * In Metal this is encoder state (setBlendColor), not pipeline state. */
     { void metal_set_blendcolor(uint32_t argb);
       metal_set_blendcolor(g_rs[193]); }
-    /* D3DRS_CULLMODE (22): 1=NONE 2=CW 3=CCW.  Hic uygulanmiyordu; Metal'in
-     * varsayilani CullModeNone oldugu icin her seyin ARKA YUZLERI de
-     * ciziliyordu.  Kapali bir gövdenin uzak tarafi yakin tarafla derinlik
-     * yarisina giriyor -> arabanin kapisinda/tamponunda, bina kenarlarinda
-     * ve gokyuzu sinirinda surekli titreyen lekeler. */
+    /* D3DRS_CULLMODE (22): 1=NONE 2=CW 3=CCW.  It was never applied; since Metal's
+     * default is CullModeNone, the BACK FACES of everything were drawn too.  The
+     * far side of a closed body z-fights with the near side -> constantly
+     * flickering blotches on the car's doors/bumpers, building edges and the
+     * skyline. */
     { void metal_set_cull(unsigned);
       metal_set_cull(g_rs[22] ? g_rs[22] : 3u); }
-    /* D3DRS_FOGENABLE (28) + D3DRS_FOGCOLOR (34).  Kose gölgelendiricisi
-     * varken sis carpani oFog'dan gelir; sabit islevli asama pikseli
-     * FOGCOLOR'a dogru karistirir.  Olculdu: FOGENABLE 5.3M kez kuruluyor,
-     * 18 kose gölgelendiricisinden 6'si oFog yaziyor. */
+    /* D3DRS_FOGENABLE (28) + D3DRS_FOGCOLOR (34).  With a vertex shader present the
+     * fog factor comes from oFog; the fixed-function stage blends the pixel toward
+     * FOGCOLOR.  Measured: FOGENABLE is set 5.3M times, 6 of the 18 vertex shaders
+     * write oFog. */
     { void metal_set_fog(unsigned, unsigned);
       metal_set_fog(g_rs[28], g_rs[34]); }
-    /* Derinlik: 7=ZENABLE 14=ZWRITEENABLE 23=ZFUNC (varsayilan LESSEQUAL=4).
-     * Arayuz Z'yi kapali cizdigi icin bunu cizim basina tasimak sart. */
+    /* Depth: 7=ZENABLE 14=ZWRITEENABLE 23=ZFUNC (default LESSEQUAL=4).
+     * Since the UI draws with Z off, this must be carried per draw. */
     { void metal_set_depth(unsigned);
       unsigned zf = g_rs[23] ? (g_rs[23] & 7u) : 4u;
       unsigned dm = (g_rs[7] ? 1u : 0u) | (g_rs[14] ? 2u : 0u) | (zf << 2);
@@ -672,17 +672,17 @@ static void rs_apply(void){
 }
 static uint64_t g_rt_set=0, g_rt_screen=0;
 static uint64_t g_rt_tex=0;
-static uint32_t g_bb_w = 1280, g_bb_h = 720;   /* geri tampon boyutu */
-/* Kup dokular IDirect3DTexture9 vtable'ini paylasiyor; hangi nesnenin kup
- * oldugunu nesne icinde saklamak GUVENSIZ (2B nesneler daha kucuk ayrilir,
- * ayrilmis alanin disini okumak komsu obek verisini okur).  Ayri kayit: */
-/* Kayit SINIRSIZ olmali: oyun her cihaz Reset'inde (cozunurluk / tam ekran
- * degisimi, ikiser Reset) 2 kup dokuyu yeniden yaratiyor.  Eskiden 64
- * girislik tablo 32. degisimde doluyordu; sonraki kup "2B" sanilip
- * GetCubeMapSurface yanlis arguman sayisiyla donuyor, yigin 4 bayt kayiyor
- * ve oyun cokuyordu (kullanici logu: tam 64 Reset'ten sonra sub_005b9920,
- * adres 0x80).  COM nesneleri hic birakilmadigi (com_alloc artan isaretci)
- * icin adres yeniden kullanilmaz; bit haritasi guvenli. */
+static uint32_t g_bb_w = 1280, g_bb_h = 720;   /* back buffer size */
+/* Cube textures share the IDirect3DTexture9 vtable; storing which object is a
+ * cube inside the object is UNSAFE (2D objects are allocated smaller, reading
+ * past the allocated area reads neighboring heap data).  A separate registry: */
+/* The registry must be UNBOUNDED: the game recreates 2 cube textures on every
+ * device Reset (resolution / fullscreen change, two Resets each).  The old
+ * 64-entry table filled up at the 32nd change; the next cube was taken for "2D",
+ * GetCubeMapSurface returned with the wrong argument count, the stack shifted by
+ * 4 bytes and the game crashed (user log: sub_005b9920 after exactly 64 Resets,
+ * address 0x80).  Since COM objects are never released (com_alloc is a bump
+ * pointer), addresses aren't reused; a bitmap is safe. */
 static uint8_t g_cube_bits[(COM_MAX - COM_BASE) / 16u / 8u];
 static unsigned g_cube_n = 0;
 static void cube_mark(uint32_t obj){
@@ -697,19 +697,19 @@ static int is_cube_tex(uint32_t obj){
 }
 static uint64_t g_st_ok=0, g_st_null=0, g_st_zero=0, g_st_other=0;
 static uint32_t g_tex_stage[4] = {0,0,0,0};
-static float    g_psc[32][4];                    /* ps sabitleri c0..c31 */
-static uint32_t g_psc_max = 0;                   /* goruldugu en yuksek indis+1 */
-static uint32_t g_psc_drop = 0;                  /* 32 ustu (dusurulen) yazma */
-static int      g_cur_ps_id = 0;                 /* etkin ps kimligi */
-static int      g_psn = 0;                       /* kayitli ps sayisi */
+static float    g_psc[32][4];                    /* ps constants c0..c31 */
+static uint32_t g_psc_max = 0;                   /* the highest index seen + 1 */
+static uint32_t g_psc_drop = 0;                  /* writes above 32 (dropped) */
+static int      g_cur_ps_id = 0;                 /* active ps id */
+static int      g_psn = 0;                       /* number of registered ps */
 static uint64_t g_stage_hist[4] = {0,0,0,0};
 static float g_rmin[3] = { 1e30f, 1e30f, 1e30f };
 static float g_rmax[3] = { -1e30f, -1e30f, -1e30f };
-/* son 8 SetVertexShaderConstantF cagrisi (tani icin) */
+/* the last 8 SetVertexShaderConstantF calls (for diagnostics) */
 static struct { uint32_t sr, pd, n; } g_sc[8];
 static unsigned g_scn = 0;
 
-/* D3DDECLTYPE -> v# kaydina 4 float oku */
+/* D3DDECLTYPE -> read 4 floats into a v# register */
 static void decl_fetch(uint32_t addr, unsigned type, float out[4]){
     out[0]=out[1]=out[2]=0.f; out[3]=1.f;
     switch (type){
@@ -719,7 +719,7 @@ static void decl_fetch(uint32_t addr, unsigned type, float out[4]){
             out[2]=MRF32(addr+8); break;                                 /* FLOAT3 */
     case 3: out[0]=MRF32(addr); out[1]=MRF32(addr+4);
             out[2]=MRF32(addr+8); out[3]=MRF32(addr+12); break;          /* FLOAT4 */
-    case 4: /* D3DCOLOR: bellekte B,G,R,A -> (R,G,B,A) */
+    case 4: /* D3DCOLOR: B,G,R,A in memory -> (R,G,B,A) */
             out[0]=MR8(addr+2)/255.f; out[1]=MR8(addr+1)/255.f;
             out[2]=MR8(addr)/255.f;   out[3]=MR8(addr+3)/255.f; break;
     case 5: out[0]=MR8(addr); out[1]=MR8(addr+1);
@@ -740,21 +740,21 @@ static void decl_fetch(uint32_t addr, unsigned type, float out[4]){
     }
 }
 
-/* --- DRAWDUMP=<kare#>: o karedeki tum cizimleri ayrintili dok --- */
+/* --- DRAWDUMP=<frame#>: dump every draw in that frame in detail --- */
 static uint32_t g_present_no = 0;
-#define ZSURF_MAGIC 0x5A535246u   /* 'ZSRF': Z yuzeyi nesnesi, +52 = kimlik */
-static uint32_t g_cur_zid = 1;           /* bagli Z yuzeyi (0 = yok) */
-/* --- cihaz kaybi / yeniden kurma -----------------------------------------
- * Pencere kipi degisince (tam ekran <-> pencere) cizim cozunurlugu de
- * degismeli; oyunun render hedefleri cihaz boyutuna bagli oldugu icin bunu
- * ANCAK oyunun kendisi Reset ile yapabilir.  Windows'ta alt-tab'da oldugu
- * gibi cihazi "kayip" bildiriyoruz: Present D3DERR_DEVICELOST,
- * TestCooperativeLevel D3DERR_DEVICENOTRESET doner, oyun kaynaklarini
- * birakip Reset cagirir, res_pick yeni kipe gore boyut secer. */
+#define ZSURF_MAGIC 0x5A535246u   /* 'ZSRF': Z surface object, +52 = id */
+static uint32_t g_cur_zid = 1;           /* the bound Z surface (0 = none) */
+/* --- device loss / rebuild -----------------------------------------------
+ * When the window mode changes (fullscreen <-> windowed) the drawing resolution
+ * must change too; since the game's render targets are tied to the device size,
+ * ONLY the game itself can do this with Reset.  As with alt-tab on Windows, we
+ * report the device as "lost": Present returns D3DERR_DEVICELOST,
+ * TestCooperativeLevel D3DERR_DEVICENOTRESET, the game releases its resources
+ * and calls Reset, and res_pick picks the size for the new mode. */
 static _Atomic int g_lost = 0;
 static unsigned long g_tcl_n = 0, g_tcl_lost_n = 0, g_lost_presents = 0, g_resets = 0;
 void com_request_reset(void){
-    if (!g_dev) return;          /* cihaz henuz yok: CreateDevice zaten yeni kipi gorecek */
+    if (!g_dev) return;          /* no device yet: CreateDevice will see the new mode anyway */
     atomic_store(&g_lost, 1); }
 static int g_wc_armed = 0, g_wc_after = 0;
 static int      g_dd_want    = -1;
@@ -771,7 +771,7 @@ static void dd_decl(uint32_t d){
     static const char *US[]={"POSITION","BLENDWEIGHT","BLENDINDICES","NORMAL","PSIZE",
         "TEXCOORD","TANGENT","BINORMAL","TESSFACTOR","POSITIONT","COLOR","FOG",
         "DEPTH","SAMPLE"};
-    if (!el){ fprintf(stderr,"      decl=0x%08x (bildirim yok)\n", d); return; }
+    if (!el){ fprintf(stderr,"      decl=0x%08x (no declaration)\n", d); return; }
     fprintf(stderr,"      decl=0x%08x:", d);
     for (uint32_t k=0;k<16;k++){
         uint32_t e=el+8u*k;
@@ -785,38 +785,38 @@ static void dd_decl(uint32_t d){
 int g_com_trace = 0;
 void com_set_trace(int v){ g_com_trace=v; }
 void draw_stats_save(uint64_t*,uint64_t*);
-/* Yeniden oynatma (state block Apply) sirasinda argumanlar guest yiginindan
- * degil kayittan gelir. */
+/* During replay (state block Apply) the arguments come from the record, not the
+ * guest stack. */
 static const uint32_t *g_arg_ovr = 0;
 static uint32_t A(CPU*c,int i){
     if (g_arg_ovr) return g_arg_ovr[i & 7];
     return MR32(c->esp + 4u*(uint32_t)i);
 }
 
-/* --- guest geri cagrisini stdcall olarak calistir --------------------
- * DirectInput'un EnumDevices ailesi geri cagirma ile calisiyor.  Geri
- * cagirma hic yapilmazsa oyun HIC giris cihazi bulamiyor: fare imleci
- * okunur ama menu eylemleri hicbir seye baglanmaz.
- * CPU durumu korunur; stdcall oldugu icin callee argumanlari temizler. */
+/* --- run a guest callback as stdcall --------------------
+ * DirectInput's EnumDevices family works with callbacks.  If the callback is never
+ * made the game finds NO input devices: the mouse cursor is read but menu actions
+ * aren't bound to anything.
+ * The CPU state is preserved; since it is stdcall the callee cleans up the arguments. */
 uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args){
     if (!fn) return 0;
     CPU save = *c;
     for (int i = nargs - 1; i >= 0; i--) PUSH32(args[i]);
-    PUSH32(0xDEADBEEFu);                    /* sahte donus adresi */
+    PUSH32(0xDEADBEEFu);                    /* fake return address */
     dispatch_indirect(c, fn);
     uint32_t ret = c->eax;
-    *c = save;                              /* cagri oncesi duruma don */
+    *c = save;                              /* go back to the state before the call */
     return ret;
 }
 
-/* GUID_SysKeyboard / GUID_SysMouse (DirectInput sistem cihazlari) */
+/* GUID_SysKeyboard / GUID_SysMouse (DirectInput system devices) */
 static void put_guid(uint32_t p, uint32_t d1, uint16_t d2, uint16_t d3,
                      const uint8_t d4[8]){
     MR32(p)=d1; MR16(p+4)=d2; MR16(p+6)=d3;
     for (int i=0;i<8;i++) MR8(p+8+i)=d4[i];
 }
 
-/* DIDEVICEINSTANCEA doldur (580 bayt) ve adresini dondur. */
+/* Fill a DIDEVICEINSTANCEA (580 bytes) and return its address. */
 static uint32_t make_devinst(int keyboard){
     static uint32_t kb = 0, ms = 0;
     uint32_t *slot = keyboard ? &kb : &ms;
@@ -827,7 +827,7 @@ static uint32_t make_devinst(int keyboard){
     static const uint8_t tail[8] = {0xBF,0xC7,0x44,0x45,0x53,0x54,0x00,0x00};
     put_guid(p+4,  keyboard?0x6F1D2B61u:0x6F1D2B60u, 0xD5A0, 0x11CF, tail);
     put_guid(p+20, keyboard?0x6F1D2B61u:0x6F1D2B60u, 0xD5A0, 0x11CF, tail);
-    /* dwDevType: alt tur << 8 | tur.  0x13=KEYBOARD, 0x12=MOUSE */
+    /* dwDevType: subtype << 8 | type.  0x13=KEYBOARD, 0x12=MOUSE */
     MR32(p+36) = keyboard ? 0x0313u : 0x0212u;
     snprintf((char*)(g_mem+p+40),  260, "%s", keyboard ? "Keyboard" : "Mouse");
     snprintf((char*)(g_mem+p+300), 260, "%s", keyboard ? "Keyboard" : "Mouse");
@@ -838,15 +838,15 @@ static uint32_t make_devinst(int keyboard){
 static void fill_caps(uint32_t p);
 
 
-/* --- kose isleme: bildirime gore girisleri topla, shader'i calistir --- */
+/* --- vertex processing: gather inputs per the declaration, run the shader --- */
 typedef struct { uint16_t off; uint8_t type; int8_t reg; } DElem;
 
 static int g_fixmat = -1;
 static uint64_t g_t_draw_ns = 0, g_v_xform = 0;
 static uint64_t g_t_vs_ns = 0;
 static uint64_t g_v_per_vs[64] = {0};
-/* Cizim yolu sure istatistigi (cikis raporu) yalniz DRAWTIME=1 ile: cizim
- * basina iki saat okumasi gercek oyunda konuk thread'in ~%0.8'iydi. */
+/* Draw path timing statistics (exit report) only with DRAWTIME=1: two clock reads
+ * per draw were ~0.8% of the guest thread in the real game. */
 static inline uint64_t now_ns(void){
     static int on = -1;
     if (on < 0) on = getenv("DRAWTIME") != NULL;
@@ -854,9 +854,9 @@ static inline uint64_t now_ns(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
     return (uint64_t)ts.tv_sec*1000000000ull + (uint64_t)ts.tv_nsec;
 }
-/* (kose gölgelendirici, kose bildirimi) ciftine karsilik gelen GPU
- * gölgelendirici kimligi.  Ayni bytecode farkli bildirimlerle
- * kullanilabildigi icin anahtar ikisi birlikte. */
+/* The GPU shader id corresponding to a (vertex shader, vertex declaration)
+ * pair.  Since the same bytecode can be used with different declarations, the
+ * key is both together. */
 #define MAXGVS 256
 static struct { uint32_t vs, decl; int gid, state; } g_gvs[MAXGVS];
 static int g_gvsn = 0, g_gvs_next = 1;
@@ -881,18 +881,18 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
         if (rg >= 0 && rg < 16){ dcl[rg][0] = (int)el[k].off; dcl[rg][1] = (int)el[k].type; }
     }
     int gid = g_gvs_next;
-    /* GPUVSMASK: hangi cevrilmis gölgelendiricilere izin verilecek (bit0=vs_1).
-     * Bir goruntu hatasini gölgelendirici bazinda ayiklamak icin. */
+    /* GPUVSMASK: which translated shaders are allowed (bit0=vs_1).
+     * For isolating an image bug per shader. */
     { static long mask = -1;
       if (mask < 0){ const char *em = ENVC("GPUVSMASK");
                      mask = (em && *em) ? strtol(em, 0, 0) : -1L; }
       if (mask >= 0 && !((mask >> (gid-1)) & 1L)){
           if (ENVC("GPUVSLOG"))
-              fprintf(stderr, "  [gpuvs] shader=%u bildirim=%08x -> maske disi, CPU'da\n", vs, decl);
-          g_gvs_next++;         /* kimlik yine de tuket ki maske bitleri kaymasin */
+              fprintf(stderr, "  [gpuvs] shader=%u decl=%08x -> outside the mask, on the CPU\n", vs, decl);
+          g_gvs_next++;         /* consume the id anyway so the mask bits don't shift */
           return -1;
       } }
-    static char msl[160*1024];          /* HD: + yakalama cekirdegi */
+    static char msl[160*1024];          /* HD: + capture kernel */
     int len = vs_to_msl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl);
     if (len <= 0){ g_gpuvs_fail++; return -1; }
     void metal_register_vs(int, const char *);
@@ -903,8 +903,8 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
     g_gvs[slot].gid = gid; g_gvs[slot].state = 1;
     g_gvs_nk[gid] = vs_kmax(prog);
 #if NFS_ENHANCED
-    /* HD isin izleme denemesi: konum ogesinin ofseti/turu, konum matrisinin
-     * sabit yazmaci ve kemikli olup olmadigi (BLENDINDICES = kullanim 2). */
+    /* HD ray tracing attempt: the offset/type of the position element, the constant
+     * register of the position matrix and whether it is skinned (BLENDINDICES = usage 2). */
     { int pr = vs_input_reg(prog, 0, 0), po = -1, pty = -1, cw = -1;
       for (int k = 0; k < nel; k++) if (el[k].reg == pr){ po = (int)el[k].off; pty = (int)el[k].type; }
       int cx = vs_pos_creg(prog, &cw);
@@ -916,71 +916,71 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
                        vs_fog_creg(prog), lr, ramp[0], ramp[1]); }
 #endif
     if (ENVC("GPUVSLOG"))
-        fprintf(stderr, "  [gpuvs] shader=%u bildirim=%08x -> vs_%d (%u komut, %d sabit)%s\n",
+        fprintf(stderr, "  [gpuvs] shader=%u decl=%08x -> vs_%d (%u instructions, %d constants)%s\n",
                 vs, decl, gid, vs_ninstr(prog), g_gvs_nk[gid],
-                vs_writes_fog(prog) ? "  [oFog YAZIYOR]" : "");
-    /* GPUVSDUMP=<gid>: uretilen MSL'yi ve kaynak bytecode'u yaz. */
+                vs_writes_fog(prog) ? "  [WRITES oFog]" : "");
+    /* GPUVSDUMP=<gid>: write the generated MSL and the source bytecode. */
     { const char *dv = ENVC("GPUVSDUMP");
       if (dv && *dv && atoi(dv) == gid){
-          fprintf(stderr, "--- vs_%d kaynak sokum ---\n", gid);
+          fprintf(stderr, "--- vs_%d source disassembly ---\n", gid);
           vs_disasm(prog, stderr);
-          fprintf(stderr, "--- vs_%d uretilen MSL ---\n%s\n", gid, msl);
+          fprintf(stderr, "--- vs_%d generated MSL ---\n%s\n", gid, msl);
       } }
     return gid;
 }
 
-/* Oyunun on yuz WorldViewProj matrisi bozuk geliyor (yalnizca 2. ve 3.
- * satirlari yazili).  FIXMAT: bozuksa makul bir matris koy.  Karar cizim
- * boyunca degismez, bu yuzden kose dongusunun DISINDA bir kez verilir;
- * hem CPU hem GPU yolu ayni yardimciyi kullanir ki ikisi ayrismasin. */
-/* --- Genis ekran (Hor+) -------------------------------------------------
- * NFSU2 4:3 tasarlanmis: ic cozunurluk tablosunun 6 satirinin TAMAMI 4:3 ve
- * indeks 6+ diziyi tasiriyor, yani menuden 1080p secilemiyor.  Cihazi
- * 1920x1080 yapinca oyun ayni 4:3 goruntuyu uretip yatayda GERILIYOR
- * (olculdu: 1080p kare, 4:3 karenin saf gerdirilmisi -- fark 2.03, dikey
- * kirpma varsayimi 34.2).
- * Duzeltme: perspektif cizimlerde kirpma uzayi x'ini oyun_orani/cihaz_orani
- * ile olcekle.  Oranlar duzelir ve yatayda DAHA COK sahne gorunur (Hor+).
- * Ayirt etme: oPos.w = dot(v, c3); perspektifte c3.w=0, ortografik
- * (arayuz) matriste c3.w=1.  Arayuze dokunulmaz. */
+/* The game's front-end WorldViewProj matrix arrives broken (only rows 2 and 3
+ * written).  FIXMAT: if it is broken, put in a reasonable matrix.  The decision
+ * doesn't change during a draw, so it is made once OUTSIDE the vertex loop; both
+ * the CPU and GPU paths use the same helper so they don't diverge. */
+/* --- Widescreen (Hor+) ---------------------------------------------------
+ * NFSU2 was designed for 4:3: ALL 6 rows of the internal resolution table are 4:3
+ * and index 6+ overflows the array, so 1080p can't be selected from the menu.
+ * When the device is made 1920x1080 the game produces the same 4:3 image and it
+ * gets STRETCHED horizontally (measured: the 1080p frame is a pure stretch of the
+ * 4:3 frame -- difference 2.03, vertical crop hypothesis 34.2).
+ * Fix: in perspective draws scale clip-space x by game_aspect/device_aspect.
+ * Proportions are fixed and MORE of the scene is visible horizontally (Hor+).
+ * Telling them apart: oPos.w = dot(v, c3); in perspective c3.w=0, in an
+ * orthographic (UI) matrix c3.w=1.  The UI isn't touched. */
 static float g_aspfix = 1.f;
-/* Hor+ carpani (kirpma uzayi x'i icin); HD birlestirme gecisi kamerayi
- * ekranda cizilen geometriyle ayni uzaya almak icin kullanir. */
+/* The Hor+ factor (for clip-space x); the HD composite pass uses it to bring the
+ * camera into the same space as the geometry drawn on screen. */
 float com_aspfix(void){ return g_aspfix; }
-/* ceviri programlari: varyantlar (HD yansima, son islem zinciri) cizim aninda uretilir */
+/* translation programs: the variants (HD reflection, post-process chain) are generated at draw time */
 static VSProg *g_psprog[256];
-/* SON ISLEM ZINCIRI (metal.m): ps'nin karo bellegi okuma varyantinin MSL'i.
- * Basarida uzunluk, yoksa 0. */
+/* POST-PROCESS CHAIN (metal.m): the MSL of the ps's tile memory read variant.
+ * Length on success, otherwise 0. */
 int com_ps_fb_msl(int base, int vid, int in_idx, int out_idx, char *msl, size_t cap){
     if (base <= 0 || base >= 256 || !g_psprog[base]) return 0;
     return ps_to_msl_fb(g_psprog[base], vid, msl, cap, in_idx, out_idx);
 }
 #if NFS_ENHANCED
-/* Yansima ayristirma varyanti: taban ps (kup varyanti icin cube=1), yansima
- * asamasi k, Metal kimligi vid.  Basarida 1. */
+/* Reflection separation variant: base ps (cube=1 for the cube variant), reflection
+ * stage k, Metal id vid.  1 on success. */
 int com_ps_refl_variant(int base, int cube, int k, int vid){
     if (base <= 0 || base >= 256 || !g_psprog[base]) return 0;
     static char msl[32768];
     if (ps_to_msl_ex2(g_psprog[base], vid, msl, sizeof msl, cube ? 1u : 0u, k) <= 0) return 0;
     void metal_register_ps(int, const char *);
     metal_register_ps(vid, msl);
-    fprintf(stderr, "[HD] yansima varyanti: ps %d%s asama %d -> %d\n",
-            base, cube ? " (kup)" : "", k, vid);
+    fprintf(stderr, "[HD] reflection variant: ps %d%s stage %d -> %d\n",
+            base, cube ? " (cube)" : "", k, vid);
     return 1;
 }
 #endif
-static uint32_t g_req_w = 0, g_req_h = 0;   /* oyunun sandigi cozunurluk */
+static uint32_t g_req_w = 0, g_req_h = 0;   /* the resolution the game thinks it has */
 unsigned long g_asp_persp = 0, g_asp_ortho = 0;
-/* Oyunun istedigi cozunurluk -> cihazin GERCEKTEN cizecegi cozunurluk.
- * Uc kural tek yerde toplanir: NFSRES pini, menuden genis ekran secimi ve
- * Retina piksel yogunlugu.  CreateDevice ile Reset ayni kurali kullanmak
- * ZORUNDA: eskiden Reset ham degeri geciriyordu, yani oyun icinden
- * cozunurluk degistirince duzeltme sessizce geri aliniyordu. */
+/* The resolution the game asks for -> the resolution the device will REALLY draw at.
+ * Three rules are gathered in one place: the NFSRES pin, the widescreen choice
+ * from the menu, and Retina pixel density.  CreateDevice and Reset MUST use the
+ * same rule: Reset used to pass the raw value through, so when the resolution was
+ * changed in-game the correction was silently undone. */
 static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
     static int rdone = 0, pinned = 0;
     static uint32_t rw = 0, rh = 0;
     *dw = gw; *dh = gh;
-    /* Imlec oyunun SANDIGI uzayda olmali, cizim yuzeyinde degil. */
+    /* The cursor must be in the space the game THINKS it is in, not the drawing surface. */
     { void metal_set_game_size(unsigned,unsigned); metal_set_game_size(gw, gh); }
     if (!rdone){ rdone = 1; const char *e = ENVC("NFSRES");
         if (e && *e){ unsigned a = 0, b = 0;
@@ -989,10 +989,10 @@ static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
     uint32_t aw = rw, ah = rh;
     int row = tbl_row(gw, gh);
     g_cur_row = row;
-    if (modemap_on()) modes_refresh();                 /* ekran satiri + menu metinleri */
+    if (modemap_on()) modes_refresh();                 /* screen row + menu strings */
     if (!pinned && row >= 0 && modemap_on()){
         aw = g_modes[row][0]; ah = g_modes[row][1];
-        fprintf(stderr,"com: menu satiri %d -> %ux%u\n", row + 1, aw, ah);
+        fprintf(stderr,"com: menu row %d -> %ux%u\n", row + 1, aw, ah);
     }
     else if (!pinned){
         uint32_t bw = aw ? aw : gw, bh = ah ? ah : gh;
@@ -1004,19 +1004,19 @@ static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
             if (nw > bw || nh > bh){ aw = nw; ah = nh; } }
     }
     if (!aw || !ah){
-        /* Gecersiz kilma yok: cihaz = oyunun istegi.  Onceki bir
-         * CreateDevice'tan kalan degerler Reset'ten sonra bayat kalmasin
-         * (RT yeniden boyutlama ve GetDisplayMode bunlara bakiyor). */
+        /* No override: device = what the game asked for.  Values left over from a
+         * previous CreateDevice must not stay stale after a Reset (RT resizing and
+         * GetDisplayMode look at them). */
         g_req_w = g_req_h = 0; g_aspfix = 1.f;
         { void metal_set_ui_aspect(float); metal_set_ui_aspect(1.f); }
         { void metal_set_uv_scale(unsigned, unsigned, unsigned, unsigned); metal_set_uv_scale(0, 0, 0, 0); }
         return;
     }
     g_req_w = gw; g_req_h = gh;
-    { void metal_set_uv_scale(unsigned, unsigned, unsigned, unsigned);   /* bkz. metal.m UV OLCEGI */
+    { void metal_set_uv_scale(unsigned, unsigned, unsigned, unsigned);   /* see metal.m UV SCALE */
       metal_set_uv_scale(gw, gh, aw, ah); }
-    /* Oyun kendi orani icin cizmeye devam eder; farki kirpma uzayinda
-     * telafi ediyoruz.  Oran birebir korunuyorsa bu carpan 1.0 kalir. */
+    /* The game keeps drawing for its own aspect ratio; we compensate for the
+     * difference in clip space.  If the ratio is preserved exactly this factor stays 1.0. */
     if (gw && gh){
         float ga = (float)gw / (float)gh, da = (float)aw / (float)ah;
         g_aspfix = ga / da;
@@ -1027,16 +1027,16 @@ static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
     { static int hf = -1;
       if (hf < 0){ const char *e = ENVC("HUDFIX"); hf = !(e && *e && *e=='0'); }
       void metal_set_ui_aspect(float); metal_set_ui_aspect(hf && g_aspfix < 1.f ? g_aspfix : 1.f); }
-    fprintf(stderr,"com: cihaz cozunurlugu %ux%u -> %ux%u (aspfix=%.4f)\n",
+    fprintf(stderr,"com: device resolution %ux%u -> %ux%u (aspfix=%.4f)\n",
             gw, gh, aw, ah, (double)g_aspfix);
 }
-/* Sabit dosyasinin YALNIZCA bu gölgelendiricinin okudugu kismini kopyala.
- * Eskiden cizim basina dosyanin tamami (4416 bayt) kopyalaniyordu, tek
- * satiri (16 bayt) olceklemek icin: yarista kare basina 1316 kopya, 5.7 MB,
- * 0.14 ms (olculdu).  Asagi akis [0, vs_kmax) disini okumuyor: GPU yolu
- * metal_draw_raw'a tam vs_kmax satir veriyor, CPU yolu vs_run da bu
- * siniri asmiyor (goreli adreslemede vs_kmax zaten 256). */
-static int16_t g_vs_kmax[MAXVS];          /* 0 = henuz bakilmadi */
+/* Copy ONLY the part of the constant file this shader reads.  The whole file
+ * (4416 bytes) used to be copied per draw, just to scale a single row (16 bytes):
+ * 1316 copies per frame in a race, 5.7 MB, 0.14 ms (measured).  Downstream never
+ * reads outside [0, vs_kmax): the GPU path gives metal_draw_raw exactly vs_kmax
+ * rows, and the CPU path vs_run doesn't exceed this bound either (with relative
+ * addressing vs_kmax is 256 anyway). */
+static int16_t g_vs_kmax[MAXVS];          /* 0 = not looked at yet */
 static void vsk_copy_used(VSConst *dst, const VSConst *src, const VSProg *prog){
     unsigned vs = g_cur_vs;
     int n = (vs < MAXVS) ? g_vs_kmax[vs] : 0;
@@ -1046,8 +1046,8 @@ static void vsk_copy_used(VSConst *dst, const VSConst *src, const VSProg *prog){
     memcpy(dst->i, src->i, sizeof dst->i);
     memcpy(dst->b, src->b, sizeof dst->b);
 }
-/* Konum matrisinin sabit yazmaci golgelendiriciye gore degisiyor; bir kez
- * cozup sakla (-2 = henuz bakilmadi). */
+/* The constant register of the position matrix depends on the shader; resolve
+ * it once and keep it (-2 = not looked at yet). */
 static int8_t g_pos_cx[MAXVS], g_pos_cw[MAXVS]; static uint8_t g_pos_seen[MAXVS];
 static unsigned long g_asp_np[MAXVS], g_asp_no[MAXVS]; static float g_asp_cw3[MAXVS];
 static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog){
@@ -1062,16 +1062,16 @@ static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog){
     }
     int cx = g_pos_cx[vs], cw = g_pos_cw[vs];
     if (cx < 0 || cw < 0){ g_asp_ortho++; return vsk; }
-    /* Perspektif mi?  oPos.w = dot(v, c[cw]).  Ortografik/ekran matrisinde
-     * bu satir (0,0,0,1): w sabit 1.  Perspektifte ise xyz kismi gorus
-     * ekseni olur ve SIFIR DEGILDIR (w bileseni kamera uzakligidir --
-     * olculdu: 5.79 / 222.0 / -86.5, yani "w==0" testi yanlisti). */
+    /* Perspective?  oPos.w = dot(v, c[cw]).  In an orthographic/screen matrix this
+     * row is (0,0,0,1): w is a constant 1.  In perspective the xyz part becomes the
+     * view axis and is NOT ZERO (the w component is the camera distance --
+     * measured: 5.79 / 222.0 / -86.5, so the "w==0" test was wrong). */
     g_asp_cw3[vs] = vsk->f[cw][3];
     { float ax = fabsf(vsk->f[cw][0]) + fabsf(vsk->f[cw][1]) + fabsf(vsk->f[cw][2]);
       if (ax < 1e-6f){ g_asp_ortho++; g_asp_no[vs]++;
-        /* HUDFIX=1: arayuzu de merkeze gore olcekle, boylece daireler
-         * dairesel kalir.  DIKKAT: tam ekran son-islem dortgenleri de
-         * ortografik; onlar kucululurse kenarlarda bant olusur. */
+        /* HUDFIX=1: also scale the UI about the center, so circles stay circular.
+         * CAUTION: fullscreen post-process quads are orthographic too; if they get
+         * shrunk, bars appear at the edges. */
         { static int hf = -1;
           if (hf < 0){ const char *e = ENVC("HUDFIX"); hf = !(e && *e && *e=='0'); }
           if (hf){ static VSConst ht; vsk_copy_used(&ht, vsk, prog);
@@ -1118,8 +1118,8 @@ static const VSConst *fixmat_apply(const VSConst *vsk){
         return &tmp;
     }
     if (mode == 3){
-        /* Ham konumlar zaten kirpma uzayinda; oyunun yazmak istedigi
-         * matris birim matris. */
+        /* The raw positions are already in clip space; the matrix the game wants to
+         * write is the identity. */
         memset(tmp.f, 0, sizeof tmp.f);
         tmp.f[0][0]=1.f; tmp.f[1][1]=1.f; tmp.f[2][2]=1.f; tmp.f[3][3]=1.f;
         return &tmp;
@@ -1146,22 +1146,22 @@ static const VSConst *fixmat_apply(const VSConst *vsk){
     return &tmp;
 }
 
-/* Asama basina "hangi koordinat kumesi + projeksiyon bolmesi".
+/* Per stage "which coordinate set + projective divide".
  * D3DTSS_TEXCOORDINDEX = 11, D3DTSS_TEXTURETRANSFORMFLAGS = 24.
- * Kodlama: indeks + 16*kip  (kip 0 = bolme yok, 1 = /z, 2 = /w).
- * Izde 422 bin cagride asama 1 ve 2 KOORDINAT 0'i kullaniyor; biz asama
- * N'e koordinat N veriyorduk. */
-/* Oyunun D3DSAMP_* durumunu Metal ornekleyicisine tasi.
+ * Encoding: index + 16*mode  (mode 0 = no divide, 1 = /z, 2 = /w).
+ * In the trace, stages 1 and 2 use COORDINATE 0 in 422 thousand calls; we were
+ * giving stage N coordinate N. */
+/* Carry the game's D3DSAMP_* state over to the Metal sampler.
  * D3DSAMP: 1=ADDRESSU 2=ADDRESSV 5=MAGFILTER 6=MINFILTER 7=MIPFILTER
  *          9=MAXMIPLEVEL 10=MAXANISOTROPY
- * Daha once tamami yok sayiliyor, her sey linear+mip-linear ciziliyordu. */
+ * Previously all of it was ignored and everything was drawn linear+mip-linear. */
 static void smp_push(void){
     void metal_set_samplers(const unsigned k[4]);
     unsigned k[4];
     for (int st = 0; st < 4; st++){
         unsigned mn = g_smp_raw[st][6], mg = g_smp_raw[st][5], mp = g_smp_raw[st][7];
         unsigned au = g_smp_raw[st][1], av = g_smp_raw[st][2], an = g_smp_raw[st][10];
-        if (mn < 1u || mn > 3u) mn = 2u;          /* gecersiz/kurulmamis -> LINEAR */
+        if (mn < 1u || mn > 3u) mn = 2u;          /* invalid/unset -> LINEAR */
         if (mg < 1u || mg > 3u) mg = 2u;
         if (mp > 2u) mp = 0u;
         if (au < 1u || au > 5u) au = 1u;          /* -> WRAP */
@@ -1183,24 +1183,24 @@ static void texproj_push(void){
         if (ci > 3u) ci = (unsigned)st;
         int pm = 0;
         if (ttf & 0x100u){                 /* D3DTTFF_PROJECTED */
-            /* NFSU2 bunu SAYI ALANI 0 ile yaziyor (olculdu: izde 28 cagrinin
-             * hepsi tam "D3DTTFF_PROJECTED").  Kose gölgelendiricisi
-             * koordinati 4 bilesenli uretiyor (oT1.xyz = dot(v0,c4..c6),
-             * oT1.w = r0.x), o yuzden sayi 0 -> W ile bol.
-             * Bolme yapilmayinca far dokusu koni olusturmak yerine yuzeye
-             * yayiliyor: kullanicinin gordugu "far cizgileri" ve yerdeki
-             * cizgili yansimalar (asama 3 = reflected_sampler) bu. */
+            /* NFSU2 writes this with a COUNT FIELD of 0 (measured: all 28 calls in the trace
+             * are exactly "D3DTTFF_PROJECTED").  The vertex shader produces a
+             * 4-component coordinate (oT1.xyz = dot(v0,c4..c6), oT1.w = r0.x), so a
+             * count of 0 -> divide by W.
+             * Without the divide the headlight texture spreads over the surface
+             * instead of forming a cone: the "headlight streaks" the user saw and the
+             * striped reflections on the ground (stage 3 = reflected_sampler) were this. */
             unsigned cnt = ttf & 7u;
-            pm = (cnt == 3u) ? 1 : 2;      /* 3 -> xy/z, digerleri -> xy/w */
+            pm = (cnt == 3u) ? 1 : 2;      /* 3 -> xy/z, the others -> xy/w */
         }
         sel[st] = (float)(ci + 16u*(unsigned)pm);
     }
     metal_set_texproj(sel);
 }
 
-/* dip_indexed -> draw_up: bu cizimin koseleri havuzdaki yansilardan indisle
- * okunacak (n > 0 iken).  draw_up GPU yoluna giremezse 0 doner ve cagiran
- * eski (indis acma) yoluna duser. */
+/* dip_indexed -> draw_up: this draw's vertices are to be read by index from the
+ * mirrors in the pool (when n > 0).  If draw_up can't take the GPU path it returns
+ * 0 and the caller falls back to the old (index expansion) path. */
 static struct { uint32_t n, vbo, ibo, isz; int32_t base; uint64_t gh; } g_ix;
 static uint64_t g_dip_ix = 0, g_dip_ixfb[6];
 static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
@@ -1215,11 +1215,11 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     vsk = fixmat_apply(vsk);
     vsk = aspect_apply(vsk, prog);
 
-    /* Bildirim ayristirmasi (bildirim, gölgelendirici) basina BIR KEZ.
-     * Eskiden her cizimde 32'ye kadar ogeyi konuk belleginden okuyup
-     * mem_is_committed ile sinayarak bastan kuruyordu (kare basina ~1300
-     * kez).  Guvenli: bildirim nesneleri yaratilinca kopyalanip bir daha
-     * degismiyor ve com_alloc adresleri yeniden kullanmiyor. */
+    /* Declaration parsing ONCE per (declaration, shader).  It used to rebuild from
+     * scratch on every draw, reading up to 32 elements from guest memory and testing
+     * them with mem_is_committed (~1300 times per frame).  Safe: declaration objects
+     * are copied when created and never change, and com_alloc doesn't reuse
+     * addresses. */
     static struct { uint32_t decl; const VSProg *prog; int nel, p_off, p_type, c_off, c_type,
                     t_off, t_type, ok; DElem el[16]; } dcc[64];
     uint32_t d = g_cur_decl;
@@ -1235,15 +1235,15 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             if (!mem_is_committed(e+7)) break;
             unsigned st=MR16(e), of=MR16(e+2), ty=MR8(e+4), us=MR8(e+6), ui=MR8(e+7);
             if (st == 0xFFu && ty == 17u) break;
-            if (st != 0) continue;                       /* yalnizca akis 0 */
-            /* DECLLOG=<ps>: yalnizca o piksel gölgelendiricisiyle cizen
-             * bildirimleri, bir kez, TUM elemanlariyla bas. */
+            if (st != 0) continue;                       /* stream 0 only */
+            /* DECLLOG=<ps>: print only the declarations drawing with that pixel shader,
+             * once, with ALL their elements. */
             { const char *dl = ENVC("DECLLOG");
               if (dl && atoi(dl) == g_cur_ps_id){
                 static uint32_t seen[32]; static int sn = 0; int nw = 1;
                 for (int q=0;q<sn;q++) if (seen[q]==d) nw = 0;
                 if (nw && k == 0 && sn < 32){ seen[sn++] = d;
-                    fprintf(stderr,"  [decl] ps=%d bildirim=0x%08x adim=%u vs=%u\n",
+                    fprintf(stderr,"  [decl] ps=%d decl=0x%08x stride=%u vs=%u\n",
                             g_cur_ps_id, d, stride, g_cur_vs);
                     for (int q2 = 0; q2 < 24; q2++){
                         uint32_t e2 = ep + 8u*q2;
@@ -1252,7 +1252,7 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                                  u2=MR8(e2+6), i2=MR8(e2+7);
                         if (s2 == 0xFFu && t2 == 17u) break;
                         int rg2 = prog ? vs_input_reg(prog,(int)u2,(int)i2) : -2;
-                        fprintf(stderr,"       akis=%u ofset=%2u tur=%u kullanim=%u/%u -> v%d\n",
+                        fprintf(stderr,"       stream=%u offset=%2u type=%u usage=%u/%u -> v%d\n",
                                 s2,o2,t2,u2,i2,rg2);
                     }
                 }
@@ -1267,7 +1267,7 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             }
         }
     }
-    /* bildirim yoksa NFSU2'nin standart duzeni: pos@0 renk@12 uv@16 */
+    /* without a declaration, NFSU2's standard layout: pos@0 color@12 uv@16 */
     if (p_off < 0){ p_off = 0;  p_type = 2; }
     if (c_off < 0){ c_off = 12; c_type = 4; }
     if (t_off < 0){ t_off = 16; t_type = 1; }
@@ -1280,13 +1280,13 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     int p_off = dcc[dci].p_off, p_type = dcc[dci].p_type, c_off = dcc[dci].c_off,
         c_type = dcc[dci].c_type, t_off = dcc[dci].t_off, t_type = dcc[dci].t_type;
 
-    /* ---------------- GPU kose gölgelendiricisi (GPUVS) ----------------
-     * Olculdu: calisma suresinin ~%45'i CPU'daki vs_run yorumlayicisinda,
-     * tavan ~3.5 M kose/sn.  Oyunun kendi bytecode'u MSL'ye cevrilip
-     * GPU'da kosturulur; koseler HAM gonderilir, okuma yerlesimi D3D
-     * bildiriminden alinip gölgelendiriciye gomulur.
-     * Cevrilemeyen gölgelendirici (akis denetimi vb.) sessizce yanlis
-     * calismaz: vs_to_msl 0 doner ve kanitlanmis CPU yoluna dusulur. */
+    /* ---------------- GPU vertex shader (GPUVS) ----------------
+     * Measured: ~45% of the run time was in the vs_run interpreter on the CPU,
+     * ceiling ~3.5 M vertices/s.  The game's own bytecode is translated to MSL and
+     * run on the GPU; vertices are sent RAW, and the read layout is taken from the
+     * D3D declaration and embedded in the shader.
+     * An untranslatable shader (flow control etc.) doesn't silently run wrong:
+     * vs_to_msl returns 0 and we fall back to the proven CPU path. */
     if (prog && nel && stride && stride <= 256u && g_gpuvs){
         int gid = gpuvs_id(prog, g_cur_vs, g_cur_decl, el, nel);
         if (gid > 0){
@@ -1308,10 +1308,11 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                 }
                 return 0;
             }
-            /* Hedefi tamamen ezen dortgen mi?  (bkz. metal.m GECIS YUKLEMESI)
-             * Yalniz hedefi okumayan adaylar: karisim kapali, 4 kanal yaziliyor,
-             * alfa testi ve Z testi yok, en fazla 6 kose.  Koseler CPU'da
-             * donusturulur; karede son islem zincirinin birkac dortgeni. */
+            /* Is it a quad that fully overwrites the target?  (see metal.m PASS LOAD)
+             * Only candidates that don't read the target: blending off, 4 channels
+             * written, no alpha test and no Z test, at most 6 vertices.  The vertices
+             * are transformed on the CPU; a few quads of the post-process chain per
+             * frame. */
             { void metal_set_next_cov_clip(const float (*)[4], unsigned, unsigned);
               if (nv <= 6u && (pt == 4u || pt == 5u || pt == 6u) && !g_rs[27] &&
                   (g_rs[168] & 15u) == 15u && !g_rs[15] && (!g_rs[7] || (g_rs[23] & 15u) == 8u)){
@@ -1336,29 +1337,29 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                 g_t_draw_ns += now_ns() - _t0;
                 return 1;
             }
-            /* Kuyruga alinamadi (arena tasmasi): CPU yolu devam etsin --
-             * sessizce dusurmek geometriyi yok ediyordu. */
+            /* Couldn't be queued (arena overflow): let the CPU path continue --
+             * silently dropping it destroyed geometry. */
             g_gpuvs_drop++;
         }
     }
-    if (g_ix.n) return 0;           /* indisli kaynak CPU yoluna verilemez */
+    if (g_ix.n) return 0;           /* an indexed source can't be given to the CPU path */
 
     for (uint32_t i = 0; i < nv; i++){
         uint32_t o = vp + i*stride;
         TVert *out = &tv[i];
         if (prog && nel){
-            /* TANI (FIXMAT=1): oyunun WVP matrisi diag(0,0,1,1) geliyor --
-             * X/Y olcegi sifir.  Kok neden aranirken boru hattinin geri
-             * kalanini gormek icin makul bir ortografik matris koy. */
-            /* Cizim basina matris saglikli mi?  Bazi cizimler dogru
-             * matrisle geliyorsa on yuz iki farkli uzay kullaniyor demektir. */
+            /* DIAGNOSTIC (FIXMAT=1): the game's WVP matrix arrives as diag(0,0,1,1) --
+             * the X/Y scale is zero.  While looking for the root cause, put in a
+             * reasonable orthographic matrix to see the rest of the pipeline. */
+            /* Is the matrix healthy per draw?  If some draws arrive with the right matrix,
+             * the front end uses two different spaces. */
             { int degenerate = (vsk->f[3][3] == 0.f && vsk->f[3][0] == 0.f &&
                                 vsk->f[0][0] == 0.f && vsk->f[1][1] == 0.f);
               if (degenerate){ g_mat_bad++;
                   static uint32_t seen[8]; static int ns=0;
                   int f4=0; for(int q=0;q<ns;q++) if(seen[q]==g_cur_vs) f4=1;
                   if(!f4 && ns<8 && ENVC("MATLOG")){ seen[ns++]=g_cur_vs;
-                      fprintf(stderr,"  [matris-BOZUK] shader=%u doku=%u son yukleme sr=%u n=%u pd=%08x\n",
+                      fprintf(stderr,"  [matrix-BROKEN] shader=%u texture=%u last upload sr=%u n=%u pd=%08x\n",
                               g_cur_vs, g_cur_tex,
                               g_scn?g_sc[(g_scn-1)&7].sr:0,
                               g_scn?g_sc[(g_scn-1)&7].n:0,
@@ -1368,11 +1369,11 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                   static uint32_t seenok[8]; static int nsok=0;
                   int f5=0; for(int q=0;q<nsok;q++) if(seenok[q]==g_cur_vs) f5=1;
                   if(!f5 && nsok<8 && ENVC("MATLOG")){ seenok[nsok++]=g_cur_vs;
-                      fprintf(stderr,"  [matris-GECERLI] shader=%u doku=%u pd=%08x\n",
+                      fprintf(stderr,"  [matrix-VALID] shader=%u texture=%u pd=%08x\n",
                               g_cur_vs, g_cur_tex, g_scn?g_sc[(g_scn-1)&7].pd:0); }
                   static int shown = 0;
                   if (0){ shown++;
-                      fprintf(stderr,"  [matris-GERCEK] cizim %llu:\n",
+                      fprintf(stderr,"  [matrix-REAL] draw %llu:\n",
                               (unsigned long long)g_vs_draws);
                       for (int rw=0; rw<4; rw++)
                           fprintf(stderr,"      %9.4f %9.4f %9.4f %9.4f\n",
@@ -1385,8 +1386,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             for (int k = 0; k < nel; k++)
                 decl_fetch(o + el[k].off, el[k].type, v[el[k].reg]);
             VSOut so;
-            /* NOVS=1: yalnizca OLCUM.  Vertex shader yorumlayicisini atlayip
-             * darbogazin gercekten burasi olup olmadigini gorur. */
+            /* NOVS=1: MEASUREMENT only.  Skips the vertex shader interpreter to see whether
+             * the bottleneck really is here. */
             static int novs = -1;
             if (novs < 0){ const char *e7 = ENVC("NOVS"); novs = (e7 && *e7 && *e7!='0'); }
             if (novs){ memset(&so, 0, sizeof so);
@@ -1396,8 +1397,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             else { uint64_t _v0 = now_ns();
                    vs_run(prog, vsk, (const float (*)[4])v, &so);
                    g_t_vs_ns += now_ns() - _v0; }
-            /* D3D9: vs_1_1 - vs_2_x renk cikislari [0,1]'e kirpilir (GPU yolu ile ayni,
-             * bkz. vsemu.c vs_to_msl) */
+            /* D3D9: vs_1_1 - vs_2_x color outputs are clamped to [0,1] (same as the GPU path,
+             * see vsemu.c vs_to_msl) */
             if (vs_colsat_on() && vs_version_major(prog) < 3)
                 for (int c2 = 0; c2 < 2; c2++) for (int k2 = 0; k2 < 4; k2++){
                     float x = so.col[c2][k2]; so.col[c2][k2] = !(x > 0.f) ? 0.f : (x > 1.f ? 1.f : x); }
@@ -1406,8 +1407,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             out->b=so.col[0][2]; out->a=so.col[0][3];
             out->r1=so.col[1][0]; out->g1=so.col[1][1];
             out->b1=so.col[1][2]; out->a1=so.col[1][3];
-            /* GPU yolunda secimi kose golgelendiricisi yapiyor; CPU yolu da
-             * AYNI permutasyonu uygulamali, yoksa iki yol ayrisir. */
+            /* On the GPU path the vertex shader does the selection; the CPU path must apply
+             * the SAME permutation, otherwise the two paths diverge. */
             for (int ts = 0; ts < 4; ts++){
                 unsigned ci = g_tss_raw[ts][11] & 0xFFFFu;
                 if (ci > 3u) ci = (unsigned)ts;
@@ -1430,8 +1431,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     }
     if (prog && nel){
         g_vs_draws++;
-        /* Shader'li cizimlerin HAM konum araligi: UI'nin hangi uzayda
-         * oldugunu ve matrisin ne yapmasi gerektigini gosterir. */
+        /* The RAW position range of shaded draws: shows which space the UI is in and what
+         * the matrix should do. */
         for (uint32_t i3 = 0; i3 < nv; i3++){
             uint32_t o3 = vp + i3*stride;
             if (!mem_is_committed(o3 + (unsigned)p_off + 11)) break;
@@ -1443,7 +1444,7 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             if (rz < g_rmin[2]) g_rmin[2] = rz;  if (rz > g_rmax[2]) g_rmax[2] = rz;
         }
     } else g_ff_draws++;
-    /* Donusturulmus koseler ekranda mi?  Kirpma uzayindan NDC'ye gecip say. */
+    /* Are the transformed vertices on screen?  Go from clip space to NDC and count. */
     { for (uint32_t i2 = 0; i2 < nv; i2++){
         float w2 = tv[i2].w;
         if (w2 <= 0.f){ g_v_badw++; continue; }
@@ -1458,7 +1459,7 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
       texproj_push(); smp_push();
       if (ENVC("PSC0")){ static int n5=0;
           if (n5<6 && g_tex_stage[1]){ n5++;
-              fprintf(stderr,"  [ps] ps=%d c0=(%.3f %.3f %.3f %.3f) doku=%u/%u/%u/%u\n",
+              fprintf(stderr,"  [ps] ps=%d c0=(%.3f %.3f %.3f %.3f) tex=%u/%u/%u/%u\n",
                       g_cur_ps_id,
                       (double)g_psc[0][0],(double)g_psc[0][1],
                       (double)g_psc[0][2],(double)g_psc[0][3],
@@ -1468,18 +1469,18 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
       if (nstage>0 && nstage<=4) g_stage_hist[nstage-1]++;
       static int shown=0;
       if (ENVC("STAGEDUMP") && nstage>=2 && shown<8){ shown++;
-          fprintf(stderr,"  [asama] cizim: doku0=%u doku1=%u doku2=%u doku3=%u  kose=%u\n",
+          fprintf(stderr,"  [stage] draw: tex0=%u tex1=%u tex2=%u tex3=%u  verts=%u\n",
                   g_tex_stage[0],g_tex_stage[1],g_tex_stage[2],g_tex_stage[3], nv); } }
     g_t_draw_ns += now_ns() - _t0; g_v_xform += nv;
     if (prog && g_cur_vs < 64u) g_v_per_vs[g_cur_vs] += nv;
     if (dd_on()){
         static int nd = 0;
         if (nd++ < 6){
-            fprintf(stderr,"   >>> cizim tip=%u kose=%u adim=%u doku=%u shader=%u eleman=%d\n",
+            fprintf(stderr,"   >>> draw type=%u verts=%u stride=%u tex=%u shader=%u elements=%d\n",
                     pt, nv, stride, g_cur_tex, g_cur_vs, nel);
             if (prog) vs_disasm(prog, stderr);
             for (int k=0;k<nel;k++)
-                fprintf(stderr,"      eleman: ofset=%u tip=%u -> v%d\n",
+                fprintf(stderr,"      element: offset=%u type=%u -> v%d\n",
                         el[k].off, el[k].type, el[k].reg);
             for (uint32_t i=0;i<nv && i<3;i++){
                 uint32_t o = vp + i*stride;
@@ -1491,23 +1492,23 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                         fprintf(stderr,"        v%d = %g %g %g %g\n", el[k].reg,
                                 v[el[k].reg][0],v[el[k].reg][1],v[el[k].reg][2],v[el[k].reg][3]);
                 }
-                fprintf(stderr,"        -> pos=(%g %g %g %g) renk=(%.3g %.3g %.3g %.3g) uv=(%g %g)\n",
+                fprintf(stderr,"        -> pos=(%g %g %g %g) color=(%.3g %.3g %.3g %.3g) uv=(%g %g)\n",
                         tv[i].x,tv[i].y,tv[i].z,tv[i].w,
                         tv[i].r,tv[i].g,tv[i].b,tv[i].a, tv[i].t[0][0],tv[i].t[0][1]);
             }
-            fprintf(stderr,"      son sabit yuklemeleri (yeniden eskiye):\n");
+            fprintf(stderr,"      last constant uploads (newest to oldest):\n");
             for (int q=1; q<=4 && q<=(int)g_scn; q++){
                 unsigned ix = (g_scn - q) & 7;
                 fprintf(stderr,"        sr=%-3u n=%-3u pd=%08x", g_sc[ix].sr, g_sc[ix].n, g_sc[ix].pd);
                 if (g_sc[ix].pd && mem_is_committed(g_sc[ix].pd+63))
-                    fprintf(stderr,"  ilk4=[%.4g %.4g %.4g %.4g][%.4g %.4g %.4g %.4g]",
+                    fprintf(stderr,"  first4=[%.4g %.4g %.4g %.4g][%.4g %.4g %.4g %.4g]",
                         MRF32(g_sc[ix].pd), MRF32(g_sc[ix].pd+4),
                         MRF32(g_sc[ix].pd+8), MRF32(g_sc[ix].pd+12),
                         MRF32(g_sc[ix].pd+16), MRF32(g_sc[ix].pd+20),
                         MRF32(g_sc[ix].pd+24), MRF32(g_sc[ix].pd+28));
                 fprintf(stderr,"\n");
             }
-            /* kullanilan c0..c7 */
+            /* the c0..c7 in use */
             for (int q=0;q<8;q++)
                 fprintf(stderr,"        c%d = %g %g %g %g\n", q,
                         g_vsk.f[q][0],g_vsk.f[q][1],g_vsk.f[q][2],g_vsk.f[q][3]);
@@ -1517,21 +1518,21 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     return 1;
 }
 
-/* DrawIndexedPrimitive hizli yolu: duragan VB/IB havuzda yansitilip indisli
- * cizilir (bkz. metal.m KALICI KOSE / INDIS HAVUZU).  0 = uygulanamadi,
- * cagiran indis acma yoluna duser. */
+/* DrawIndexedPrimitive fast path: static VBs/IBs are mirrored in the pool and drawn
+ * indexed (see metal.m PERSISTENT VERTEX / INDEX POOL).  0 = couldn't be applied,
+ * the caller falls back to the index expansion path. */
 static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t ntri, uint32_t isz){
     int metal_mirror(uint32_t, uint32_t, const void *, uint32_t, unsigned, uint32_t *, uint32_t *);
     const uint8_t *metal_pool_cpu(void);
-    static int off = -1;             /* NOIX=1: kapali (A/B olcumu, guvenlik) */
+    static int off = -1;             /* NOIX=1: off (A/B measurement, safety) */
     if (off < 0){ const char *e = ENVC("NOIX"); off = (e && *e && *e != '0'); }
     if (off) return 0;
-    if (pt != 4u || !g_gpuvs){ g_dip_ixfb[0]++; return 0; }         /* serit/yelpaze: eski yol */
+    if (pt != 4u || !g_gpuvs){ g_dip_ixfb[0]++; return 0; }         /* strip/fan: the old path */
     uint32_t vb = g_ss_vb, ib = g_ib_obj, stride = g_ss_stride, so = g_ss_off;
     if (!mem_is_committed(vb+63) || !mem_is_committed(ib+63)){ g_dip_ixfb[1]++; return 0; }
     uint32_t vsz = MR32(vb+4), vba = MR32(vb+8), isb = MR32(ib+4), iba = MR32(ib+8);
-    /* son 4 karede kilitlendiyse icerigi degisiyor olabilir: her kare yeniden
-     * yansitmak yerine eski yol (dinamik tamponlar hep oradan gider) */
+    /* if it was locked in the last 4 frames its content may be changing: instead of
+     * re-mirroring every frame, the old path (dynamic buffers always go there) */
     if ((uint32_t)g_present - MR32(vb+52) < 4u || (uint32_t)g_present - MR32(ib+52) < 4u){
         g_dip_ixfb[2]++; return 0; }
     uint32_t ni = ntri * 3u;
@@ -1539,18 +1540,18 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
         (uint64_t)(starti + ni) * isz > isb ||
         !mem_is_committed(vba + vsz - 1u) || !mem_is_committed(iba + isb - 1u)){
         g_dip_ixfb[3]++; return 0; }
-    /* Metal indis ofseti 4'un kati olmali; 16 bitlik indiste tek numarali
-     * baslangic icin IB'nin 2 bayt kaydirilmis ikinci yansisi kullanilir
-     * (anahtar ib+2: com_alloc 16'ya hizali, baska nesneyle cakismaz).
-     * Olculdu: bu olmadan DIP cizimlerinin %19'u eski yola dusuyordu. */
+    /* The Metal index offset must be a multiple of 4; for an odd start with 16-bit
+     * indices a second mirror of the IB shifted by 2 bytes is used (key ib+2:
+     * com_alloc is 16-aligned, it doesn't collide with another object).
+     * Measured: without this 19% of DIP draws fell back to the old path. */
     uint32_t sh = ((starti * isz) & 3u) ? 2u : 0u;
     if (sh && isz != 2u){ g_dip_ixfb[3]++; return 0; }
     uint32_t voff, ioff, imax;
     if (!metal_mirror(vb, MR32(vb+48), g_mem + vba, vsz, 0, &voff, NULL) ||
         !metal_mirror(ib + sh, MR32(ib+48), g_mem + iba + sh, isb - sh, isz, &ioff, &imax)){
         g_dip_ixfb[4]++; return 0; }
-    /* Sinir: tum IB'nin en buyuk indisi bu VB'ye sigiyorsa tarama yok;
-     * sigmiyorsa (bir IB birden cok VB'ye hizmet ediyor) cizimin araligi. */
+    /* Bound: if the largest index of the whole IB fits this VB, no scan; if it doesn't
+     * (one IB serves several VBs), the draw's range. */
     if ((uint64_t)so + ((uint64_t)basev + imax + 1u) * stride > vsz){
         const uint8_t *P = metal_pool_cpu() + ioff + (size_t)starti * isz - sh;
         uint32_t mx = 0;
@@ -1558,8 +1559,8 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
         else          { const uint32_t *x = (const uint32_t *)P; for (uint32_t k = 0; k < ni; k++) if (x[k] > mx) mx = x[k]; }
         if ((uint64_t)so + ((uint64_t)basev + mx + 1u) * stride > vsz){ g_dip_ixfb[5]++; return 0; }
     }
-    /* geometri kimligi (HD isin izleme onbellegi): ayni yansi + ayni aralik =
-     * ayni geometri; uretim degisince kimlik de degisir */
+    /* geometry id (HD ray tracing cache): same mirror + same range = same geometry;
+     * the id changes when the generation changes */
     uint64_t gh = 1469598103934665603ull;
     uint32_t kv[9] = { vb, MR32(vb+48), ib, MR32(ib+48), starti, ni, basev, stride, so };
     for (int q = 0; q < 9; q++){ gh = (gh ^ kv[q]) * 1099511628211ull; gh ^= gh >> 29; }
@@ -1571,13 +1572,13 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
     return ok;
 }
 
-/* ---- D3DX HLE Asama 2: cagri kaydi ve etkisizlik denetimi (dxrec.h) ----
- * D3DX'in durum atamasi (sub_00669296) kare basina ~36 bin cihaz cagrisi
- * uretiyor ve %96'si cihazdaki degeri yeniden yaziyor.  Burada bir
- * cagrinin SIMDI yapilsa isleyicinin yazacagi degerlerin mevcut durumla
- * ayni olup olmadigi, isleyicinin kendi mantigi tekrarlanarak denetlenir.
- * Yalnizca asagidaki 8 metot desteklenir; baska her cihaz cagrisi kaydi
- * gecersiz kilar (atlama yapilmaz).                                      */
+/* ---- D3DX HLE Stage 2: call recording and no-effect check (dxrec.h) ----
+ * D3DX's state assignment (sub_00669296) produces ~36 thousand device calls per
+ * frame and 96% of them rewrite the value already on the device.  Here, whether
+ * the values a handler would write if a call were made NOW are the same as the
+ * current state is checked by repeating the handler's own logic.
+ * Only the 8 methods below are supported; any other device call invalidates the
+ * record (no skipping is done).                                          */
 #include "dxrec.h"
 #define DXREC_DEPTH 8
 static DxRec *g_dxrec[DXREC_DEPTH];
@@ -1614,8 +1615,8 @@ void dxrec_append(const DxRec *src){
 }
 void dxrec_end(void){ if (g_dxrec_depth > 0) g_dxrec_depth--; }
 
-/* Veri isaretcisi olan sabit metotlari icin kopyalanacak/karsilastirilacak
- * bayt sayisi (isleyicinin sinirlariyla ayni). */
+/* The number of bytes to copy/compare for constant methods with a data pointer
+ * (the same as the handler's bounds). */
 static uint32_t dxrec_datalen(int mid, const uint32_t *a){
     if (MID(SetVertexShaderConstantF)){ uint32_t n = a[2]; if (a[0] >= 256u) return 0;
         if (a[0] + n > 256u) n = 256u - a[0]; return n*16u; }
@@ -1623,7 +1624,7 @@ static uint32_t dxrec_datalen(int mid, const uint32_t *a){
         if (a[0] + n > 32u) n = 32u - a[0]; return n*16u; }
     return 0;
 }
-/* a[]: this'ten sonraki argumanlar; d: sabit verisi (dlen bayt). */
+/* a[]: the arguments after this; d: constant data (dlen bytes). */
 static int dxrec_call_redundant(int mid, const uint32_t *a, const uint8_t *d, uint32_t dlen){
     if (MID(SetRenderState))
         return a[0] >= 256u || (g_rs[a[0]] == a[1] && !g_rs_dirty);
@@ -1657,13 +1658,14 @@ static int dxrec_call_redundant(int mid, const uint32_t *a, const uint8_t *d, ui
         return dlen == 0 || !memcmp(g_psc[a[0]], d, dlen);
     return 0;
 }
-/* D3DX yerel yolu (d3dx_hle.c, Asama 4): bu cihaz cagrisi SIMDI yapilsa
- * etkisiz mi?  Etkisizse cagiran onu hic yapmaz (konuk dagitimi + com_call
- * tasarrufu).  Durum blogu kaydi/tekrari, acik dxrec kaydi ya da FXTRACE
- * karesinde HAYIR: cagri gercekten yapilmali ki kayda/ize girsin.
+/* The D3DX native path (d3dx_hle.c, Stage 4): would this device call have no
+ * effect if made NOW?  If so the caller doesn't make it at all (saving the guest
+ * dispatch + com_call).  NO during state block recording/replay, with an open
+ * dxrec record or in an FXTRACE frame: the call must really be made so it gets
+ * into the record/trace.
  * kind: 1 SetRenderState(a0, a1), 2 SetTextureStageState(a0, a1, a2),
  *       3 SetSamplerState(a0, a1, a2), 4 SetTexture(a0, a1),
- *       5/6 Set{Vertex,Pixel}ShaderConstantF(a0, a1=veri, a2), 7/8 Set{Vertex,Pixel}Shader(a0). */
+ *       5/6 Set{Vertex,Pixel}ShaderConstantF(a0, a1=data, a2), 7/8 Set{Vertex,Pixel}Shader(a0). */
 int fxtr_now(void); extern int g_fxtr;
 int dxn_skip(int kind, uint32_t a0, uint32_t a1, uint32_t a2){
     if (g_sb_rec || g_sb_replay || g_dxrec_depth) return 0;
@@ -1674,7 +1676,7 @@ int dxn_skip(int kind, uint32_t a0, uint32_t a1, uint32_t a2){
             : kind == 5 ? MID_SetVertexShaderConstantF : kind == 6 ? MID_SetPixelShaderConstantF
             : kind == 7 ? MID_SetVertexShader : kind == 8 ? MID_SetPixelShader : 0;
     if (!mid) return 0;
-    if (kind == 5 || kind == 6){                 /* a1: konuk veri isaretcisi */
+    if (kind == 5 || kind == 6){                 /* a1: guest data pointer */
         uint32_t dlen = dxrec_datalen(mid, a);
         if (!dlen) return 0;
         if (!a1 || !mem_is_committed(a1) || !mem_is_committed(a1 + dlen - 1u)) return 0;
@@ -1687,9 +1689,9 @@ static int dxrec_supported(int mid){
         || MID(SetTexture) || MID(SetVertexShader) || MID(SetPixelShader)
         || MID(SetVertexShaderConstantF) || MID(SetPixelShaderConstantF);
 }
-/* com_call'dan, isleyiciden ONCE: acik her kayda ekle. */
+/* From com_call, BEFORE the handler: append to every open record. */
 static void dxrec_note(CPU *c, int iface, int mid, int nargs){
-    /* Bizde etkisiz olan sayac cagrilari (doku AddRef/Release) kaydi bozmaz. */
+    /* Counter calls that are no-ops for us (texture AddRef/Release) don't break the record. */
     if ((MID(AddRef) || MID(Release)) && iface != IF_STATEBLOCK
         && iface != IF_DS && iface != IF_DSBUF) return;
     int okc = iface == IF_DEV && dxrec_supported(mid) && !dxrec_sb_recording()
@@ -1725,10 +1727,10 @@ int dxrec_redundant(const DxRec *r){
     return 1;
 }
 
-/* COMSTAT=<kare>: IDirect3DDevice9 metot sayilari, D3DX BeginPass /
- * CommitChanges ICINDEN mi DISINDAN mi geldigi ve GEREKSIZ (cihazdaki son
- * degerle ayni) orani.  D3DX_HLE.md Asama 2 icin; D3DXSTAT ile birlikte
- * kullanilmali (BeginPass derinligini o sarmalayici tutuyor). */
+/* COMSTAT=<frame>: IDirect3DDevice9 method counts, whether they come from INSIDE
+ * or OUTSIDE D3DX BeginPass / CommitChanges, and the REDUNDANT ratio (same as the
+ * last value on the device).  For D3DX_HLE.md Stage 2; must be used together with
+ * D3DXSTAT (that wrapper keeps the BeginPass depth). */
 extern int g_dx_in_pass;
 static int g_cs_on = -1; static long g_cs_from = 0, g_cs_f0 = -1;
 static uint64_t cs_n[MID__count][2], cs_red[MID__count][2];
@@ -1768,9 +1770,9 @@ void comstat_report(void){
     if (g_cs_f0 < 0) return;
     long metal_frames(void);
     double fr = (double)(metal_frames() - g_cs_f0); if (fr < 1) fr = 1;
-    fprintf(stderr, "\n=== COMSTAT (%.0f kare): IDirect3DDevice9 cagri/kare ===\n", fr);
-    fprintf(stderr, "  %-28s %10s %10s %9s %10s %9s\n", "metot", "BeginPass", "gereksiz",
-            "", "disarida", "gereksiz");
+    fprintf(stderr, "\n=== COMSTAT (%.0f frames): IDirect3DDevice9 calls/frame ===\n", fr);
+    fprintf(stderr, "  %-28s %10s %10s %9s %10s %9s\n", "method", "BeginPass", "redundant",
+            "", "outside", "redundant");
     for (int pass = 0; pass < 40; pass++){
         int best = -1; uint64_t bv = 0;
         for (int i = 1; i < MID__count; i++){
@@ -1785,10 +1787,10 @@ void comstat_report(void){
     }
 }
 
-/* FXTRACE=<kare>[,<kare>...]: o karelerde her cihaz cagrisini (argumanlar,
- * sabit/matris verisi) ve d3dx_hle.c'den gelen efekt metodu isaretlerini
- * sirayla basar.  Yerel ID3DXEffect'in D3DX ile ayni cihaz durumunu
- * uretmesi icin davranis referansi (D3DX_HLE.md, Asama 4). */
+/* FXTRACE=<frame>[,<frame>...]: prints every device call (arguments,
+ * constant/matrix data) and the effect method markers from d3dx_hle.c in order in
+ * those frames.  A behavioral reference so the native ID3DXEffect produces the
+ * same device state as D3DX (D3DX_HLE.md, Stage 4). */
 int g_fxtr = 0;
 static uint32_t g_fxtr_fr[8]; static int g_fxtr_nf;
 __attribute__((constructor)) static void fxtr_init(void){
@@ -1827,7 +1829,7 @@ int com_call(CPU *c, uint32_t magic){
     g_com_calls++;
     if (!g_sb_replay) POP32(c->eip);
     if (iface==0 || iface>=NEL(g_if) || m>=g_if[iface].n){
-        fprintf(stderr,"  [COM] gecersiz arayuz/metot %u:%u\n", iface, m);
+        fprintf(stderr,"  [COM] invalid interface/method %u:%u\n", iface, m);
         c->eax=0x80004001u; return 1;
     }
     if (iface < MSTAT_IF && m < MSTAT_M) g_mstat[iface][m]++;
@@ -1842,20 +1844,20 @@ int com_call(CPU *c, uint32_t magic){
 
     if (g_dxrec_depth) dxrec_note(c, (int)iface, mid, nargs);
     if (g_fxtr && fxtr_now()) fxtr_dev(c, (int)iface, mid, nargs, nm);
-    /* ZSEQ=<kare>: o karede hedef / Z yuzeyi / Clear / Z durumu sirasi (tani) */
+    /* ZSEQ=<frame>: the target / Z surface / Clear / Z state sequence in that frame (diagnostic) */
     if (iface==IF_DEV && ENVC("ZSEQ") && g_present_no == (uint32_t)atoi(ENVC("ZSEQ"))){
         static unsigned nd = 0;
         if (nm[0]=='D' && nm[1]=='r'){ nd++; }
         else if (MID(SetRenderTarget) || MID(SetDepthStencilSurface) || MID(Clear)
                  || (MID(SetRenderState) && (A(c,1)==7||A(c,1)==14||A(c,1)==23))
                  || MID(BeginScene) || MID(EndScene) || MID(StretchRect)){
-            if (nd){ fprintf(stderr, "  [zseq]   .. %u cizim\n", nd); nd = 0; }
+            if (nd){ fprintf(stderr, "  [zseq]   .. %u draws\n", nd); nd = 0; }
             uint32_t s2 = A(c,2);
             fprintf(stderr, "  [zseq] %s %x %x %x %x  (rt=%u", nm, A(c,1), A(c,2), A(c,3), A(c,4), g_cur_rt);
             if ((MID(SetRenderTarget)||MID(SetDepthStencilSurface)) && s2 && mem_is_committed(s2+47))
-                fprintf(stderr, " yuzey tid=%u %ux%u tur=%u", MR32(s2+28), MR32(s2+4), MR32(s2+8), MR32(s2+40));
+                fprintf(stderr, " surface tid=%u %ux%u type=%u", MR32(s2+28), MR32(s2+4), MR32(s2+8), MR32(s2+40));
             if (MID(SetDepthStencilSurface) && A(c,1) && mem_is_committed(A(c,1)+47))
-                fprintf(stderr, " zyuzey %ux%u tur=%u", MR32(A(c,1)+4), MR32(A(c,1)+8), MR32(A(c,1)+40));
+                fprintf(stderr, " zsurface %ux%u type=%u", MR32(A(c,1)+4), MR32(A(c,1)+8), MR32(A(c,1)+40));
             fprintf(stderr, ")\n");
         }
     }
@@ -1864,27 +1866,27 @@ int com_call(CPU *c, uint32_t magic){
         if (g_cs_on) comstat(c, mid, nargs);
     }
 
-    /* --- KUP DOKU: ayni vtable yuvasi, BIR FAZLA arguman ---------------
-     * IDirect3DCubeTexture9 metotlari 2B karsiliklariyla ayni yuvalarda
-     * ama basta bir FaceType parametresi tasiyor.  Islev govdeleri bunu
-     * zaten ayirt ediyordu; ama YIGIN TEMIZLIGI (nargs) duzeltilmemisti,
-     * yani her cagri 4 bayt sizdiriyordu.  Yansima acikken oyun 6 kup
-     * yuzu icin GetCubeMapSurface cagirinca tam 24 bayt kayiyor: cagiran
-     * fonksiyonun epilogu yanlis yerden pop yapiyor, esi ve donus adresi
-     * bozuluyor ve oyun ilk karede cokuyordu (g_CarEnvironmentMapEnable=1
-     * ile birebir yeniden uretildi). */
-    /* Once UCUZ olan metot kimligine bak: is_cube_tex() konuk BELLEGI
-     * okuyor ve eskiden HER doku cagrisinda calisiyordu -- kosuda
-     * IDirect3DTexture9 AddRef+Release tek basina 96.8 milyon cagri. */
+    /* --- CUBE TEXTURE: the same vtable slot, ONE MORE argument ---------------
+     * IDirect3DCubeTexture9 methods are in the same slots as their 2D counterparts
+     * but carry a FaceType parameter first.  The function bodies already told them
+     * apart; but the STACK CLEANUP (nargs) hadn't been fixed, so every call leaked
+     * 4 bytes.  With reflections on, when the game called GetCubeMapSurface for the
+     * 6 cube faces the stack shifted by exactly 24 bytes: the caller's epilogue
+     * popped from the wrong place, esi and the return address got corrupted and the
+     * game crashed on the first frame (reproduced exactly with
+     * g_CarEnvironmentMapEnable=1). */
+    /* Look at the CHEAP method id first: is_cube_tex() reads guest MEMORY and used to
+     * run on EVERY texture call -- in a run IDirect3DTexture9 AddRef+Release alone
+     * are 96.8 million calls. */
     if (iface==IF_TEX &&
         (MID(GetSurfaceLevel) || MID(GetCubeMapSurface) ||
          MID(LockRect) || MID(UnlockRect) ||
          MID(AddDirtyRect)) && is_cube_tex(A(c,0)))
         nargs++;
 
-    /* --- durum blogu KAYDI ---------------------------------------------
-     * D3D9'da kayit sirasinda cihaz durumu DEGISMEZ; cagri yalnizca
-     * bloga yazilir. */
+    /* --- state block RECORDING -------------------------------------------
+     * In D3D9 the device state DOESN'T CHANGE during recording; the call is only
+     * written to the block. */
     if (g_sb_rec && iface==IF_DEV && !g_sb_replay && sb_recordable(mid)){
         SBlock *B = &g_sb[g_sb_rec];
         if (B->n < MAXSBREC){
@@ -1897,13 +1899,12 @@ int com_call(CPU *c, uint32_t magic){
         return 1;
     }
 
-    /* --- ortak: IUnknown --- */
+    /* --- common: IUnknown --- */
     if      (MID(QueryInterface)){
-        /* DirectSound8'de CreateSoundBuffer IDirectSoundBuffer dondurur;
-         * IDirectSoundBuffer8'i almak icin oyun QueryInterface yapar.
-         * E_NOINTERFACE donunce o sesler hic kullanilmiyor olabilir
-         * (olculdu: 4 tampon yaratiliyor ama hicbirine yazilmiyor).
-         * Ayni nesneyi donduruyoruz - vtable yuvalari zaten ortak. */
+        /* In DirectSound8 CreateSoundBuffer returns an IDirectSoundBuffer; the game does
+         * QueryInterface to get IDirectSoundBuffer8.  When E_NOINTERFACE is returned
+         * those sounds may never be used (measured: 4 buffers are created but none is
+         * written to).  We return the same object - the vtable slots are shared anyway. */
         uint32_t ppv = (nargs >= 3) ? A(c,2) : 0u;
         if ((iface==IF_DS || iface==IF_DSBUF) && ppv){
             mem_commit(ppv,4); MR32(ppv) = A(c,0); r = 0;
@@ -1911,13 +1912,12 @@ int com_call(CPU *c, uint32_t magic){
     }
     else if (MID(AddRef))  r=1;
     else if (MID(Release)){
-        /* Oyun ses tamponunu Stop ile DEGIL Release ile susturuyor
-         * (olculdu: 3 dakikalik oturumda Stop=0, Release=7).  Durdurmayinca
-         * menu muzigi yaris boyunca bayat icerigi donguye alip yaris
-         * sesiyle cakisiyordu. */
+        /* The game silences a sound buffer with Release, NOT Stop (measured: Stop=0,
+         * Release=7 in a 3-minute session).  Without stopping it, the menu music
+         * looped stale content during the race and clashed with the race sound. */
         if (iface==IF_STATEBLOCK){
-            /* Blok yuvasini geri ver: oyun oturum boyunca surekli blok
-             * yaratip biraktigi icin havuz yoksa tukenir. */
+            /* Give the block slot back: since the game keeps creating and releasing blocks
+             * throughout the session, without a pool it runs out. */
             uint32_t self1=A(c,0);
             int bi = (self1 && mem_is_committed(self1+11)) ? (int)MR32(self1+8) : 0;
             if (bi > 0 && bi < MAXSB){ g_sb[bi].used = 0; g_sb[bi].n = 0;
@@ -1936,18 +1936,18 @@ int com_call(CPU *c, uint32_t magic){
     /* --- IDirect3D9 --- */
     else if (iface==IF_D3D9){
         if      (MID(GetAdapterCount))     r=1;
-        /* Cozunurluk listesi TEK satirdi (1280x720), bu yuzden oyunun
-         * ayar menusunde cozunurluk degistirilemiyordu.  Gercek bir liste
-         * veriyoruz; secilen mod CreateDevice/Reset ile Metal'e gecer. */
+        /* The resolution list was a SINGLE row (1280x720), so the resolution couldn't be
+         * changed in the game's settings menu.  We give a real list; the selected mode
+         * goes to Metal via CreateDevice/Reset. */
         else if (MID(GetAdapterModeCount)) r=(uint32_t)NEL(g_modes);
         else if (MID(EnumAdapterModes)){
             uint32_t mode=A(c,3), pm=A(c,4);
             if (mode >= NEL(g_modes)) { r=0x8876086Cu; }
-            else { uint32_t fmt=A(c,2); if(!fmt) fmt=22u;   /* istenen bicimi yansit */
-                   if (mode == 0 && modemap_on()) modes_refresh();   /* menu metinleri */
-                   const uint32_t *ml = g_tbl[mode];   /* secilebilirlik: oyunun tablosu */
+            else { uint32_t fmt=A(c,2); if(!fmt) fmt=22u;   /* mirror the requested format */
+                   if (mode == 0 && modemap_on()) modes_refresh();   /* menu strings */
+                   const uint32_t *ml = g_tbl[mode];   /* selectability: the game's table */
                    if (mode == 4 && modemap_on() && !g_row4_on)
-                       ml = g_tbl[ROW_NATIVE];         /* 4K secilemez: bkz. modes_refresh */
+                       ml = g_tbl[ROW_NATIVE];         /* 4K can't be selected: see modes_refresh */
                    if(pm){ mem_commit(pm,16);
                            MR32(pm)   = ml[0];
                            MR32(pm+4) = ml[1];
@@ -1957,8 +1957,8 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(GetAdapterDisplayMode)){
             uint32_t pm=A(c,2);
             if(pm){ mem_commit(pm,16);
-                    /* Masaustu modu: oyun bundan buyuk satirlari eliyor
-                     * (1600x1200 bu yuzden hic secilemiyordu). */
+                    /* Desktop mode: the game eliminates rows larger than this
+                     * (which is why 1600x1200 could never be selected). */
                     const uint32_t *nl = mode_label(ROW_NATIVE);
                     MR32(pm)   = nl[0] > 1600u ? nl[0] : 1600u;
                     MR32(pm+4) = nl[1] > 1200u ? nl[1] : 1200u;
@@ -1975,47 +1975,46 @@ int com_call(CPU *c, uint32_t magic){
             if(!g_dev) g_dev=com_new(IF_DEV,256);
             /* (this, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
              *  pPresentationParameters, ppReturnedDeviceInterface)
-             * pPresentationParameters HIC OKUNMUYORDU: oyun hangi
-             * cozunurlugu isterse istesin biz 1280x720'de kaliyorduk.
-             * Ayar menusunden cozunurluk degistirmenin etkisiz kalmasinin
-             * sebebi buydu -- oyun cihazi yeni boyutla yeniden yaratiyor,
-             * biz ayni cihazi geri verip boyutu yok sayiyorduk. */
+             * pPresentationParameters WAS NEVER READ: whatever resolution the game
+             * asked for, we stayed at 1280x720.  This is why changing the resolution
+             * from the settings menu had no effect -- the game recreates the device
+             * with the new size, and we gave back the same device and ignored the size. */
             uint32_t ppp=A(c,5);
             if (ppp && mem_is_committed(ppp+7)){
                 uint32_t w4=MR32(ppp), h4=MR32(ppp+4);
                 uint32_t win4 = mem_is_committed(ppp+35) ? MR32(ppp+32) : 1u;
-                fprintf(stderr,"com: CreateDevice istegi %ux%u (%s)\n",
-                        w4, h4, win4 ? "pencereli" : "tam ekran");
+                fprintf(stderr,"com: CreateDevice request %ux%u (%s)\n",
+                        w4, h4, win4 ? "windowed" : "fullscreen");
                 /* D3DPRESENT_PARAMETERS: SwapEffect@24, EnableAutoDepthStencil@36,
                  * AutoDepthStencilFormat@40, Flags@44 (2 = DISCARD_DEPTHSTENCIL).
-                 * Olculdu (2026-10-18): takas 1 (DISCARD), Z bicimi 75 (D24S8),
-                 * bayrak 0 -> ortuk Z kareler arasi KORUNMALI. */
+                 * Measured (2026-10-18): swap 1 (DISCARD), Z format 75 (D24S8),
+                 * flags 0 -> the implicit Z MUST BE PRESERVED across frames. */
                 if (mem_is_committed(ppp+55))
-                    fprintf(stderr,"com: sunum parametreleri: takas %u, ortuk Z %u (bicim %u), bayraklar 0x%x, aralik 0x%x\n",
+                    fprintf(stderr,"com: presentation parameters: swap %u, implicit Z %u (format %u), flags 0x%x, interval 0x%x\n",
                             MR32(ppp+24), MR32(ppp+36), MR32(ppp+40), MR32(ppp+44), MR32(ppp+52));
-                if (w4 > 8192u || h4 > 8192u){      /* oyunun dizi tasmasi */
-                    fprintf(stderr,"com: gecersiz boyut yok sayildi, %ux%u korunuyor\n",
+                if (w4 > 8192u || h4 > 8192u){      /* the game's array overflow */
+                    fprintf(stderr,"com: invalid size ignored, keeping %ux%u\n",
                             g_bb_w, g_bb_h);
                     w4 = h4 = 0;
                 }
-                /* NFSRES=<gen>x<yuk>: oyunun istedigi cozunurlugu gecersiz kil.
-                 * Oyunun kendi ic tablosu 6 satir ve tamami 4:3; menuden
-                 * 1080p secilemiyor (indeks 6+ diziyi tasiriyor). */
+                /* NFSRES=<width>x<height>: override the resolution the game asks for.
+                 * The game's own internal table has 6 rows, all 4:3; 1080p can't be
+                 * selected from the menu (index 6+ overflows the array). */
                 { uint32_t dw = w4, dh = h4;
                   res_pick(w4, h4, &dw, &dh);
                   w4 = dw; h4 = dh; }
                 if (w4 && h4){
                     g_bb_w = w4; g_bb_h = h4;
                     void metal_want_size(unsigned,unsigned);
-                    metal_want_size(w4,h4);              /* pencere acilmadiysa */
+                    metal_want_size(w4,h4);              /* if the window hasn't opened */
                     if (metal_available()){ void metal_resize(unsigned,unsigned);
                                             metal_resize(w4,h4); }
                 }
             }
-            /* RESSCAN=1: oyunun KENDI cozunurluk tablosunu konuk bellekte bul.
-             * Tablo EXE'de duz durmuyor, calisma aninda kuruluyor; onu
-             * yamalamak 1080p'yi oyunun her yerine (en-boy orani, render
-             * hedefleri, viewport) tasimanin tek temiz yolu. */
+            /* RESSCAN=1: find the game's OWN resolution table in guest memory.  The table
+             * isn't stored flat in the EXE, it is built at run time; patching it is
+             * the only clean way to carry 1080p everywhere in the game (aspect
+             * ratio, render targets, viewport). */
             if (ENVC("RESSCAN")){
                 static const uint32_t want[12] = {640,480,800,600,1024,768,
                                                   1280,960,1280,1024,1600,1200};
@@ -2030,9 +2029,9 @@ int com_call(CPU *c, uint32_t magic){
                         int ok = 1;
                         for (int k = 0; k < 12; k++)
                             if (MR32(a + 4u*(uint32_t)k) != want[k]){ ok = 0; break; }
-                        if (ok){ fprintf(stderr,"com: [resscan] tablo 0x%08x\n", a); found++; }
+                        if (ok){ fprintf(stderr,"com: [resscan] table 0x%08x\n", a); found++; }
                     }
-                /* Tam dizi bulunamazsa yalnizca 1600x1200 ikililerini bildir */
+                /* If the full array isn't found, report only the 1600x1200 pairs */
                 if (!found){
                     int n2 = 0;
                     for (unsigned q = 0; q < sizeof rng/sizeof *rng && n2 < 12; q++)
@@ -2040,18 +2039,18 @@ int com_call(CPU *c, uint32_t magic){
                             if (!mem_is_committed(a) || !mem_is_committed(a+7u)) continue;
                             if (MR32(a)==1600u && MR32(a+4u)==1200u){
                                 fprintf(stderr,"com: [resscan] 1600x1200 @ 0x%08x  "
-                                        "onceki: %u %u %u %u\n", a,
+                                        "previous: %u %u %u %u\n", a,
                                         mem_is_committed(a-16u)?MR32(a-16u):0,
                                         mem_is_committed(a-12u)?MR32(a-12u):0,
                                         mem_is_committed(a-8u)?MR32(a-8u):0,
                                         mem_is_committed(a-4u)?MR32(a-4u):0);
                                 n2++; }
                         }
-                    if (!n2) fprintf(stderr,"com: [resscan] tablo bulunamadi\n");
+                    if (!n2) fprintf(stderr,"com: [resscan] table not found\n");
                 }
             }
             uint32_t pp=A(c,6); if(pp) MR32(pp)=g_dev;
-            fprintf(stderr,"com: IDirect3DDevice9 olusturuldu 0x%08x (%ux%u)\n",
+            fprintf(stderr,"com: IDirect3DDevice9 created 0x%08x (%ux%u)\n",
                     g_dev, g_bb_w, g_bb_h);
             r=0; }
         else r=0;                       /* Check* -> D3D_OK */
@@ -2079,26 +2078,26 @@ int com_call(CPU *c, uint32_t magic){
                                      ty==5?"MAGFILTER":ty==6?"MINFILTER":ty==7?"MIPFILTER":
                                      ty==8?"MIPMAPLODBIAS":ty==9?"MAXMIPLEVEL":
                                      ty==10?"MAXANISOTROPY":ty==11?"SRGB":"?";
-                    fprintf(stderr,"  [smp] asama%u %s(%u) = %u\n", sm, tn, ty, val); } }
+                    fprintf(stderr,"  [smp] stage%u %s(%u) = %u\n", sm, tn, ty, val); } }
             r=0; }
         else if (MID(SetTextureStageState)){
             uint32_t stg=A(c,1), ty=A(c,2), val=A(c,3);
             if (stg < 8u && ty < 40u) g_tss_raw[stg][ty] = val;
             r=0; }
         else if (MID(SetTexture)){
-            /* CUBELOG=1: kup dokunun gercekten baglanip baglanmadigini olc.
-             * Metal tarafinda kup destegi YOK (duz 2B yaratiliyor); once
-             * bu yolun kullanildigini dogrula. */
+            /* CUBELOG=1: measure whether the cube texture really gets bound.
+             * There is NO cube support on the Metal side (a flat 2D is created);
+             * first verify that this path is used. */
             if (ENVC("CUBELOG") && A(c,2) && is_cube_tex(A(c,2))){
                 static unsigned n2 = 0;
                 if (n2 < 8){ n2++;
-                    fprintf(stderr,"  [kup] SetTexture asama=%u doku=0x%08x vs=%u\n",
+                    fprintf(stderr,"  [cube] SetTexture stage=%u tex=0x%08x vs=%u\n",
                             A(c,1), A(c,2), g_cur_vs); }
             }
             uint32_t stg=A(c,1), to=A(c,2);
             if (stg < 8u) g_raw_tex[stg] = to;
-            /* Tum asamalari izle: araba boyasi/yansimasi ust asamalarda
-             * olabilir; simdilik yalnizca olcum icin. */
+            /* Track all stages: car paint/reflections may be in the upper stages; for
+             * measurement only for now. */
             if (stg < 4u)
                 g_tex_stage[stg] = (to && mem_is_committed(to+28)) ? MR32(to+28) : 0;
             if (stg==0){
@@ -2109,8 +2108,8 @@ int com_call(CPU *c, uint32_t magic){
                     if (sd<4 && mem_is_committed(to+31)){ sd++;
                         uint32_t vt = MR32(to);
                         uint32_t mg = (vt && mem_is_committed(vt)) ? MR32(vt) : 0;
-                        fprintf(stderr,"  [SetTexture] nesne=%08x vtable=%08x ilk-giris=%08x"
-                                " -> arayuz=%u  alanlar: +4=%u +8=%u +14=%u(fmt) +18=%u +1c=%u\n",
+                        fprintf(stderr,"  [SetTexture] object=%08x vtable=%08x first-entry=%08x"
+                                " -> interface=%u  fields: +4=%u +8=%u +14=%u(fmt) +18=%u +1c=%u\n",
                                 to, vt, mg, (mg>>16)&0x1FFFu,
                                 MR32(to+4), MR32(to+8), MR32(to+0x14),
                                 MR32(to+0x18), MR32(to+0x1c));
@@ -2121,9 +2120,9 @@ int com_call(CPU *c, uint32_t magic){
         else if (!strncmp(nm,"Draw",4)){
             g_draw++;
             { static const char *seen[8]; static int ns=0;
-              int f=0; for(int q=0;q<ns;q++) if(seen[q]==nm) f=1;   /* adlar g_if tablosundan: isaretci yeter */
+              int f=0; for(int q=0;q<ns;q++) if(seen[q]==nm) f=1;   /* names from the g_if table: a pointer is enough */
               if(!f && ns<8){ seen[ns++]=nm;
-                  fprintf(stderr,"  [cizim-adi] \"%s\"\n", nm); } }
+                  fprintf(stderr,"  [draw-name] \"%s\"\n", nm); } }
             if (MID(DrawIndexedPrimitive)){
                 /* (this, Type, BaseVertexIndex, MinIndex, NumVertices,
                  *  StartIndex, PrimitiveCount) */
@@ -2141,7 +2140,7 @@ int com_call(CPU *c, uint32_t magic){
                         g_dip_draws++; g_dip_tris += ntri; }
                     else {
                         if (!g_idx_scratch) g_idx_scratch = gbuf_alloc(4096u*64u);
-                        uint32_t maxv = 4095u / 3u * 3u;       /* draw_up siniri */
+                        uint32_t maxv = 4095u / 3u * 3u;       /* draw_up limit */
                         uint32_t done = 0;
                         while (done < ntri && g_ss_stride <= 64u){
                             uint32_t chunk = ntri - done;
@@ -2193,7 +2192,7 @@ int com_call(CPU *c, uint32_t magic){
                     uint32_t nv = (pt==4) ? nprim*3u : nprim+2u;
                     if (g_cur_decl != last_decl){ last_decl = g_cur_decl; dd_decl(g_cur_decl); }
                     if (nd++ < 40){
-                        fprintf(stderr,"   #%-3d tip=%u kose=%-4u adim=%u doku=%u\n",
+                        fprintf(stderr,"   #%-3d type=%u verts=%-4u stride=%u tex=%u\n",
                                 nd, pt, nv, stride, g_cur_tex);
                         for (uint32_t v=0; v<nv && v<4; v++){
                             uint32_t o = vp + v*stride;
@@ -2211,16 +2210,16 @@ int com_call(CPU *c, uint32_t magic){
                     sh++;
                     uint32_t d  = g_cur_decl;
                     uint32_t el = (d && mem_is_committed(d+4)) ? MR32(d+4) : 0;
-                    fprintf(stderr,"  [draw] tip=%u sayi=%u adim=%u decl=0x%08x fvf=0x%08x eleman=0x%08x\n",
+                    fprintf(stderr,"  [draw] type=%u count=%u stride=%u decl=0x%08x fvf=0x%08x elements=0x%08x\n",
                             pt, A(c,2), stride, d, g_cur_fvf, el);
-                    /* ilk kose verilerini dok */
+                    /* dump the first vertices' data */
                     { uint32_t vp = A(c,3), nprim = A(c,2);
                       uint32_t nv = (pt==6||pt==5) ? nprim+2u : nprim*3u;
                       if (nv > 6) nv = 6;
                       for (uint32_t v=0; v<nv; v++){
                         uint32_t o = vp + v*stride;
                         if (!mem_is_committed(o+24)) break;
-                        fprintf(stderr,"        v%u: pos=(%.2f, %.2f, %.2f) renk=0x%08x uv=(%.3f, %.3f)\n",
+                        fprintf(stderr,"        v%u: pos=(%.2f, %.2f, %.2f) color=0x%08x uv=(%.3f, %.3f)\n",
                                 v, MRF32(o), MRF32(o+4), MRF32(o+8), MR32(o+12),
                                 MRF32(o+16), MRF32(o+20));
                       } }
@@ -2229,7 +2228,7 @@ int com_call(CPU *c, uint32_t magic){
                         if (!mem_is_committed(e+7)) break;
                         uint32_t st=MR16(e), of=MR16(e+2), ty=MR8(e+4), us=MR8(e+6);
                         if (st == 0xFFu && ty == 17u) break;
-                        fprintf(stderr,"        ofset=%-3u tip=%-2u kullanim=%u\n", of, ty, us);
+                        fprintf(stderr,"        offset=%-3u type=%-2u usage=%u\n", of, ty, us);
                     }
                 }
             }
@@ -2254,12 +2253,12 @@ int com_call(CPU *c, uint32_t magic){
                 if (!mem_is_committed(o+15)) break;
                 memcpy(g_vsk.f[sr+k], g_mem+o, 16);
             }
-            /* VSKDUMP: pd'nin CEVRESINI dok.  Matris 2 vektor kaymissa
-             * dogru satirlar pd-32'de duruyor olmali. */
-            /* WATCHVSK: bu tampona kim yaziyor?  Yuklemeden hemen sonra
-             * sayfayi salt-okunur yap; sonraki karenin yazani yakalanir. */
-            /* PDLIST: farkli pd degerlerini ve matrisin bozuk olup
-             * olmadigini listele.  Iyi/bozuk blok karsilastirmasi icin. */
+            /* VSKDUMP: dump the SURROUNDINGS of pd.  If the matrix is shifted by 2 vectors,
+             * the right rows should be at pd-32. */
+            /* WATCHVSK: who writes to this buffer?  Right after the upload make the page
+             * read-only; the writer of the next frame gets caught. */
+            /* PDLIST: list the distinct pd values and whether the matrix is broken.  For
+             * comparing good/broken blocks. */
             if (ENVC("PDLIST") && sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
                 static uint32_t seen[32]; static int ns=0;
                 int f=0; for (int q=0;q<ns;q++) if (seen[q]==pd) f=1;
@@ -2267,15 +2266,15 @@ int com_call(CPU *c, uint32_t magic){
                     float m00=MRF32(pd), m11=MRF32(pd+20), m33=MRF32(pd+60);
                     int bad = (m00==0.f && m11==0.f && m33==0.f);
                     fprintf(stderr,"  [pd] %08x n=%u %s  m00=%g m11=%g m33=%g\n",
-                            pd, n, bad?"BOZUK":"iyi  ", m00, m11, m33);
+                            pd, n, bad?"BROKEN":"good  ", m00, m11, m33);
                 }
             }
-            /* OWNERSCAN: obekte pd'yi isaret eden yapiyi bul, icinde ad ara. */
+            /* OWNERSCAN: find the structure on the heap that points to pd, look for a name in it. */
             if (ENVC("OWNERSCAN") && sr==0 && n==5 && pd){
                 static int os_=0, oseen=0;
                 oseen++;
                 if (oseen > 400 && !os_){ os_=1;
-                    fprintf(stderr,"  [sahip] pd=%08x'i isaret eden yapilar:\n", pd);
+                    fprintf(stderr,"  [owner] structures pointing to pd=%08x:\n", pd);
                     int found = 0;
                     for (uint64_t A2 = 0x10000000ull; A2 < 0x30000000ull && found < 12; A2 += 4){
                         uint32_t a3 = (uint32_t)A2;
@@ -2283,7 +2282,7 @@ int com_call(CPU *c, uint32_t magic){
                         if (!mem_is_committed(a3+3)) continue;
                         if (MR32(a3) != pd) continue;
                         found++;
-                        fprintf(stderr,"    yapi alani %08x:\n", a3);
+                        fprintf(stderr,"    structure field %08x:\n", a3);
                         uint32_t base = (a3 > 0x80u) ? a3 - 0x80u : 0x10000u;
                         for (uint32_t q = base; q <= a3 + 0x80u; q += 4u){
                             if (!mem_is_committed(q+3)) continue;
@@ -2300,17 +2299,16 @@ int com_call(CPU *c, uint32_t magic){
                                         q, (int)q - (int)a3, t);
                         }
                     }
-                    if (!found) fprintf(stderr,"    (isaret eden bulunamadi)\n");
+                    if (!found) fprintf(stderr,"    (no pointer to it found)\n");
                 }
             }
-            /* PARAMNAME: yigindaki isaretcileri tarayip D3DX efekt
-             * parametresinin ADINI bul.  Hangi parametrenin hic
-             * ayarlanmadigini ogrenmek icin. */
+            /* PARAMNAME: scan the pointers on the stack and find the NAME of the D3DX effect
+             * parameter.  To learn which parameter is never set. */
             if (ENVC("PARAMNAME") && sr==0 && n==5 && pd){
                 static int pn=0, pseen=0;
                 pseen++;
                 if (pseen > 400 && pn < 1){ pn=1;
-                    fprintf(stderr,"  [param] pd=%08x icin yigin taramasi:\n", pd);
+                    fprintf(stderr,"  [param] stack scan for pd=%08x:\n", pd);
                     for (uint32_t off=0; off<0x120u; off+=4u){
                         uint32_t sp2 = c->esp + off;
                         if (!mem_is_committed(sp2+3)) continue;
@@ -2326,18 +2324,18 @@ int com_call(CPU *c, uint32_t magic){
                                 if (ch<0x20u || ch>0x7Eu){ ok=0; break; }
                                 L++; }
                             if (ok && L>=4 && L<40 && t[L]==0)
-                                fprintf(stderr,"      yigin+%03x -> yapi %08x +%02x -> \"%s\"\n",
+                                fprintf(stderr,"      stack+%03x -> structure %08x +%02x -> \"%s\"\n",
                                         off, V, q, t);
                         }
                     }
                 }
             }
-            /* VSKBT: matrisi yukleyen guest cagirici zinciri */
+            /* VSKBT: the guest caller chain that uploads the matrix */
             if (ENVC("VSKBT") && sr==0 && n==5 && pd){
                 static int bt=0, bseen=0;
                 bseen++;
                 if (bseen > atoi(ENVC("VSKBT")) && bt<2){ bt++;
-                    fprintf(stderr,"  [vsk-cagirici] yukleme #%d pd=%08x\n", bseen, pd);
+                    fprintf(stderr,"  [vsk-caller] upload #%d pd=%08x\n", bseen, pd);
                     guest_backtrace(c, 14); }
             }
             if (ENVC("WATCHVSK") && sr==0 && n==5 && pd){
@@ -2349,10 +2347,10 @@ int com_call(CPU *c, uint32_t magic){
                 static int vd=0, vseen=0;
                 vseen++;
                 if (vseen>500 && vd<3){ vd++;
-                    fprintf(stderr,"  [vsk] pd=%08x n=%u cevresi:\n", pd, n);
+                    fprintf(stderr,"  [vsk] pd=%08x n=%u surroundings:\n", pd, n);
                     for (int q=-4; q<8; q++){
                         uint32_t o2 = pd + (uint32_t)(16*q);
-                        if (!mem_is_committed(o2+15)) { fprintf(stderr,"      %+3d: (yok)\n", q); continue; }
+                        if (!mem_is_committed(o2+15)) { fprintf(stderr,"      %+3d: (none)\n", q); continue; }
                         fprintf(stderr,"      %+3d (%08x): %14.7g %14.7g %14.7g %14.7g\n", q, o2,
                                 MRF32(o2), MRF32(o2+4), MRF32(o2+8), MRF32(o2+12));
                     }
@@ -2364,11 +2362,11 @@ int com_call(CPU *c, uint32_t magic){
                     for (uint32_t bp2=(pd & ~15u); bp2>=0x10000000u; bp2-=16u){
                         if (!mem_is_committed(bp2+4)) break;
                         if (MR32(bp2+4)==0xA110C8EDu){
-                            fprintf(stderr,"  [blok] pd=%08x  blok basi=%08x boyut=%u"
-                                    "  -> pd ofseti=%d\n",
+                            fprintf(stderr,"  [block] pd=%08x  block start=%08x size=%u"
+                                    "  -> pd offset=%d\n",
                                     pd, bp2+16u, MR32(bp2), (int)(pd-(bp2+16u)));
                             break; } }
-                    fprintf(stderr,"  [sabitler] pd=%08x n=%u  (blok oncesi 2 vec4 dahil)\n", pd, n);
+                    fprintf(stderr,"  [constants] pd=%08x n=%u  (including 2 vec4 before the block)\n", pd, n);
                     for (int rw=-2; rw<(int)n && rw<11; rw++){
                         uint32_t a2 = pd + (uint32_t)(rw*16);
                         if (!mem_is_committed(a2+15)) continue;
@@ -2377,52 +2375,52 @@ int com_call(CPU *c, uint32_t magic){
                     }
                 }
             }
-            /* matris saglikli mi? c0..c3 icin: son satir (0,0,0,1) benzeri
-             * ya da en az bir eleman makul buyuklukte */
+            /* is the matrix healthy? for c0..c3: a last row like (0,0,0,1) or at least one
+             * element of reasonable magnitude */
             if (sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
-                static uint64_t iyi=0, kotu=0, sifir=0; static int gos=0;
-                int nz=0, buyuk=0;
+                static uint64_t mat_good=0, mat_bad=0, mat_zero=0; static int mat_shown=0;
+                int nz=0, n_big=0;
                 for (int q=0;q<16;q++){
                     float fv = MRF32(pd+4u*q);
                     if (fv != 0.f) nz++;
-                    if (fabsf(fv) > 1e6f) buyuk++;
+                    if (fabsf(fv) > 1e6f) n_big++;
                 }
-                if (nz==0) sifir++;
-                else if (buyuk){ kotu++;
+                if (nz==0) mat_zero++;
+                else if (n_big){ mat_bad++;
                     if (ENVC("WATCHALLOC") && !g_wc_armed){
                         g_wc_armed = 1;
                         void watch_dump(const char*, int);
                         void watch_arm(uint32_t);
-                        watch_dump("sabit blogu yazicisi", 30);
+                        watch_dump("constant block writer", 30);
                         watch_arm(0);
                     }
                     if (0){
                         if (++g_wc_after == 40){
                             void watch_dump(const char*, int);
                             void watch_arm(uint32_t);
-                            watch_dump("sabit blogu yazicisi", 24);
-                            watch_arm(0);              /* izlemeyi kapat */
+                            watch_dump("constant block writer", 24);
+                            watch_arm(0);              /* turn the watch off */
                             g_wc_armed = 0;
                         }
                     }
-                    /* c->eip = SetVertexShaderConstantF'i cagiran guest komutunun
-                     * hemen sonrasi (com_call girisinde POP32 edildi) */
+                    /* c->eip = right after the guest instruction that called SetVertexShaderConstantF
+                     * (POP32'd at com_call entry) */
                     static uint32_t caller[8]; static int ncall=0;
                     int seen=0;
                     for (int q=0;q<ncall;q++) if (caller[q]==c->eip) seen=1;
                     if (!seen && ncall<8){ caller[ncall++]=c->eip;
-                        fprintf(stderr,"  [matris-BOZUK] pd=%08x  cagiran donus=0x%08x  n=%u\n",
+                        fprintf(stderr,"  [matrix-BROKEN] pd=%08x  caller return=0x%08x  n=%u\n",
                                 pd, c->eip, n);
-                        /* Cagiran ebp-tabanli cerceve kullaniyor ve ebp canli:
-                         * [ebp-8] = parametre tanimlayicisi (bkz. 0x00669d87). */
-                        /* pd hangi heap blogunda? (baslik: +0 boyut, +4 0xA110C8ED) */
+                        /* The caller uses an ebp-based frame and ebp is live:
+                         * [ebp-8] = the parameter descriptor (see 0x00669d87). */
+                        /* which heap block is pd in? (header: +0 size, +4 0xA110C8ED) */
                         for (uint32_t bp = (pd & ~15u); bp >= 0x10000000u; bp -= 16u){
                             if (!mem_is_committed(bp+4)) break;
                             if (MR32(bp+4) == 0xA110C8EDu){
                                 uint32_t bsz = MR32(bp);
-                                fprintf(stderr,"      pd blogu: bas=%08x boyut=%u  pd ofseti=%d\n",
+                                fprintf(stderr,"      pd block: start=%08x size=%u  pd offset=%d\n",
                                         bp+16u, bsz, (int)(pd - (bp+16u)));
-                                fprintf(stderr,"      blok basi 64 bayt:");
+                                fprintf(stderr,"      first 64 bytes of the block:");
                                 for (int q=0;q<64;q++){ if(q%32==0) fprintf(stderr,"\n        ");
                                     fprintf(stderr,"%02x ", MR8(bp+16u+q)); }
                                 fprintf(stderr,"\n        ascii: ");
@@ -2432,18 +2430,17 @@ int com_call(CPU *c, uint32_t magic){
                                 break;
                             }
                         }
-                        /* Bir sonraki yazmayi yakalamak icin watchpoint kur:
-                         * blok her karede yeniden dolduruluyor, bu yuzden
-                         * simdi kurmak yeterli. */
+                        /* Set a watchpoint to catch the next write: the block is refilled every frame,
+                         * so setting it now is enough. */
                         if (ENVC("WATCHCONST")){
                             void watch_arm(uint32_t);
                             watch_arm(pd + 16u);
                             g_wc_armed = 1;
                         }
-                        /* Semantik hash'i (h=h*33+c) bellekte ara: oyun tarafi
-                         * ve efekt tarafi ayni degeri tutuyor mu? */
-                        /* "WorldViewProj" string'ini ve ona isaret eden yapilari bul:
-                         * parametre tanimlayicisinin tur alanini dogrudan gormek icin. */
+                        /* Search memory for the semantic hash (h=h*33+c): do the game side and the
+                         * effect side hold the same value? */
+                        /* Find the "WorldViewProj" string and the structures pointing to it: to see the
+                         * type field of the parameter descriptor directly. */
                         if (ENVC("FINDPARAM")){
                             static const char *needle = "WorldViewProj";
                             size_t nl = strlen(needle);
@@ -2453,20 +2450,20 @@ int com_call(CPU *c, uint32_t magic){
                                 if (!memcmp(g_mem + a, needle, nl) && MR8(a+nl) == 0)
                                     found[nf++] = a;
                             }
-                            fprintf(stderr,"      'WorldViewProj' bulundu: %d yerde\n", nf);
+                            fprintf(stderr,"      'WorldViewProj' found: in %d places\n", nf);
                             for (int k = 0; k < nf; k++){
                                 fprintf(stderr,"        @%08x\n", found[k]);
-                                /* bu adrese isaret eden dword'leri ara */
+                                /* search for dwords pointing to this address */
                                 int np = 0;
                                 for (uint32_t a = 0x10000000u; a < 0x10400000u && np < 6; a += 4){
                                     if (!mem_is_committed(a + 4)) { a += 0x3FFCu; continue; }
                                     if (MR32(a) != found[k]) continue;
                                     np++;
-                                    /* isaretci bir yapinin hangi alaninda? +8 varsayimiyla dene */
+                                    /* which field of a structure is the pointer in? try assuming +8 */
                                     for (int off = 0; off <= 0x10; off += 4){
                                         uint32_t base = a - (uint32_t)off;
                                         if (!mem_is_committed(base + 0x5F)) continue;
-                                        fprintf(stderr,"          isaretci@%08x (yapi basi %08x, alan +%02x)"
+                                        fprintf(stderr,"          pointer@%08x (structure start %08x, field +%02x)"
                                                 "  +54=%u +56=%u +04=%u +00=%u\n",
                                                 a, base, off, MR16(base+0x54), MR16(base+0x56),
                                                 MR32(base+4), MR32(base));
@@ -2475,7 +2472,7 @@ int com_call(CPU *c, uint32_t magic){
                             }
                         }
                         uint32_t desc = mem_is_committed(c->ebp) ? MR32(c->ebp - 8u) : 0;
-                        fprintf(stderr,"      ebp=%08x tanimlayici=%08x\n", c->ebp, desc);
+                        fprintf(stderr,"      ebp=%08x descriptor=%08x\n", c->ebp, desc);
                         if (desc && mem_is_committed(desc+0x5F)){
                             for (int rw2=0; rw2<0x60; rw2+=16){
                                 fprintf(stderr,"        +%02x:", rw2);
@@ -2490,7 +2487,7 @@ int com_call(CPU *c, uint32_t magic){
                             for (int f=0; f<0x60; f+=4){
                                 uint32_t v = MR32(desc+f);
                                 if (v > 0x10000000u && v < 0x30000000u && mem_is_committed(v+15)){
-                                    fprintf(stderr,"        [+%02x]->%08x (pd fark %+d):", f, v, (int)(v - pd));
+                                    fprintf(stderr,"        [+%02x]->%08x (pd diff %+d):", f, v, (int)(v - pd));
                                     for (int q=0;q<16;q++) fprintf(stderr," %02x", MR8(v+q));
                                     fprintf(stderr,"  ");
                                     for (int q=0;q<16;q++){ uint8_t ch=MR8(v+q);
@@ -2505,10 +2502,10 @@ int com_call(CPU *c, uint32_t magic){
                                 MRF32(pd+rw*16), MRF32(pd+rw*16+4),
                                 MRF32(pd+rw*16+8), MRF32(pd+rw*16+12));
                         }
-                        /* tamponun ONCESI: oyun bazen geriye kaydirilmis
-                         * isaretci veriyor; gercek veri orada olabilir */
+                        /* BEFORE the buffer: the game sometimes gives a pointer shifted backwards; the
+                         * real data may be there */
                         if (pd >= 64 && mem_is_committed(pd-64)){
-                            fprintf(stderr,"      --- pd'den once 4 vec4 ---\n");
+                            fprintf(stderr,"      --- 4 vec4 before pd ---\n");
                             for (int rw=-4; rw<0; rw++)
                                 fprintf(stderr,"      c%-2d %12.4g %12.4g %12.4g %12.4g\n", rw,
                                     MRF32(pd+rw*16), MRF32(pd+rw*16+4),
@@ -2517,33 +2514,33 @@ int com_call(CPU *c, uint32_t magic){
                     }
                     static int bt=0;
                     if (ENVC("MATBT") && bt<2){ bt++;
-                        fprintf(stderr,"  [matris-BOZUK] pd=%08x, cagri yigini:\n", pd);
+                        fprintf(stderr,"  [matrix-BROKEN] pd=%08x, call stack:\n", pd);
                         guest_backtrace(c, 14); } }
-                else { iyi++;
-                       if (gos<3){ gos++;
-                         fprintf(stderr,"  [matris-IYI] pd=%08x\n", pd);
+                else { mat_good++;
+                       if (mat_shown<3){ mat_shown++;
+                         fprintf(stderr,"  [matrix-GOOD] pd=%08x\n", pd);
                          for (int rw=0;rw<4;rw++)
                            fprintf(stderr,"      %9.4f %9.4f %9.4f %9.4f\n",
                              MRF32(pd+rw*16),MRF32(pd+rw*16+4),
                              MRF32(pd+rw*16+8),MRF32(pd+rw*16+12)); } }
-                if (((iyi+kotu+sifir) % 20000)==0)
-                    fprintf(stderr,"  [matris] iyi=%llu bozuk=%llu sifir=%llu\n",
-                            (unsigned long long)iyi,(unsigned long long)kotu,
-                            (unsigned long long)sifir);
+                if (((mat_good+mat_bad+mat_zero) % 20000)==0)
+                    fprintf(stderr,"  [matrix] good=%llu broken=%llu zero=%llu\n",
+                            (unsigned long long)mat_good,(unsigned long long)mat_bad,
+                            (unsigned long long)mat_zero);
             }
             if (ENVC("VSCDUMP") && sh<6 && sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
                 sh++;
-                fprintf(stderr,"  [vsconst] esp=%08x pd=%08x sr=%u n=%u  yigin:",
+                fprintf(stderr,"  [vsconst] esp=%08x pd=%08x sr=%u n=%u  stack:",
                         c->esp, pd, sr, n);
                 for (int q=0;q<6;q++) fprintf(stderr," %08x", MR32(c->esp+4u*q));
-                fprintf(stderr,"\n            ham@pd:");
+                fprintf(stderr,"\n            raw@pd:");
                 for (int q=0;q<16;q++){ if(q%8==0) fprintf(stderr,"\n              ");
                     fprintf(stderr," %08x", MR32(pd+4u*q)); }
                 fprintf(stderr,"\n");
             }
             if (VB() && sh<8 && sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
                 sh++;
-                fprintf(stderr,"  [vsconst] c0..c3 (StartRegister=%u, %u vektor):\n", sr, n);
+                fprintf(stderr,"  [vsconst] c0..c3 (StartRegister=%u, %u vectors):\n", sr, n);
                 for (uint32_t rw=0; rw<4; rw++)
                     fprintf(stderr,"     [%8.3f %8.3f %8.3f %8.3f]\n",
                             MRF32(pd+rw*16), MRF32(pd+rw*16+4),
@@ -2569,19 +2566,19 @@ int com_call(CPU *c, uint32_t magic){
         
         else if      (MID(TestCooperativeLevel)){
             g_tcl_n++;
-            /* Cihaz kaybi (tam ekran gecisi): oyun D3D9'daki gibi
-             * D3DPOOL_DEFAULT kaynaklarini birakip Reset cagiriyor. */
+            /* Device loss (fullscreen transition): as in D3D9 the game releases its
+             * D3DPOOL_DEFAULT resources and calls Reset. */
             r = atomic_load(&g_lost) ? 0x88760869u /* D3DERR_DEVICENOTRESET */ : 0u;
             if (r && g_tcl_lost_n++ < 4) fprintf(stderr,"com: TestCooperativeLevel -> DEVICENOTRESET\n"); }
         else if (MID(GetAvailableTextureMem)) r=256u*1024u*1024u;
         else if (MID(GetDeviceCaps)){ uint32_t pc=A(c,1); if(pc) fill_caps(pc); r=0; }
         else if (MID(GetDirect3D)){ uint32_t p=A(c,1); if(p) MR32(p)=g_d3d9; r=0; }
         else if (MID(GetDisplayMode)){
-            /* GECERLI boyut olmali; sabit 1280x720 donunce oyunun ayar
-             * ekrani listedeki secili satiri bulamiyordu.  Ayni sebeple
-             * cihaz oyunun sandigindan buyukse (Retina olcegi, NFSRES)
-             * gercek boyutu (or. 2448x1836) degil oyunun KENDI sectigi
-             * boyutu bildiriyoruz: gercek boyut o tabloda yok. */
+            /* Must be a VALID size; when a fixed 1280x720 was returned the game's settings
+             * screen couldn't find the selected row in the list.  For the same reason,
+             * if the device is larger than the game thinks (Retina scale, NFSRES) we
+             * report the size the game ITSELF chose, not the real size (e.g.
+             * 2448x1836): the real size isn't in that table. */
             uint32_t pm=A(c,2);
             uint32_t dmw = g_req_w ? g_req_w : g_bb_w;
             uint32_t dmh = g_req_h ? g_req_h : g_bb_h;
@@ -2600,22 +2597,22 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(EndScene)) r=0;
         else if (MID(Present)){ g_present_no++;
             { extern void guest_cpu_mark(void); guest_cpu_mark(); }
-            /* FETICK: on yuz tiki [0x8651a8] 60 Hz'de artmali ama oyunun
-             * kare-farki olcumu hep 1/1800 s veriyor, bu yuzden tik hic
-             * artmiyor -> animasyonlar ve zamanli ekran gecisleri donuyor.
-             * Sanal saatimiz kare basina tam 1/60 s ilerlettigi icin kare
-             * basina +1 tik dogru hizi verir. */
+            /* FETICK: the front-end tick [0x8651a8] should increase at 60 Hz, but the game's
+             * frame-delta measurement always gives 1/1800 s, so the tick never
+             * increases -> animations and timed screen transitions freeze.
+             * Since our virtual clock advances exactly 1/60 s per frame, +1 tick per
+             * frame gives the right speed. */
             if (ENVC("FETICK") && mem_is_committed(0x008651a8u))
                 MR32(0x008651a8u) = MR32(0x008651a8u) + 1u;
-            /* FIXFRAMETIME: oyunun HEDEF KARE SURESI [0x865558] hic
-             * kurulmuyor (kuran sub_00576cc0/ce0 cagrilmiyor) -> kare
-             * farki dt hep 1/1800 kaliyor, on yuz tiki [0x8651a8] hic
-             * artmiyor, animasyonlar ve zamanli ekran gecisleri donuyor.
-             * Oyunun kendi varsayilani [0x7fb710] = 1/120. */
-            /* LIMFREE=<kare> (yalniz OLCUM, VCLOCK=8333 + NOVSYNC=1 ile): o kareden
-             * sonra hedef kare suresi ~0 -> oyunun 120 fps sinirlayicisi beklemez,
-             * fps = GPU/CPU kapasitesi; oyun zamani sanal saatle kare basina sabit.
-             * Menulerde KULLANMA: on yuz zamanlamasi bozulur, AUTOSEQ kayar. */
+            /* FIXFRAMETIME: the game's TARGET FRAME TIME [0x865558] is never set (its
+             * setters sub_00576cc0/ce0 aren't called) -> the frame delta dt stays at
+             * 1/1800, the front-end tick [0x8651a8] never increases, animations and
+             * timed screen transitions freeze.
+             * The game's own default [0x7fb710] = 1/120. */
+            /* LIMFREE=<frame> (MEASUREMENT only, with VCLOCK=8333 + NOVSYNC=1): after that
+             * frame the target frame time ~0 -> the game's 120 fps limiter doesn't
+             * wait, fps = GPU/CPU capacity; game time is fixed per frame by the
+             * virtual clock.  DON'T USE in menus: front-end timing breaks, AUTOSEQ drifts. */
             { const char *lf = ENVC("LIMFREE");
               if (lf && g_present_no >= (unsigned)atoi(lf) && g_present_no >= 2u && mem_is_committed(0x00865558u))
                   MRF32(0x00865558u) = 0.0002f; }
@@ -2628,12 +2625,12 @@ int com_call(CPU *c, uint32_t magic){
                                       ? MRF32(0x007fb710u) : (1.f/120.f);
                   if (mem_is_committed(0x00865558u)){
                       MRF32(0x00865558u) = v;
-                      fprintf(stderr,"  [kare-suresi] [0x865558] = %g olarak kuruldu\n",
+                      fprintf(stderr,"  [frame-time] [0x865558] set to %g\n",
                               (double)v);
                   }
               } }
-            /* DATADIFF: iki kare arasinda hangi global degiskenler
-             * degisiyor?  Donmus bir sayac/zaman varsa dogrudan gorunur. */
+            /* DATADIFF: which global variables change between two frames?  A frozen
+             * counter/clock shows up directly. */
             { const char *dd2 = ENVC("DATADIFF");
               static uint8_t *snap = 0; static int taken = 0;
               const uint32_t DLO = 0x007E0000u, DHI = 0x008A0000u;
@@ -2642,10 +2639,10 @@ int com_call(CPU *c, uint32_t magic){
                   if (!taken && g_present_no == at){
                       snap = malloc(DHI - DLO);
                       if (snap){ memcpy(snap, g_mem + DLO, DHI - DLO); taken = 1;
-                                 fprintf(stderr,"  [fark] kare %u: anlik goruntu alindi\n", at); }
+                                 fprintf(stderr,"  [diff] frame %u: snapshot taken\n", at); }
                   } else if (taken == 1 && g_present_no == at + 600u){
                       taken = 2; int n = 0;
-                      fprintf(stderr,"  [fark] kare %u ile %u arasinda degisenler:\n", at, at+600u);
+                      fprintf(stderr,"  [diff] changed between frames %u and %u:\n", at, at+600u);
                       for (uint32_t o = 0; o + 4 <= DHI - DLO; o += 4){
                           uint32_t oldv, newv;
                           memcpy(&oldv, snap + o, 4);
@@ -2656,12 +2653,12 @@ int com_call(CPU *c, uint32_t magic){
                           fprintf(stderr,"     0x%08x: %10u -> %-10u  (%g -> %g)\n",
                                   DLO + o, oldv, newv, (double)fo, (double)fn2);
                       }
-                      fprintf(stderr,"  [fark] toplam degisen dword (ilk 40 gosterildi)\n");
+                      fprintf(stderr,"  [diff] total changed dwords (first 40 shown)\n");
                   }
               } }
-            /* FORCESWITCH: splash'te takildik.  Gecisi elle tetikleyip
-             * bir sonraki ekranin (profil / ana menu) yuklenip
-             * yuklenmedigini olcuyoruz.  TANI amacli. */
+            /* FORCESWITCH: we got stuck on the splash.  We trigger the transition by hand and
+             * measure whether the next screen (profile / main menu) loads.
+             * DIAGNOSTIC purpose. */
             { const char *fs2 = ENVC("FORCESWITCH");
               static int fired = 0;
               extern uint32_t g_fe_mgr;
@@ -2670,13 +2667,12 @@ int com_call(CPU *c, uint32_t magic){
                   uint32_t from = 0x0078ea60u;              /* UG_LS_Splash.fng */
                   uint32_t to   = (atoi(fs2) == 2) ? 0x0078f530u   /* UI_Main.fng */
                                                    : 0x0078ea4cu;  /* MC_Background.fng */
-                  fprintf(stderr,"  [zorla] SwitchFEngPackages(yonetici=%08x, \"%s\" -> \"%s\")\n",
+                  fprintf(stderr,"  [force] SwitchFEngPackages(manager=%08x, \"%s\" -> \"%s\")\n",
                           g_fe_mgr, (const char*)(g_mem+from), (const char*)(g_mem+to));
                   { CPU save = *c;
                     if (atoi(fs2) == 3){
-                        /* sub_004c4f50(mevcut_paket_adi, 0): onyukleme
-                         * akisini ilerletir; hedefi kendi listesinden bulur
-                         * ve YUKLEYEREK gecis yapar. */
+                        /* sub_004c4f50(current_package_name, 0): advances the boot flow; finds the target
+                         * in its own list and transitions by LOADING it. */
                         PUSH32(0u); PUSH32(from);
                         PUSH32(0xDEADBEEFu);
                         dispatch_indirect(c, 0x004c4f50u);
@@ -2687,19 +2683,19 @@ int com_call(CPU *c, uint32_t magic){
                         dispatch_indirect(c, 0x0051cbb0u);
                     }
                     *c = save; }
-                  fprintf(stderr,"  [zorla] cagri dondu\n");
+                  fprintf(stderr,"  [force] call returned\n");
               } }
-            /* BOOTFLOW: onyukleme akisi listesini (0x836488) yuru.
-             * Splash'te neyin beklendigini dogrudan gosterir. */
+            /* BOOTFLOW: walk the boot flow list (0x836488).
+             * Shows directly what is being waited for on the splash. */
             if (ENVC("BOOTFLOW") && (g_present_no % 900u) == 5u){
                 uint32_t head = mem_is_committed(0x00836488u) ? MR32(0x00836488u) : 0;
-                { /* On yuz saati zinciri:
-                   *   [0x865194] = kare farki (dt, saniye)
-                   *   [0x865140] = biriktirici kalan
-                   *   [0x8651a8] = on yuz tiki (dt'den 60 Hz'e yuvarlanir)
-                   * Animasyonlar ve zamanli ekran gecisleri bu tike bagli. */
-                  fprintf(stderr,"  [fe-saat] kare %u: dt(865194)=%g  kalan(865140)=%g"
-                          "  TIK(8651a8)=%d  kare(865148)=%d  hedef(865558)=%g\n", g_present_no,
+                { /* Front-end clock chain:
+                   *   [0x865194] = frame delta (dt, seconds)
+                   *   [0x865140] = accumulator remainder
+                   *   [0x8651a8] = front-end tick (rounded from dt to 60 Hz)
+                   * Animations and timed screen transitions depend on this tick. */
+                  fprintf(stderr,"  [fe-clock] frame %u: dt(865194)=%g  remainder(865140)=%g"
+                          "  TICK(8651a8)=%d  frame(865148)=%d  target(865558)=%g\n", g_present_no,
                           mem_is_committed(0x00865194u)?(double)MRF32(0x00865194u):-1.0,
                           mem_is_committed(0x00865140u)?(double)MRF32(0x00865140u):-1.0,
                           mem_is_committed(0x008651a8u)?(int)MR32(0x008651a8u):-1,
@@ -2709,9 +2705,8 @@ int com_call(CPU *c, uint32_t magic){
                     uint64_t t1 = host_us(); volatile int sp=0;
                     for (int q=0;q<200000;q++) sp+=q;
                     uint64_t t2 = host_us();
-                    { /* __ftol (sub_0075bed4) dogrulugu: ST(0)=deger ile
-                       * cagirip sonucu karsilastir.  Kare-farki zincirindeki
-                       * tek supheli ilkel bu. */
+                    { /* __ftol (sub_0075bed4) correctness: call it with ST(0)=value and compare the
+                       * result.  The only suspect primitive in the frame-delta chain. */
                       static int ft_done = 0;
                       if (!ft_done){ ft_done = 1;
                         const double tv[5] = { 90.5, 15.5, 1.5, 0.5, 30000.5 };
@@ -2722,16 +2717,16 @@ int com_call(CPU *c, uint32_t magic){
                             dispatch_indirect(c, 0x0075bed4u);
                             fprintf(stderr,"           __ftol(%g) = %d %s\n",
                                     tv[q], (int)c->eax,
-                                    ((int)c->eax == (int)tv[q]) ? "" : "  <-- YANLIS");
+                                    ((int)c->eax == (int)tv[q]) ? "" : "  <-- WRONG");
                             *c = sv;
                         } } }
-                    fprintf(stderr,"           ARA esi(86513c)=%d  int2 sonrasi kalan(865144)=%g\n",
+                    fprintf(stderr,"           MID esi(86513c)=%d  remainder after int2(865144)=%g\n",
                             mem_is_committed(0x0086513cu)?(int)MR32(0x0086513cu):-1,
                             mem_is_committed(0x00865144u)?(double)MRF32(0x00865144u):-1.0);
-                    { /* sub_0057eae0 her karede olculen kare suresini
-                       * 0x8647a8 + (kare%100)*16 + 4 adresine yaziyor. */
+                    { /* sub_0057eae0 writes the measured frame time every frame to
+                       * 0x8647a8 + (frame%100)*16 + 4. */
                       uint32_t fr = mem_is_committed(0x00865148u)?MR32(0x00865148u):0;
-                      fprintf(stderr,"           OLCULEN kare suresi (son 4 kare):");
+                      fprintf(stderr,"           MEASURED frame time (last 4 frames):");
                       for (int q=0;q<4;q++){
                           uint32_t idx = (fr - (uint32_t)q) % 100u;
                           uint32_t a4 = 0x008647a8u + idx*16u + 4u;
@@ -2742,7 +2737,7 @@ int com_call(CPU *c, uint32_t magic){
                             mem_is_committed(0x00828028u)?(double)MRF32(0x00828028u):-1.0,
                             mem_is_committed(0x008284e4u)?MR32(0x008284e4u):0);
                     fprintf(stderr,"           QPC bolen(8284e4)=%u  olcek(78435c)=%g"
-                            "  host_us kare-ici: %llu -> %llu (fark %llu us)\n",
+                            "  host_us within frame: %llu -> %llu (diff %llu us)\n",
                             mem_is_committed(0x008284e4u)?MR32(0x008284e4u):0,
                             mem_is_committed(0x0078435cu)?(double)MRF32(0x0078435cu):0.0,
                             (unsigned long long)t1,(unsigned long long)t2,
@@ -2751,10 +2746,10 @@ int com_call(CPU *c, uint32_t magic){
                           mem_is_committed(0x007fb714u)?(double)MRF32(0x007fb714u):-1.0,
                           mem_is_committed(0x007fb700u)?MR32(0x007fb700u):0,
                           mem_is_committed(0x00865144u)?(double)MRF32(0x00865144u):-1.0); }
-                { /* Oyun saati: sub_0057a1b0 => [0x865134] * sabit.
-                   * Bu sayac artmiyorsa on yuz animasyonlari donuk kalir. */
-                  fprintf(stderr,"  [oyunsaati] tik(865134)=%d  (865138)=%08x  sec(7fb700)=%u"
-                          "  olcek=%g/%g  fe_t(864720)=%g\n",
+                { /* Game clock: sub_0057a1b0 => [0x865134] * constant.
+                   * If this counter doesn't increase, front-end animations stay frozen. */
+                  fprintf(stderr,"  [gameclock] tick(865134)=%d  (865138)=%08x  sec(7fb700)=%u"
+                          "  scale=%g/%g  fe_t(864720)=%g\n",
                           mem_is_committed(0x00865134u)?(int)MR32(0x00865134u):-1,
                           mem_is_committed(0x00865138u)?MR32(0x00865138u):0,
                           mem_is_committed(0x007fb700u)?MR32(0x007fb700u):0,
@@ -2762,9 +2757,9 @@ int com_call(CPU *c, uint32_t magic){
                           mem_is_committed(0x007875bcu)?(double)MRF32(0x007875bcu):0.0,
                           mem_is_committed(0x00864720u)?(double)MRF32(0x00864720u):0.0); }
                 { uint64_t host_us(void); uint32_t host_ms(void);
-                  fprintf(stderr,"  [saat] kare %u: host_us=%llu  host_ms=%u\n",
+                  fprintf(stderr,"  [clock] frame %u: host_us=%llu  host_ms=%u\n",
                           g_present_no, (unsigned long long)host_us(), host_ms()); }
-                fprintf(stderr,"  [onyukleme] kare %u  liste=%08x  bayrak(83648c)=%u  (836498)=%08x\n",
+                fprintf(stderr,"  [boot] frame %u  list=%08x  flag(83648c)=%u  (836498)=%08x\n",
                         g_present_no, head,
                         mem_is_committed(0x0083648cu) ? MR8(0x0083648cu) : 999u,
                         mem_is_committed(0x00836498u) ? MR32(0x00836498u) : 0);
@@ -2784,8 +2779,8 @@ int com_call(CPU *c, uint32_t magic){
                     }
                 }
             }
-            /* FLOWLOG: oyunun kendi akis izleyicisini oku.
-             * 0x86549c ve 0x864f88 o an calisan adimin ADINI tutuyor. */
+            /* FLOWLOG: read the game's own flow tracker.
+             * 0x86549c and 0x864f88 hold the NAME of the step currently running. */
             if (ENVC("FLOWLOG") && (g_present_no % 500u) == 1u){
                 static char last[160] = {0};
                 char cur[160]; cur[0] = 0;
@@ -2801,50 +2796,50 @@ int com_call(CPU *c, uint32_t magic){
                 }
                 if (strcmp(cur, last)){
                     snprintf(last, sizeof last, "%s", cur);
-                    fprintf(stderr,"  [akis] kare %u: %s  bayrak(865498)=%u (8654a4)=%u\n",
+                    fprintf(stderr,"  [flow] frame %u: %s  flag(865498)=%u (8654a4)=%u\n",
                             g_present_no, cur,
                             mem_is_committed(0x00865498u)?MR8(0x00865498u):999u,
                             mem_is_committed(0x008654a4u)?MR32(0x008654a4u):999u);
                 }
             }
-            /* PRESENTBT: ana dongunun yapisini cikar. */
+            /* PRESENTBT: extract the structure of the main loop. */
             { const char *pb = ENVC("PRESENTBT");
               static int nb = 0;
               if (pb && nb < 2 && g_present_no >= (uint32_t)atoi(pb)){ nb++;
-                  fprintf(stderr,"  [ana-dongu] Present #%u:\n", g_present_no);
+                  fprintf(stderr,"  [main-loop] Present #%u:\n", g_present_no);
                   guest_backtrace(c, 26); } }
-            /* Kararli durumu olcmek icin: belirtilen karede kapsamayi
-             * sifirla ve ornekleyiciyi baslat.  Boylece "acilisla birlikte
-             * her sey" degil, "simdi ne donuyor" gorunur. */
+            /* To measure the steady state: at the given frame reset coverage and start the
+             * sampler.  This way you see "what is spinning now", not "everything since
+             * startup". */
             { static int done = 0; const char *ra2 = ENVC("COVRESET_AT");
               uint32_t at = ra2 ? (uint32_t)atoi(ra2) : 0;
               if (!done && at && g_present_no >= at){ done = 1;
                   cov_reset();
-                  fprintf(stderr,"  [olcum] kare %u: kapsama sifirlandi, ornekleyici basladi\n",
+                  fprintf(stderr,"  [measure] frame %u: coverage reset, sampler started\n",
                           g_present_no); }
               }
             g_present++;
             { void vclock_tick(void); vclock_tick(); }
-            /* Oyun hizi = gercek fps / 60 oldugu icin kareyi 60 Hz'e
-             * frenle (VARSAYILAN: fren YOK; PACE60=1 ile 60 Hz'e sabitlenir). */
+            /* Since game speed = real fps / 60, throttle the frame to 60 Hz
+             * (DEFAULT: NO limiter; locked to 60 Hz with PACE60=1). */
             { void frame_pace(void); frame_pace(); }
-            /* COVRESET=<Present#>: o kareden itibaren kapsamayi sifirla ki
-             * rapor YALNIZCA kararli durumda calisan kodu gostersin. */
+            /* COVRESET=<Present#>: reset coverage from that frame on so the report shows ONLY
+             * the code running in the steady state. */
             { const char *cr = ENVC("COVRESET");
               if (cr && g_present_no == (uint32_t)atoi(cr)){
                   void cov_reset(void); cov_reset();
-                  fprintf(stderr,"  kapsama sifirlandi (Present %u)\n", g_present_no);
+                  fprintf(stderr,"  coverage reset (Present %u)\n", g_present_no);
               } }
             if (metal_available()) metal_present();
             { extern int g_perflog; void perflog_guest_frame(void);
               if (g_perflog) perflog_guest_frame(); }
             { void mprot_rearm(void); mprot_rearm(); }
-            /* Oyunun kendi slot havuzlari: tukenen varsa ekrana kirmizi ad
-             * basiliyor.  Liste 0x828538 (kuyruk) -> +4 (onceki) ... 0x828534. */
+            /* The game's own slot pools: if one runs out a red name is printed on screen.
+             * List 0x828538 (tail) -> +4 (previous) ... 0x828534. */
             if (ENVC("POOLS") && (g_present_no % 150) == 20){
-                fprintf(stderr,"  --- slot havuzlari (liste basi 0x828530=%u) ---\n",
+                fprintf(stderr,"  --- slot pools (list head 0x828530=%u) ---\n",
                         mem_is_committed(0x828530u) ? MR32(0x828530u) : 0xFFFFFFFFu);
-                /* dogrudan bilinen havuzlar: EventHandler (0x883e38), Event (0x883e34?) */
+                /* directly known pools: EventHandler (0x883e38), Event (0x883e34?) */
                 { uint32_t known[] = {0x883e38u, 0x883e34u};
                   for (int q=0;q<2;q++){
                     if (!mem_is_committed(known[q]+4)) continue;
@@ -2855,7 +2850,7 @@ int com_call(CPU *c, uint32_t magic){
                     if (np2 && mem_is_committed(np2))
                         for (int k2=0;k2<40;k2++){ uint8_t ch=MR8(np2+k2);
                             if (ch<32||ch>126){ nm3[k2]=0; break; } nm3[k2]=(char)ch; nm3[k2+1]=0; }
-                    fprintf(stderr,"    [0x%08x] %-24s kapasite=%u bos=%u eleman=%u"
+                    fprintf(stderr,"    [0x%08x] %-24s capacity=%u free=%u element=%u"
                             "  (+08=%u +10=%u +18=%u +1c=%u)\n",
                             known[q], nm3, MR32(po+0x24), MR32(po+0x2c), MR32(po+0x28),
                             MR32(po+8), MR32(po+0x10), MR32(po+0x18), MR32(po+0x1c));
@@ -2871,7 +2866,7 @@ int com_call(CPU *c, uint32_t magic){
                         for (int q=0;q<40;q++){ uint8_t ch=MR8(nameptr+q);
                             if (ch<32||ch>126){ nm2[q]=0; break; } nm2[q]=(char)ch; nm2[q+1]=0; }
                     if (cap && cap < 100000u)
-                        fprintf(stderr,"    %-28s kapasite=%-6u bos=%-6u eleman=%u%s\n",
+                        fprintf(stderr,"    %-28s capacity=%-6u free=%-6u element=%u%s\n",
                                 nm2, cap, fr, esz, (fr==0)?"   <<< TUKENDI":"");
                     n2 = MR32(n2+4);
                 }
@@ -2886,20 +2881,20 @@ int com_call(CPU *c, uint32_t magic){
                             if (!mem_is_committed(a+4)){ a += 0x3FFCu; continue; }
                             if (MR32(a)==want[hz]){ cnt++; if(nf2<6) first[nf2++]=a; }
                         }
-                        fprintf(stderr,"  [hash] %-20s 0x%08X -> %d yerde:",
+                        fprintf(stderr,"  [hash] %-20s 0x%08X -> in %d places:",
                                 nmz[hz], want[hz], cnt);
                         for (int q=0;q<nf2;q++) fprintf(stderr," %08x", first[q]);
                         fprintf(stderr,"\n");
                     }
                 }
             }
-            /* RESETAT=<kare>: o karede cihaz kaybi uret (test) */
-            { const char *ra = ENVC("RESETAT");   /* virgulle birden cok kare */
+            /* RESETAT=<frame>: produce a device loss at that frame (test) */
+            { const char *ra = ENVC("RESETAT");   /* several frames separated by commas */
               int hitr = 0;
               for (const char *q = ra; q && *q; ){ if ((uint32_t)atoi(q) == g_present_no) hitr = 1;
                   while (*q && *q != ',') q++; if (*q) q++; }
               if (hitr){
-                  fprintf(stderr,"com: RESETAT: kare %u'de cihaz kaybi\n", g_present_no);
+                  fprintf(stderr,"com: RESETAT: device loss at frame %u\n", g_present_no);
                   com_request_reset(); } }
             r=0;
             if (atomic_load(&g_lost)){ r = 0x88760868u;   /* D3DERR_DEVICELOST */
@@ -2907,14 +2902,13 @@ int com_call(CPU *c, uint32_t magic){
             }
         else if (MID(StretchRect)){
             /* (this, pSrcSurface, pSrcRect, pDstSurface, pDstRect, Filter)
-             * HIC UYGULANMAMISTI (olculdu: oturumda 2261 cagri).  Oyun
-             * sahneyi arka tampondan bir dokuya bununla kopyaliyor; son
-             * islem (bleach bypass / motion blur / DOF) o dokudan okuyor.
-             * Kopya yapilmayinca kaynak bos kaliyor ve birlestirme SIYAH
-             * uretiyordu -- yuksek detayda ana menunun tamamen kararmasinin
-             * sebebi buydu.
-             * Yuzey yerlesimi: +28 = Metal doku kimligi, +40 = koken
-             * (1 = arka tampon, 2 = doku yuzeyi, 4 = etkin hedef). */
+             * HAD NEVER BEEN IMPLEMENTED (measured: 2261 calls in a session).  The game
+             * copies the scene from the back buffer into a texture with this; the
+             * post-process (bleach bypass / motion blur / DOF) reads from that texture.
+             * Without the copy the source stayed empty and the composite produced
+             * BLACK -- this was why the main menu went completely dark at high detail.
+             * Surface layout: +28 = Metal texture id, +40 = origin
+             * (1 = back buffer, 2 = texture surface, 4 = active target). */
             uint32_t ss=A(c,1), ds=A(c,3);
             uint32_t stex = (ss && mem_is_committed(ss+31)) ? MR32(ss+28) : 0u;
             uint32_t dtex = (ds && mem_is_committed(ds+31)) ? MR32(ds+28) : 0u;
@@ -2923,7 +2917,7 @@ int com_call(CPU *c, uint32_t magic){
                 if (nb2 < 8){ nb2++;
                     uint32_t so=(ss&&mem_is_committed(ss+43))?MR32(ss+40):0;
                     uint32_t doo=(ds&&mem_is_committed(ds+43))?MR32(ds+40):0;
-                    fprintf(stderr,"  [blit] kaynak doku=%u koken=%u (%ux%u) -> hedef doku=%u koken=%u (%ux%u)\n",
+                    fprintf(stderr,"  [blit] source tex=%u origin=%u (%ux%u) -> dest tex=%u origin=%u (%ux%u)\n",
                             stex, so, ss?MR32(ss+4):0, ss?MR32(ss+8):0,
                             dtex, doo, ds?MR32(ds+4):0, ds?MR32(ds+8):0); }
             }
@@ -2938,7 +2932,7 @@ int com_call(CPU *c, uint32_t magic){
                 uint32_t sf2 = A(c,2);
                 if (n3 < 8 && sf2 && mem_is_committed(sf2+43) && MR32(sf2+40)==2u){
                     n3++;
-                    fprintf(stderr,"  [kup] SetRenderTarget KUP YUZEYI 0x%08x\n", sf2);
+                    fprintf(stderr,"  [cube] SetRenderTarget CUBE FACE 0x%08x\n", sf2);
                 }
             }
             /* (this, RenderTargetIndex, pRenderTarget) */
@@ -2949,8 +2943,8 @@ int com_call(CPU *c, uint32_t magic){
                   uint32_t o5 = (surf && mem_is_committed(surf+43)) ? MR32(surf+40) : 7;
                   if (o5 < 8) org[o5]++;
                   if (ENVC("RTLOG") && !shown && (org[0]+org[1]+org[2]+org[3]+org[4]+org[7]) % 400 == 0){
-                    fprintf(stderr,"  [RT] koken sayaci: yok=%llu backbuf=%llu yuzeyLvl=%llu"
-                            " olusturulan=%llu getRT=%llu bilinmeyen=%llu\n",
+                    fprintf(stderr,"  [RT] origin counter: none=%llu backbuf=%llu surfaceLvl=%llu"
+                            " created=%llu getRT=%llu unknown=%llu\n",
                             (unsigned long long)org[0],(unsigned long long)org[1],
                             (unsigned long long)org[2],(unsigned long long)org[3],
                             (unsigned long long)org[4],(unsigned long long)org[7]); } }
@@ -2963,11 +2957,11 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetTransform)){
             static int nt=0;
             uint32_t ty=A(c,1), mp=A(c,2);
-            /* XFORMAT=<kare>: yalnizca o karedeki TUM SetTransform cagrilari. */
+            /* XFORMAT=<frame>: ALL SetTransform calls in that frame only. */
             { static long xa = -2; if (xa == -2){ const char *e = ENVC("XFORMAT"); xa = e ? atol(e) : -1; }
               if (xa >= 0 && (long)g_present_no == xa && mp && mem_is_committed(mp+63)){
                 const char *tn = ty==2?"VIEW":(ty==3?"PROJECTION":(ty==256?"WORLD":"?"));
-                fprintf(stderr,"  [xf@%ld] tip=%u(%s) cagiran=0x%08x\n", xa, ty, tn, c->eip);
+                fprintf(stderr,"  [xf@%ld] type=%u(%s) caller=0x%08x\n", xa, ty, tn, c->eip);
                 for (int rw=0; rw<4; rw++)
                     fprintf(stderr,"      %10.4f %10.4f %10.4f %10.4f\n",
                             MRF32(mp+rw*16), MRF32(mp+rw*16+4),
@@ -3009,16 +3003,16 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetVertexDeclaration)){ g_cur_decl=A(c,1); g_raw_decl=g_cur_decl; r=0; }
         else if (MID(Reset)){
             /* (this, D3DPRESENT_PARAMETERS*)
-             * Oyun cozunurluk/grafik detayi degistirince cihazi sifirlar.
-             * Bu metot HIC uygulanmamisti; ayar degistirmek cokuyordu. */
+             * The game resets the device when it changes resolution/graphics detail.
+             * This method HAD NEVER been implemented; changing settings crashed. */
             uint32_t pp3=A(c,1);
             if (pp3 && mem_is_committed(pp3+7)){
                 uint32_t w3=MR32(pp3), h3=MR32(pp3+4);
                 fprintf(stderr,"  [D3D] Reset: %ux%u\n", w3, h3);
-                if (w3 > 8192u || h3 > 8192u) w3 = h3 = 0;   /* cop boyut */
-                /* CreateDevice ile AYNI kural uygulanmali: eskiden Reset
-                 * ham degeri geciriyordu, yani oyun icinden cozunurluk
-                 * degistirince goruntu yeniden bulaniklasiyordu. */
+                if (w3 > 8192u || h3 > 8192u) w3 = h3 = 0;   /* garbage size */
+                /* The SAME rule as CreateDevice must be applied: Reset used to pass the raw value
+                 * through, so when the resolution was changed in-game the image got
+                 * blurry again. */
                 if (w3 && h3){ uint32_t d3w = w3, d3h = h3;
                     res_pick(w3, h3, &d3w, &d3h); w3 = d3w; h3 = d3h; }
                 if (w3 && h3){ g_bb_w = w3; g_bb_h = h3; }
@@ -3028,28 +3022,28 @@ int com_call(CPU *c, uint32_t magic){
                                             metal_resize(w3,h3); } }
             }
             g_resets++;
-            /* Oyun Reset'ten once butun render hedeflerini birakmis olmali
-             * (D3D9 kurali); Metal tarafinda da birak, yoksa her cozunurluk
-             * degisimi hepsini sizdiriyordu. */
+            /* The game must have released all render targets before Reset (the D3D9 rule);
+             * release them on the Metal side too, otherwise every resolution change
+             * leaked all of them. */
             if (metal_available()){ void metal_reset_rts(void); metal_reset_rts(); }
             if (atomic_exchange(&g_lost, 0))
-                fprintf(stderr,"com: cihaz kaybi Reset ile kapandi (TCL %lu cagri)\n", g_tcl_n);
-            /* Reset sonrasi durum varsayilana doner.  D3D9: hedef 0 geri
-             * tampona, Z yuzeyi ORTUK Z'ye (EnableAutoDepthStencil) doner ve
-             * oyun buna guvenip ikisini bir daha kurmuyor.  Eskiden Metal
-             * tarafinda son hedef/Z oldugu gibi kaliyordu.  Tam ekran gecisi
-             * cihaz kaybi yolundan Reset'i KARE ORTASINDA yakaliyor: o an
-             * doku 7'ye Z'siz (NULL) cizim yapiliyordu (olculdu).  Sonrasinda
-             * ana sahne Z testi olmadan ciziliyordu -> araba ici disina donuk,
-             * zemin yansimasi kara.  Eski davranis: NORTRESET=1 (3/3 bozuk). */
+                fprintf(stderr,"com: device loss closed by Reset (TCL %lu calls)\n", g_tcl_n);
+            /* After Reset the state returns to defaults.  D3D9: target 0 returns to the back
+             * buffer, the Z surface to the IMPLICIT Z (EnableAutoDepthStencil), and the
+             * game relies on this and never sets them again.  Previously the last
+             * target/Z stayed as they were on the Metal side.  The fullscreen transition
+             * catches Reset MID-FRAME through the device-loss path: at that moment a draw
+             * to texture 7 without Z (NULL) was in progress (measured).  Afterwards the
+             * main scene was drawn without a Z test -> the car inside-out, the ground
+             * reflection black.  Old behavior: NORTRESET=1 (3/3 broken). */
             if (g_cur_zid != 1u)
-                fprintf(stderr, "com: Reset: bagli Z yuzeyi %u -> ortuk Z\n", g_cur_zid);
-            /* D3D9 Reset TUM cihaz durumunu (render/sampler/asama durumlari)
-             * varsayilana dondurur ve oyun buna guveniyor: kendi durum
-             * golgesini de varsayilana cekip "zaten oyle" sandigi durumlari
-             * bir daha yazmiyor.  Biz eski degerleri tutuyorduk (Reset
-             * kare ortasina denk gelirse o anki gecisin durumu sizardi).
-             * Olculen kosularda gorunur fark yok; D3D9 kurali geregi. */
+                fprintf(stderr, "com: Reset: bound Z surface %u -> implicit Z\n", g_cur_zid);
+            /* D3D9 Reset returns ALL device state (render/sampler/stage states) to the
+             * defaults and the game relies on this: it pulls its own state shadow back
+             * to the defaults too and never rewrites the states it thinks are "already
+             * like that".  We kept the old values (if Reset hit mid-frame the state of
+             * the current pass leaked).  No visible difference in the measured runs; it
+             * is required by the D3D9 rule. */
             if (!ENVC("NORSRESET")){
                 memset(g_rs, 0, sizeof g_rs); g_rs_init = 0; g_rs_dirty = 1;
                 memset(g_smp_raw, 0, sizeof g_smp_raw);
@@ -3058,7 +3052,7 @@ int com_call(CPU *c, uint32_t magic){
                 if (metal_available()){ rs_apply(); g_rs_dirty = 0; }
             }
             if (g_cur_rt)
-                fprintf(stderr, "com: Reset: bagli render hedefi doku %u -> geri tampon\n", g_cur_rt);
+                fprintf(stderr, "com: Reset: bound render target texture %u -> back buffer\n", g_cur_rt);
             if (!ENVC("NORTRESET")){
             g_cur_zid = 1;
             if (metal_available()){ void metal_set_zsurf(unsigned); metal_set_zsurf(1);
@@ -3070,24 +3064,24 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(CreateTexture)){
             /* (this,W,H,Levels,Usage,Format,Pool,ppTex,pShared) */
             uint32_t w=A(c,1), h=A(c,2), lev=A(c,3), usage=A(c,4), fmt=A(c,5), pool=A(c,6);
-            /* NFSRES etkinken oyun son-islem hedeflerini KENDI sandigi
-             * cozunurlukte yaratiyor (1280x1024).  Sahne 1920x1080'de
-             * ciziliyor, sonra o kucuk hedefe kopyalanip geri buyutuluyor:
-             * hem cozunurluk kaybi hem de olcekli blit.  Tam ekran
-             * hedefleri cihaz boyutuna cekince zincir bastan sona 1:1. */
+            /* With NFSRES active the game creates its post-process targets at the resolution
+             * it THINKS it has (1280x1024).  The scene is drawn at 1920x1080, then copied
+             * into that small target and scaled back up: both a resolution loss and a
+             * scaled blit.  Pulling the fullscreen targets to the device size makes the
+             * chain 1:1 from start to end. */
             if ((usage & 1u) && g_req_w && w == g_req_w && h == g_req_h){
                 static int sr4 = 0;
                 if (sr4 < 3){ sr4++;
-                    fprintf(stderr,"  [RT-doku] %ux%u -> %ux%u (NFSRES)\n", w,h,g_bb_w,g_bb_h); }
+                    fprintf(stderr,"  [RT-tex] %ux%u -> %ux%u (NFSRES)\n", w,h,g_bb_w,g_bb_h); }
                 w = g_bb_w; h = g_bb_h;
             }
             uint32_t pp=A(c,7); uint32_t t=com_new(IF_TEX,64);
             MR32(t+4)=w; MR32(t+8)=h; MR32(t+20)=fmt; MR32(t+24)=lev?lev:1u;
-            /* HD build: yansima hedefleri Metal'de buyur, oyun eski boyutu
-             * gormeye devam eder (orijinal build'de derlenmez). */
+            /* HD build: reflection targets grow in Metal, the game keeps seeing the old size
+             * (not compiled into the original build). */
             uint32_t mw = w, mh = h, mlev = lev ? lev : 1u;
             int ekind = (usage & 1u) ? enh_rt_size(c->eip, g_bb_w, g_bb_h, &mw, &mh) : ENH_NONE;
-            /* Yol yansimasi: bulaniklik gecisi icin tam mip zinciri (bkz. enhance.c). */
+            /* Road reflection: a full mip chain for the blur pass (see enhance.c). */
             if (ekind == ENH_ROAD){ mlev = 1u; for (uint32_t q = mw > mh ? mw : mh; q > 1u; q >>= 1) mlev++; }
             if (metal_available()){
                 /* D3DUSAGE_RENDERTARGET = 1 */
@@ -3096,18 +3090,18 @@ int com_call(CPU *c, uint32_t magic){
                 if (ekind == ENH_ROAD && tid){ void metal_hd_mark_road(unsigned,unsigned,unsigned);
                                                metal_hd_mark_road(tid, w, h); }
                 if ((usage & 1u) && ENVC("RTIDLOG"))
-                    fprintf(stderr,"  [RT-id] %ux%u (metal %ux%u) id=%u cagiran=0x%08x\n",
+                    fprintf(stderr,"  [RT-id] %ux%u (metal %ux%u) id=%u caller=0x%08x\n",
                             w, h, mw, mh, tid, c->eip);
                 if (usage & 1u){ g_rt_tex++;
                     static int sr3=0;
                     if (sr3<6){ sr3++;
-                        fprintf(stderr,"  [RT-doku] %ux%u fmt=%u seviye=%u -> id=%u\n",
+                        fprintf(stderr,"  [RT-tex] %ux%u fmt=%u levels=%u -> id=%u\n",
                                 w,h,fmt,lev?lev:1u,tid); } }
                 if (!tid){ g_tex_fail++;
                     static uint32_t bad[16]; static int nb=0; int seen=0;
                     for (int q=0;q<nb;q++) if (bad[q]==fmt) seen=1;
                     if (!seen && nb<16){ bad[nb++]=fmt;
-                        fprintf(stderr,"  [doku] DESTEKLENMEYEN format %u (0x%x) %ux%u usage=0x%x\n",
+                        fprintf(stderr,"  [tex] UNSUPPORTED format %u (0x%x) %ux%u usage=0x%x\n",
                                 fmt, fmt, w, h, usage); }
                 }
             }
@@ -3122,15 +3116,15 @@ int com_call(CPU *c, uint32_t magic){
                            case 0x35545844: fn2="DXT5"; break; case 41: fn2="L8"; break; }
               if (fmt<64) fmt_hist[fmt]++;
               if (VB() && sh<12){ sh++;
-                fprintf(stderr,"  [doku] %ux%u lev=%u usage=0x%x fmt=%u(%s) pool=%u\n",
+                fprintf(stderr,"  [tex] %ux%u lev=%u usage=0x%x fmt=%u(%s) pool=%u\n",
                         w,h,lev,usage,fmt,fn2,pool); } }
             if(pp) MR32(pp)=t; r=0; }
         else if (MID(CreateCubeTexture)){
             /* (this, EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pShared)
-             * Once bos bir COM nesnesi donuluyordu: boyut/format yok, Metal
-             * dokusu yok -> yansima yolunda cop deger okunuyordu. */
+             * An empty COM object used to be returned: no size/format, no Metal texture
+             * -> garbage values were read in the reflection path. */
             uint32_t edge=A(c,1), lev=A(c,2), usage=A(c,3), fmt=A(c,4), pp=A(c,6);
-            uint32_t t2=com_new(IF_TEX,160);        /* yuz tamponlari icin genis */
+            uint32_t t2=com_new(IF_TEX,160);        /* wide enough for face buffers */
             if (!edge || edge > 4096u) edge = 256u;
             MR32(t2+4)=edge; MR32(t2+8)=edge; MR32(t2+20)=fmt?fmt:22u;
             MR32(t2+24)=lev?lev:1u;
@@ -3138,23 +3132,23 @@ int com_call(CPU *c, uint32_t magic){
             if (usage & 1u) enh_rt_size(c->eip, g_bb_w, g_bb_h, &medge, &medge2);
             if (metal_available()){
                 unsigned metal_create_texture_cube(unsigned,unsigned,unsigned,unsigned);
-                /* Kup doku HER ZAMAN render hedefi: oyun cevre haritasini
-                 * alti yuze cizip sonra ornekliyor. */
+                /* A cube texture is ALWAYS a render target: the game draws the environment map to
+                 * the six faces and then samples it. */
                 MR32(t2+28)= getenv("NOCUBE")
                     ? metal_create_texture_ex(medge,medge,lev?lev:1u,fmt?fmt:22u,1u)
                     : metal_create_texture_cube(medge,lev?lev:1u,fmt?fmt:22u,1u);
             }
-            if (ENVC("CUBELOG")) fprintf(stderr,"  [kup] CreateCubeTexture kenar=%u seviye=%u kullanim=0x%x bicim=%u havuz=%u -> metal %u\n",
+            if (ENVC("CUBELOG")) fprintf(stderr,"  [cube] CreateCubeTexture edge=%u levels=%u usage=0x%x format=%u pool=%u -> metal %u\n",
                                           edge, lev, usage, fmt, A(c,5), MR32(t2+28));
-            cube_mark(t2);                          /* KUP DOKU kaydi */
+            cube_mark(t2);                          /* CUBE TEXTURE registry */
             if(pp) MR32(pp)=t2; r=0; }
         else if (MID(GetCubeMapSurface)){
             /* (this, FaceType, Level, ppCubeMapSurface) */
             uint32_t self2=A(c,0), pp=A(c,3); uint32_t sf=com_new(IF_SURF,64);
             MR32(sf+40)=2;
-            /* +44: YUZ indeksi + 1 (0 = kup yuzeyi degil).  SetRenderTarget
-             * bunu hedef alanina paketliyor; yoksa alti yuz ust uste ayni
-             * dokuya cizilir. */
+            /* +44: FACE index + 1 (0 = not a cube face).  SetRenderTarget packs it into the
+             * target field; otherwise the six faces are drawn on top of each other into
+             * the same texture. */
             { uint32_t face = A(c,1); MR32(sf+44) = (face < 6u) ? face + 1u : 1u; }
             if (self2 && mem_is_committed(self2+31)){
                 MR32(sf+4)=MR32(self2+4); MR32(sf+8)=MR32(self2+8);
@@ -3181,9 +3175,9 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(CreateDepthStencilSurface)){
             uint32_t pp=A(c,7); uint32_t sf=com_new(IF_SURF,64);
             MR32(sf+4)=A(c,1); MR32(sf+8)=A(c,2); MR32(sf+20)=A(c,3); MR32(sf+40)=5;
-            /* Z yuzeyi kimligi (metal.m g_ztex): 1 ortuk, >=2 yaratilan. */
-            /* Reset'te oyun yuzeyleri yeniden yaratir; tablo dolunca basa
-             * sar (eskiler o zamana birakilmis olur), dokuyu sifirlat. */
+            /* Z surface id (metal.m g_ztex): 1 implicit, >=2 created. */
+            /* On Reset the game recreates its surfaces; when the table fills up wrap around
+             * (the old ones have been released by then), have the texture reset. */
             static uint32_t next_zid = 2;
             if (next_zid >= 64u) next_zid = 2;
             uint32_t zid = next_zid++;
@@ -3195,23 +3189,23 @@ int com_call(CPU *c, uint32_t magic){
             MR32(sf+4)=g_bb_w; MR32(sf+8)=g_bb_h; MR32(sf+20)=22u;
             MR32(sf+40)=1; if(pp) MR32(pp)=sf; r=0; }
         else if (MID(GetRenderTarget)||MID(GetDepthStencilSurface)){
-            /* Bu yuzeyler de gercek geri tampon boyutunu tasimali; yoksa
-             * GetDesc 0 dondurur. */
+            /* These surfaces must also carry the real back buffer size; otherwise GetDesc
+             * returns 0. */
             uint32_t pp=A(c, nargs-1); uint32_t sf=com_new(IF_SURF,64);
-            MR32(sf+40)=4; MR32(sf+28)=g_cur_rt;   /* etkin hedefi geri ver */
+            MR32(sf+40)=4; MR32(sf+28)=g_cur_rt;   /* return the active target */
             MR32(sf+4)=g_bb_w; MR32(sf+8)=g_bb_h; MR32(sf+20)=22u;
             if (MID(GetDepthStencilSurface)){
-                /* etkin Z yuzeyini geri ver (oyun sonra SetDepthStencilSurface
-                 * ile geri bagliyor) */
+                /* return the active Z surface (the game binds it back later with
+                 * SetDepthStencilSurface) */
                 MR32(sf+28)=0; MR32(sf+20)=80u;
                 MR32(sf+52)=g_cur_zid; MR32(sf+56)=ZSURF_MAGIC;
             }
             if(pp) MR32(pp)=sf; r=0; }
         else if (MID(SetDepthStencilSurface)){
-            /* (this, pNewZStencil).  NULL -> Z testi/yazmasi etkisiz. */
+            /* (this, pNewZStencil).  NULL -> Z test/write disabled. */
             uint32_t sf=A(c,1), zid=0;
             if (sf){
-                zid = 1;   /* taninmayan yuzey: ortuk */
+                zid = 1;   /* unrecognized surface: implicit */
                 if (mem_is_committed(sf+59) && MR32(sf+56)==ZSURF_MAGIC) zid = MR32(sf+52);
             }
             g_cur_zid = zid;
@@ -3227,14 +3221,14 @@ int com_call(CPU *c, uint32_t magic){
                 static const char *US[]={"POSITION","BLENDWEIGHT","BLENDINDICES","NORMAL",
                     "PSIZE","TEXCOORD","TANGENT","BINORMAL","TESSFACTOR","POSITIONT",
                     "COLOR","FOG","DEPTH","SAMPLE"};
-                fprintf(stderr,"  [vdecl] bildirim:\n");
+                fprintf(stderr,"  [vdecl] declaration:\n");
                 for (uint32_t k=0;k<32;k++){
                     uint32_t e=el+8u*k;
                     if (!mem_is_committed(e+7)) break;
                     uint32_t st=MR16(e), of=MR16(e+2);
                     uint32_t ty=MR8(e+4), me=MR8(e+5), us=MR8(e+6), ui=MR8(e+7);
                     if (st==0xFFu && ty==17u){ fprintf(stderr,"     [%u] END\n",k); break; }
-                    fprintf(stderr,"     [%u] akis=%u ofset=%-3u tip=%-8s kullanim=%-10s idx=%u (yontem=%u)\n",
+                    fprintf(stderr,"     [%u] stream=%u offset=%-3u type=%-8s usage=%-10s idx=%u (method=%u)\n",
                             k, st, of, ty<18?TY[ty]:"?", us<14?US[us]:"?", ui, me);
                 }
               } }
@@ -3255,7 +3249,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(CreateVertexShader)||MID(CreatePixelShader)){
             uint32_t fn=A(c,1), pp=A(c,2);
             uint32_t h=com_new(IF_VSHADER,32);
-            /* shader token akisini tara: 0x0000FFFF END token'ina kadar */
+            /* scan the shader token stream: up to the 0x0000FFFF END token */
             uint32_t sz=0;
             if (fn){ uint32_t k=0;
                 for (; k<16384; k++){
@@ -3266,26 +3260,26 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t copy = sz ? gbuf_alloc(sz) : 0;
             if (copy && fn) memcpy(g_mem+copy, g_mem+fn, sz);
             MR32(h+4)=copy; MR32(h+8)=sz; MR32(h+12)=0;
-            /* PSDUMP: piksel gölgelendiricileri de ayni token bicimini
-             * kullaniyor; derleyip sokumleyerek NE yaptiklarini gor. */
+            /* PSDUMP: pixel shaders use the same token format too; compile and disassemble
+             * them to see WHAT they do. */
             if (MID(CreatePixelShader) && copy && sz >= 8 && ENVC("PSDUMP")){
                 static int pn = 0;
                 if (pn < atoi(ENVC("PSDUMP"))){
                     VSProg *pp2 = vs_compile((const uint32_t *)(g_mem+copy), sz/4u);
-                    if (pp2 && vs_ninstr(pp2) < 5u){ pp2 = 0; }   /* basit UI'yi atla */
+                    if (pp2 && vs_ninstr(pp2) < 5u){ pp2 = 0; }   /* skip simple UI */
                     if (pp2){ pn++;
-                        fprintf(stderr,"  --- PIKSEL GOLGELENDIRICI #%d (%u komut) ---\n",
+                        fprintf(stderr,"  --- PIXEL SHADER #%d (%u instructions) ---\n",
                                 pn, vs_ninstr(pp2));
                         vs_disasm(pp2, stderr);
                         { static char msl[16384];
                           int len = ps_to_msl(pp2, pn, msl, sizeof msl);
                           if (len > 0) fprintf(stderr, "--- URETILEN MSL ---\n%s\n", msl);
-                          else fprintf(stderr, "--- MSL uretilemedi ---\n"); }
+                          else fprintf(stderr, "--- MSL could not be generated ---\n"); }
                     }
                 }
             }
-            /* Piksel gölgelendiricisini MSL'ye cevirip Metal'e kaydet:
-             * oyunun kendi gölgelendiricisi GPU'da AYNEN calisir. */
+            /* Translate the pixel shader to MSL and register it with Metal:
+             * the game's own shader runs EXACTLY on the GPU. */
             if (MID(CreatePixelShader) && copy && sz >= 8){
                 VSProg *pp3 = vs_compile((const uint32_t *)(g_mem+copy), sz/4u);
                 if (pp3){
@@ -3301,21 +3295,20 @@ int com_call(CPU *c, uint32_t magic){
                         metal_register_ps(id, msl);
                         MR32(h+12) = (uint32_t)id;
                     }
-                    /* KUP VARYANTI (id + PSCUBE): D3D9'da ps_1_x doku
-                     * TIPINI bildirmez, tip baglamadan gelir.  Araba cevre
-                     * haritasi asama 0'a kup doku bagliyor; ayni yuvaya
-                     * texture2d bekleyen bir gölgelendirici baglanirsa
-                     * Metal cizimi reddediyor (validateCommonDrawErrors).
-                     * Cizim aninda bagli dokuya gore varyant seciliyor. */
+                    /* CUBE VARIANT (id + PSCUBE): in D3D9 ps_1_x doesn't declare the texture TYPE, the
+                     * type comes from the binding.  The car environment map binds a cube
+                     * texture to stage 0; if a shader expecting texture2d is bound to the
+                     * same slot, Metal rejects the draw (validateCommonDrawErrors).
+                     * The variant is selected at draw time based on the bound texture. */
                     if (id < PSCUBE &&
                         ps_to_msl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u) > 0){
-                        /* PSMSL=<id>: o kimligin (kup varyanti dahil) MSL'ini yaz */
+                        /* PSMSL=<id>: write the MSL of that id (including the cube variant) */
                         if (ENVC("PSMSL") && atoi(ENVC("PSMSL")) == id + PSCUBE)
                             fprintf(stderr, "--- MSL ps %d ---\n%s\n", id + PSCUBE, msl);
                         metal_register_ps(id + PSCUBE, msl);
                     }
-                    /* program saklanir: HD yansima ayristirma ve son islem zinciri
-                     * varyantlari cizim aninda, ihtiyac olunca uretilir */
+                    /* the program is kept: the HD reflection separation and post-process chain variants
+                     * are generated at draw time, when needed */
                     if (id < PSCUBE && !g_psprog[id]) g_psprog[id] = pp3;
                     else vs_free(pp3);
                 }
@@ -3329,21 +3322,21 @@ int com_call(CPU *c, uint32_t magic){
                             static int dcl[16][2];
                             for (int q7=0;q7<16;q7++){ dcl[q7][0]=-1; dcl[q7][1]=0; }
                             dcl[0][0]=0;  dcl[0][1]=2;    /* pos  FLOAT3 @0  */
-                            dcl[1][0]=12; dcl[1][1]=4;    /* renk D3DCOLOR   */
+                            dcl[1][0]=12; dcl[1][1]=4;    /* color D3DCOLOR  */
                             dcl[2][0]=16; dcl[2][1]=1;    /* uv   FLOAT2     */
                             static char msl2[24576];
                             int L2 = vs_to_msl(vp2, (int)g_vsprogn, dcl, msl2, sizeof msl2);
-                            fprintf(stderr,"--- KOSE GOLGELENDIRICI #%u (%u komut) MSL ---\n%s\n",
-                                    g_vsprogn, vs_ninstr(vp2), L2>0?msl2:"(uretilemedi)");
+                            fprintf(stderr,"--- VERTEX SHADER #%u (%u instructions) MSL ---\n%s\n",
+                                    g_vsprogn, vs_ninstr(vp2), L2>0?msl2:"(could not be generated)");
                         }
                     }
                 }
             }
             if(pp) MR32(pp)=h; r=0; }
         else if (MID(BeginStateBlock)){
-            /* D3D9: ic ice Begin GECERSIZDIR (ikincisi D3DERR_INVALIDCALL
-             * doner).  Oyun bunu yapiyor (izde 845 ve 846 pes pese);
-             * ikinciyi yeni blok saymak disaridaki blogu kaybettiriyordu. */
+            /* D3D9: a nested Begin IS INVALID (the second returns D3DERR_INVALIDCALL).  The game
+             * does this (845 and 846 back to back in the trace); counting the second as a
+             * new block made the outer block get lost. */
             if (g_sb_rec) r=0x8876086Cu;          /* D3DERR_INVALIDCALL */
             else {
                 int slot = 0;
@@ -3354,8 +3347,8 @@ int com_call(CPU *c, uint32_t magic){
                 r=0;
             } }
         else if (MID(CreateStateBlock)){
-            /* Onceden tanimli kume (D3DSBT_ALL vb.) yakalar.  Izde hic
-             * kullanilmiyor; bos blok birakiyoruz. */
+            /* Captures a predefined set (D3DSBT_ALL etc.).  Never used in the trace; we leave
+             * an empty block. */
             uint32_t pp=A(c,2);
             if(pp){ uint32_t o=com_new(IF_STATEBLOCK,32); MR32(o+8)=0; MR32(pp)=o; }
             r=0; }
@@ -3363,7 +3356,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(EndStateBlock)){
             uint32_t pp=A(c,1);
             uint32_t o=com_new(IF_STATEBLOCK,32);
-            MR32(o+8) = (uint32_t)g_sb_rec;         /* blok indeksi */
+            MR32(o+8) = (uint32_t)g_sb_rec;         /* block index */
             g_sb_rec = 0;
             if(pp) MR32(pp)=o;
             r=0; }
@@ -3371,7 +3364,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(GetSwapChain)){ uint32_t pp=A(c,2); if(pp) MR32(pp)=com_new(IF_SWAPCHAIN,32); r=0; }
         else if (MID(GetNumberOfSwapChains)) r=1;
         else if (!strncmp(nm,"Get",3) && nargs>=2){
-            /* cikis parametresini guvenli varsayilanla doldur */
+            /* fill the output parameter with a safe default */
             uint32_t p=A(c,nargs-1); uint32_t sz=4;
             if      (MID(GetTransform))           sz=64;
             else if (MID(GetMaterial))            sz=68;
@@ -3388,28 +3381,28 @@ int com_call(CPU *c, uint32_t magic){
             if (p && p < 0xE0000000u){ mem_commit(p,sz); memset(g_mem+p,0,sz); }
             if (MID(GetViewport) && p){ MR32(p+8)=1280; MR32(p+12)=720; MRF32(p+20)=1.0f; }
             r=0; }
-        else r=0;                        /* geri kalan Set* -> D3D_OK */
+        else r=0;                        /* the remaining Set* -> D3D_OK */
     }
-    /* --- kaynaklar --- */
+    /* --- resources --- */
     else if (iface==IF_TEX || iface==IF_VB || iface==IF_IB || iface==IF_SURF){
         uint32_t self=A(c,0);
         if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; r=0; }
         else if (MID(Lock)){
             uint32_t off=A(c,1), sz=A(c,2), pp=A(c,3);
-            /* KALICI HAVUZ: icerik degisebilir -> yansi uretimi ilerlesin ve
-             * tampon birkac kare "degisken" sayilsin (bkz. dip_indexed). */
+            /* PERSISTENT POOL: the content may change -> let the mirror generation advance and
+             * the buffer count as "volatile" for a few frames (see dip_indexed). */
             if (self && (iface==IF_VB || iface==IF_IB)){
                 MR32(self+48) = MR32(self+48) + 1u; MR32(self+52) = (uint32_t)g_present; }
             uint32_t base = self?MR32(self+8):0;
             if(!base){ base=gbuf_alloc(sz?sz:65536); if(self) MR32(self+8)=base; }
             if(pp) MR32(pp)=base+off; r=0; }
         else if (MID(LockRect)){
-            /* 2B doku : (Level, pLockedRect, pRect, Flags)
-             * KUP doku : (FaceType, Level, pLockedRect, pRect, Flags)
-             * Yuzey    : (pLockedRect, pRect, Flags)
-             * Kup imzasi 2B gibi ele alinirsa pLockedRect diye Level
-             * okunur; oyunun gercek yapisi DOLDURULMAZ ve cop isaretci
-             * ile cokme olur (olculdu: guest adres 0x400). */
+            /* 2D texture : (Level, pLockedRect, pRect, Flags)
+             * CUBE texture : (FaceType, Level, pLockedRect, pRect, Flags)
+             * Surface    : (pLockedRect, pRect, Flags)
+             * If the cube signature is treated like 2D, Level is read as pLockedRect;
+             * the game's real structure is NOT FILLED and it crashes with a garbage
+             * pointer (measured: guest address 0x400). */
             int is_cube = (iface==IF_TEX && is_cube_tex(self));
             uint32_t face  = is_cube ? A(c,1) : 0u;
             uint32_t level = is_cube ? A(c,2) : ((iface==IF_TEX) ? A(c,1) : 0u);
@@ -3430,7 +3423,7 @@ int com_call(CPU *c, uint32_t magic){
             if(plr){ mem_commit(plr,8); MR32(plr)=pitch; MR32(plr+4)=buf; }
             r=0; }
         else if (MID(UnlockRect)){
-            /* 2B: (Level)  |  KUP: (FaceType, Level)  |  Yuzey: () */
+            /* 2D: (Level)  |  CUBE: (FaceType, Level)  |  Surface: () */
             int is_cube2 = (iface==IF_TEX && is_cube_tex(self));
             uint32_t face2 = is_cube2 ? A(c,1) : 0u;
             uint32_t level = is_cube2 ? A(c,2) : ((iface==IF_TEX) ? A(c,1) : 0u);
@@ -3439,11 +3432,11 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t fmt = self?MR32(self+20):21u, mid = self?MR32(self+28):0;
             uint32_t buf = self ? (is_cube2 ? MR32(self + 104u + 4u*(face2 & 7u))
                                             : MR32(self + 32u + 4u*level)) : 0;
-            /* Kup dokuda YUZE yukle.  Eskiden yuz bilgisi okunup atiliyordu:
-             * alti yuzun hepsi 0. dilime yaziliyor, 0. yuz en son yuklenen
-             * yuzu tasiyor, 1-5 siyah kaliyordu.  Olculdu (menu, kare 1650,
-             * yansima kupu doku 11): yuz parlakliklari 43.8/0/0/0/0/0; Windows
-             * referansinda araba tavani +Y yuzundeki tavan isigini yansitiyor. */
+            /* Upload to the FACE on a cube texture.  The face info used to be read and thrown
+             * away: all six faces were written to slice 0, face 0 carried the last uploaded
+             * face, and 1-5 stayed black.  Measured (menu, frame 1650, reflection cube
+             * texture 11): face brightnesses 43.8/0/0/0/0/0; in the Windows reference the
+             * car roof reflects the ceiling light on the +Y face. */
             if (metal_available() && mid && buf && w && h){
                 void metal_upload_texture_face(unsigned,unsigned,unsigned,const void*,unsigned,unsigned,unsigned,unsigned);
                 if (is_cube2)
@@ -3456,10 +3449,10 @@ int com_call(CPU *c, uint32_t magic){
             if (ENVC("LOCKLOG") && w==640 && h==480){
                 static int nl=0;
                 if (nl<3){ nl++;
-                    fprintf(stderr,"  [kilit] %ux%u fmt=%u lev=%u mid=%u adim=%u  ilk 32 bayt:\n    ",
+                    fprintf(stderr,"  [lock] %ux%u fmt=%u lev=%u mid=%u pitch=%u  first 32 bytes:\n    ",
                             w,h,fmt,level,mid, metal_level_pitch(w,level,fmt));
                     for (int q=0;q<32;q++) fprintf(stderr,"%02x ", MR8(buf+q));
-                    fprintf(stderr,"\n    ikinci satir: ");
+                    fprintf(stderr,"\n    second row: ");
                     uint32_t pt = metal_level_pitch(w,level,fmt);
                     for (int q=0;q<16;q++) fprintf(stderr,"%02x ", MR8(buf+pt+q));
                     fprintf(stderr,"\n");
@@ -3469,21 +3462,21 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(GetLevelCount)) r=(self&&MR32(self+24))?MR32(self+24):1u;
         else if (MID(GetType)) r=(iface==IF_TEX)?3u:(iface==IF_SURF?1u:(iface==IF_VB?4u:5u));
         else if (MID(GetSurfaceLevel)||MID(GetCubeMapSurface)){
-            /* Yuzey, ait oldugu dokunun Metal kimligini tasimali; yoksa
-             * SetRenderTarget hangi dokuya cizilecegini bilemez.
-             * KUP doku ayni vtable yuvasini kullanir ama imzasi farklidir:
-             *   2B  : GetSurfaceLevel(Level, ppSurface)
-             *   KUP : GetCubeMapSurface(FaceType, Level, ppSurface)
-             * 2B gibi ele alinirsa isaretci YANLIS arguman'a yazilir. */
+            /* The surface must carry the Metal id of the texture it belongs to; otherwise
+             * SetRenderTarget can't know which texture to draw into.
+             * A CUBE texture uses the same vtable slot but its signature differs:
+             *   2D  : GetSurfaceLevel(Level, ppSurface)
+             *   CUBE: GetCubeMapSurface(FaceType, Level, ppSurface)
+             * If treated like 2D the pointer is written to the WRONG argument. */
             uint32_t self0=A(c,0);
             int cube3 = is_cube_tex(self0);
             uint32_t pp = cube3 ? A(c,3) : A(c,2);
             uint32_t sf=com_new(IF_SURF,64);
             MR32(sf+40)=2;
-            /* +44: KUP YUZ indeksi + 1.  Kup doku 2B ile ayni vtable'i
-             * paylastigi icin GetCubeMapSurface bu dala (GetSurfaceLevel
-             * adiyla) dusebilir; yuz yazilmazsa SetRenderTarget alti yuzu de
-             * 0. dilime cizer (DAL1 ile ayni anlam). */
+            /* +44: CUBE FACE index + 1.  Since a cube texture shares the same vtable as 2D,
+             * GetCubeMapSurface can fall into this branch (under the name
+             * GetSurfaceLevel); if the face isn't written, SetRenderTarget draws all six
+             * faces into slice 0 (same meaning as BRANCH1). */
             if (cube3){ uint32_t face = A(c,1); MR32(sf+44) = (face < 6u) ? face + 1u : 1u; }
             uint32_t self=A(c,0);
             if (self && mem_is_committed(self+31)){
@@ -3492,13 +3485,13 @@ int com_call(CPU *c, uint32_t magic){
             }
             if(pp) MR32(pp)=sf; r=0; }
         else if (MID(GetDesc)||MID(GetLevelDesc)){
-            /* D3DSURFACE_DESC yerlesimi:
+            /* D3DSURFACE_DESC layout:
              *   0 Format, 4 Type, 8 Usage, 12 Pool,
              *  16 MultiSampleType, 20 MultiSampleQuality,
              *  24 Width, 28 Height
-             * Genislik/yukseklik ONCEDEN 16/20'ye yaziliyordu (yani
-             * MultiSample alanlarina) -> oyun boyutu 0 okuyup yuksek
-             * detayda cop isaretci hesapliyor ve cokuyordu. */
+             * Width/height used to be written at 16/20 (i.e. into the MultiSample
+             * fields) -> the game read the size as 0, computed a garbage pointer at
+             * high detail and crashed. */
             uint32_t p=A(c,nargs-1);
             if(p){ mem_commit(p,32); memset(g_mem+p,0,32);
                 uint32_t fw = self?MR32(self+4):256, fh = self?MR32(self+8):256;
@@ -3524,37 +3517,37 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t b=com_new(IF_DSBUF,64);
             /* DSBUFFERDESC: dwSize@0 dwFlags@4 dwBufferBytes@8 dwReserved@12
              *               lpwfxFormat@16 guid3DAlgorithm@20
-             * DIKKAT: boyut +12'den (dwReserved) okunuyordu -> her zaman 0
-             * gelip 65536'ya dusuyordu.  Oyun akis tamponunu KENDI istedigi
-             * boyuta gore besler; bizim imlec cok daha hizli turlayinca oyun
-             * sarkiyi hizli aktariyor ve yetisemedigi yerde sessizlik
-             * yaziyor -- "muzik hizli akiyor ve arada kesiliyor". */
+             * CAUTION: the size was read from +12 (dwReserved) -> it always came as 0
+             * and fell back to 65536.  The game feeds the stream buffer based on the size
+             * IT asked for; when our cursor lapped much faster the game pushed the song
+             * fast and wrote silence where it couldn't keep up -- "the music runs fast
+             * and cuts out now and then". */
             uint32_t bytes = (desc && mem_is_committed(desc+11)) ? MR32(desc+8) : 0;
             if (ENVC("SNDBUF"))
-                fprintf(stderr, "  [ses] CreateSoundBuffer istenen=%u bayt "
-                        "(bayrak=%08x, eski-yanlis-alan=%u)\n",
+                fprintf(stderr, "  [sound] CreateSoundBuffer requested=%u bytes "
+                        "(flags=%08x, old-wrong-field=%u)\n",
                         bytes, desc?MR32(desc+4):0, desc?MR32(desc+12):0);
-            /* DSLOG=1: hangi guest alt sistemi bu tamponu yaratti?  SFX
-             * tamponlari (#1-#4) hic calinmadigi icin sahibini bulmak sart. */
+            /* DSLOG=1: which guest subsystem created this buffer?  Since the SFX buffers
+             * (#1-#4) were never played, finding their owner is a must. */
             if (ENVC("DSLOG")){
-                fprintf(stderr, "  [ses] --- CreateSoundBuffer #%d cagri zinciri ---\n",
+                fprintf(stderr, "  [sound] --- CreateSoundBuffer #%d call chain ---\n",
                         (int)g_snd_play);
                 guest_backtrace(c, 10);
             }
             if(!bytes || bytes>0x400000u) bytes=65536u;
             MR32(b+4)=bytes; MR32(b+8)=gbuf_alloc(bytes); MR32(b+12)=0;
-            /* WAVEFORMATEX'ten bayt/saniye: oynatma imleci GERCEKCI ilerlemeli.
-             * Video oynatici kareleri ses saatine gore suruyor; imlec sahte
-             * olursa oynatma hic bitmiyor. */
-            { uint32_t bps = 176400u;                /* varsayilan 44.1k 16-bit stereo */
+            /* Bytes/second from WAVEFORMATEX: the play cursor must advance REALISTICALLY.
+             * The video player drives its frames from the audio clock; if the cursor is
+             * fake, playback never ends. */
+            { uint32_t bps = 176400u;                /* default 44.1k 16-bit stereo */
               uint32_t pfmt = (desc && mem_is_committed(desc+19)) ? MR32(desc+16) : 0;
               if (pfmt && mem_is_committed(pfmt+15)){
                   uint32_t v = MR32(pfmt+8);         /* nAvgBytesPerSec */
                   if (v >= 8000u && v <= 1000000u) bps = v;
               }
               MR32(b+20)=bps; MR32(b+24)=0;
-              /* CoreAudio karistiricisina kaydet.  Birincil tampon
-               * (DSBCAPS_PRIMARYBUFFER = 0x1) calinmaz. */
+              /* Register with the CoreAudio mixer.  The primary buffer
+               * (DSBCAPS_PRIMARYBUFFER = 0x1) isn't played. */
               uint32_t flags = (desc && mem_is_committed(desc+7)) ? MR32(desc+4) : 0;
               uint32_t rate = 44100u, chans = 2u, bits = 16u;
               if (pfmt && mem_is_committed(pfmt+15)){
@@ -3573,14 +3566,13 @@ int com_call(CPU *c, uint32_t magic){
             /* DSCAPS: dwSize@0 dwFlags@4 dwMinSecondarySampleRate@8
              *         dwMaxSecondarySampleRate@12 dwPrimaryBuffers@16
              *         dwMaxHwMixingAllBuffers@20 ...
-             * Eskiden bayrak yalnizca 0x200 (SECONDARYSTEREO) idi ve
-             * dwPrimaryBuffers'a 100000 yaziliyordu.  Oyun ses yeteneklerini
-             * buradan ogreniyor. */
+             * The flags used to be only 0x200 (SECONDARYSTEREO) and 100000 was written
+             * to dwPrimaryBuffers.  The game learns the sound capabilities from here. */
             uint32_t p=A(c,1);
             if(p){ uint32_t sz=MR32(p); if(!sz||sz>256u) sz=0x64u; mem_commit(p,sz);
                    memset(g_mem+p,0,sz); MR32(p)=sz;
-                   MR32(p+4)=0x00000F1Fu;   /* birincil mono/stereo/8/16 +
-                                             * ikincil mono/stereo/8/16 +
+                   MR32(p+4)=0x00000F1Fu;   /* primary mono/stereo/8/16 +
+                                             * secondary mono/stereo/8/16 +
                                              * CONTINUOUSRATE */
                    MR32(p+8)=100u; MR32(p+12)=100000u;
                    MR32(p+16)=1u;           /* dwPrimaryBuffers */
@@ -3594,16 +3586,16 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetCooperativeLevel)) r=0;
         else if (MID(GetSpeakerConfig)){ uint32_t p=A(c,1); if(p){mem_commit(p,4);MR32(p)=0x00000006u;} r=0; }
         else if (MID(DuplicateSoundBuffer)){
-            /* (this, pOriginal, ppDuplicate) - kopya ayni PCM verisini
-             * paylasir.  Eskiden BOS bir COM nesnesi donuyordu: boyut yok,
-             * veri yok, karistiricida sesi yok.  Oyun es zamanli efektleri
-             * (motor, menu tiklamalari) boyle caldigi icin HEPSI sessizdi. */
+            /* (this, pOriginal, ppDuplicate) - the duplicate shares the same PCM data.  It
+             * used to return an EMPTY COM object: no size, no data, no sound in the mixer.
+             * Since the game plays simultaneous effects (engine, menu clicks) this way,
+             * ALL of them were silent. */
             uint32_t src=A(c,1), pp=A(c,2);
             uint32_t b=com_new(IF_DSBUF,64);
             if (src && mem_is_committed(src+31)){
-                MR32(b+4)=MR32(src+4);          /* boyut   */
+                MR32(b+4)=MR32(src+4);          /* size    */
                 MR32(b+8)=MR32(src+8);          /* veri    */
-                MR32(b+20)=MR32(src+20);        /* bayt/sn */
+                MR32(b+20)=MR32(src+20);        /* bytes/s */
                 MR32(b+12)=0; MR32(b+16)=0; MR32(b+24)=0;
                 int audio_duplicate(int);
                 MR32(b+28)=(uint32_t)audio_duplicate((int)MR32(src+28));
@@ -3615,13 +3607,12 @@ int com_call(CPU *c, uint32_t magic){
         uint32_t self=A(c,0);
         uint32_t sz = self?MR32(self+4):65536u, buf = self?MR32(self+8):0;
         if      (MID(Lock)){
-            /* Hangi tampon nesnesi kilitleniyor?  SFX olaylari tampon
-             * kilitliyor ama duyulmuyor; kaydedilmemis (birincil ya da
-             * rapor disi) bir tampona yaziliyor olabilir. */
-            /* Hangi IS PARCACIGI kilitliyor?  Akis (muzik) ayri bir
-             * thread'te; SFX olaylari ANA thread'ten geliyor.  Ikisini
-             * ayirmak, SFX verisinin gercekten yazilip yazilmadigini
-             * gostermenin en dogrudan yolu. */
+            /* Which buffer object is being locked?  SFX events lock buffers but aren't
+             * heard; they may be writing to an unregistered (primary or unreported)
+             * buffer. */
+            /* Which THREAD is locking?  The stream (music) is on a separate thread; SFX
+             * events come from the MAIN thread.  Telling the two apart is the most direct
+             * way to show whether SFX data is really written. */
             { uint32_t tid = (c->fs_base && mem_is_committed(c->fs_base+0x24u))
                              ? MR32(c->fs_base+0x24u) : 0u;
               static uint32_t tl[8]; static unsigned tc[8]; static uint64_t tb[8];
@@ -3638,15 +3629,15 @@ int com_call(CPU *c, uint32_t magic){
               g_lock_obj = obj; g_lock_cnt = cnt; g_lock_n = nobj; }
             if (ENVC("DSLOG")){ static int nl3=0;
                 if (nl3 < 2){ nl3++;
-                    fprintf(stderr,"  [ses] --- Lock cagri zinciri (tampon %u) ---\n",
+                    fprintf(stderr,"  [sound] --- Lock call chain (buffer %u) ---\n",
                             self?MR32(self+28):0);
                     guest_backtrace(c, 12); } }
             /* (this, dwOffset, dwBytes, ppv1, pcb1, ppv2, pcb2, dwFlags)
              *
-             * DirectSound tamponu DAIRESELDIR: istenen aralik sonu asarsa
-             * IKI bolge dondurulur (sonuna kadar + bastan devami).  Eskiden
-             * tek duz bolge veriliyordu; tamponun basina yazilmasi gereken
-             * kisim hic yazilmiyor, her sarmada sessiz bosluk olusuyordu. */
+             * A DirectSound buffer is CIRCULAR: if the requested range goes past the end,
+             * TWO regions are returned (up to the end + the continuation from the start).
+             * A single flat region used to be given; the part to be written at the start
+             * of the buffer was never written and every wrap made a silent gap. */
             uint32_t off=A(c,1), want=A(c,2), pp1=A(c,3), pn1=A(c,4),
                      pp2=A(c,5), pn2=A(c,6), fl=A(c,7);
             if(!buf){ buf=gbuf_alloc(sz?sz:65536u); if(self) MR32(self+8)=buf; }
@@ -3664,8 +3655,8 @@ int com_call(CPU *c, uint32_t magic){
                     uint32_t rp=0, rw=0;
                     void audio_cursors(int, uint32_t*, uint32_t*);
                     audio_cursors((int)sid2, &rp, &rw);
-                    fprintf(stderr,"  [snd] kilit ofs=%6u boyut=%6u  |  oynatma=%6u yazma=%6u"
-                            "  tampon=%u  ileri=%d\n", off, want, rp, rw, sz,
+                    fprintf(stderr,"  [snd] lock ofs=%6u size=%6u  |  play=%6u write=%6u"
+                            "  buffer=%u  ahead=%d\n", off, want, rp, rw, sz,
                             (int)((off + sz - rp) % sz));
                 }
             }
@@ -3675,11 +3666,10 @@ int com_call(CPU *c, uint32_t magic){
             if(pn2){ mem_commit(pn2,4); MR32(pn2)= b2; }
             r=0; }
         else if (MID(Unlock)){
-            /* VOICELOG=1: oyunun KENDI ses kanali tablosu.
-             * sub_00725378 tabloyu [0x8b466c] adres, 0x90 adim, sayi
-             * [0x8b460c] (int16) olarak geziyor; +0x26 baytini "kullanimda"
-             * olarak sinaviyor.  SFX olaylari kanal aciyor mu, dogrudan
-             * olcmenin tek yolu bu. */
+            /* VOICELOG=1: the game's OWN sound channel table.
+             * sub_00725378 walks the table at address [0x8b466c], stride 0x90, count
+             * [0x8b460c] (int16); it tests byte +0x26 as "in use".  The only way to
+             * measure directly whether SFX events open channels. */
             if (ENVC("VOICELOG")){
                 static unsigned nu=0; static int peak=0;
                 if ((nu++ % 120u) == 0u){
@@ -3692,8 +3682,8 @@ int com_call(CPU *c, uint32_t magic){
                             if (mem_is_committed(e+0x26u) && MR8(e+0x26u)) act++;
                         }
                     if (act > peak) peak = act;
-                    /* Tablo GENELINDE degisim: yorumum (+0x26) yanlis olsa
-                     * bile herhangi bir alan yaziliyor mu, bunu gorur. */
+                    /* Changes ACROSS the table: even if my interpretation (+0x26) is wrong, this
+                     * shows whether any field gets written. */
                     unsigned nz = 0, ent_nz = 0;
                     if (tb && cnt > 0 && cnt < 256)
                         for (int q=0;q<cnt;q++){
@@ -3702,22 +3692,22 @@ int com_call(CPU *c, uint32_t magic){
                             for (unsigned k=0;k<0x90u;k++) if (MR8(e+k)){ nz++; any=1; }
                             if (any) ent_nz++;
                         }
-                    /* Ses seviyesi genelleri: sub_0072d3ec sesi
-                     * ((uint16)[0x8b44c6] << 8) * param olarak olcekliyor. */
-                    fprintf(stderr,"  [seviye] [0x8b44c6]=%u  [0x8b44c4]=%u  [0x8b44c8]=%u"
+                    /* Volume globals: sub_0072d3ec scales the sound as
+                     * ((uint16)[0x8b44c6] << 8) * param. */
+                    fprintf(stderr,"  [volume] [0x8b44c6]=%u  [0x8b44c4]=%u  [0x8b44c8]=%u"
                             "  [0x8b44ca]=%u  [0x8b44cc]=%u\n",
                             mem_is_committed(0x8b44c6u)?MR16(0x8b44c6u):0xFFFFu,
                             mem_is_committed(0x8b44c4u)?MR16(0x8b44c4u):0xFFFFu,
                             mem_is_committed(0x8b44c8u)?MR16(0x8b44c8u):0xFFFFu,
                             mem_is_committed(0x8b44cau)?MR16(0x8b44cau):0xFFFFu,
                             mem_is_committed(0x8b44ccu)?MR16(0x8b44ccu):0xFFFFu);
-                    fprintf(stderr,"  [kanal] tablo=0x%08x sayi=%d etkin=%d (tepe=%d)"
-                            "  sifir-olmayan giris=%u bayt=%u\n",
+                    fprintf(stderr,"  [channel] table=0x%08x count=%d active=%d (peak=%d)"
+                            "  non-zero entries=%u bytes=%u\n",
                             tb, cnt, act, peak, ent_nz, nz);
                 }
             }
-            /* Oyun bu tampona gercek PCM yaziyor mu?  Yaziyorsa ses motoru
-             * (dolayisiyla on yuz mantigi) CALISIYOR demektir. */
+            /* Is the game writing real PCM to this buffer?  If so the sound engine (and so
+             * the front-end logic) IS RUNNING. */
             uint32_t p1=A(c,1), n1=A(c,2);
             if (p1 && n1 && n1 < 1u<<22 && mem_is_committed(p1+ (n1>16?15:0))){
                 uint32_t nz=0, lim = n1 < 4096u ? n1 : 4096u;
@@ -3727,42 +3717,42 @@ int com_call(CPU *c, uint32_t magic){
                 { uint32_t sid4 = (self && mem_is_committed(self+31)) ? MR32(self+28) : 0;
                   if (sid4){ void audio_note_write_stat(int, uint32_t, int);
                              audio_note_write_stat((int)sid4, n1, nz ? 1 : 0); } }
-                /* SNDZERO: TAMAMEN SIFIR yazilan bolgeleri, cagiran guest
-                 * adresiyle birlikte bildir.  Olculdu: oyun tam 30 sn'de bir
-                 * ~50-95 ms sessizlik YAZIYOR (tampon ac degil, veri bos). */
+                /* SNDZERO: report regions written ENTIRELY AS ZERO, together with the calling
+                 * guest address.  Measured: the game WRITES ~50-95 ms of silence exactly
+                 * every 30 s (the buffer isn't starved, the data is empty). */
                 if (ENVC("SNDZERO")){
                     double audio_time(void);
                     double _t = audio_time();
-                    /* Baslangictaki tampon temizlemeleri ilgi cekmiyor; asil
-                     * olay ilk 20 sn'den SONRA, 30 sn'lik akis blogu
-                     * tazelenirken oluyor.  Tum bolgeye bakariz (ilk 4 KB'ye
-                     * degil): yazmanin ikinci yarisi bos olabilir. */
+                    /* The buffer clears at startup aren't interesting; the real event happens AFTER
+                     * the first 20 s, while the 30 s stream block is refreshed.  We look at
+                     * the whole region (not the first 4 KB): the second half of the write
+                     * may be empty. */
                     if (_t > 20.0 && n1 >= 1024u){
                         uint32_t nz2 = 0, lim2 = n1 < 65536u ? n1 : 65536u;
                         for (uint32_t q = 0; q < lim2; q++) if (MR8(p1+q)) nz2++;
-                        if (nz2 * 4u < lim2){          /* %75'ten fazlasi sifir */
+                        if (nz2 * 4u < lim2){          /* more than 75% zero */
                             static int nzl = 0;
                             if (nzl < 120){ nzl++;
-                                fprintf(stderr, "  [sifir-yazma] t=%.3f sn  ofs=%u boyut=%u "
-                                        "dolu=%.1f%%  cagiran=guest:%08x\n",
+                                fprintf(stderr, "  [zero-write] t=%.3f s  ofs=%u size=%u "
+                                        "filled=%.1f%%  caller=guest:%08x\n",
                                         _t, p1 - (self?MR32(self+8):0), n1,
                                         100.0*nz2/lim2, c->eip);
                             }
                         }
                     }
                 }
-                /* Karistiriciya yazma konumunu bildir (servo icin).
-                 * DIKKAT: kilit SARMIS olabilir -- ikinci bolge (pv2,cb2)
-                 * tamponun BASINDAN devam eder.  Yalnizca birinci bolgeye
-                 * bakmak, sarmada yazma imlecini tamponun sonunda sanmaya
-                 * ve servoyu yanlis beslemeye yol aciyordu. */
+                /* Tell the mixer the write position (for the servo).
+                 * CAUTION: the lock may have WRAPPED -- the second region (pv2,cb2)
+                 * continues from the START of the buffer.  Looking only at the first
+                 * region made us think the write cursor was at the end of the buffer on a
+                 * wrap and fed the servo wrongly. */
                 { uint32_t sid3 = (self && mem_is_committed(self+31)) ? MR32(self+28) : 0;
                   uint32_t base3 = self ? MR32(self+8) : 0;
                   uint32_t n2u   = A(c,4);
                   if (sid3 && base3 && p1 >= base3){
                       void audio_note_write(int, uint32_t);
                       if (n2u && n2u < 1u<<22)
-                          audio_note_write((int)sid3, n2u);          /* bastan devam */
+                          audio_note_write((int)sid3, n2u);          /* continue from the start */
                       else
                           audio_note_write((int)sid3, (p1 - base3) + n1);
                   } }
@@ -3775,7 +3765,7 @@ int com_call(CPU *c, uint32_t magic){
                       if (MR32(self+28)) audio_play((int)MR32(self+28), (A(c,3) & 1u) ? 1 : 0); }
             g_snd_play++;
             if (ENVC("DSLOG")){
-                fprintf(stderr, "  [ses] --- Play cagri zinciri (tampon %u) ---\n",
+                fprintf(stderr, "  [sound] --- Play call chain (buffer %u) ---\n",
                         self?MR32(self+28):0);
                 guest_backtrace(c, 10);
             }
@@ -3795,8 +3785,8 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t p=A(c,1); if(p){mem_commit(p,4); MR32(p)= (self&&MR32(self+12))?1u:0u;} r=0; }
         else if (MID(GetCurrentPosition)){
             int break_gcp = 0;
-            /* Oynatma imleci GECEN ZAMANA gore ilerler (sahte sabit adim
-             * degil): video oynatici kareleri bu saate gore suruyor. */
+            /* The play cursor advances with ELAPSED TIME (not a fake fixed step): the video
+             * player drives its frames from this clock. */
             uint32_t p1=A(c,1), p2=A(c,2);
             uint64_t host_us(void);
             uint32_t bps = (self && mem_is_committed(self+27)) ? MR32(self+20) : 176400u;
@@ -3806,9 +3796,9 @@ int com_call(CPU *c, uint32_t magic){
             uint64_t now = host_us();
             if (playing && !t0){ t0 = (uint32_t)(now/1000ull); if(self) MR32(self+24)=t0; }
             uint32_t pos = 0;
-            /* Karistiriciya kayitliysa GERCEK oynatma imlecini kullan:
-             * oyunun akis (streaming) mantigi yazdigi yeri buna gore
-             * seciyor; tahmini saatle gercek calma ayrisirsa ses bozulur. */
+            /* If registered with the mixer use the REAL play cursor: the game's streaming
+             * logic chooses where it writes based on it; if the estimated clock and the
+             * real playback diverge, the sound breaks. */
             { uint32_t sid = (self && mem_is_committed(self+31)) ? MR32(self+28) : 0;
               if (sid && playing){
                   uint32_t rp=0, rw=0;
@@ -3860,19 +3850,19 @@ int com_call(CPU *c, uint32_t magic){
                 else if (d1 == 0x6F1D2B60u) kind = 2;   /* GUID_SysMouse    */
                 fprintf(stderr,"  [DI] CreateDevice GUID %08x-%04x-%04x -> %s\n",
                         d1, MR16(g+4), MR16(g+6),
-                        kind==1?"KLAVYE":(kind==2?"FARE":"bilinmeyen"));
+                        kind==1?"KEYBOARD":(kind==2?"MOUSE":"unknown"));
             }
             MR32(d+8) = kind;
             if(pp) MR32(pp)=d; r=0; }
         else if (MID(EnumDevices)){
             /* (dwDevType, lpCallback, pvRef, dwFlags)
-             * Geri cagirmayi GERCEKTEN cagir: klavye ve fare bildir. */
+             * REALLY call the callback: report a keyboard and a mouse. */
             uint32_t devtype=A(c,1), cb=A(c,2), ref=A(c,3);
             if (cb && ENVC("DI_ENUM")){
                 for (int k=0;k<2;k++){
                     int is_kb = (k==0);
                     uint32_t t = is_kb ? 0x13u : 0x12u;
-                    /* 0 = DI8DEVCLASS_ALL -> hepsi */
+                    /* 0 = DI8DEVCLASS_ALL -> all */
                     if (devtype && (devtype & 0xFFu) != t && devtype > 4u) continue;
                     uint32_t args[2] = { make_devinst(is_kb), ref };
                     if (call_guest(c, cb, 2, args) == 0) break;   /* DIENUM_STOP */
@@ -3882,13 +3872,13 @@ int com_call(CPU *c, uint32_t magic){
             r=0; }
         else if (MID(EnumDevicesBySemantics)){
             /* (ptszUserName, lpdiActionFormat, lpCallback, pvRef, dwFlags)
-             * geri cagirma: (lpddi, lpdid, dwFlags, dwRemaining, pvRef) */
+             * callback: (lpddi, lpdid, dwFlags, dwRemaining, pvRef) */
             uint32_t cb=A(c,3), ref=A(c,4);
             if (cb && !ENVC("DI_NO_SEM")){
                 for (int k=0;k<2;k++){
                     int is_kb = (k==0);
                     uint32_t dev = com_new(IF_DIDEV,128);
-                    MR32(dev+8) = is_kb ? 1u : 2u;     /* cihaz turu isareti */
+                    MR32(dev+8) = is_kb ? 1u : 2u;     /* device type marker */
                     uint32_t args[5] = { make_devinst(is_kb), dev,
                                          0x00000001u,          /* DIEDBS_MAPPEDPRI1 */
                                          (uint32_t)(1-k), ref };
@@ -3905,18 +3895,18 @@ int com_call(CPU *c, uint32_t magic){
     else if (iface==IF_DIDEV){
         uint32_t self=A(c,0);
         uint32_t dkind = (self && mem_is_committed(self+11)) ? MR32(self+8) : 0;
-        /* DITRACE=1: cihaz basina cagri zinciri.  Oyun klavye cihazini
-         * kuruyor ama hic okumuyor; zincirin nerede kesildigini gorelim. */
+        /* DITRACE=1: the call chain per device.  The game sets up the keyboard device but
+         * never reads it; let's see where the chain breaks. */
         int di_tr = 0;
         { static int n2 = 0;
           if (ENVC("DITRACE") && n2 < 140){ n2++; di_tr = 1;
               fprintf(stderr,"  [DI%u/%08x] %-24s", dkind, self, nm); } }
         if (MID(EnumObjects)){
-            /* (lpCallback, pvRef, dwFlags) -- geri cagirma:
+            /* (lpCallback, pvRef, dwFlags) -- callback:
              * BOOL(LPCDIDEVICEOBJECTINSTANCE, LPVOID)
-             * Cagrilmazsa oyun cihazi "nesnesiz" gorup terk ediyor. */
+             * If it isn't called the game sees the device as "objectless" and abandons it. */
             uint32_t cb=A(c,1), ref=A(c,2), flags=A(c,3);
-            if (cb && dkind == 1u){                 /* klavye */
+            if (cb && dkind == 1u){                 /* keyboard */
                 uint32_t oi = gbuf_alloc(340);
                 for (uint32_t dik = 1; dik < 0xEEu; dik++){
                     if (!(flags & 0x0Cu) && flags != 0u) break;   /* DIDFT_BUTTON/ALL */
@@ -3967,12 +3957,12 @@ int com_call(CPU *c, uint32_t magic){
             { static uint32_t seen_cb[8]; static int ns=0;
               int f2=0; for (int q=0;q<ns;q++) if (seen_cb[q]==cb) f2=1;
               if (!f2 && ns<8){ seen_cb[ns++]=cb;
-                fprintf(stderr,"  [giris] GetDeviceState boyut=%u (veriBicimi=0x%08x cihaz=%u)\n",
+                fprintf(stderr,"  [input] GetDeviceState size=%u (dataFormat=0x%08x device=%u)\n",
                         cb, self?MR32(self+4):0,
                         (self && mem_is_committed(self+11)) ? MR32(self+8) : 0); } }
             if(p && cb && cb<4096u){
                 mem_commit(p,cb); memset(g_mem+p,0,cb);
-                /* 256 baytlik istek = DirectInput klavye tablosu */
+                /* a 256-byte request = the DirectInput keyboard table */
                 if (cb == 20u && metal_available()){        /* DIMOUSESTATE2 */
                     metal_fill_mouse(g_mem+p, cb);
                     g_dikey_calls++;
@@ -3991,7 +3981,7 @@ int com_call(CPU *c, uint32_t magic){
                     for (uint32_t q=0;q<256;q++)
                         if (MR8(p+q)){ g_dikey_hits++;
                             if (g_dikey_hits <= 3)
-                                fprintf(stderr,"  [giris] tus 0x%02x basili (cagri %llu)\n",
+                                fprintf(stderr,"  [input] key 0x%02x pressed (call %llu)\n",
                                         q, (unsigned long long)g_dikey_calls);
                             break; }
                 }
@@ -4006,13 +3996,13 @@ int com_call(CPU *c, uint32_t magic){
                 memset(g_act_of_key, 0, sizeof g_act_of_key);
                 memset(g_act_ofs, 0, sizeof g_act_ofs);
                 g_act_count = 0;
-                if (ENVC("DIMAP")) fprintf(stderr,"  [harita] --- yeni etkin harita ---\n");
+                if (ENVC("DIMAP")) fprintf(stderr,"  [map] --- new active map ---\n");
             }
             if (af && mem_is_committed(af+71)){
                 uint32_t nact=MR32(af+12), rg=MR32(af+16), asz=MR32(af+4);
                 if (!asz) asz=40u;
                 { static int sl=0; if (sl<4){ sl++;
-                    fprintf(stderr,"  [DI] %s: %u eylem, veriBoyutu=%u eylemBoyutu=%u tampon=%u cihaz=%u\n",
+                    fprintf(stderr,"  [DI] %s: %u actions, dataSize=%u actionSize=%u buffer=%u device=%u\n",
                             nm, nact, MR32(af+8), asz, MR32(af+40),
                             (self && mem_is_committed(self+11)) ? MR32(self+8) : 0); } }
                 if (nact && nact < 1024u && rg){
@@ -4024,19 +4014,19 @@ int com_call(CPU *c, uint32_t magic){
                         uint32_t dik = sem & 0xFFu;
                         if (!dik) continue;
                         if (is_build){
-                            /* DirectInput bu alanlari doldurur:
+                            /* DirectInput fills these fields:
                              * dwObjID = DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE(dik) */
                             MR32(a2+32) = 0x04u | (dik << 8);
                             MR32(a2+36) = 0x20u;             /* DIAH_DEFAULT */
-                            /* guidInstance = klavye */
+                            /* guidInstance = keyboard */
                             put_guid(a2+16, 0x6F1D2B61u, 0xD5A0, 0x11CF,
                                      (const uint8_t[8]){0xBF,0xC7,0x44,0x45,0x53,0x54,0,0});
                         } else {
                             g_act_of_key[dik] = app;
-                            g_act_ofs[dik]    = k * 4u;      /* veri ofseti */
+                            g_act_ofs[dik]    = k * 4u;      /* data offset */
                             g_act_count++;
                             if (ENVC("DIMAP"))
-                                fprintf(stderr,"  [harita] dik=0x%02x -> eylem 0x%x (ofs %u)\n",
+                                fprintf(stderr,"  [map] dik=0x%02x -> action 0x%x (ofs %u)\n",
                                         dik, app, k*4u);
                         }
                     }
@@ -4052,7 +4042,7 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t n = 0;
             { static int sg=0;
               if (ENVC("DIDATA") && sg<4){ sg++;
-                fprintf(stderr,"  [DIdata] cb=%u istenen=%u bayrak=0x%x eylem=%d\n",
+                fprintf(stderr,"  [DIdata] cb=%u requested=%u flags=0x%x action=%d\n",
                         cb, want, flags, g_act_count); } }
             if (g_act_count && metal_available() && cb >= 16u && cb <= 32u){
                 unsigned char cur[256];
@@ -4061,7 +4051,7 @@ int com_call(CPU *c, uint32_t magic){
                     if (!g_act_of_key[k]) continue;
                     unsigned char now = cur[k] ? 1 : 0, was = g_kb_prev[k];
                     if (now == was) continue;
-                    if (rg && !(flags & 1u)){          /* DIGDD_PEEK degilse tuket */
+                    if (rg && !(flags & 1u)){          /* consume unless DIGDD_PEEK */
                         uint32_t e = rg + n*cb;
                         mem_commit(e, cb); memset(g_mem+e, 0, cb);
                         MR32(e)    = g_act_ofs[k];
@@ -4071,7 +4061,7 @@ int com_call(CPU *c, uint32_t magic){
                         if (cb >= 20u) MR32(e+16) = g_act_of_key[k];
                         { static int se=0;
                           if (ENVC("DIDATA") && se<6){ se++;
-                            fprintf(stderr,"  [DIdata] olay: dik=%u ofs=%u veri=0x%x app=0x%x\n",
+                            fprintf(stderr,"  [DIdata] event: dik=%u ofs=%u data=0x%x app=0x%x\n",
                                     k, g_act_ofs[k], now?0x80u:0u, g_act_of_key[k]); } }
                     }
                     if (!(flags & 1u)) g_kb_prev[k] = now;
@@ -4085,7 +4075,7 @@ int com_call(CPU *c, uint32_t magic){
                    memset(g_mem+p,0,sz); MR32(p)=sz;
                    MR32(p+4)=0x00000010u;   /* DIDC_ATTACHED */
                    MR32(p+8)=0x00000013u;   /* DI8DEVTYPE_KEYBOARD */
-                   MR32(p+12)=256; }        /* dwAxes/dwButtons yaklasik */
+                   MR32(p+12)=256; }        /* dwAxes/dwButtons approximate */
             r=0; }
         else if (MID(GetProperty)){
             uint32_t p=A(c,2);
@@ -4139,9 +4129,9 @@ int com_call(CPU *c, uint32_t magic){
             }
             r=0; }
         else if (iface==IF_STATEBLOCK && MID(Capture)){
-            /* Bloktaki her durumun SU ANKI degerini yeniden yaz.  Oyun
-             * kaydet/geri-yukle deyimini boyle kuruyor: bir kez kaydet,
-             * degistirmeden once Capture, sonra Apply. */
+            /* Rewrite the CURRENT value of every state in the block.  This is how the game
+             * builds its save/restore idiom: record once, Capture before changing, then
+             * Apply. */
             uint32_t self6=A(c,0);
             int bi = (self6 && mem_is_committed(self6+11)) ? (int)MR32(self6+8) : 0;
             if (bi > 0 && bi < MAXSB && g_sb[bi].used){
@@ -4151,8 +4141,8 @@ int com_call(CPU *c, uint32_t magic){
                     uint32_t mm = R->magic & 0xFFFFu;
                     uint32_t ifc = (R->magic>>16) & 0x1FFFu;
                     if (ifc >= NEL(g_if) || mm >= g_if[ifc].n) continue;
-                    /* metot adi yerine onbellekli sayisal kimlik: D3DX Begin her
-                     * efektte 5 blok yakaliyor, ad karsilastirmasi sicak noktaydi */
+                    /* a cached numeric id instead of the method name: D3DX Begin captures 5 blocks per
+                     * effect, the name comparison was a hot spot */
                     int md;
                     if (ifc < MIDIF && mm < MIDM){
                         md = g_midc[ifc][mm];
@@ -4188,7 +4178,7 @@ int com_call(CPU *c, uint32_t magic){
     if (g_com_trace && !MID(Present) && strncmp(nm,"Draw",4)
         && !MID(SetRenderState) && !MID(SetTextureStageState))
         fprintf(stderr,"  [COM] %s::%-28s (%d arg) -> 0x%08x%s\n",
-                g_if[iface].name, nm, nargs, r, impl?"":" [YOK]");
+                g_if[iface].name, nm, nargs, r, impl?"":" [MISSING]");
     if(!impl) g_com_unimpl++;
     c->eax=r;
     if (!g_sb_replay) c->esp += 4u*(uint32_t)nargs;
@@ -4199,7 +4189,7 @@ static uint32_t g_ds = 0;
 /* DirectSoundCreate(lpGuid, ppDS, pUnkOuter) */
 uint32_t com_directsoundcreate(uint32_t ppDS){
     if (!g_ds){ g_ds = com_new(IF_DS, 64);
-        fprintf(stderr,"com: IDirectSound nesnesi 0x%08x\n", g_ds); }
+        fprintf(stderr,"com: IDirectSound object 0x%08x\n", g_ds); }
     if (ppDS) MR32(ppDS) = g_ds;
     return 0;
 }
@@ -4208,14 +4198,14 @@ static uint32_t g_di8 = 0;
 /* DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter) */
 uint32_t com_directinput8create(uint32_t ppvOut){
     if (!g_di8){ g_di8 = com_new(IF_DI8, 64);
-        fprintf(stderr,"com: IDirectInput8 nesnesi 0x%08x\n", g_di8); }
+        fprintf(stderr,"com: IDirectInput8 object 0x%08x\n", g_di8); }
     if (ppvOut) MR32(ppvOut) = g_di8;
     return 0;                       /* DI_OK */
 }
 
 uint32_t com_direct3dcreate9(void){
     if(!g_d3d9){ g_d3d9=com_new(IF_D3D9,64);
-        fprintf(stderr,"com: IDirect3D9 nesnesi 0x%08x\n", g_d3d9); }
+        fprintf(stderr,"com: IDirect3D9 object 0x%08x\n", g_d3d9); }
     return g_d3d9;
 }
 void com_init(void){ mem_commit(COM_BASE,0x10000);
@@ -4227,20 +4217,20 @@ void draw_stats_save(uint64_t *a, uint64_t *b){ g_ptype=a; g_stride=b; }
 void com_report(void){
     fprintf(stderr,"\n=== COM / D3D9 KATMANI ===\n");
     if (g_aspfix != 1.f)
-        { fprintf(stderr,"  genis ekran      : aspfix %.4f, %lu perspektif / %lu ortografik cizim\n",
+        { fprintf(stderr,"  widescreen       : aspfix %.4f, %lu perspective / %lu orthographic draws\n",
                   g_aspfix, g_asp_persp, g_asp_ortho);
           for (unsigned v2 = 0; v2 < MAXVS; v2++)
               if (g_asp_np[v2] || g_asp_no[v2])
                   fprintf(stderr,"     vs=%-3u cx=%-3d cw=%-3d  persp %8lu / orto %8lu  c[cw].w=%.3f\n",
                           v2, g_pos_cx[v2], g_pos_cw[v2], g_asp_np[v2], g_asp_no[v2], g_asp_cw3[v2]); }
     if (ENVC("RSLOG")){
-        /* rs_apply()'in gercekten kullandigi state'ler */
+        /* the states rs_apply() really uses */
         static const unsigned handled[] = {7,14,15,19,20,22,23,24,25,27,168,171,193};
-        fprintf(stderr,"  --- SetRenderState kullanimi (ELE ALINMAYANLAR yildizli) ---\n");
+        fprintf(stderr,"  --- SetRenderState usage (UNHANDLED ones starred) ---\n");
         for (unsigned i=0;i<256;i++){
             if (!g_rs_hits[i]) continue;
             int h=0; for (unsigned k=0;k<sizeof handled/sizeof*handled;k++) if(handled[k]==i) h=1;
-            fprintf(stderr,"   %c st=%-3u %8u kez  degerler:", h?' ':'*', i, g_rs_hits[i]);
+            fprintf(stderr,"   %c st=%-3u %8u times  values:", h?' ':'*', i, g_rs_hits[i]);
             for (int k=0;k<g_rs_nval[i];k++){
                 float f; memcpy(&f,&g_rs_vals[i][k],4);
                 fprintf(stderr," 0x%x(%g)", g_rs_vals[i][k], f);
@@ -4248,32 +4238,32 @@ void com_report(void){
             fprintf(stderr,"%s\n", g_rs_nval[i]>=4?" ...":"");
         }
     }
-    fprintf(stderr,"  SetRenderState    : %llu uygulandi, %llu ATLANDI (%%%.1f gereksizdi)\n",
+    fprintf(stderr,"  SetRenderState    : %llu applied, %llu SKIPPED (%%%.1f were redundant)\n",
             (unsigned long long)g_rs_run, (unsigned long long)g_rs_skip,
             100.0*(double)g_rs_skip/(double)((g_rs_skip+g_rs_run) ? (g_rs_skip+g_rs_run) : 1));
-    fprintf(stderr,"  toplam COM cagrisi : %llu\n",(unsigned long long)g_com_calls);
-    fprintf(stderr,"  Present (kare)     : %llu\n",(unsigned long long)g_present);
+    fprintf(stderr,"  total COM calls    : %llu\n",(unsigned long long)g_com_calls);
+    fprintf(stderr,"  Present (frames)   : %llu\n",(unsigned long long)g_present);
     if (metal_available())
-        fprintf(stderr,"  Metal ekrana sunum : %ld kare, %ld ucgen\n"
-                       "  Metal doku         : %ld olusturuldu, %ld yukleme\n",
+        fprintf(stderr,"  Metal presentation : %ld frames, %ld triangles\n"
+                       "  Metal textures     : %ld created, %ld uploads\n",
                 metal_frames(), metal_tris(),
                 metal_tex_created(), metal_tex_uploaded());
-    fprintf(stderr,"  Draw* cagrisi      : %llu\n",(unsigned long long)g_draw);
-    fprintf(stderr,"  ps sabit dosyasi   : en yuksek c%u kullanildi, %u yazma 32 ustu\n",
+    fprintf(stderr,"  Draw* calls        : %llu\n",(unsigned long long)g_draw);
+    fprintf(stderr,"  ps constant file   : highest used c%u, %u writes above 32\n",
             g_psc_max ? g_psc_max-1u : 0u, g_psc_drop);
     fprintf(stderr,"  guest COM heap     : %u KB\n",(com_ptr-COM_BASE)/1024u);
-    fprintf(stderr,"  guest tampon heap  : %u KB\n",(gbuf_ptr-GBUF_BASE)/1024u);
+    fprintf(stderr,"  guest buffer heap  : %u KB\n",(gbuf_ptr-GBUF_BASE)/1024u);
     if (g_ptype){
         static const char *PT[] = {"?","POINTLIST","LINELIST","LINESTRIP",
                                    "TRIANGLELIST","TRIANGLESTRIP","TRIANGLEFAN","?"};
-        fprintf(stderr,"  --- DrawPrimitiveUP: primitif tipleri ---\n");
+        fprintf(stderr,"  --- DrawPrimitiveUP: primitive types ---\n");
         for (int i=0;i<8;i++) if (g_ptype[i])
             fprintf(stderr,"    %-16s %llu\n", PT[i], (unsigned long long)g_ptype[i]);
-        fprintf(stderr,"  --- kose (vertex) adim boyutlari ---\n");
+        fprintf(stderr,"  --- vertex stride sizes ---\n");
         for (int i=0;i<64;i++) if (g_stride[i])
-            fprintf(stderr,"    %3d bayt  %llu\n", i*4, (unsigned long long)g_stride[i]);
+            fprintf(stderr,"    %3d bytes  %llu\n", i*4, (unsigned long long)g_stride[i]);
     }
-    fprintf(stderr,"  --- DirectInput / DirectSound cagrilari ---\n");
+    fprintf(stderr,"  --- DirectInput / DirectSound calls ---\n");
     { int any=0;
       for (unsigned i=1;i<NEL(g_if) && i<MSTAT_IF;i++){
         if (i!=IF_DI8 && i!=IF_DIDEV && i!=IF_DS && i!=IF_DSBUF && i!=IF_QUERY) continue;
@@ -4283,100 +4273,100 @@ void com_report(void){
                         g_if[i].name, g_if[i].m[j].name,
                         (unsigned long long)g_mstat[i][j]); }
       }
-      if(!any) fprintf(stderr,"    (hic cagri yok)\n");
+      if(!any) fprintf(stderr,"    (no calls at all)\n");
     }
-    fprintf(stderr,"  kose shader'i     : %llu cizim shader'li, %llu shader'siz, %u derlendi\n",
+    fprintf(stderr,"  vertex shader     : %llu draws with shader, %llu without, %u compiled\n",
             (unsigned long long)g_vs_draws, (unsigned long long)g_ff_draws, g_vsprogn-1);
-    fprintf(stderr,"  durum blogu       : %d yuva, %llu Apply, %llu Capture, "
-            "%llu kayit tasti, %llu yuva bulunamadi\n",
+    fprintf(stderr,"  state blocks      : %d slots, %llu Apply, %llu Capture, "
+            "%llu record overflows, %llu slots not found\n",
             g_sbn-1, (unsigned long long)g_sb_applied,
             (unsigned long long)g_sb_captured, (unsigned long long)g_sb_dropped,
             (unsigned long long)g_sb_full);
-    fprintf(stderr,"  GPU kose gölgelendirici: %llu cizim GPU'da, %llu ceviri reddedildi,"
-            " %d/%d (shader,bildirim) cifti kayitli\n",
+    fprintf(stderr,"  GPU vertex shader: %llu draws on the GPU, %llu translations rejected,"
+            " %d/%d (shader,decl) pairs registered\n",
             (unsigned long long)g_gpuvs_draws, (unsigned long long)g_gpuvs_fail,
             g_gvs_next-1, g_gvsn);
-    fprintf(stderr,"  indisli cizim      : %llu havuzdan, eski yol: serit/yelpaze %llu, nesne %llu, yeni kilit %llu, "
-            "hiza/sinir %llu, yansi %llu, indis disi %llu\n",
+    fprintf(stderr,"  indexed draws      : %llu from the pool, old path: strip/fan %llu, object %llu, new lock %llu, "
+            "alignment/bound %llu, mirror %llu, out of index %llu\n",
             (unsigned long long)g_dip_ix, (unsigned long long)g_dip_ixfb[0], (unsigned long long)g_dip_ixfb[1],
             (unsigned long long)g_dip_ixfb[2], (unsigned long long)g_dip_ixfb[3], (unsigned long long)g_dip_ixfb[4],
             (unsigned long long)g_dip_ixfb[5]);
     { unsigned ovrv=0, ovkb=0; void metal_raw_overflow(unsigned*,unsigned*);
       metal_raw_overflow(&ovrv,&ovkb);
       if (ovrv || ovkb || g_gpuvs_drop)
-          fprintf(stderr,"  GPU kose arena tasmasi : %u kose, %u sabit, %llu cizim CPU'ya dondu\n",
+          fprintf(stderr,"  GPU vertex arena overflow : %u verts, %u constants, %llu draws went back to the CPU\n",
                   ovrv, ovkb, (unsigned long long)g_gpuvs_drop); }
     if (metal_available())
-        fprintf(stderr,"  atlanan kare      : %ld\n", metal_frames_dropped());
+        fprintf(stderr,"  skipped frames    : %ld\n", metal_frames_dropped());
     { extern uint64_t g_icall_hits;
       if (ENVC("ICALL"))
-          fprintf(stderr,"  ICALL isabet      : %llu\n", (unsigned long long)g_icall_hits); }
+          fprintf(stderr,"  ICALL hits        : %llu\n", (unsigned long long)g_icall_hits); }
     { const char *cp = ENVC("COVREPORT");
       if (cp){ void cov_report(const char*); cov_report(cp); } }
     { extern uint64_t g_timer_ticks;
-      fprintf(stderr,"  zamanlayici tik   : %llu\n", (unsigned long long)g_timer_ticks); }
-    fprintf(stderr,"  cizim matrisi     : %llu gecerli, %llu bozuk\n",
+      fprintf(stderr,"  timer ticks       : %llu\n", (unsigned long long)g_timer_ticks); }
+    fprintf(stderr,"  draw matrix       : %llu valid, %llu broken\n",
             (unsigned long long)g_mat_ok,(unsigned long long)g_mat_bad);
-    fprintf(stderr,"  DI eylem haritasi : %d tus bagli, %llu olay uretildi\n",
+    fprintf(stderr,"  DI action map     : %d keys bound, %llu events produced\n",
             g_act_count, (unsigned long long)g_di_events);
-    fprintf(stderr,"  DI cihaz sayimi   : %llu sayim, %llu nesne sayimi\n",
+    fprintf(stderr,"  DI device enum    : %llu enumerations, %llu object enumerations\n",
             (unsigned long long)g_di_enum, (unsigned long long)g_di_objs);
     for (int q2 = 0; g_lk_tid && q2 < 8; q2++){
         if (!g_lk_tid[q2]) continue;
-        fprintf(stderr,"  [kilit] tid=%u  kilit=%u  toplam=%.1f KB\n",
+        fprintf(stderr,"  [lock] tid=%u  locks=%u  total=%.1f KB\n",
                 g_lk_tid[q2]-1u, g_lk_cnt[q2], g_lk_byt[q2]/1024.0);
     }
     for (int q2 = 0; q2 < g_lock_n; q2++){
         uint32_t o2 = g_lock_obj[q2];
-        fprintf(stderr,"  [kilit] nesne 0x%08x  ses-id=%u  boyut=%u  kilit=%u\n",
+        fprintf(stderr,"  [lock] object 0x%08x  sound-id=%u  size=%u  locks=%u\n",
                 o2, (o2 && mem_is_committed(o2+31)) ? MR32(o2+28) : 0u,
                 (o2 && mem_is_committed(o2+7)) ? MR32(o2+4) : 0u, g_lock_cnt[q2]);
     }
-    fprintf(stderr,"  ses tamponu       : %llu dolu yazma, %llu bos yazma, %.1f KB, %llu Play\n",
+    fprintf(stderr,"  sound buffers     : %llu non-empty writes, %llu empty writes, %.1f KB, %llu Play\n",
             (unsigned long long)g_snd_nonzero,(unsigned long long)g_snd_zero,
             g_snd_bytes/1024.0,(unsigned long long)g_snd_play);
     audio_report();
-    fprintf(stderr,"  klavye okuma      : %llu cagri, %llu tanesinde tus basili\n",
+    fprintf(stderr,"  keyboard reads    : %llu calls, a key pressed in %llu of them\n",
             (unsigned long long)g_dikey_calls,(unsigned long long)g_dikey_hits);
-    fprintf(stderr,"  RT dokusu olusturuldu: %llu\n",(unsigned long long)g_rt_tex);
+    fprintf(stderr,"  RT textures created: %llu\n",(unsigned long long)g_rt_tex);
     { void metal_miplevel_report(void); if (metal_available()) metal_miplevel_report(); }
-    fprintf(stderr,"  render hedefi     : dokuya %llu, ekrana %llu\n",
+    fprintf(stderr,"  render target     : to a texture %llu, to the screen %llu\n",
             (unsigned long long)g_rt_set,(unsigned long long)g_rt_screen);
-    fprintf(stderr,"  SetTexture        : gecerli %llu, NULL %llu, id=0 %llu, asama!=0 %llu\n",
+    fprintf(stderr,"  SetTexture        : valid %llu, NULL %llu, id=0 %llu, stage!=0 %llu\n",
             (unsigned long long)g_st_ok,(unsigned long long)g_st_null,
             (unsigned long long)g_st_zero,(unsigned long long)g_st_other);
-    fprintf(stderr,"  doku olusturma    : %llu basarisiz\n", (unsigned long long)g_tex_fail);
-    fprintf(stderr,"  bunun vs_run'da   : %.2f sn\n", g_t_vs_ns/1e9);
-    fprintf(stderr,"  --- SHADER BASINA KOSE ---\n");
+    fprintf(stderr,"  texture creation  : %llu failed\n", (unsigned long long)g_tex_fail);
+    fprintf(stderr,"  of which in vs_run: %.2f s\n", g_t_vs_ns/1e9);
+    fprintf(stderr,"  --- VERTICES PER SHADER ---\n");
     for (int q=0;q<8;q++){
         uint64_t best=0; int bi=-1;
         for (int w=0;w<64;w++) if (g_v_per_vs[w]>best){ best=g_v_per_vs[w]; bi=w; }
         if (bi<0) break;
-        fprintf(stderr,"     vs%-3d %12llu kose (%.1f%%)  %u komut\n", bi,
+        fprintf(stderr,"     vs%-3d %12llu verts (%.1f%%)  %u instructions\n", bi,
                 (unsigned long long)best,
                 g_v_xform ? 100.0*(double)best/(double)g_v_xform : 0.0,
                 (bi>0 && (unsigned)bi<g_vsprogn && g_vsprog[bi]) ? vs_ninstr(g_vsprog[bi]) : 0u);
         g_v_per_vs[bi]=0;
     }
-    fprintf(stderr,"  cizim yolu suresi : %.2f sn (DRAWTIME=1 ile), %llu kose donusturuldu (%.1f M kose/sn)\n",
+    fprintf(stderr,"  draw path time    : %.2f s (with DRAWTIME=1), %llu vertices transformed (%.1f M verts/s)\n",
             g_t_draw_ns/1e9, (unsigned long long)g_v_xform,
             g_t_draw_ns ? (double)g_v_xform/(g_t_draw_ns/1000.0) : 0.0);
-    fprintf(stderr,"  bagli doku asamasi: 1'li %llu, 2'li %llu, 3'lu %llu, 4'lu %llu cizim\n",
+    fprintf(stderr,"  bound texture stages: 1: %llu, 2: %llu, 3: %llu, 4: %llu draws\n",
             (unsigned long long)g_stage_hist[0],(unsigned long long)g_stage_hist[1],
             (unsigned long long)g_stage_hist[2],(unsigned long long)g_stage_hist[3]);
-    fprintf(stderr,"  indeksli cizim   : %llu cizim, %llu ucgen, %llu atlandi\n",
+    fprintf(stderr,"  indexed draws    : %llu draws, %llu triangles, %llu skipped\n",
             (unsigned long long)g_dip_draws,(unsigned long long)g_dip_tris,
             (unsigned long long)g_dip_skip);
-    fprintf(stderr,"  ham konum araligi : x[%.4g..%.4g] y[%.4g..%.4g] z[%.4g..%.4g]\n",
+    fprintf(stderr,"  raw position range: x[%.4g..%.4g] y[%.4g..%.4g] z[%.4g..%.4g]\n",
             g_rmin[0],g_rmax[0],g_rmin[1],g_rmax[1],g_rmin[2],g_rmax[2]);
-    fprintf(stderr,"  kose konumu       : ekran ici %llu, disi %llu, w<=0 %llu\n",
+    fprintf(stderr,"  vertex position   : on screen %llu, off %llu, w<=0 %llu\n",
             (unsigned long long)g_v_in, (unsigned long long)g_v_out,
             (unsigned long long)g_v_badw);
     for (unsigned q=1; q<g_vsprogn && q<6; q++)
-        fprintf(stderr,"     vs%u: surum %u.%u, %u komut, %u bilinmeyen\n", q,
+        fprintf(stderr,"     vs%u: version %u.%u, %u instructions, %u unknown\n", q,
                 vs_version(g_vsprog[q])>>8, vs_version(g_vsprog[q])&0xFF,
                 vs_ninstr(g_vsprog[q]), vs_unknown(g_vsprog[q]));
-    fprintf(stderr,"  --- EN COK CAGRILAN D3D9/COM METOTLARI ---\n");
+    fprintf(stderr,"  --- MOST CALLED D3D9/COM METHODS ---\n");
     for (int k=0;k<120;k++){
         uint64_t best=0; int bi=0,bm=0;
         for (unsigned i=1;i<NEL(g_if) && i<MSTAT_IF;i++)
@@ -4407,7 +4397,7 @@ static void fill_caps(uint32_t p){
     MR32(p+0xA0)=8; MR32(p+0xA4)=6; MR32(p+0xA8)=4; MR32(p+0xAC)=8;
     MRF32(p+0xB0)=256.0f; MR32(p+0xB4)=1048575; MR32(p+0xB8)=1048575;
     MR32(p+0xBC)=16; MR32(p+0xC0)=508;
-    { /* Shader surumu ortam degiskeniyle ayarlanabilir (SM=0 -> sabit fonksiyon) */
+    { /* The shader version can be set with an environment variable (SM=0 -> fixed function) */
       const char *sm = ENVC("D3D_SM");
       uint32_t vs=0xFFFE0200u, ps=0xFFFF0200u;
       if (sm){ int v=atoi(sm);
