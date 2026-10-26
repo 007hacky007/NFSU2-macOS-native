@@ -197,8 +197,11 @@ if [ "$WITH_DATA" = 1 ]; then
   STEP3="3. Keep $NAME.app and the \"Need for Speed Underground 2\" folder next to
    each other; the app finds the game there by itself.  Move them together."
 else
-  DATA="Your own copy of the PC game (the European v1.2 SPEED2.EXE without the
-    CD check, 4,788,224 bytes).  The game files are NOT included."
+  DATA="Your own copy of the PC game, with one of these SPEED2.EXE files (v1.2
+    without the CD check): the European one (4,788,224 bytes) or the North
+    American one (4,800,512 bytes).  The app picks the matching engine.
+    The US v1.0 disc SPEED2.EXE is copy-protected and cannot run.
+    The game files are NOT included."
   STEP3="3. The first time, the window asks where the game is: click
    \"Choose Folder...\" and pick the folder that has SPEED2.EXE in it.
    The app remembers it."
