@@ -2108,3 +2108,56 @@ stall → 1.8 s muted instead of a replay; a normal race mutes ~85 ms.
 `SPEED2.EXE` is checked by SHA-256 at startup; any other build (the US retail
 executable, for one) gets a clear message instead of a crash.
 `NFSU2_ANY_EXE=1` skips the check.
+
+## 2026-10-26: launcher window and portable copy
+
+Reddit asked for a GUI and for a single app with the game inside, made without a
+terminal. `launcher/*.swift` (Swift 5 mode, AppKit + SwiftUI, macOS 11 target)
+is now the bundle's executable; `pack.sh` builds it with `swiftc` and puts both
+engines next to it:
+
+    Contents/MacOS/NFSU2              launcher
+    Contents/MacOS/nfsu2-engine       out/nfsu2_boot
+    Contents/MacOS/nfsu2-engine-hd    out/nfsu2_hd_boot
+
+One download (~67 MB) instead of two apps. `./pack.sh --hd` still makes the old
+HD-only "NFSU2 HD.app"; `--original-only` leaves the HD engine out; without
+`swiftc` the engine becomes the executable as before (no window).
+
+- **Game files:** same search order as `app_find_game`; the exe is checked
+  (size, SHA-256) before Play; the engine gets the checked path in `NFSU2_DATA`.
+  States: found / not found / different version / inside this app.
+- **Graphics:** Original or HD (`LauncherEngine`), full screen (`NFSUFullScreen`,
+  the key the engine already uses).
+- **Make Copy…:** builds "NFSU2 Portable.app" (save panel, /Applications by
+  default): copies this bundle plus the game folder into
+  `Contents/Resources/Game` (MOVIES and the Windows plugins left out, as in
+  `pack.sh --embed`), `copyfile(COPYFILE_CLONE)` per file (instant on the same
+  APFS disk: measured 6 s for 1.5 GB), removes the quarantine tag, signs ad hoc
+  again, then renames from a hidden `.partial` name. The running app is never
+  written to (signature; App Translocation makes it read-only anyway). A copy
+  being replaced goes to the Trash.
+- **Tools:** Saves, Logs, Reset Graphics Settings (drops `g_*` and
+  `NotFirstTime` from `~/.nfsu2_registry`: the game detects again), Report a
+  Problem (GitHub issues).
+- **Show this window when the app opens:** off = straight into the game; hold
+  Option to see the window.
+
+**The engine is a child process, not exec().** A game folder under Downloads /
+Documents / Desktop triggers macOS's folder permission prompt. A child process
+inherits the launcher as its "responsible" process, so the permission granted to
+the launcher covers the engine; after exec() the ad-hoc signed engine would be a
+different code identity and could be asked again. The launcher hides its window,
+drops its Dock icon (accessory) and exits with the engine's exit status, so
+`open -W` still waits for the game.
+
+Test hooks (no visible window): `NFSU2_LAUNCHER_SNAPSHOT=<png>` draws the window
+(`NFSU2_LAUNCHER_STATE=notfound|unsupported|embedded|copying|done`),
+`NFSU2_LAUNCHER_TEST=play` presses Play off screen,
+`NFSU2_LAUNCHER_TEST=portable:<game dir>:<dest.app>` builds a portable copy.
+In automated runs keep the game outside Downloads/Documents/Desktop (or pass
+`NFSU2_DATA`): the permission prompt otherwise waits for a click.
+Verified: Original and HD started through `open` + launcher, 1200–1500 frames,
+clean exit, 0 traps; portable copy signed (`codesign --verify --strict`), no
+quarantine, runs from its embedded data; user prefs and registry unchanged.
+`tools/session.sh` opens NFSU2.app with `NFSU2_SKIP_LAUNCHER=1 NFSU2_ENGINE=…`.

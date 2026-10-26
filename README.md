@@ -17,9 +17,9 @@ time. On an M1 Pro, races run at **119 fps** (the display's limit), against
 
 > **This repository contains no game code and no game assets.** It contains the
 > recompiler and the runtime only. You need your own copy of the game. The C
-> code generated from its executable is never committed. The prebuilt apps on
-> the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) contain the recompiled program but no game files:
-> on first launch you point them at your own installation.
+> code generated from its executable is never committed. The prebuilt app on
+> the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) contains the recompiled program but no game files:
+> on first launch you point it at your own installation.
 
 ![Race, native ARM64 build](screenshots/selected/27_20260924_current-race.jpg)
 
@@ -35,7 +35,7 @@ The game boots, reaches the menus, and races are playable with sound.
 | DirectSound → CoreAudio, DirectInput (keyboard, mouse) | working |
 | Windowed, fullscreen, Retina-native and 1080p widescreen | working |
 | Career mode: profile creation (name entry), save and load | working |
-| Double-clickable `.app` (`./pack.sh`) | working |
+| Double-clickable `.app` with a launcher window (`./pack.sh`) | working |
 | Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAPHICS_RESEARCH.md` |
 
 ### Known limitations
@@ -107,6 +107,7 @@ out/nfsu2_boot            ~35 MB arm64 Mach-O
 | `runtime/overrides.c`, `d3dx_hle.c` | hand-written replacements for specific game functions |
 | `runtime/enhance.c` | HD build only (`-DNFS_ENHANCED=1`) |
 | `runtime/bundle.m`, `pack.sh` | `.app` behaviour and packaging |
+| `launcher/*.swift` | the app's launcher window (Swift/SwiftUI): finds and checks the game, Original/HD, portable copy |
 | `tests/boot.c` | program entry point (runs the game from its PE entry point) |
 
 ## Verification
@@ -149,7 +150,7 @@ HD build draws about 18 W.
 ## Requirements
 
 - Apple Silicon Mac, macOS 11 or later. Developed on an M1 Pro, macOS 27.
-- Xcode Command Line Tools (`clang`).
+- Xcode Command Line Tools (`clang`; `swiftc` for the launcher window).
 - Python 3 with `capstone` 5.x and `pefile` (`requirements.txt`).
 - Rosetta 2, only for `tools/fuzzisa.py`.
 - Your own installation of the game, with this exact executable:
@@ -187,9 +188,21 @@ tools/gen_v2.sh "$EXE"
 ./run.sh             # windowed
 ./run.sh 1080p       # 1920x1080, widescreen-corrected
 ./run.sh hd          # HD build
-./pack.sh            # out/NFSU2.app
-./pack.sh --hd       # out/NFSU2 HD.app
+./pack.sh            # out/NFSU2.app: launcher + both engines (Original and HD)
+./pack.sh --zip      # also out/NFSU2.zip for a release
+./pack.sh --embed    # out/personal/NFSU2.app with your game inside (do not share)
 ```
+
+The app opens a small launcher window first (`launcher/`, built by `pack.sh`
+with `swiftc`): it finds and checks `SPEED2.EXE`, offers Original or HD graphics
+and full screen, opens the saves and logs folders, and **Make Copy…** builds a
+portable app with the game files inside (APFS clones, seconds on the same disk),
+so nobody needs `pack.sh --embed` or a terminal for that. Untick "Show this
+window when the app opens" to go straight into the game (hold Option to get the
+window back). `NFSU2_SKIP_LAUNCHER=1` / `NFSU2_ENGINE=original|hd` do the same
+from scripts.
+
+![Launcher window](screenshots/selected/launcher.png)
 
 `run.sh` documents the environment switches; most are diagnostics.
 
@@ -204,8 +217,9 @@ a report.
 **Can I play Need for Speed: Underground 2 on a Mac?**
 Yes, on an Apple Silicon Mac (M1 or later) with your own copy of the PC game.
 Download `NFSU2.zip` from the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest), or build the port as
-described above (`./pack.sh` produces a double-clickable `NFSU2.app`). Menus,
-races, career saves and sound work.
+described above (`./pack.sh` produces a double-clickable `NFSU2.app`). Open it,
+choose the game folder once, click Play. Menus, races, career saves and sound
+work.
 
 **Do I need Wine, CrossOver, Whisky, Parallels or a virtual machine?**
 No. The game's code is recompiled to native ARM64 and runs directly on macOS.
@@ -217,11 +231,20 @@ against 10–15 fps under Wine 11.18 with Rosetta 2, and 119 fps against 45 fps
 in the 3D menus. Method and raw numbers are in `WINE_COMPARISON.md`.
 
 **Is there a ready-made download?**
-Yes: the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) has `NFSU2.zip` (standard build) and
-`NFSU2.HD.zip` (MSAA, ray-traced reflections). Neither contains game files; on
-first launch the app asks for the folder that holds your own `SPEED2.EXE`. The
-app is not notarized, so after moving it to Applications run once:
+Yes: the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) has `NFSU2.zip`. The app holds both
+graphics modes, Original and HD (MSAA, ray-traced reflections), chosen in its
+window; older releases had a separate `NFSU2.HD.zip`. It contains no game files:
+the window asks for the folder that holds your own `SPEED2.EXE`.
+The app is not notarized, so macOS blocks the first start: open System Settings ›
+Privacy & Security and click **Open Anyway** (on macOS 14 and older: right-click
+the app › Open). If macOS says the app is damaged, run once in Terminal:
 `xattr -dr com.apple.quarantine /Applications/NFSU2.app`
+
+**Can I carry the game to another Mac in one piece?**
+Yes. In the app's window, **Make Copy…** creates "NFSU2 Portable.app" with the
+game files inside (about 1.4 GB). It runs on its own; saves stay in
+`~/Library/Application Support/NFSU2 Saves` on each Mac. It contains the game,
+so keep it for yourself.
 
 **Which version of the game does it need?**
 The Windows PC version, with the exact `SPEED2.EXE` listed under

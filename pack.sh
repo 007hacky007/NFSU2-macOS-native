@@ -1,15 +1,24 @@
 #!/bin/bash
-# Build the out/NFSU2.app bundle (or out/NFSU2 HD.app with --hd).
+# Build the out/NFSU2.app bundle.
 #
-#   ./pack.sh                 the port only (~35 MB) -- the game data is the user's
+# The bundle opens a small launcher window (launcher/*.swift, Swift + SwiftUI):
+# it finds and checks the game, lets the player pick Original or HD graphics and
+# full screen, makes a portable copy with the game inside, then starts the engine.
+#   Contents/MacOS/NFSU2              launcher (the bundle's executable)
+#   Contents/MacOS/nfsu2-engine       out/nfsu2_boot     (original)
+#   Contents/MacOS/nfsu2-engine-hd    out/nfsu2_hd_boot  (HD, if built)
+# Without swiftc the engine itself becomes Contents/MacOS/NFSU2 (no window), as before.
+#
+#   ./pack.sh                 the port only (~70 MB, both engines) -- the game data is the user's
 #   ./pack.sh --with-data     also copy the game data next to it (~1.5 GB)
 #   ./pack.sh --zip           also produce NFSU2.zip for distribution
 #   ./pack.sh --embed         PERSONAL single-piece app: the game data is embedded
 #                             INSIDE the bundle (out/personal/, ~1.4 GB).  Since it
 #                             contains the game itself it
 #                             CANNOT BE DISTRIBUTED; no distribution folder / zip is made.
-#   ./pack.sh --hd            "NFSU2 HD.app" from the HD build (graphics improvements;
-#                             separate bundle id, separate log, sits next to the original)
+#   ./pack.sh --hd            "NFSU2 HD.app" with the HD engine only (the older
+#                             two-app layout; separate bundle id, sits next to NFSU2.app)
+#   ./pack.sh --original-only NFSU2.app with the original engine only
 #
 # The game data does NOT go into the bundle BY DEFAULT: the app asks for the
 # folder on first launch and remembers the choice.  That keeps the bundle small
@@ -22,13 +31,14 @@
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
-WITH_DATA=0; MAKE_ZIP=0; HD=0; EMBED=0; SIGN_ID="${SIGN_ID:-}"
+WITH_DATA=0; MAKE_ZIP=0; HD=0; EMBED=0; ORIG_ONLY=0; SIGN_ID="${SIGN_ID:-}"
 for a in "$@"; do
   case "$a" in
     --with-data) WITH_DATA=1 ;;
     --zip)       MAKE_ZIP=1 ;;
     --hd)        HD=1 ;;
     --embed)     EMBED=1 ;;
+    --original-only) ORIG_ONLY=1 ;;
     *) echo "unknown option: $a"; exit 1 ;;
   esac
 done
@@ -51,8 +61,31 @@ APP="$OUTDIR/$NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp "$BIN" "$APP/Contents/MacOS/NFSU2"
-chmod +x "$APP/Contents/MacOS/NFSU2"
+# --- launcher (rebuilt when a launcher/*.swift is newer) ---
+LAUNCHER="$ROOT/out/nfsu2_launcher"
+if [ ! -x "$LAUNCHER" ] || [ -n "$(find "$ROOT/launcher" -name '*.swift' -newer "$LAUNCHER" 2>/dev/null)" ]; then
+  echo "building the launcher..."
+  # -target: runs on macOS 11 like the engine; -swift-version 5: no Swift 6 strict concurrency
+  swiftc -swift-version 5 -O -target arm64-apple-macos11.0 -o "$LAUNCHER" "$ROOT"/launcher/*.swift \
+    || { echo "warning: launcher build failed (swiftc missing?), bundling without it"; rm -f "$LAUNCHER"; }
+fi
+
+# --- engines ---
+ENGINES=()
+if [ -x "$LAUNCHER" ]; then
+  cp "$LAUNCHER" "$APP/Contents/MacOS/NFSU2"
+  if [ "$HD" = 1 ]; then
+    cp "$BIN" "$APP/Contents/MacOS/nfsu2-engine-hd"; ENGINES+=(nfsu2-engine-hd)
+  else
+    cp "$BIN" "$APP/Contents/MacOS/nfsu2-engine"; ENGINES+=(nfsu2-engine)
+    if [ "$ORIG_ONLY" = 0 ] && [ -x "$ROOT/out/nfsu2_hd_boot" ]; then
+      cp "$ROOT/out/nfsu2_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-hd"; ENGINES+=(nfsu2-engine-hd)
+    fi
+  fi
+else
+  cp "$BIN" "$APP/Contents/MacOS/NFSU2"     # old layout: the engine is the executable
+fi
+chmod +x "$APP/Contents/MacOS/"*
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # --- icon ---
@@ -121,6 +154,14 @@ PLIST
 # If SIGN_ID is given, sign with a real certificate (for those with an Apple
 # Developer account), otherwise ad-hoc.  An ad-hoc signature does NOT PASS
 # Gatekeeper: the downloaded bundle is "spctl: rejected", the user has to remove the quarantine.
+# Nested executables first (the engines), then the bundle.
+for e in "${ENGINES[@]}"; do
+  if [ -n "$SIGN_ID" ]; then
+    codesign --force --options runtime --sign "$SIGN_ID" --timestamp "$APP/Contents/MacOS/$e" || { echo "codesign FAILED: $e"; exit 1; }
+  else
+    codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/$e" 2>/dev/null || echo "warning: codesign failed: $e"
+  fi
+done
 if [ -n "$SIGN_ID" ]; then
   codesign --force --options runtime --sign "$SIGN_ID" --timestamp "$APP" \
     && echo "signature: $SIGN_ID" || { echo "codesign FAILED"; exit 1; }
@@ -143,60 +184,74 @@ fi
 
 # --- read-me note for testers ---
 if [ "$WITH_DATA" = 1 ]; then
-  DATA="The game files come in the folder next to it (nothing else needed)."
-  STEP3="3. Open the app.  IMPORTANT: keep $NAME.app and the
-   \"Need for Speed Underground 2\" folder next to it in the SAME place; the app
-   looks for the game next to itself.  You can move the two together."
+  DATA="The game files come in the folder next to the app (nothing else needed)."
+  STEP3="3. Keep $NAME.app and the \"Need for Speed Underground 2\" folder next to
+   each other; the app finds the game there by itself.  Move them together."
 else
-  DATA="Your own NFSU2 installation.  The game files are NOT INCLUDED in this bundle."
-  STEP3="3. Open the app.  On first launch it asks for the folder the game is
-   installed in (the folder containing SPEED2.EXE).  The choice is remembered."
+  DATA="Your own copy of the PC game (the European v1.2 SPEED2.EXE without the
+    CD check, 4,788,224 bytes).  The game files are NOT included."
+  STEP3="3. The first time, the window asks where the game is: click
+   \"Choose Folder...\" and pick the folder that has SPEED2.EXE in it.
+   The app remembers it."
 fi
 cat > "$ROOT/out/README.txt" <<TXT
 $DISP -- native macOS (Apple Silicon) port
 ================================================================
-The x86 code was statically recompiled to ARM64.  No Wine, no emulator.
+The game's PC code, rebuilt to run natively on Apple Silicon.
+No Wine, no emulator, no virtual machine.
 
-REQUIREMENTS
-  - An Apple Silicon Mac (M1 or later).  Intel Macs can't run it.
+YOU NEED
+  - A Mac with Apple Silicon (M1 or later).  Intel Macs can't run it.
   - macOS 11 Big Sur or later.
   - $DATA
 
-INSTALLATION
+INSTALL
 1. Drag $NAME.app into the Applications folder.
-2. Open Terminal and run this line:
+2. Double-click it.  The app is not from the App Store and not notarized by
+   Apple, so the first time macOS stops it:
+     - It says it "can't be opened" / "Apple could not verify" it:
+       click Done, open System Settings > Privacy & Security, scroll down,
+       click "Open Anyway" next to $NAME, then confirm.  (macOS 14 and
+       older: right-click the app > Open > Open.)  Only needed once.
+     - It says the app "is damaged": open the Terminal app, paste this line,
+       press Return, then double-click the app again:
 
-     xattr -dr com.apple.quarantine "/Applications/$NAME.app"
+         xattr -dr com.apple.quarantine "/Applications/$NAME.app"
 
-   This step is REQUIRED.  Since the app isn't notarized by Apple, macOS
-   refuses to open it after downloading (it says "damaged" or "the developer
-   cannot be verified").  The command only removes the download tag.
 $STEP3
+4. Click Play.
 
-USAGE
+THE WINDOW
+  Game files      where the game is and whether it is the right version.
+  Graphics        Original = the PC look, least power.
+                  HD = smoother edges and real reflections; the Mac gets warmer.
+                  "Start in full screen" (Cmd-F also switches while playing).
+  Portable copy   "Make Copy..." builds one app with the game inside it
+                  (about 1.4 GB) that runs on its own, e.g. on another Mac.
+                  It contains the game: keep it for yourself.
+  Saves / Logs    open those folders.  Logs help when reporting a problem.
+  Reset Graphics Settings   the game picks settings for this Mac again.
+  If you untick "Show this window when the app opens", the game starts right
+  away; hold the Option key while opening the app to see the window again.
+
+PLAYING
   Enter        skip the title screen
-  Cmd-F        fullscreen
+  Cmd-F        full screen on/off
   Cmd-Q        quit
-  Resolution   from the game's own menu: Options > Display.
-               The 1920x1080 row in the list is for widescreen.
+  Resolution   in the game: Options > Display.
 
 IF SOMETHING GOES WRONG
-  Log:  ~/Library/Logs/NFSU2/nfsu2${TAG}.log        (the previous one: nfsu2${TAG}-previous.log)
-  Send this file, it says what happened.
-
-  To choose the game folder again:
-     defaults delete $BID
+  In the window click "Logs" and send the newest nfsu2 log file with
+  "Report a Problem" (opens the project's issue page).
 
 SAVES
   Career saves:  ~/Library/Application Support/NFSU2 Saves
   Settings:      ~/.nfsu2_registry
-  Both live OUTSIDE the app and the game folder: when a new version comes
-  out, replacing $NAME.app (or the game folder) doesn't delete your
-  progress.  To back up, copying this folder and this file is enough.
+  Both live outside the app and the game folder, so replacing $NAME.app
+  with a new version keeps your progress.  To back up, copy them.
 
-  Profile name: typed on the "Create Profile" screen.  Delete the preset
-  "NAME" in the box with the Delete (backspace) key, type at most 7
-  letters/digits, Enter.
+  Profile name: on the "Create Profile" screen delete the preset "NAME"
+  with the Delete key, type at most 7 letters/digits, press Enter.
 TXT
 echo "note: $ROOT/out/README.txt"
 
