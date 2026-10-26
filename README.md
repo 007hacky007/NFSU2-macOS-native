@@ -40,7 +40,8 @@ The game boots, reaches the menus, and races are playable with sound.
 
 ### Known limitations
 
-- **Exactly one build of `SPEED2.EXE` is supported** (see [Requirements](#requirements)).
+- **Exactly one build of `SPEED2.EXE` is supported**, the European v1.2 one
+  (see [Game versions](#game-versions)).
   Game addresses are hard-coded in the runtime, and the pipeline relies on a
   property of that particular file (below).
 - Videos are skipped: there is no VP6 decoder.
@@ -158,12 +159,61 @@ HD build draws about 18 W.
   | | |
   |---|---|
   | File | `SPEED2.EXE`, 4,788,224 bytes |
-  | Build | European v1.2 executable without the CD check |
+  | Build | **European** (PAL) v1.2 executable without the CD check, built Feb 9 2005 |
   | SHA-256 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` |
 
-  Other builds (for example the US retail executable) have not been tested and
-  will not work without changes. The app checks the file at startup and says so
-  instead of crashing; `NFSU2_ANY_EXE=1` skips the check.
+  The app checks the file at startup and says so instead of crashing;
+  `NFSU2_ANY_EXE=1` skips the check.
+
+### Game versions
+
+The recompiled code and the addresses in the runtime belong to one executable,
+so every other build of `SPEED2.EXE` needs its own lifting pass and address
+table. The game *data* is a separate matter (see the note under the table).
+
+| `SPEED2.EXE` | Size | SHA-256 | Status |
+|---|---|---|---|
+| European v1.2, no CD check | 4,788,224 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` | **Supported** |
+| North American v1.2, no CD check (the build most PC mods target) | 4,800,512 | `f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7` | Not supported yet. Same Feb 9 2005 build; the data addresses match ours, the code is shifted by small amounts. Planned. |
+| US v1.0 retail disc | 5,987,981 | `2cbd698fee8338a13d1891bc17d27e6641b4b9dd40580de818594b9140222899` | **Cannot be supported.** Protected by SafeDisc: the code section is encrypted on disc and only decrypted at run time, so there is nothing to recompile. |
+
+The retail disc executable carries the disc's copy protection, and the official
+v1.2 patch most likely keeps it (not verified here). A static recompiler needs
+readable machine code, so the port cannot use a protected executable, and this
+project does not remove copy protection.
+
+**Data from the discs.** The US discs and the European release share 1,218 of
+their ~1,250 files byte for byte. The differences are the region's cars (the US
+release has `CARS/CIVIC` and `CARS/RSX`; the European one has `CARS/CORSA` and
+`CARS/PEUGOT106`), the per-language movies, `FRONTEND/FrontB.lzc` and
+`server.dll`.
+
+**US data works with the supported executable.** The game's region is a
+constant in the executable (`0` in the US build, `6` in the European one), and
+it decides which of the region-only cars exist. Left at the European value, US
+data hangs on the "Loading" screen as soon as a race picks a Corsa or a 106. The
+runtime therefore looks at the data at startup: if `CARS/CIVIC` and `CARS/RSX`
+are there but `CARS/CORSA` and `CARS/PEUGOT106` are not, it switches the game to
+the US region (log line `region: North American data`). Tested on US disc data:
+races load, the Civic is in the Quick Race car list and the Mazda is called
+Miata, as in the US release; the region check hides the Corsa and 106.
+`NFSU2_REGION=na` or `eu` forces either region.
+
+### Installing from the PC discs on a Mac
+
+The discs hold the game in plain zip files, so the Windows installer is not
+needed. With the two disc images (`.cue`/`.bin`, `.iso`, or the disc folders):
+
+```bash
+brew install sevenzip     # only needed for .bin/.iso images
+python3 tools/install_from_discs.py ~/Games/NFSU2 "Disc 1.cue" "Disc 2.cue"
+```
+
+This writes a normal game folder (about 1.7 GB) that the launcher can point at.
+It copies the disc's `SPEED2.EXE` too, but see the table above: the launcher
+accepts only the supported executable. With that executable in the folder, the
+US disc data plays in the US region (see "US data works with the supported
+executable" above).
 
 ## Build and run
 
@@ -247,9 +297,15 @@ game files inside (about 1.4 GB). It runs on its own; saves stay in
 so keep it for yourself.
 
 **Which version of the game does it need?**
-The Windows PC version, with the exact `SPEED2.EXE` listed under
-[Requirements](#requirements). Other builds, including the console versions,
-are not supported.
+The Windows PC version, with the European v1.2 `SPEED2.EXE` listed under
+[Requirements](#requirements). The North American v1.2 executable is not
+supported yet; the US v1.0 disc executable cannot be (it is copy-protected).
+Console versions are not supported. See [Game versions](#game-versions).
+
+**I only have the PC discs. Can I install them on a Mac?**
+Yes, without Windows: `tools/install_from_discs.py` unpacks the disc images
+into a game folder. See [Installing from the PC discs on a
+Mac](#installing-from-the-pc-discs-on-a-mac).
 
 **Does it work on Intel Macs?**
 No. Only Apple Silicon is targeted and tested.

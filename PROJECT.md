@@ -2161,3 +2161,46 @@ Verified: Original and HD started through `open` + launcher, 1200–1500 frames,
 clean exit, 0 traps; portable copy signed (`codesign --verify --strict`), no
 quarantine, runs from its embedded data; user prefs and registry unchanged.
 `tools/session.sh` opens NFSU2.app with `NFSU2_SKIP_LAUNCHER=1 NFSU2_ENGINE=…`.
+
+## 2026-10-26: HD black screen at start, Spotlight, menu car
+
+### HD: ~8 s black screen on the first start of a build (fixed)
+
+The game creates all its pixel shaders while it boots; each was translated and
+compiled from MSL source on the spot, one after another. With a cold Metal cache
+(the first start of every new build, or after macOS clears the cache) that held
+the first frames back: measured, the first 150 frames took 10.0 s in the HD build
+(more variants per shader) against 2.4 s with a warm cache. Now `metal_register_ps`
+starts each compile in the background (up to 8 at once: the Metal compiler runs
+them in parallel), and a draw waits only for the shader it needs; a draw that
+needs a shader still waiting in the queue compiles it itself right away
+(`ps_wait` / `ps_run`). Cold HD start: 150 frames in 3.1 s. Menu frames differ
+from the old path no more than two runs of the old path differ from each other.
+`PSASYNC=0`: old behaviour. Note for measurements: total process time is
+misleading on a cold cache, Metal writes its cache at exit; time the frames.
+
+### Spotlight opens 3-7 s late while the game runs (open)
+
+Measured (user at the keyboard, ~15 runs): Spotlight's UI process ("Siri AI" on
+macOS 27) is backgrounded (darwinbg, priority 4) while hidden and gets the
+Cmd+Space ~5 s late; once it has it, it opens fast. Not the cause: the system
+shortcut block (`NFSKISAYOL=0` was worse), Game Mode (`GCSupportsGameMode=false`
+kept it off, still slow), GPU load (menu ~9 %), `framebufferOnly`
+(`FBONLY=1`: readable middle texture + one copy pass, validated with the Metal
+debug layer), disk I/O (a few KB/s), CPU cluster load (E-cluster ~62 %). A
+control app presenting 120 Hz full screen with the same layer settings does NOT
+slow Spotlight, so it is something in the engine; `FPSCAP=10` makes it fast,
+`FPSCAP=60` does not. Next: grow the control app towards the engine (threads,
+wakeups ~1160/s, GPU work) until Spotlight slows. Test switches: `FPSCAP=<n>`,
+`BGFPS=<n>` (cap only while another app is in front), `FBONLY=1`. The layer is
+now explicitly opaque.
+
+### Menu car headlights
+
+The main menu's 350Z (no profile) shows a large pale lilac highlight over the
+hood front and headlights from the first frame on, and it stays after visiting
+car select. Isolated with `SKIPPS`/`SKIPDRAW`: car = ps 265 (draws 167-285 in
+frame 1650); the headlight lenses are draws 213-222 (light atlas texture 813,
+64x64, complete with 4 mips; 807 = tail lights); the highlight itself is the
+scene's reflection on the body panels, not a missing texture and not post
+processing. Not decided whether anything is wrong without a reference image.

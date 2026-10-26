@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include "enhance.h"
@@ -303,9 +304,47 @@ void sub_006623ea(CPU *c){
     }
 }
 
+/* --- Game region: European executable on North American data -------------
+ * The supported SPEED2.EXE is the European build.  Its territory is a constant
+ * in .data, [0x7fa73c] = 6; the US build uses 0 (sub_005712b0 -> "EN",
+ * sub_00571390 -> "US").  The region decides which cars exist
+ * (sub_005022c0): region 0 hides the European-only cars listed at 0x7f7c48
+ * (CORSA, PEUGOT106), any other region hides the North American-only ones at
+ * 0x7f7c50 (CIVIC, RSX).  US disc data has no CORSA/PEUGOT106 folders, so the
+ * European region hangs on "Loading" when a race picks one of them.
+ * Detect the data's region from those car folders; NFSU2_REGION=na|eu forces it. */
+#define GAME_REGION_ADDR 0x7fa73cu
+#define GAME_REGION_NA   0u
+#define GAME_REGION_EU   6u
+static void region_install(void){
+    int fileio_game_file_exists(const char *win);
+    uint32_t cur = MR32(GAME_REGION_ADDR);
+    if (cur != GAME_REGION_EU){   /* not the build this is known for */
+        fprintf(stderr, "region: unexpected territory %u, left unchanged\n", cur);
+        return;
+    }
+    const char *e = getenv("NFSU2_REGION");
+    int na;
+    if (e && *e){
+        if (!strcasecmp(e, "na") || !strcasecmp(e, "us")) na = 1;
+        else if (!strcasecmp(e, "eu")) na = 0;
+        else { fprintf(stderr, "region: NFSU2_REGION=%s not understood (na|eu)\n", e); return; }
+    } else {
+        int eu_cars = fileio_game_file_exists("CARS\\CORSA\\GEOMETRY.BIN")
+                   && fileio_game_file_exists("CARS\\PEUGOT106\\GEOMETRY.BIN");
+        int na_cars = fileio_game_file_exists("CARS\\CIVIC\\GEOMETRY.BIN")
+                   && fileio_game_file_exists("CARS\\RSX\\GEOMETRY.BIN");
+        na = na_cars && !eu_cars;
+    }
+    if (na) MR32(GAME_REGION_ADDR) = GAME_REGION_NA;
+    fprintf(stderr, "region: %s data (territory %u)%s\n", na ? "North American" : "European",
+            MR32(GAME_REGION_ADDR), (e && *e) ? ", forced by NFSU2_REGION" : "");
+}
+
 void overrides_install(void){
     void dispatch_patch(uint32_t, void(*)(CPU*));
     dispatch_patch(0x006e2be0u, wrap_6e2be0);
+    region_install();
 }
 
 void overrides_report(void){

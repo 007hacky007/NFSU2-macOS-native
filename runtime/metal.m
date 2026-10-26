@@ -857,6 +857,33 @@ void metal_set_samplers(const unsigned k[4]){
 #define PSREFL 512          /* (HD) reflection separation variant */
 static id<MTLFunction> g_psfn[MAXPS];      /* ps compiled from the translation (with alpha test, kAT=1) */
 static id<MTLFunction> g_psfn_nat[MAXPS];  /* the same ps, without alpha test (kAT=0; see ALPHA TEST VARIANT) */
+/* ASYNC PIXEL SHADER COMPILES.  The game creates all its pixel shaders while it
+ * boots; each was compiled from MSL source on the spot, one after the other.  With
+ * a cold Metal cache (the first start of a new build) that is ~8 s of black screen
+ * in the HD build (more variants per shader), ~1 s in the normal one.  Now each
+ * compile is started in the background (up to 8 at a time: the Metal compiler runs
+ * them in parallel) and a draw waits only for the shader it actually needs.
+ * PSASYNC=0: compile on the spot, as before. */
+/* g_ps_pend: 0 done/none, 1 queued (not started), 2 compiling.  A draw that needs a
+ * shader still queued compiles it itself right away (jumps the queue): the first
+ * frames need a handful of the ~280 shaders the game creates at boot. */
+static _Atomic unsigned char g_ps_pend[MAXPS];
+static pthread_mutex_t g_ps_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_ps_cv = PTHREAD_COND_INITIALIZER;
+static void (^g_ps_job[MAXPS])(void);
+static void ps_run(int psid){
+    unsigned char want = 1;
+    if (!atomic_compare_exchange_strong(&g_ps_pend[psid], &want, 2)) return;   /* someone else has it */
+    void (^job)(void) = g_ps_job[psid];
+    if (job) job();
+}
+static void ps_wait(int psid){
+    if (psid <= 0 || psid >= MAXPS || !atomic_load(&g_ps_pend[psid])) return;
+    ps_run(psid);
+    pthread_mutex_lock(&g_ps_mx);
+    while (atomic_load(&g_ps_pend[psid])) pthread_cond_wait(&g_ps_cv, &g_ps_mx);
+    pthread_mutex_unlock(&g_ps_mx);
+}
 static id<MTLFunction> g_fmain_at, g_fmain_nat;   /* fixed-function fragment shader */
 /* ---- ALPHA TEST VARIANT ----------------------------------------------------
  * Every translated fragment shader did the alpha test itself:
@@ -1493,6 +1520,7 @@ static int hd_refl_ps(int ps, unsigned target, const unsigned tx[4]){
         int com_ps_refl_variant(int, int, int, int);
         com_ps_refl_variant(ps % PSCUBE, ps >= PSCUBE, k, vid);
     }
+    ps_wait(vid);
     return g_psfn[vid] ? vid : ps;
 }
 /* 4x4 inverse, row-major.  0 on failure. */
@@ -4010,6 +4038,55 @@ static unsigned u_gcd(unsigned a, unsigned b){
  * the main thread and stored.  A guess was NOT ENOUGH: the title bar was assumed
  * to be 28 points, on a notched screen it was 32; the 3-point difference clipped
  * the window and brought back the resampling (blur). */
+/* FBONLY: the frame is drawn into a readable middle texture (the game copies from
+ * the back buffer), then one full-screen pass writes it to a render-target-only
+ * drawable.  framebufferOnly drawables can be compressed and shown directly; with
+ * readable drawables WindowServer had extra work every frame. */
+static int fbonly_on(void){
+    static int v = -1;
+    if (v < 0){ const char *e = getenv("FBONLY"); v = (e && *e && *e != '0') ? 1 : 0; }
+    return v;
+}
+static id<MTLTexture> g_fb_mid;
+static id<MTLRenderPipelineState> g_fb_copy_pso;
+static id<MTLTexture> fbonly_mid(id<MTLTexture> drw){
+    if (!g_fb_mid || g_fb_mid.width != drw.width || g_fb_mid.height != drw.height ||
+        g_fb_mid.pixelFormat != drw.pixelFormat){
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:drw.pixelFormat
+            width:drw.width height:drw.height mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        g_fb_mid = [g_dev newTextureWithDescriptor:td];
+    }
+    return g_fb_mid;
+}
+static void fbonly_copy(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst){
+    if (!g_fb_copy_pso){
+        NSString *src_ = @"#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; };\n"
+            "vertex V fbc_v(uint i [[vertex_id]]) { float2 q = float2(float((i << 1) & 2), float(i & 2));"
+            " V o; o.p = float4(q * 2.0 - 1.0, 0.0, 1.0); return o; }\n"
+            "fragment float4 fbc_f(V in [[stage_in]], texture2d<float> t [[texture(0)]]) {"
+            " return t.read(uint2(in.p.xy)); }\n";
+        NSError *e = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:src_ options:nil error:&e];
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"fbc_v"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"fbc_f"];
+        pd.colorAttachments[0].pixelFormat = dst.pixelFormat;
+        g_fb_copy_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!g_fb_copy_pso){ fprintf(stderr, "metal: FBONLY copy pipeline failed\n"); return; }
+    }
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = dst;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
+    [en setRenderPipelineState:g_fb_copy_pso];
+    [en setFragmentTexture:src atIndex:0];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [en endEncoding];
+}
 static _Atomic int g_scr_cw = 0, g_scr_ch = 0, g_scr_s100 = 0;
 static void scr_cache(void){
     @autoreleasepool {
@@ -4616,29 +4693,56 @@ void metal_register_ps(int psid, const char *msl){
                 } else { free(iso); iso = 0; }
             }
         } } }
-    if (psid <= 0 || psid >= MAXPS || !msl || !g_dev || g_psfn[psid]){ free(iso); return; }
+    if (psid <= 0 || psid >= MAXPS || !msl || !g_dev || g_psfn[psid] || atomic_load(&g_ps_pend[psid])){ free(iso); return; }
+    static int async = -1;
+    if (async < 0){ const char *e = ENVC("PSASYNC"); async = !(e && *e == '0'); }
+    static dispatch_queue_t q; static dispatch_semaphore_t slots;
+    if (async && !q){
+        q = dispatch_queue_create("nfsu2.ps-compile",
+                dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0));
+        slots = dispatch_semaphore_create(8);
+    }
+    NSString *src;
     @autoreleasepool {
-        NSString *src = [kPrelude stringByAppendingString:
-                         [NSString stringWithUTF8String:msl]];
+        src = [kPrelude stringByAppendingString:[NSString stringWithUTF8String:msl]];
+    }
+    free(iso);
+    void (^job)(void) = ^{ @autoreleasepool {
         NSError *err = nil;
         struct timespec _c0; if (g_perflog) clock_gettime(CLOCK_MONOTONIC, &_c0);
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:nil error:&err];
         if (g_perflog){ struct timespec _c1; clock_gettime(CLOCK_MONOTONIC, &_c1);
             perflog_event(PL_PS, (uint64_t)(_c1.tv_sec - _c0.tv_sec) * 1000000000ull + (uint64_t)_c1.tv_nsec - (uint64_t)_c0.tv_nsec, 0); }
         if (!lib){
-            static int shown = 0;
-            if (shown < 3){ shown++;
+            static _Atomic int shown = 0;
+            if (atomic_fetch_add(&shown, 1) < 3)
                 fprintf(stderr, "ps%d could not be compiled: %s\n", psid,
-                        err ? [[err localizedDescription] UTF8String] : "?"); }
-            return;
+                        err ? [[err localizedDescription] UTF8String] : "?");
+        } else {
+            char nm[32]; snprintf(nm, sizeof nm, "ps_%d", psid);
+            NSString *fnm = [NSString stringWithUTF8String:nm];
+            id<MTLFunction> f = fn_spec(lib, fnm, 1), fnat = nil;
+            if (!f) fprintf(stderr, "ps%d: function not found\n", psid);
+            if (alfavar_mode()) fnat = fn_spec(lib, fnm, alfavar_mode() >= 2 ? 2 : 0);
+            pthread_mutex_lock(&g_ps_mx);
+            g_psfn[psid] = f; g_psfn_nat[psid] = fnat;
+            pthread_mutex_unlock(&g_ps_mx);
         }
-        char nm[32]; snprintf(nm, sizeof nm, "ps_%d", psid);
-        NSString *fnm = [NSString stringWithUTF8String:nm];
-        g_psfn[psid] = fn_spec(lib, fnm, 1);
-        if (!g_psfn[psid]) fprintf(stderr, "ps%d: function not found\n", psid);
-        if (alfavar_mode()) g_psfn_nat[psid] = fn_spec(lib, fnm, alfavar_mode() >= 2 ? 2 : 0);
-    }
-    free(iso);
+        pthread_mutex_lock(&g_ps_mx);
+        atomic_store(&g_ps_pend[psid], 0);
+        g_ps_job[psid] = nil;
+        pthread_cond_broadcast(&g_ps_cv);
+        pthread_mutex_unlock(&g_ps_mx);
+    } };
+    g_ps_job[psid] = job;
+    atomic_store(&g_ps_pend[psid], 1);
+    if (!async){ ps_run(psid); return; }
+    dispatch_async(q, ^{
+        if (atomic_load(&g_ps_pend[psid]) != 1) return;     /* a draw took it already */
+        dispatch_semaphore_wait(slots, DISPATCH_TIME_FOREVER);
+        ps_run(psid);
+        dispatch_semaphore_signal(slots);
+    });
 }
 
 /* D3DCMPFUNC (1..8) -> Metal compare function */
@@ -5047,6 +5151,7 @@ static id<MTLRenderPipelineState> pso_for(uint64_t key){
                           ? g_vsfn[vsid]
                           : [g_lib newFunctionWithName:@"vmain"];
     int nat = (int)((key >> 52) & 1u);         /* see ALPHA TEST VARIANT */
+    ps_wait(psid);
     pd.fragmentFunction = (psid > 0 && psid < MAXPS && g_psfn[psid])
                           ? ((nat && g_psfn_nat[psid]) ? g_psfn_nat[psid] : g_psfn[psid])
                           : ((nat && g_fmain_nat) ? g_fmain_nat : g_fmain_at);
@@ -5521,7 +5626,8 @@ static void dlink_start(NSView *v){
     CAMetalLayer *l = [CAMetalLayer layer];
     l.device = g_dev;
     l.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    l.framebufferOnly = NO;   /* must be readable for frame dumps */
+    l.framebufferOnly = NO;   /* must be readable for frame dumps (see FBONLY) */
+    l.opaque = YES;
     return l;
 }
 @end
@@ -5892,8 +5998,10 @@ void metal_run_main_loop(void){
         [g_win setContentView:view];
         g_layer = (CAMetalLayer *)view.layer;
         dlink_start(view);
-        /* Needed so StretchRect can read from the back buffer. */
-        g_layer.framebufferOnly = NO;
+        /* Needed so StretchRect can read from the back buffer.  FBONLY=1 (test):
+         * render-target-only drawables (compressible, eligible for direct display). */
+        g_layer.framebufferOnly = fbonly_on() ? YES : NO;
+        g_layer.opaque = YES;
         /* NOVSYNC=1: turn off vsync.  For MEASUREMENT only -- with it off the image
          * tears, 1:1 fidelity breaks. */
         if (ENVC("NOVSYNC")) g_layer.displaySyncEnabled = NO;
@@ -6005,6 +6113,13 @@ void metal_run_main_loop(void){
                   [g_win toggleFullScreen:nil]; } }
             /* System shortcuts are off while the game is in front (see ks_engel) */
             { int kw = ks_wanted(); if (kw) ks_engel(kw == 2 || [NSApp isActive]); }
+            /* BGFPS=<n>: while another app is in front (Spotlight, Cmd-Tab...) present
+             * at most n frames a second. */
+            { static int bg = -2; if (bg == -2){ const char *e = ENVC("BGFPS"); bg = e ? atoi(e) : 0; }
+              if (bg > 0 && ![NSApp isActive]) usleep((useconds_t)(1000000 / bg)); }
+            /* FPSCAP=<n> (test): at most n frames a second, always */
+            { static int cap = -2; if (cap == -2){ const char *e = ENVC("FPSCAP"); cap = e ? atoi(e) : 0; }
+              if (cap > 0) usleep((useconds_t)(1000000 / cap)); }
             @autoreleasepool {
                 NSEvent *ev;
                 while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
@@ -6191,7 +6306,8 @@ void metal_run_main_loop(void){
                               od.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; od.storageMode = MTLStorageModePrivate;
                               ot[k3] = [g_dev newTextureWithDescriptor:od]; }
                           dtex = ot[k3]; }
-                      else { d = [g_layer nextDrawable]; dtex = d.texture; } }
+                      else { d = [g_layer nextDrawable]; dtex = d.texture;
+                             if (d && fbonly_on()) dtex = fbonly_mid(d.texture); } }
                     clock_gettime(CLOCK_MONOTONIC,&_d1);
                     atomic_fetch_add(&g_wait_drawable_ns,
                       (unsigned long long)(_d1.tv_sec-_d0.tv_sec)*1000000000ull
@@ -7448,6 +7564,7 @@ void metal_run_main_loop(void){
                                 while (ns > mx &&
                                        !atomic_compare_exchange_weak(&g_gpu_max_ns, &mx, ns)) {}
                             } }];
+                        if (d && fbonly_on() && dtex != d.texture) fbonly_copy(cb, dtex, d.texture);
                         if (d) [cb presentDrawable:d];
                         [cb commit];
                         long fno = atomic_fetch_add(&g_frames_drawn, 1) + 1;
