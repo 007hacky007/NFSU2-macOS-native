@@ -78,13 +78,13 @@ uint64_t g_hook_hits = 0, g_gs_fail = 0;
 static int g_gs_reported = 0;
 
 static const struct { uint32_t ip; const char *what; } g_hook_names[] = {
-    {0x0076115eu,"__security_check_cookie entry"},
-    {0x00761167u,"jne -> __report_gsfailure"},
-    {0x0076112du,"__report_gsfailure body"},
-    {0x00761141u,"call reporter(1,0)"},
-    {0x0076c25cu,"reporter function entry"},
-    {0x0076c2b9u,"took the 'Buffer overrun' branch"},
-    {0x0076c2a0u,"reporter: error kind switch"},
+    {GA(0x0076115eu),"__security_check_cookie entry"},
+    {GA(0x00761167u),"jne -> __report_gsfailure"},
+    {GA(0x0076112du),"__report_gsfailure body"},
+    {GA(0x00761141u),"call reporter(1,0)"},
+    {GA(0x0076c25cu),"reporter function entry"},
+    {GA(0x0076c2b9u),"took the 'Buffer overrun' branch"},
+    {GA(0x0076c2a0u),"reporter: error kind switch"},
 };
 /* --- runaway recursion hunter: sub_0065ae35 --- */
 typedef struct { uint32_t a1,a3,esp,cnt,esi,cntw,idx0,s4,eax,e48,edi,edival,inner; } RecEnt;
@@ -93,7 +93,7 @@ static RecEnt g_rec[RECR];
 static uint32_t g_rec_n = 0, g_rec_esp0 = 0;
 void guest_hook(CPU *c, uint32_t ip){
     g_hook_hits++;
-    if (ip == 0x0065ae35u){
+    if (ip == GA(0x0065ae35u)){
         uint32_t a1=MR32(c->esp+4u), a2=MR32(c->esp+8u), a3=MR32(c->esp+12u);
         if (!g_rec_esp0) g_rec_esp0 = c->esp;
         uint32_t esi_ = MR32(c->ecx+0x2cu) + a1*0x64u;
@@ -131,7 +131,7 @@ void guest_hook(CPU *c, uint32_t ip){
         }
         return;
     }
-    if (ip == 0x0066888eu){
+    if (ip == GA(0x0066888eu)){
         /* movzx esi, word [edi+4] : type/class switch */
         static int n=0;
         if (n<40){
@@ -145,8 +145,8 @@ void guest_hook(CPU *c, uint32_t ip){
         }
         return;
     }
-    if (ip == 0x0076115eu){                       /* __security_check_cookie entry */
-        uint32_t expect = MR32(0x0081a1d0u);
+    if (ip == GA(0x0076115eu)){                       /* __security_check_cookie entry */
+        uint32_t expect = MR32(GA(0x0081a1d0u));
         if (c->ecx != expect){
             g_gs_fail++;
             if (g_gs_reported < 3){

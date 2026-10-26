@@ -30,8 +30,13 @@ case "$MODE" in
   hd)      NFSHD=1; MODE=window ;;
   hd1080p) NFSHD=1; MODE=1080p ;;
 esac
-BIN="$ROOT/out/nfsu2_boot"
-[ "${NFSHD:-0}" = 1 ] && BIN="$ROOT/out/nfsu2_hd_boot"
+# The engine must match the executable: the North American v1.2 SPEED2.EXE runs on
+# out/nfsu2_na[_hd]_boot (BUILD=na ./build.sh && BUILD=na ./link.sh).
+NA=""
+[ "$(shasum -a 256 "$EXE" | cut -c1-64)" = f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7 ] && NA="_na"
+BIN="$ROOT/out/nfsu2${NA}_boot"
+[ "${NFSHD:-0}" = 1 ] && BIN="$ROOT/out/nfsu2${NA}_hd_boot"
+[ -n "$NA" ] && echo "SPEED2.EXE: North American v1.2 -> $(basename "$BIN")"
 [ -x "$BIN" ] || { echo "build first: ./build.sh && ./link.sh  ($BIN missing)"; exit 1; }
 [ "${NFSHD:-0}" = 1 ] && echo "build: HD (graphics improvements on)" || echo "build: original"
 

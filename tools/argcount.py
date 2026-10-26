@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive the stdcall argument count of every import from the push sequence at its call sites.
    Also count fs:/gs: segment usage (SEH/TLS)."""
-import sys, struct, collections
+import sys, os, struct, collections
 sys.path.insert(0,'tools')
 import pefile
 from capstone import *
@@ -18,7 +18,7 @@ def rd32(a):
         if va<=a<va+len(d)-3: return struct.unpack_from('<I',d,a-va)[0]
 md=L.md
 seeds={IB+pe.OPTIONAL_HEADER.AddressOfEntryPoint}
-for a in (int(x,16) for x in open('out/relocs.txt')):
+for a in (int(x,16) for x in open(os.environ.get('RELOCS','out/relocs.txt'))):
     v=rd32(a)
     if v is not None and L.in_text(v): seeds.add(v)
 cov=bytearray(L.TSZ); q=collections.deque(seeds); seen=set(seeds)
@@ -177,11 +177,12 @@ for a,(dll,nm) in iat.items():
         else: miss+=1; print(f"  MISMATCH {nm}: derived {best}, actual {KNOWN[nm]}  (distribution {dict(cnt)})")
 print(f"\n=== ARGUMENT COUNT DERIVATION ACCURACY ===")
 print(f"  across {hit+miss} known functions: {hit} correct, {miss} wrong = %{100.0*hit/max(hit+miss,1):.1f}")
-with open('gen/all/impargs.c','w') as f:
+IMPOUT=os.path.join(os.environ.get('GENOUT','gen/all'),'impargs.c')
+with open(IMPOUT,'w') as f:
     f.write('#include <stdint.h>\ntypedef struct { uint32_t iat; const char*dll; const char*name; int nargs; } ImpEnt;\n')
     f.write(f'const uint32_t g_imp_count = {len(rows)};\nconst ImpEnt g_imp[] = {{\n')
     for dll,nm,n,sites,a in sorted(rows,key=lambda r:r[4]):
         n2 = KNOWN.get(nm, n)
         f.write(f'  {{0x{a:08x}u,"{dll}","{nm}",{n2}}},\n')
     f.write('};\n')
-print(f"-> gen/all/impargs.c ({len(rows)} entries)")
+print(f"-> {IMPOUT} ({len(rows)} entries)")

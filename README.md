@@ -40,10 +40,9 @@ The game boots, reaches the menus, and races are playable with sound.
 
 ### Known limitations
 
-- **Exactly one build of `SPEED2.EXE` is supported**, the European v1.2 one
-  (see [Game versions](#game-versions)).
-  Game addresses are hard-coded in the runtime, and the pipeline relies on a
-  property of that particular file (below).
+- **Two builds of `SPEED2.EXE` are supported**, the European and the North
+  American v1.2 ones (see [Game versions](#game-versions)); each has its own
+  engine. Other builds would need their own lifting pass and address map.
 - Videos are skipped: there is no VP6 decoder.
 - Keyboard and mouse only; no gamepad or wheel support. No network play.
 - Structured exception handling is not implemented (`RtlUnwind` /
@@ -154,27 +153,27 @@ HD build draws about 18 W.
 - Xcode Command Line Tools (`clang`; `swiftc` for the launcher window).
 - Python 3 with `capstone` 5.x and `pefile` (`requirements.txt`).
 - Rosetta 2, only for `tools/fuzzisa.py`.
-- Your own installation of the game, with this exact executable:
+- Your own installation of the game, with one of these executables (both v1.2
+  without the CD check, built Feb 9 2005):
 
-  | | |
-  |---|---|
-  | File | `SPEED2.EXE`, 4,788,224 bytes |
-  | Build | **European** (PAL) v1.2 executable without the CD check, built Feb 9 2005 |
-  | SHA-256 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` |
+  | Build | `SPEED2.EXE` size | SHA-256 |
+  |---|---|---|
+  | **European** (PAL) v1.2 | 4,788,224 bytes | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` |
+  | **North American** v1.2 | 4,800,512 bytes | `f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7` |
 
-  The app checks the file at startup and says so instead of crashing;
-  `NFSU2_ANY_EXE=1` skips the check.
+  The app checks the file at startup, picks the matching engine and says so
+  instead of crashing on any other file; `NFSU2_ANY_EXE=1` skips the check.
 
 ### Game versions
 
-The recompiled code and the addresses in the runtime belong to one executable,
-so every other build of `SPEED2.EXE` needs its own lifting pass and address
-table. The game *data* is a separate matter (see the note under the table).
+The recompiled code belongs to one executable, so every build of `SPEED2.EXE`
+gets its own lifting pass and engine. The game *data* is a separate matter (see
+the note under the table).
 
 | `SPEED2.EXE` | Size | SHA-256 | Status |
 |---|---|---|---|
-| European v1.2, no CD check | 4,788,224 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` | **Supported** |
-| North American v1.2, no CD check (the build most PC mods target) | 4,800,512 | `f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7` | Not supported yet. Same Feb 9 2005 build; the data addresses match ours, the code is shifted by small amounts. Planned. |
+| European v1.2, no CD check | 4,788,224 | `8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297` | **Supported** (the reference build) |
+| North American v1.2, no CD check (the build most PC mods target) | 4,800,512 | `f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7` | **Supported** (engines `nfsu2-engine-na`, `-na-hd`). Tested on US disc data from the menus into a Quick Race, original and HD. |
 | US v1.0 retail disc | 5,987,981 | `2cbd698fee8338a13d1891bc17d27e6641b4b9dd40580de818594b9140222899` | **Cannot be supported.** Protected by SafeDisc: the code section is encrypted on disc and only decrypted at run time, so there is nothing to recompile. |
 
 The retail disc executable carries the disc's copy protection, and the official
@@ -210,10 +209,36 @@ python3 tools/install_from_discs.py ~/Games/NFSU2 "Disc 1.cue" "Disc 2.cue"
 ```
 
 This writes a normal game folder (about 1.7 GB) that the launcher can point at.
-It copies the disc's `SPEED2.EXE` too, but see the table above: the launcher
-accepts only the supported executable. With that executable in the folder, the
-US disc data plays in the US region (see "US data works with the supported
-executable" above).
+It copies the disc's `SPEED2.EXE` too, but see the table above: the disc
+executable cannot run, so put a supported one in its place. The North American
+v1.2 executable is the natural match for US disc data; the European one also
+works with it (see "US data works with the supported executable" above).
+
+### How the North American build is made
+
+The European executable is the reference: the runtime was written against it.
+`tools/addrmap.py` matches the two executables function by function (a byte
+signature with the parts that move between builds masked, aligned in order) and
+collects data-address pairs from the matched code: 23,276 of 23,277 functions
+match, most code is 16 bytes away from the European build, most data is at the
+same address. Every game address in the runtime is written as `GA(0x…)` in
+European terms; for the North American engine `runtime/build_na.h` (generated
+from the map) turns each one, and each `sub_XXXXXXXX` name the runtime uses, into
+the North American one. An address the map cannot place stops the build.
+
+Two things differ at run time:
+
+- The North American no-CD executable still looks for a CD-ROM drive (its disc
+  contents check is patched out, the drive check is not) and otherwise asks for
+  "Disc 2" forever. Its engine reports `D:` as an empty CD-ROM drive; paths on
+  `D:` resolve to the game folder like those on `C:`.
+- Its region variable is in `.bss` (0, the US) rather than a constant, see
+  "US data works with the supported executable".
+
+Function discovery missed eight call targets in this executable (its linear scan
+stops on bytes an earlier, misaligned scan covered), which became traps;
+`LIFT_MISSING=1` (set by `tools/gen_v2.sh` for this build) lifts such targets in
+extra shards.
 
 ## Build and run
 
@@ -242,6 +267,22 @@ tools/gen_v2.sh "$EXE"
 ./pack.sh --zip      # also out/NFSU2.zip for a release
 ./pack.sh --embed    # out/personal/NFSU2.app with your game inside (do not share)
 ```
+
+For the North American v1.2 executable the same steps build a second pair of
+engines; `tools/gen_v2.sh` recognises the file by its SHA-256 and writes `gen/na`,
+`run.sh` picks the engine by the executable, and `pack.sh` adds the engines to the
+app when they are built:
+
+```bash
+tools/gen_v2.sh "/path/to/NA/SPEED2.EXE"       # -> gen/na
+BUILD=na ./build.sh && BUILD=na ./link.sh       # -> out/nfsu2_na_boot, out/nfsu2_na_hd_boot
+```
+
+`runtime/build_na.h` is committed. `link.sh` regenerates it from
+`out/na/addrmap.json` when that file exists, which takes both executables:
+`tools/addrmap.py build <European SPEED2.EXE> <North American SPEED2.EXE> out/na/addrmap.json`.
+Do this after adding a `GA(...)` address or a `sub_` name to the runtime; game
+addresses written without `GA(...)` would be wrong in the North American engine.
 
 The app opens a small launcher window first (`launcher/`, built by `pack.sh`
 with `swiftc`): it finds and checks `SPEED2.EXE`, offers Original or HD graphics
@@ -297,10 +338,10 @@ game files inside (about 1.4 GB). It runs on its own; saves stay in
 so keep it for yourself.
 
 **Which version of the game does it need?**
-The Windows PC version, with the European v1.2 `SPEED2.EXE` listed under
-[Requirements](#requirements). The North American v1.2 executable is not
-supported yet; the US v1.0 disc executable cannot be (it is copy-protected).
-Console versions are not supported. See [Game versions](#game-versions).
+The Windows PC version, with the European or the North American v1.2
+`SPEED2.EXE` listed under [Requirements](#requirements). The US v1.0 disc
+executable cannot be supported (it is copy-protected). Console versions are not
+supported. See [Game versions](#game-versions).
 
 **I only have the PC discs. Can I install them on a Mac?**
 Yes, without Windows: `tools/install_from_discs.py` unpacks the disc images

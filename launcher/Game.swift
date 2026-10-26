@@ -7,15 +7,28 @@
 import Foundation
 import CryptoKit
 
+/// A build of SPEED2.EXE the port has an engine for (README "Game versions").
+struct ExeBuild: Equatable {
+    let name: String
+    let size: UInt64
+    let sha256: String
+    let engineSuffix: String      // Contents/MacOS/nfsu2-engine<suffix>[-hd]
+}
+
 enum SupportedExe {
-    static let size: UInt64 = 4_788_224
-    static let sha256 = "8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297"
+    static let builds = [
+        ExeBuild(name: "European v1.2", size: 4_788_224,
+                 sha256: "8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297", engineSuffix: ""),
+        ExeBuild(name: "North American v1.2", size: 4_800_512,
+                 sha256: "f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7", engineSuffix: "-na"),
+    ]
     static let names = ["SPEED2.EXE", "speed2.exe", "Speed2.exe"]
 }
 
 struct GameLocation: Equatable {
     let exe: URL
     let embedded: Bool
+    var build: ExeBuild? = nil    // set by Locator.check
     var folder: URL { exe.deletingLastPathComponent() }
 }
 
@@ -35,6 +48,16 @@ enum Paths {
     static var saves: URL { home.appendingPathComponent("Library/Application Support/NFSU2 Saves") }
     static var logs: URL { home.appendingPathComponent("Library/Logs/NFSU2") }
     static var registry: URL { home.appendingPathComponent(".nfsu2_registry") }
+
+    /// The engine binary for a build of SPEED2.EXE (nil: the European one).
+    static func engine(_ build: ExeBuild?, hd: Bool) -> URL {
+        macOS.appendingPathComponent("nfsu2-engine" + (build?.engineSuffix ?? "") + (hd ? "-hd" : ""))
+    }
+    static func hasEngine(_ build: ExeBuild?) -> Bool {
+        let fm = FileManager.default
+        return fm.isExecutableFile(atPath: engine(build, hd: false).path)
+            || fm.isExecutableFile(atPath: engine(build, hd: true).path)
+    }
 }
 
 enum Prefs {
@@ -102,17 +125,24 @@ enum Locator {
         ((try? FileManager.default.attributesOfItem(atPath: u.path))?[.size] as? NSNumber)?.uint64Value ?? 0
     }
 
-    /// true when this is the one SPEED2.EXE the port was built from.
-    static func isSupported(_ exe: URL) -> Bool {
-        if ProcessInfo.processInfo.environment["NFSU2_ANY_EXE"] == "1" { return true }
-        guard fileSize(exe) == SupportedExe.size,
-              let data = try? Data(contentsOf: exe, options: .mappedIfSafe) else { return false }
+    /// Which supported build this SPEED2.EXE is, if any.
+    static func identify(_ exe: URL) -> ExeBuild? {
+        let size = fileSize(exe)
+        guard SupportedExe.builds.contains(where: { $0.size == size }),
+              let data = try? Data(contentsOf: exe, options: .mappedIfSafe) else { return nil }
         let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        return hex == SupportedExe.sha256
+        return SupportedExe.builds.first { $0.sha256 == hex }
     }
 
+    /// Ready when the file is a supported build and this app has its engine.
     static func check(_ loc: GameLocation) -> GameState {
-        isSupported(loc.exe) ? .ready(loc) : .unsupported(loc, fileSize(loc.exe))
+        var l = loc
+        l.build = identify(loc.exe)
+        if l.build == nil && ProcessInfo.processInfo.environment["NFSU2_ANY_EXE"] == "1" {
+            l.build = SupportedExe.builds[0]
+        }
+        guard let b = l.build, Paths.hasEngine(b) else { return .unsupported(l, fileSize(loc.exe)) }
+        return .ready(l)
     }
 }
 

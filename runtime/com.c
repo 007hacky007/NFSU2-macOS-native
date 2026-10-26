@@ -223,7 +223,7 @@ static uint32_t g_modes[6][2] = {
     {1280,720},{1920,1080},{2560,1440},{0,0},{3840,2160},{1600,1200},
 };
 #define ROW_NATIVE 3
-static const uint32_t g_lbl_addr[6] = {0x0078fa1cu,0x0078fa14u,0x0078fa08u,0x0078f9fcu,0x0078f9f0u,0x0078f9e4u};
+static const uint32_t g_lbl_addr[6] = {GA(0x0078fa1cu),GA(0x0078fa14u),GA(0x0078fa08u),GA(0x0078f9fcu),GA(0x0078f9f0u),GA(0x0078f9e4u)};
 static const uint32_t g_lbl_cap[6]  = {8,8,12,12,12,12};
 static void label_put(int row, const char *txt){
     uint32_t a = g_lbl_addr[row], n = (uint32_t)strlen(txt);
@@ -2674,8 +2674,8 @@ int com_call(CPU *c, uint32_t magic){
              * increases -> animations and timed screen transitions freeze.
              * Since our virtual clock advances exactly 1/60 s per frame, +1 tick per
              * frame gives the right speed. */
-            if (ENVC("FETICK") && mem_is_committed(0x008651a8u))
-                MR32(0x008651a8u) = MR32(0x008651a8u) + 1u;
+            if (ENVC("FETICK") && mem_is_committed(GA(0x008651a8u)))
+                MR32(GA(0x008651a8u)) = MR32(GA(0x008651a8u)) + 1u;
             /* FIXFRAMETIME: the game's TARGET FRAME TIME [0x865558] is never set (its
              * setters sub_00576cc0/ce0 aren't called) -> the frame delta dt stays at
              * 1/1800, the front-end tick [0x8651a8] never increases, animations and
@@ -2686,17 +2686,17 @@ int com_call(CPU *c, uint32_t magic){
              * wait, fps = GPU/CPU capacity; game time is fixed per frame by the
              * virtual clock.  DON'T USE in menus: front-end timing breaks, AUTOSEQ drifts. */
             { const char *lf = ENVC("LIMFREE");
-              if (lf && g_present_no >= (unsigned)atoi(lf) && g_present_no >= 2u && mem_is_committed(0x00865558u))
-                  MRF32(0x00865558u) = 0.0002f; }
+              if (lf && g_present_no >= (unsigned)atoi(lf) && g_present_no >= 2u && mem_is_committed(GA(0x00865558u)))
+                  MRF32(GA(0x00865558u)) = 0.0002f; }
             { const char *ff = ENVC("FIXFRAMETIME");
               static int done_ft = 0;
               if (ff && *ff && ff[0] != '0' && !done_ft && g_present_no >= 2u){
                   done_ft = 1;
                   float v = (float)atof(ff);
-                  if (!(v > 0.f)) v = mem_is_committed(0x007fb710u)
-                                      ? MRF32(0x007fb710u) : (1.f/120.f);
-                  if (mem_is_committed(0x00865558u)){
-                      MRF32(0x00865558u) = v;
+                  if (!(v > 0.f)) v = mem_is_committed(GA(0x007fb710u))
+                                      ? MRF32(GA(0x007fb710u)) : (1.f/120.f);
+                  if (mem_is_committed(GA(0x00865558u))){
+                      MRF32(GA(0x00865558u)) = v;
                       fprintf(stderr,"  [frame-time] [0x865558] set to %g\n",
                               (double)v);
                   }
@@ -2736,9 +2736,9 @@ int com_call(CPU *c, uint32_t magic){
               extern uint32_t g_fe_mgr;
               if (fs2 && *fs2 && !fired && g_present_no >= 2500u && g_fe_mgr){
                   fired = 1;
-                  uint32_t from = 0x0078ea60u;              /* UG_LS_Splash.fng */
-                  uint32_t to   = (atoi(fs2) == 2) ? 0x0078f530u   /* UI_Main.fng */
-                                                   : 0x0078ea4cu;  /* MC_Background.fng */
+                  uint32_t from = GA(0x0078ea60u);              /* UG_LS_Splash.fng */
+                  uint32_t to   = (atoi(fs2) == 2) ? GA(0x0078f530u)   /* UI_Main.fng */
+                                                   : GA(0x0078ea4cu);  /* MC_Background.fng */
                   fprintf(stderr,"  [force] SwitchFEngPackages(manager=%08x, \"%s\" -> \"%s\")\n",
                           g_fe_mgr, (const char*)(g_mem+from), (const char*)(g_mem+to));
                   { CPU save = *c;
@@ -2747,12 +2747,12 @@ int com_call(CPU *c, uint32_t magic){
                          * in its own list and transitions by LOADING it. */
                         PUSH32(0u); PUSH32(from);
                         PUSH32(0xDEADBEEFu);
-                        dispatch_indirect(c, 0x004c4f50u);
+                        dispatch_indirect(c, GA(0x004c4f50u));
                     } else {
                         PUSH32(to); PUSH32(from);
                         PUSH32(0xDEADBEEFu);
                         c->ecx = g_fe_mgr;
-                        dispatch_indirect(c, 0x0051cbb0u);
+                        dispatch_indirect(c, GA(0x0051cbb0u));
                     }
                     *c = save; }
                   fprintf(stderr,"  [force] call returned\n");
@@ -2760,7 +2760,7 @@ int com_call(CPU *c, uint32_t magic){
             /* BOOTFLOW: walk the boot flow list (0x836488).
              * Shows directly what is being waited for on the splash. */
             if (ENVC("BOOTFLOW") && (g_present_no % 900u) == 5u){
-                uint32_t head = mem_is_committed(0x00836488u) ? MR32(0x00836488u) : 0;
+                uint32_t head = mem_is_committed(GA(0x00836488u)) ? MR32(GA(0x00836488u)) : 0;
                 { /* Front-end clock chain:
                    *   [0x865194] = frame delta (dt, seconds)
                    *   [0x865140] = accumulator remainder
@@ -2768,11 +2768,11 @@ int com_call(CPU *c, uint32_t magic){
                    * Animations and timed screen transitions depend on this tick. */
                   fprintf(stderr,"  [fe-clock] frame %u: dt(865194)=%g  remainder(865140)=%g"
                           "  TICK(8651a8)=%d  frame(865148)=%d  target(865558)=%g\n", g_present_no,
-                          mem_is_committed(0x00865194u)?(double)MRF32(0x00865194u):-1.0,
-                          mem_is_committed(0x00865140u)?(double)MRF32(0x00865140u):-1.0,
-                          mem_is_committed(0x008651a8u)?(int)MR32(0x008651a8u):-1,
-                          mem_is_committed(0x00865148u)?(int)MR32(0x00865148u):-1,
-                          mem_is_committed(0x00865558u)?(double)MRF32(0x00865558u):-1.0);
+                          mem_is_committed(GA(0x00865194u))?(double)MRF32(GA(0x00865194u)):-1.0,
+                          mem_is_committed(GA(0x00865140u))?(double)MRF32(GA(0x00865140u)):-1.0,
+                          mem_is_committed(GA(0x008651a8u))?(int)MR32(GA(0x008651a8u)):-1,
+                          mem_is_committed(GA(0x00865148u))?(int)MR32(GA(0x00865148u)):-1,
+                          mem_is_committed(GA(0x00865558u))?(double)MRF32(GA(0x00865558u)):-1.0);
                   { uint64_t host_us(void);
                     uint64_t t1 = host_us(); volatile int sp=0;
                     for (int q=0;q<200000;q++) sp+=q;
@@ -2786,55 +2786,55 @@ int com_call(CPU *c, uint32_t magic){
                             CPU sv = *c;
                             c->top = (c->top - 1) & 7; c->st[c->top] = tv[q];
                             PUSH32(0xDEADBEEFu);
-                            dispatch_indirect(c, 0x0075bed4u);
+                            dispatch_indirect(c, GA(0x0075bed4u));
                             fprintf(stderr,"           __ftol(%g) = %d %s\n",
                                     tv[q], (int)c->eax,
                                     ((int)c->eax == (int)tv[q]) ? "" : "  <-- WRONG");
                             *c = sv;
                         } } }
                     fprintf(stderr,"           MID esi(86513c)=%d  remainder after int2(865144)=%g\n",
-                            mem_is_committed(0x0086513cu)?(int)MR32(0x0086513cu):-1,
-                            mem_is_committed(0x00865144u)?(double)MRF32(0x00865144u):-1.0);
+                            mem_is_committed(GA(0x0086513cu))?(int)MR32(GA(0x0086513cu)):-1,
+                            mem_is_committed(GA(0x00865144u))?(double)MRF32(GA(0x00865144u)):-1.0);
                     { /* sub_0057eae0 writes the measured frame time every frame to
                        * 0x8647a8 + (frame%100)*16 + 4. */
-                      uint32_t fr = mem_is_committed(0x00865148u)?MR32(0x00865148u):0;
+                      uint32_t fr = mem_is_committed(GA(0x00865148u))?MR32(GA(0x00865148u)):0;
                       fprintf(stderr,"           MEASURED frame time (last 4 frames):");
                       for (int q=0;q<4;q++){
                           uint32_t idx = (fr - (uint32_t)q) % 100u;
-                          uint32_t a4 = 0x008647a8u + idx*16u + 4u;
+                          uint32_t a4 = GA(0x008647a8u) + idx*16u + 4u;
                           fprintf(stderr,"  %g", mem_is_committed(a4)?(double)MRF32(a4):-1.0);
                       }
                       fprintf(stderr,"\n"); }
                     fprintf(stderr,"           ms/tik(828028)=%g  kaydirma(8284e4)=%u\n",
-                            mem_is_committed(0x00828028u)?(double)MRF32(0x00828028u):-1.0,
-                            mem_is_committed(0x008284e4u)?MR32(0x008284e4u):0);
+                            mem_is_committed(GA(0x00828028u))?(double)MRF32(GA(0x00828028u)):-1.0,
+                            mem_is_committed(GA(0x008284e4u))?MR32(GA(0x008284e4u)):0);
                     fprintf(stderr,"           QPC bolen(8284e4)=%u  olcek(78435c)=%g"
                             "  host_us within frame: %llu -> %llu (diff %llu us)\n",
-                            mem_is_committed(0x008284e4u)?MR32(0x008284e4u):0,
-                            mem_is_committed(0x0078435cu)?(double)MRF32(0x0078435cu):0.0,
+                            mem_is_committed(GA(0x008284e4u))?MR32(GA(0x008284e4u)):0,
+                            mem_is_committed(GA(0x0078435cu))?(double)MRF32(GA(0x0078435cu)):0.0,
                             (unsigned long long)t1,(unsigned long long)t2,
                             (unsigned long long)(t2-t1)); }
                   fprintf(stderr,"           girdi(7fb714)=%g  mod(7fb700)=%u  kalan2(865144)=%g\n",
-                          mem_is_committed(0x007fb714u)?(double)MRF32(0x007fb714u):-1.0,
-                          mem_is_committed(0x007fb700u)?MR32(0x007fb700u):0,
-                          mem_is_committed(0x00865144u)?(double)MRF32(0x00865144u):-1.0); }
+                          mem_is_committed(GA(0x007fb714u))?(double)MRF32(GA(0x007fb714u)):-1.0,
+                          mem_is_committed(GA(0x007fb700u))?MR32(GA(0x007fb700u)):0,
+                          mem_is_committed(GA(0x00865144u))?(double)MRF32(GA(0x00865144u)):-1.0); }
                 { /* Game clock: sub_0057a1b0 => [0x865134] * constant.
                    * If this counter doesn't increase, front-end animations stay frozen. */
                   fprintf(stderr,"  [gameclock] tick(865134)=%d  (865138)=%08x  sec(7fb700)=%u"
                           "  scale=%g/%g  fe_t(864720)=%g\n",
-                          mem_is_committed(0x00865134u)?(int)MR32(0x00865134u):-1,
-                          mem_is_committed(0x00865138u)?MR32(0x00865138u):0,
-                          mem_is_committed(0x007fb700u)?MR32(0x007fb700u):0,
-                          mem_is_committed(0x007851c0u)?(double)MRF32(0x007851c0u):0.0,
-                          mem_is_committed(0x007875bcu)?(double)MRF32(0x007875bcu):0.0,
-                          mem_is_committed(0x00864720u)?(double)MRF32(0x00864720u):0.0); }
+                          mem_is_committed(GA(0x00865134u))?(int)MR32(GA(0x00865134u)):-1,
+                          mem_is_committed(GA(0x00865138u))?MR32(GA(0x00865138u)):0,
+                          mem_is_committed(GA(0x007fb700u))?MR32(GA(0x007fb700u)):0,
+                          mem_is_committed(GA(0x007851c0u))?(double)MRF32(GA(0x007851c0u)):0.0,
+                          mem_is_committed(GA(0x007875bcu))?(double)MRF32(GA(0x007875bcu)):0.0,
+                          mem_is_committed(GA(0x00864720u))?(double)MRF32(GA(0x00864720u)):0.0); }
                 { uint64_t host_us(void); uint32_t host_ms(void);
                   fprintf(stderr,"  [clock] frame %u: host_us=%llu  host_ms=%u\n",
                           g_present_no, (unsigned long long)host_us(), host_ms()); }
                 fprintf(stderr,"  [boot] frame %u  list=%08x  flag(83648c)=%u  (836498)=%08x\n",
                         g_present_no, head,
-                        mem_is_committed(0x0083648cu) ? MR8(0x0083648cu) : 999u,
-                        mem_is_committed(0x00836498u) ? MR32(0x00836498u) : 0);
+                        mem_is_committed(GA(0x0083648cu)) ? MR8(GA(0x0083648cu)) : 999u,
+                        mem_is_committed(GA(0x00836498u)) ? MR32(GA(0x00836498u)) : 0);
                 if (head && mem_is_committed(head+0x40u)){
                     for (uint32_t q = 0; q < 0x40u; q += 4u){
                         uint32_t V = MR32(head+q);
@@ -2856,7 +2856,7 @@ int com_call(CPU *c, uint32_t magic){
             if (ENVC("FLOWLOG") && (g_present_no % 500u) == 1u){
                 static char last[160] = {0};
                 char cur[160]; cur[0] = 0;
-                uint32_t gl[2] = { 0x0086549cu, 0x00864f88u };
+                uint32_t gl[2] = { GA(0x0086549cu), GA(0x00864f88u) };
                 for (int q = 0; q < 2; q++){
                     const char *t = "(?)";
                     if (mem_is_committed(gl[q]+3)){
@@ -2870,8 +2870,8 @@ int com_call(CPU *c, uint32_t magic){
                     snprintf(last, sizeof last, "%s", cur);
                     fprintf(stderr,"  [flow] frame %u: %s  flag(865498)=%u (8654a4)=%u\n",
                             g_present_no, cur,
-                            mem_is_committed(0x00865498u)?MR8(0x00865498u):999u,
-                            mem_is_committed(0x008654a4u)?MR32(0x008654a4u):999u);
+                            mem_is_committed(GA(0x00865498u))?MR8(GA(0x00865498u)):999u,
+                            mem_is_committed(GA(0x008654a4u))?MR32(GA(0x008654a4u)):999u);
                 }
             }
             /* PRESENTBT: extract the structure of the main loop. */
@@ -2910,9 +2910,9 @@ int com_call(CPU *c, uint32_t magic){
              * List 0x828538 (tail) -> +4 (previous) ... 0x828534. */
             if (ENVC("POOLS") && (g_present_no % 150) == 20){
                 fprintf(stderr,"  --- slot pools (list head 0x828530=%u) ---\n",
-                        mem_is_committed(0x828530u) ? MR32(0x828530u) : 0xFFFFFFFFu);
+                        mem_is_committed(GA(0x828530u)) ? MR32(GA(0x828530u)) : 0xFFFFFFFFu);
                 /* directly known pools: EventHandler (0x883e38), Event (0x883e34?) */
-                { uint32_t known[] = {0x883e38u, 0x883e34u};
+                { uint32_t known[] = {GA(0x883e38u), GA(0x883e34u)};
                   for (int q=0;q<2;q++){
                     if (!mem_is_committed(known[q]+4)) continue;
                     uint32_t po = MR32(known[q]);
@@ -2927,9 +2927,9 @@ int com_call(CPU *c, uint32_t magic){
                             known[q], nm3, MR32(po+0x24), MR32(po+0x2c), MR32(po+0x28),
                             MR32(po+8), MR32(po+0x10), MR32(po+0x18), MR32(po+0x1c));
                   } }
-                uint32_t n2 = mem_is_committed(0x828538u) ? MR32(0x828538u) : 0;
+                uint32_t n2 = mem_is_committed(GA(0x828538u)) ? MR32(GA(0x828538u)) : 0;
                 int guard2 = 0;
-                while (n2 && n2 != 0x828534u && guard2++ < 400){
+                while (n2 && n2 != GA(0x828534u) && guard2++ < 400){
                     if (!mem_is_committed(n2+0x2f)) break;
                     uint32_t nameptr = MR32(n2+0x0c);
                     uint32_t cap = MR32(n2+0x24), esz = MR32(n2+0x28), fr = MR32(n2+0x2c);
@@ -3745,8 +3745,8 @@ int com_call(CPU *c, uint32_t magic){
             if (ENVC("VOICELOG")){
                 static unsigned nu=0; static int peak=0;
                 if ((nu++ % 120u) == 0u){
-                    uint32_t tb = mem_is_committed(0x8b466cu) ? MR32(0x8b466cu) : 0u;
-                    int cnt = mem_is_committed(0x8b460cu) ? (int)(int16_t)MR16(0x8b460cu) : 0;
+                    uint32_t tb = mem_is_committed(GA(0x8b466cu)) ? MR32(GA(0x8b466cu)) : 0u;
+                    int cnt = mem_is_committed(GA(0x8b460cu)) ? (int)(int16_t)MR16(GA(0x8b460cu)) : 0;
                     int act = 0;
                     if (tb && cnt > 0 && cnt < 256)
                         for (int q=0;q<cnt;q++){
@@ -3768,11 +3768,11 @@ int com_call(CPU *c, uint32_t magic){
                      * ((uint16)[0x8b44c6] << 8) * param. */
                     fprintf(stderr,"  [volume] [0x8b44c6]=%u  [0x8b44c4]=%u  [0x8b44c8]=%u"
                             "  [0x8b44ca]=%u  [0x8b44cc]=%u\n",
-                            mem_is_committed(0x8b44c6u)?MR16(0x8b44c6u):0xFFFFu,
-                            mem_is_committed(0x8b44c4u)?MR16(0x8b44c4u):0xFFFFu,
-                            mem_is_committed(0x8b44c8u)?MR16(0x8b44c8u):0xFFFFu,
-                            mem_is_committed(0x8b44cau)?MR16(0x8b44cau):0xFFFFu,
-                            mem_is_committed(0x8b44ccu)?MR16(0x8b44ccu):0xFFFFu);
+                            mem_is_committed(GA(0x8b44c6u))?MR16(GA(0x8b44c6u)):0xFFFFu,
+                            mem_is_committed(GA(0x8b44c4u))?MR16(GA(0x8b44c4u)):0xFFFFu,
+                            mem_is_committed(GA(0x8b44c8u))?MR16(GA(0x8b44c8u)):0xFFFFu,
+                            mem_is_committed(GA(0x8b44cau))?MR16(GA(0x8b44cau)):0xFFFFu,
+                            mem_is_committed(GA(0x8b44ccu))?MR16(GA(0x8b44ccu)):0xFFFFu);
                     fprintf(stderr,"  [channel] table=0x%08x count=%d active=%d (peak=%d)"
                             "  non-zero entries=%u bytes=%u\n",
                             tb, cnt, act, peak, ent_nz, nz);

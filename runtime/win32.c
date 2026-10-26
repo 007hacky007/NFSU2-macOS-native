@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <time.h>
 #include <setjmp.h>
@@ -264,14 +265,14 @@ static void spin_report(void){
 }
 uint64_t spin_slept_us(void){ return g_spin_us; }   /* perflog: frame limiter sleep */
 static void qpc_spin_sleep(CPU *c){
-    if (MR32(c->esp + 0xcu) != 0x57eb79u) return;
+    if (MR32(c->esp + 0xcu) != GA(0x57eb79u)) return;
     if (g_spin_margin < 0){ const char *e = getenv("SPINSLEEP"); g_spin_margin = e ? atoi(e) : 200;
                          if (g_spin_margin && ENVC("QPCWHO")) atexit(spin_report); }
     if (!g_spin_margin) return;
     /* the game's units: F = [0x828028] per QPC tick (measured 0.001 = ms,
      * k = [0x784550] = 1000), X = [0x865558] = 1/120 s frame target */
-    uint32_t S = MR32(0x8284e4u) & 31u;
-    float F = MRF32(0x828028u), frame_target = MRF32(c->esp + 0x20u);
+    uint32_t S = MR32(GA(0x8284e4u)) & 31u;
+    float F = MRF32(GA(0x828028u)), frame_target = MRF32(c->esp + 0x20u);
     if (!(F > 0.0f) || !(frame_target > 0.0f)) return;
     uint64_t now = host_qpc();
     int32_t d = (int32_t)((uint32_t)(now >> S) - c->ebx); if (d < 0) d = 0;
@@ -294,7 +295,7 @@ static void qpc_who(CPU *c){
     uint32_t ra = c->eip;                       /* after POP32: the return address */
     /* sub_0043bdf0 (the game's time wrapper): sub esp,8; push arg; call.
      * After POP32 [esp]=arg, [esp+4..0xb]=locals, [esp+0xc]=its caller. */
-    uint32_t ra2 = ra == 0x43bdfeu ? MR32(c->esp+0xcu)
+    uint32_t ra2 = ra == GA(0x43bdfeu) ? MR32(c->esp+0xcu)
                  : (c->ebp && mem_is_committed(c->ebp+4u)) ? MR32(c->ebp+4u) : 0u;
     uint32_t h = (tid * 2654435761u ^ ra * 40503u ^ ra2) & 127u;
     for (int i = 0; i < 128; i++, h = (h + 1) & 127u){
@@ -320,7 +321,7 @@ int win32_call(CPU *c, uint32_t idx){
     static uint32_t qpc_idx = 0xFFFFFFFFu;
     if (idx == qpc_idx || (qpc_idx == 0xFFFFFFFFu && !strcmp(n,"QueryPerformanceCounter") && (qpc_idx = idx, 1))){
         if (ENVC("QPCWHO")) qpc_who(c);
-        if (c->eip == 0x43bdfeu) qpc_spin_sleep(c);
+        if (c->eip == GA(0x43bdfeu)) qpc_spin_sleep(c);
         uint64_t v = host_qpc(); uint32_t p=ARG(c,0);
         if(p){ MR32(p)=(uint32_t)v; MR32(p+4)=(uint32_t)(v>>32); } r=1; }
     else if (!strcmp(n,"GetVersion"))            r = 0x0A280105u;      /* 5.1.2600 */
@@ -543,7 +544,7 @@ int win32_call(CPU *c, uint32_t idx){
         r = 1; }
     else if (!strcmp(n,"Direct3DCreate9")) r = com_direct3dcreate9();
     else if (!strcmp(n,"DirectInput8Create")) r = com_directinput8create(ARG(c,3));
-    else if (!strcmp(n,"DirectSoundCreate") || (!strcmp(n,"#1") && !strcmp(e->dll,"DSOUND.dll")))
+    else if (!strcmp(n,"DirectSoundCreate") || (!strcmp(n,"#1") && !strcasecmp(e->dll,"DSOUND.dll")))
         r = com_directsoundcreate(ARG(c,1));
     else if (!strcmp(n,"SetConsoleCtrlHandler")) r = 1;
     else if (!strcmp(n,"RtlUnwind"))             r = 0;

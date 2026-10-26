@@ -81,10 +81,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define RET_ROAD       0x005BA0A7u
-#define RET_ROAD_BLUR  0x005BA11Du
-#define RET_MIRROR     0x005BA1DDu
-#define RET_CUBE       0x005BA559u
+#ifndef GA                       /* game address, see cpu.h */
+#define GA(x) (x)
+#endif
+#define RET_ROAD       GA(0x005BA0A7u)
+#define RET_ROAD_BLUR  GA(0x005BA11Du)
+#define RET_MIRROR     GA(0x005BA1DDu)
+#define RET_CUBE       GA(0x005BA559u)
 
 static int    g_init, g_refl = 1;
 static double g_road = 0.5, g_blur = 0.5;

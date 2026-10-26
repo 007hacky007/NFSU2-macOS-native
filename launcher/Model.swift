@@ -29,18 +29,16 @@ final class LauncherModel: ObservableObject {
     var isCopying: Bool { builder != nil }
     private var quitWhenCopyStops = false
 
-    let hasOriginal: Bool
-    let hasHD: Bool
-    var canChooseEngine: Bool { hasOriginal && hasHD }
-
-    static func engineURL(_ e: Engine) -> URL {
-        Paths.macOS.appendingPathComponent(e == .hd ? "nfsu2-engine-hd" : "nfsu2-engine")
+    /// Engines for the found SPEED2.EXE (European ones until it is known).
+    func hasEngine(_ e: Engine) -> Bool {
+        FileManager.default.isExecutableFile(atPath: Paths.engine(location?.build, hd: e == .hd).path)
     }
+    var canChooseEngine: Bool { hasEngine(.original) && hasEngine(.hd) }
 
     init() {
         let fm = FileManager.default
-        hasOriginal = fm.isExecutableFile(atPath: Self.engineURL(.original).path)
-        hasHD = fm.isExecutableFile(atPath: Self.engineURL(.hd).path)
+        let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
+        let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
         defaults.register(defaults: [Prefs.showAtStartup: true])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
@@ -111,7 +109,9 @@ final class LauncherModel: ObservableObject {
         if !engineForced { defaults.set(engine.rawValue, forKey: Prefs.engine) }
         defaults.synchronize()
         if !fromEnv { setenv("NFSU2_DATA", loc.exe.path, 1) }
-        let path = Self.engineURL(engine).path
+        var e = engine
+        if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
+        let path = Paths.engine(loc.build, hd: e == .hd).path
         // A child process, not exec(): macOS attributes the child's file access to
         // this launcher (the "responsible" process), so folder permissions the
         // player granted here (Downloads, Documents...) are not asked for again.

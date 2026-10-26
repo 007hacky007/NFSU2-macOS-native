@@ -40,6 +40,6 @@ def rd32(a):
 IMG_LO, IMG_HI = IB, IB+pe.OPTIONAL_HEADER.SizeOfImage
 ok=sum(1 for a in addrs if (v:=rd32(a)) is not None and IMG_LO<=v<IMG_HI)
 print(f"\nVERIFICATION: {ok}/{len(addrs)} locations hold a value pointing into the image range ({IMG_LO:#x}-{IMG_HI:#x}) = {100.0*ok/max(len(addrs),1):.2f}%")
-out='out/relocs.txt'; os.makedirs('out', exist_ok=True)
+out=os.environ.get('RELOCS','out/relocs.txt'); os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
 open(out,'w').write('\n'.join(f'{a:08x}' for a in sorted(addrs)))
 print(f"-> {out} ({len(addrs)} addresses)")

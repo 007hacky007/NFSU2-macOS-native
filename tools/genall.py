@@ -22,7 +22,7 @@ def discover_all():
         for nm,va,vs,d in L.secs:
             if va<=a<va+len(d)-3: return struct.unpack_from('<I',d,a-va)[0]
     funcs={EP}
-    for a in (int(x,16) for x in open('out/relocs.txt')):
+    for a in (int(x,16) for x in open(os.environ.get('RELOCS','out/relocs.txt'))):
         v=rd32(a)
         if v is not None and L.in_text(v): funcs.add(v)
     md=L.md; cov=bytearray(L.TSZ); q=collections.deque(funcs); seen=set(funcs)
@@ -177,6 +177,19 @@ if __name__=='__main__':
             if (n+1)%16==0: print(f"  {n+1}/{NSHARD} shard  ({time.time()-t1:.0f}s)")
     print(f"  generation done ({time.time()-t1:.0f}s)")
 
+    # LIFT_MISSING=1: call targets in .text that discovery missed (its linear scan
+    # can stop on bytes an earlier, misaligned scan already covered) are lifted
+    # too, in extra shards, instead of becoming "stub" traps.  Repeated until no
+    # new target appears.  Off by default so the European output stays as it is.
+    if os.environ.get('LIFT_MISSING') == '1':
+        _init(inl); extra = NSHARD
+        while True:
+            more = sorted(a for a in refs - defined if _L.in_text(a))
+            if not more: break
+            idx, d, r, tp, tr, kk, sz = _shard((extra, more))
+            print(f"  [lift-missing] shard_{extra:04d}: {', '.join(hex(a) for a in more)}")
+            defined |= set(d); refs |= set(r); traps += tp; trunc += tr; kinds.update(kk); bytes_ += sz
+            extra += 1
     missing = sorted(refs - defined)
     print(f"\n  defined: {len(defined)}   referenced: {len(refs)}   MISSING: {len(missing)}")
     if missing or (MEMARG and OVERRIDES):

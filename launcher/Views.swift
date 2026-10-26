@@ -74,11 +74,15 @@ struct GameCard: View {
             return (Theme.warn, "Game files not found",
                     "Choose the folder where Need for Speed Underground 2 is installed (the folder with SPEED2.EXE in it). Your own copy of the PC game is needed.")
         case .ready(let l):
-            return (Theme.accent, l.embedded ? "Ready · the game is inside this app" : "Ready · supported version",
+            return (Theme.accent, l.embedded ? "Ready · the game is inside this app" : "Ready · \(l.build?.name ?? "supported version")",
                     l.embedded ? "This is a portable copy: it needs no separate game folder." : l.folder.path)
         case .unsupported(let l, let size):
+            if let b = l.build {
+                return (Theme.bad, "No engine for this version in this app",
+                        "\(l.folder.path) has the \(b.name) SPEED2.EXE, but this copy of the app has no engine for it. Use a release that includes it.")
+            }
             return (Theme.bad, "This SPEED2.EXE is a different version",
-                    "Found \(formatBytes(Int64(size))) at \(l.folder.path). The port runs only the European v1.2 SPEED2.EXE without the CD check (4,788,224 bytes); other versions, such as the US one, would crash.")
+                    "Found \(formatBytes(Int64(size))) at \(l.folder.path). The port runs the European v1.2 (4,788,224 bytes) and North American v1.2 (4,800,512 bytes) SPEED2.EXE without the CD check; other versions, such as the US disc one, would crash.")
         }
     }
 

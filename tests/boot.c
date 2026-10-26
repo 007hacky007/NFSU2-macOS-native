@@ -37,7 +37,7 @@ void sampler_report(void);
 static void all_reports(void){
     static int done; if(done) return; done=1;
     if (getenv("WATCH_ADDR")) watch_dump("end of run / crash", 24);
-    fprintf(stderr,"\n  CRT heap: _crtheap=0x%08x __active_heap=%u\n", MR32(0x8ba4a4u), MR32(0x8ba4a8u));
+    fprintf(stderr,"\n  CRT heap: _crtheap=0x%08x __active_heap=%u\n", MR32(GA(0x8ba4a4u)), MR32(GA(0x8ba4a8u)));
     sampler_report();
     com_report(); win32_report(); { void vclock_report(void); vclock_report(); }
     { void metal_budget_report(void); metal_budget_report(); }

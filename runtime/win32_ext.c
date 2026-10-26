@@ -893,7 +893,18 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"DuplicateHandle")){ uint32_t p=A(c,3); if(p) MR32(p)=A(c,1); r=1; }
     else if (!strcmp(n,"SetErrorMode")) r=0;
     else if (!strcmp(n,"GetLogicalDrives")) r=0x0000000Cu;             /* C: and D: */
-    else if (!strcmp(n,"GetDriveTypeA")) r=3;                          /* DRIVE_FIXED */
+    else if (!strcmp(n,"GetDriveTypeA")){
+#if NFS_EXE_NA
+        /* The North American v1.2 no-CD executable still looks for a CD-ROM
+         * drive (sub_005bf450: GetDriveTypeA == DRIVE_CDROM; the disc contents
+         * check is patched out) and otherwise shows "Please insert Disc 2"
+         * forever.  D: is that drive; paths on it resolve to the game folder. */
+        uint32_t p=A(c,0); char d = p ? (char)MR8(p) : 'C';
+        r = (d=='D' || d=='d') ? 5u : 3u;                                  /* DRIVE_CDROM : DRIVE_FIXED */
+#else
+        r=3;                                                           /* DRIVE_FIXED */
+#endif
+    }
     else if (!strcmp(n,"GetCurrentDirectoryA")){
         uint32_t p=A(c,1); const char*s="C:\\NFSU2"; uint32_t l=(uint32_t)strlen(s);
         if(p){ mem_commit(p,l+1); memcpy(g_mem+p,s,l); MR8(p+l)=0; } r=l; }

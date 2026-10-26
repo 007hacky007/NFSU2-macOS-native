@@ -13,6 +13,14 @@ extern uint8_t *g_mem;
  * diagnosable signal instead of crashing the host.                       */
 #define GSZ 0x100000000ull
 
+/* GA(0x...): an address in the game's executable, written as it is in the
+ * reference (European v1.2) build.  Other builds compile the runtime with a
+ * generated header (tools/addrmap.py header) that maps every GA literal and
+ * every sub_XXXXXXXX name to that build; an unmappable address stops the build. */
+#ifndef GA
+#define GA(x) (x)
+#endif
+
 #define MR8(a)   (*(uint8_t  *)(g_mem + (uint32_t)(a)))
 #define MR16(a)  (*(uint16_t *)(g_mem + (uint32_t)(a)))
 #define MR32(a)  (*(uint32_t *)(g_mem + (uint32_t)(a)))

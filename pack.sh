@@ -7,6 +7,7 @@
 #   Contents/MacOS/NFSU2              launcher (the bundle's executable)
 #   Contents/MacOS/nfsu2-engine       out/nfsu2_boot     (original)
 #   Contents/MacOS/nfsu2-engine-hd    out/nfsu2_hd_boot  (HD, if built)
+#   Contents/MacOS/nfsu2-engine-na[-hd]  out/nfsu2_na[_hd]_boot  (North American v1.2, if built)
 # Without swiftc the engine itself becomes Contents/MacOS/NFSU2 (no window), as before.
 #
 #   ./pack.sh                 the port only (~70 MB, both engines) -- the game data is the user's
@@ -81,6 +82,14 @@ if [ -x "$LAUNCHER" ]; then
     if [ "$ORIG_ONLY" = 0 ] && [ -x "$ROOT/out/nfsu2_hd_boot" ]; then
       cp "$ROOT/out/nfsu2_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-hd"; ENGINES+=(nfsu2-engine-hd)
     fi
+  fi
+  # North American v1.2 engines (BUILD=na ./build.sh && BUILD=na ./link.sh), if built;
+  # the launcher picks them by the SPEED2.EXE it finds.
+  if [ "$HD" = 0 ] && [ -x "$ROOT/out/nfsu2_na_boot" ]; then
+    cp "$ROOT/out/nfsu2_na_boot" "$APP/Contents/MacOS/nfsu2-engine-na"; ENGINES+=(nfsu2-engine-na)
+  fi
+  if [ "$ORIG_ONLY" = 0 ] && [ -x "$ROOT/out/nfsu2_na_hd_boot" ]; then
+    cp "$ROOT/out/nfsu2_na_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-na-hd"; ENGINES+=(nfsu2-engine-na-hd)
   fi
 else
   cp "$BIN" "$APP/Contents/MacOS/NFSU2"     # old layout: the engine is the executable

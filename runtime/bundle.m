@@ -228,12 +228,20 @@ const char *app_find_game(void){
     return NULL;
 }
 
-/* SUPPORTED EXECUTABLE.  Game addresses are hard-coded in the runtime (and the
- * generated code is lifted from this exact file), so any other SPEED2.EXE --
- * e.g. the US release -- crashes or hangs somewhere at startup with no hint why.
- * Check the SHA-256 up front and say so.  NFSU2_ANY_EXE=1 skips the check. */
-#define NFSU2_EXE_SIZE   4788224u
-#define NFSU2_EXE_SHA256 "8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297"
+/* SUPPORTED EXECUTABLES.  The generated code is lifted from one exact file and
+ * game addresses are compiled into the runtime, so each engine runs exactly one
+ * SPEED2.EXE: the default build the European v1.2 one, the NFS_EXE_NA build the
+ * North American v1.2 one (README "Game versions").  Any other file crashes or
+ * hangs somewhere at startup with no hint why, so check the SHA-256 up front and
+ * say so.  NFSU2_ANY_EXE=1 skips the check. */
+typedef struct { const char *name, *sha256; unsigned size; } KnownExe;
+static const KnownExe g_exe_eu = { "European v1.2", "8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297", 4788224u };
+static const KnownExe g_exe_na = { "North American v1.2", "f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7", 4800512u };
+#if NFS_EXE_NA
+static const KnownExe *const g_exe_mine = &g_exe_na, *const g_exe_other = &g_exe_eu;
+#else
+static const KnownExe *const g_exe_mine = &g_exe_eu, *const g_exe_other = &g_exe_na;
+#endif
 int app_check_exe(const char *exe){
     const char *any = getenv("NFSU2_ANY_EXE");
     if (any && *any == '1') return 1;
@@ -246,20 +254,33 @@ int app_check_exe(const char *exe){
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(md, &c);
     char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
     for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
-    if (!strcmp(hex, NFSU2_EXE_SHA256)) return 1;
-    fprintf(stderr, "unsupported SPEED2.EXE: %s\n  size %zu bytes, sha256 %s\n"
-                    "  supported: %u bytes, sha256 %s (European v1.2 no-CD executable)\n"
+    if (!strcmp(hex, g_exe_mine->sha256)){
+        fprintf(stderr, "SPEED2.EXE: %s\n", g_exe_mine->name);
+        return 1;
+    }
+    int other = !strcmp(hex, g_exe_other->sha256);
+    fprintf(stderr, "unsupported SPEED2.EXE for this engine: %s\n  size %zu bytes, sha256 %s%s%s\n"
+                    "  this engine runs: %s, %u bytes, sha256 %s\n"
                     "  NFSU2_ANY_EXE=1 skips this check (it will almost certainly not run)\n",
-            exe, tot, hex, NFSU2_EXE_SIZE, NFSU2_EXE_SHA256);
+            exe, tot, hex, other ? " = " : "", other ? g_exe_other->name : "",
+            g_exe_mine->name, g_exe_mine->size, g_exe_mine->sha256);
     if (app_is_bundled()){
         char msg[1600];
-        snprintf(msg, sizeof msg,
-                 "This port runs exactly one build of the game's executable: the European "
-                 "v1.2 no-CD SPEED2.EXE (%u bytes). The SPEED2.EXE in the chosen folder is "
-                 "different (%zu bytes), for example the US release, and would crash.\n\n"
-                 "Replace SPEED2.EXE in your game folder with the supported one and open the "
-                 "app again. Details: README, \"Requirements\".\n\n%s",
-                 NFSU2_EXE_SIZE, tot, exe);
+        if (other)
+            snprintf(msg, sizeof msg,
+                     "This SPEED2.EXE is the %s executable, but this engine was built for the "
+                     "%s one. Open the game through the NFSU2 app's own window, which picks the "
+                     "matching engine, or use a release that includes it.\n\n%s",
+                     g_exe_other->name, g_exe_mine->name, exe);
+        else
+            snprintf(msg, sizeof msg,
+                     "This port runs these builds of the game's executable: the European v1.2 "
+                     "SPEED2.EXE (%u bytes) and the North American v1.2 SPEED2.EXE (%u bytes), "
+                     "both without the CD check. The SPEED2.EXE in the chosen folder is different "
+                     "(%zu bytes) and would crash.\n\n"
+                     "Replace SPEED2.EXE in your game folder with a supported one and open the "
+                     "app again. Details: README, \"Game versions\".\n\n%s",
+                     g_exe_eu.size, g_exe_na.size, tot, exe);
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         [NSApp activateIgnoringOtherApps:YES];

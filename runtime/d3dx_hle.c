@@ -40,26 +40,26 @@ enum { DX_BEGINPASS, DX_PASSAPPLY, DX_STATEAPPLY, DX_664A2F, DX_EVALSTATE,
        DX_SETVECTORARRAY, DX_N };
 
 static DxStat g_dx[DX_N] = {
-    [DX_BEGINPASS]      = {"BeginPass",        0x0066ace2u},
-    [DX_PASSAPPLY]      = {"apply pass",      0x006691b1u},
-    [DX_STATEAPPLY]     = {"set state",         0x00669296u},
-    [DX_664A2F]         = {"sub_00664a2f",      0x00664a2fu},
-    [DX_EVALSTATE]      = {"evaluate expr", 0x00663a42u},
-    [DX_VM]             = {"preshader VM",      0x00688e89u},
-    [DX_GATHER_A]       = {"gather inputs (0)",   0x00663275u},
-    [DX_GATHER_B]       = {"gather inputs (1,2)", 0x00662edcu},
-    [DX_660A52]         = {"sub_00660a52",      0x00660a52u},
-    [DX_668E0D]         = {"sub_00668e0d",      0x00668e0du},
-    [DX_BEGIN]          = {"Begin",             0x00664792u},
-    [DX_COMMIT]         = {"CommitChanges",     0x0066ac27u},
-    [DX_ENDPASS]        = {"EndPass",           0x0065addbu},
-    [DX_END]            = {"End",               0x0065acf5u},
-    [DX_SETMATRIX]      = {"SetMatrix",         0x0066d13au},
-    [DX_SETVECTOR]      = {"SetVector",         0x0066d303u},
-    [DX_SETTEXTURE]     = {"SetTexture",        0x0066d7e9u},
-    [DX_SETINTARRAY]    = {"SetIntArray",       0x0066e8a9u},
-    [DX_SETFLOAT]       = {"SetFloat",          0x0066f501u},
-    [DX_SETVECTORARRAY] = {"SetVectorArray",    0x0066ca38u},
+    [DX_BEGINPASS]      = {"BeginPass",        GA(0x0066ace2u)},
+    [DX_PASSAPPLY]      = {"apply pass",      GA(0x006691b1u)},
+    [DX_STATEAPPLY]     = {"set state",         GA(0x00669296u)},
+    [DX_664A2F]         = {"sub_00664a2f",      GA(0x00664a2fu)},
+    [DX_EVALSTATE]      = {"evaluate expr", GA(0x00663a42u)},
+    [DX_VM]             = {"preshader VM",      GA(0x00688e89u)},
+    [DX_GATHER_A]       = {"gather inputs (0)",   GA(0x00663275u)},
+    [DX_GATHER_B]       = {"gather inputs (1,2)", GA(0x00662edcu)},
+    [DX_660A52]         = {"sub_00660a52",      GA(0x00660a52u)},
+    [DX_668E0D]         = {"sub_00668e0d",      GA(0x00668e0du)},
+    [DX_BEGIN]          = {"Begin",             GA(0x00664792u)},
+    [DX_COMMIT]         = {"CommitChanges",     GA(0x0066ac27u)},
+    [DX_ENDPASS]        = {"EndPass",           GA(0x0065addbu)},
+    [DX_END]            = {"End",               GA(0x0065acf5u)},
+    [DX_SETMATRIX]      = {"SetMatrix",         GA(0x0066d13au)},
+    [DX_SETVECTOR]      = {"SetVector",         GA(0x0066d303u)},
+    [DX_SETTEXTURE]     = {"SetTexture",        GA(0x0066d7e9u)},
+    [DX_SETINTARRAY]    = {"SetIntArray",       GA(0x0066e8a9u)},
+    [DX_SETFLOAT]       = {"SetFloat",          GA(0x0066f501u)},
+    [DX_SETVECTORARRAY] = {"SetVectorArray",    GA(0x0066ca38u)},
 };
 
 long metal_frames(void);
@@ -82,34 +82,34 @@ static void dx_window(void){
     g_dx_f0 = f;
 }
 
-#define DX_WRAP(idx, hex)                                                   \
-    void sub_##hex##_orig(CPU *c);                                          \
-    void sub_##hex(CPU *c){                                                 \
-        if (!dx_on()){ sub_##hex##_orig(c); return; }                       \
+#define DX_WRAP(idx, fn)                                                    \
+    void fn##_orig(CPU *c);                                                 \
+    void fn(CPU *c){                                                        \
+        if (!dx_on()){ fn##_orig(c); return; }                              \
         if (idx == DX_BEGINPASS) dx_window();                               \
         int inp = (idx == DX_BEGINPASS || idx == DX_COMMIT);                \
         g_dx_in_pass += inp;                                                \
         uint64_t t0 = mach_absolute_time();                                 \
-        sub_##hex##_orig(c);                                                \
+        fn##_orig(c);                                                       \
         g_dx_in_pass -= inp;                                                \
         g_dx[idx].ticks += mach_absolute_time() - t0;                       \
         g_dx[idx].n++;                                                      \
     }
 
-DX_WRAP(DX_BEGINPASS,      0066ace2)
-DX_WRAP(DX_VM,             00688e89)
-DX_WRAP(DX_GATHER_A,       00663275)
-DX_WRAP(DX_GATHER_B,       00662edc)
-DX_WRAP(DX_660A52,         00660a52)
-DX_WRAP(DX_BEGIN,          00664792)
-DX_WRAP(DX_COMMIT,         0066ac27)
-DX_WRAP(DX_ENDPASS,        0065addb)
-DX_WRAP(DX_END,            0065acf5)
-DX_WRAP(DX_SETMATRIX,      0066d13a)
-DX_WRAP(DX_SETVECTOR,      0066d303)
-DX_WRAP(DX_SETINTARRAY,    0066e8a9)
-DX_WRAP(DX_SETFLOAT,       0066f501)
-DX_WRAP(DX_SETVECTORARRAY, 0066ca38)
+DX_WRAP(DX_BEGINPASS,      sub_0066ace2)
+DX_WRAP(DX_VM,             sub_00688e89)
+DX_WRAP(DX_GATHER_A,       sub_00663275)
+DX_WRAP(DX_GATHER_B,       sub_00662edc)
+DX_WRAP(DX_660A52,         sub_00660a52)
+DX_WRAP(DX_BEGIN,          sub_00664792)
+DX_WRAP(DX_COMMIT,         sub_0066ac27)
+DX_WRAP(DX_ENDPASS,        sub_0065addb)
+DX_WRAP(DX_END,            sub_0065acf5)
+DX_WRAP(DX_SETMATRIX,      sub_0066d13a)
+DX_WRAP(DX_SETVECTOR,      sub_0066d303)
+DX_WRAP(DX_SETINTARRAY,    sub_0066e8a9)
+DX_WRAP(DX_SETFLOAT,       sub_0066f501)
+DX_WRAP(DX_SETVECTORARRAY, sub_0066ca38)
 
 /* ---- Analysis: do the inputs of expression evaluation really change? ----
  * D3DXANALYZE=<frame>: from that frame on, on every sub_00663a42 call compares a
@@ -553,26 +553,26 @@ void sub_0066056c(CPU *c){
     c->ebp = fp; c->ebx = th; c->edx = sl;
     uint32_t pobj = MR32(MR32(th+0xb0u) + MR32(sl+0x14u)*4u), head = MR32(pobj+0x40u);
     c->edi = head;
-    if (!head){ r = pl_call(c, th, sl, 0x6605feu); goto done; }
+    if (!head){ r = pl_call(c, th, sl, GA(0x6605feu)); goto done; }
     {
     uint32_t pool = MR32(th+0x38u), cnt = MR32(pool+8u);
     if (cnt <= 1u){
         if (!cnt){ r = 0; goto done; }
         uint32_t e = MR32(pool+0xcu);
-        if (e == th){ r = pl_call(c, th, sl, 0x6605feu); goto done; }
+        if (e == th){ r = pl_call(c, th, sl, GA(0x6605feu)); goto done; }
         if (e) for (uint32_t q = MR32(head+0x10u); q != head; q = MR32(q+0x10u))
-            if (MR32(q) == e){ r = pl_call(c, e, MR32(q+4u), 0x6605feu); goto done; }
+            if (MR32(q) == e){ r = pl_call(c, e, MR32(q+4u), GA(0x6605feu)); goto done; }
     }
     for (uint32_t q = MR32(head+0x10u); q != head; q = MR32(q+0x10u)){
         uint32_t ef = MR32(q);
         if (ef && (MR8(ef+0x119u) & 1u)){
             c->esi = q;
-            r = pl_call(c, ef, MR32(q+4u), 0x6605ddu);
+            r = pl_call(c, ef, MR32(q+4u), GA(0x6605ddu));
             if ((int32_t)r < 0) goto done;
         }
     }
     if (!(MR8(th+0x119u) & 1u)){ r = 0; goto done; }
-    r = pl_call(c, th, MR32(fp+8u), 0x6605feu);
+    r = pl_call(c, th, MR32(fp+8u), GA(0x6605feu));
     }
 done:
     c->eax = r;
@@ -596,7 +596,7 @@ void sub_0065cf44(CPU *c){
     if ((t != 3u && t != 1u) || dst - src + 63u < 127u){ sm_slow++; sub_0065cf44_orig(c); return; }
     uint32_t S[16], D[16];
     memcpy(S, g_mem + src, 64);
-    double z = (double)MRF32(0x7d7d3cu), last = 0;
+    double z = (double)MRF32(GA(0x7d7d3cu)), last = 0;
     if (t == 3u){
         for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) D[4*j+i] = S[4*i+j];
     } else {
@@ -866,17 +866,17 @@ static int n6_samp(CPU *c, uint32_t th, uint32_t P, uint32_t Rb, uint32_t Re, ui
                 if (MR8(R2+0x5bu) == 3u){
                     if (MR32(R2)){
                         uint32_t rec = (uint32_t)((int32_t)(P2 - MR32(th+0x2cu)) / 0x64) & 0xffffu;
-                        r = n4_eval(c, th, rec, k, R2, P2, 0x668d51u);
+                        r = n4_eval(c, th, rec, k, R2, P2, GA(0x668d51u));
                         if ((int32_t)r < 0){ *res = r; return 1; }
                         MR32(R2) = MR32(R2+4u);
                     }
-                    r = n4_dev(c, dev, 3, 0x114u, 0x668d7du, stage, MR32(R2+0x58u) & 0xffffffu,
+                    r = n4_dev(c, dev, 3, 0x114u, GA(0x668d7du), stage, MR32(R2+0x58u) & 0xffffffu,
                                MR32(MR32(R2+0x48u) + MR32(P2)));
                 } else {
                     uint32_t o = MR32(MR32(th+0xb0u) + MR32(R2+0x1cu)*4u), o40 = MR32(o+0x40u);
                     uint32_t ix = MR32(MR32(R2+8u));
                     if (o40) ix = MR32(MR32(o40+8u) + ix*4u);
-                    r = n4_dev(c, dev, 4, 0x104u, 0x668dc4u, stage, MR32(MR32(th+0x18u) + ix*24u + 4u), 0);
+                    r = n4_dev(c, dev, 4, 0x104u, GA(0x668dc4u), stage, MR32(MR32(th+0x18u) + ix*24u + 4u), 0);
                 }
                 if ((int32_t)r < 0){ *res = r; return 1; }
             }
@@ -961,21 +961,21 @@ static int n7_shader(CPU *c, uint32_t th, uint32_t P, uint32_t *res){
     uint32_t o = MR32(MR32(th+0xb0u) + MR32(R0+0x1cu)*4u), o40 = MR32(o+0x40u), ix = MR32(MR32(R0+8u));
     if (o40) ix = MR32(MR32(o40+8u) + ix*4u);
     uint32_t sh = MR32(MR32(th+0x18u) + ix*24u + 4u);
-    r = vs ? n4_dev(c, dev, 7, 0x170u, 0x668e79u, sh, 0, 0) : n4_dev(c, dev, 8, 0x1acu, 0x668ea9u, sh, 0, 0);
+    r = vs ? n4_dev(c, dev, 7, 0x170u, GA(0x668e79u), sh, 0, 0) : n4_dev(c, dev, 8, 0x1acu, GA(0x668ea9u), sh, 0, 0);
     if ((int32_t)r < 0){ *res = r; return 1; }
     uint32_t R = R0 + 0x64u; slot8 = R;
     if (MR8(P+8u) & 4u){
         uint32_t rec = (uint32_t)((int32_t)(P - base) / 0x64) & 0xffffu;
-        c->ecx = th; PUSH32(1u); PUSH32(rec); PUSH32(0x668ed9u); sub_00663bc1(c);
+        c->ecx = th; PUSH32(1u); PUSH32(rec); PUSH32(GA(0x668ed9u)); sub_00663bc1(c);
         r = c->eax; if ((int32_t)r < 0){ *res = r; return 1; }
         if (MR8(P+8u) & 0x10u){
             uint32_t n;
             if ((n = MR16(P+0x50u)) && MR16(P+0x4cu) == MR16(P+0x4eu))
-                n4_dev(c, dev, vs ? 5 : 6, vs ? 0x178u : 0x1b4u, vs ? 0x668f1eu : 0x668f26u, 0, MR32(P+0x40u)+MR32(P), n);
+                n4_dev(c, dev, vs ? 5 : 6, vs ? 0x178u : 0x1b4u, vs ? GA(0x668f1eu) : GA(0x668f26u), 0, MR32(P+0x40u)+MR32(P), n);
             if ((n = MR16(P+0x56u)) && MR16(P+0x52u) == MR16(P+0x54u))
-                n4_dev(c, dev, vs ? 9 : 10, vs ? 0x180u : 0x1bcu, vs ? 0x668f59u : 0x668f61u, 0, MR32(P+0x44u)+MR32(P), n);
+                n4_dev(c, dev, vs ? 9 : 10, vs ? 0x180u : 0x1bcu, vs ? GA(0x668f59u) : GA(0x668f61u), 0, MR32(P+0x44u)+MR32(P), n);
             if ((n = MR16(P+0x5cu)) && MR16(P+0x58u) == MR16(P+0x5au))
-                n4_dev(c, dev, vs ? 11 : 12, vs ? 0x188u : 0x1c4u, vs ? 0x668f94u : 0x668f9cu, 0, MR32(P+0x48u)+MR32(P), n);
+                n4_dev(c, dev, vs ? 11 : 12, vs ? 0x188u : 0x1c4u, vs ? GA(0x668f94u) : GA(0x668f9cu), 0, MR32(P+0x48u)+MR32(P), n);
         }
         R += 0x64u; slot8 = R;
     }
@@ -988,9 +988,9 @@ static int n7_shader(CPU *c, uint32_t th, uint32_t P, uint32_t *res){
                 if (dst + nb <= src || src + nb <= dst) memcpy(g_mem + dst, g_mem + src, nb);
                 else { for (uint32_t k = 0; k + 4u <= nb; k += 4u) MR32(dst+k) = MR32(src+k);   /* rep movsd */
                        for (uint32_t k = nb & ~3u; k < nb; k++) MR8(dst+k) = MR8(src+k); }
-            } else n7_fill(c, sub_006623ea, 0x669017u, th, P, R, &slot8);
+            } else n7_fill(c, sub_006623ea, GA(0x669017u), th, P, R, &slot8);
         }
-        r = n4_dev(c, dev, vs ? 5 : 6, vs ? 0x178u : 0x1b4u, vs ? 0x669045u : 0x66904du,
+        r = n4_dev(c, dev, vs ? 5 : 6, vs ? 0x178u : 0x1b4u, vs ? GA(0x669045u) : GA(0x66904du),
                    0, MR32(P+0x40u)+MR32(P), MR16(P+0x50u));
         if ((int32_t)r < 0){ *res = r; return 1; }
     }
@@ -998,22 +998,22 @@ static int n7_shader(CPU *c, uint32_t th, uint32_t P, uint32_t *res){
     uint32_t endi = MR16(P+0x54u)*0x64u + MR32(P+4u);
     if (R < endi){
         for (; R < endi; R += 0x64u)
-            if (MR32(R)){ MR32(R) = MR32(R+4u); n7_fill(c, sub_006627a5, 0x6690b3u, th, P, R, &slot8); }
-        r = n4_dev(c, dev, vs ? 9 : 10, vs ? 0x180u : 0x1bcu, vs ? 0x6690deu : 0x6690e6u,
+            if (MR32(R)){ MR32(R) = MR32(R+4u); n7_fill(c, sub_006627a5, GA(0x6690b3u), th, P, R, &slot8); }
+        r = n4_dev(c, dev, vs ? 9 : 10, vs ? 0x180u : 0x1bcu, vs ? GA(0x6690deu) : GA(0x6690e6u),
                    0, MR32(P+0x44u)+MR32(P), MR16(P+0x56u));
         if ((int32_t)r < 0){ *res = r; return 1; }
     }
     uint32_t endb = MR16(P+0x5au)*0x64u + MR32(P+4u);
     if (R < endb){
         for (; R < endb; R += 0x64u)
-            if (MR32(R)){ MR32(R) = MR32(R+4u); n7_fill(c, sub_00662bab, 0x66913bu, th, P, R, &slot8); }
-        r = n4_dev(c, dev, vs ? 11 : 12, vs ? 0x188u : 0x1c4u, vs ? 0x669166u : 0x66916eu,
+            if (MR32(R)){ MR32(R) = MR32(R+4u); n7_fill(c, sub_00662bab, GA(0x66913bu), th, P, R, &slot8); }
+        r = n4_dev(c, dev, vs ? 11 : 12, vs ? 0x188u : 0x1c4u, vs ? GA(0x669166u) : GA(0x66916eu),
                    0, MR32(P+0x48u)+MR32(P), MR16(P+0x5cu));
         if ((int32_t)r < 0){ *res = r; return 1; }
     }
     if (R >= ends){ *res = 0; return 1; }
     if (!n6_samp(c, th, P, R, ends, &r)){
-        c->ecx = th; PUSH32(ends); PUSH32(R); PUSH32(P); PUSH32(0x66918eu); sub_00668cd0_orig(c);
+        c->ecx = th; PUSH32(ends); PUSH32(R); PUSH32(P); PUSH32(GA(0x66918eu)); sub_00668cd0_orig(c);
         r = c->eax;
     }
     *res = r;
@@ -1078,18 +1078,18 @@ static void n8_store(CPU *c, uint32_t th, uint32_t tex, uint32_t ix, uint32_t o4
     n8_tex++;
     uint32_t y = MR32(th+0x18u) + (o40 ? MR32(MR32(o40+8u) + ix*4u) : ix)*24u;
     if (MR32(y+4u) == tex) return;
-    if (tex) n8_ref(c, tex, 4u, 0x65cd10u);
+    if (tex) n8_ref(c, tex, 4u, GA(0x65cd10u));
     uint32_t old = MR32(y+4u);
-    if (old){ n8_ref(c, old, 8u, 0x65cd1du); MR32(y+4u) = 0; }
+    if (old){ n8_ref(c, old, 8u, GA(0x65cd1du)); MR32(y+4u) = 0; }
     MR32(y+4u) = tex;
     if (!o40) return;
     for (uint32_t nd = MR32(o40+0x10u); nd != o40; nd = MR32(nd+0x10u)){
         uint32_t ef = MR32(nd);
         if (!ef) continue;
         uint32_t y2 = MR32(ef+0x18u) + MR32(MR32(nd+8u) + ix*4u)*24u, nw = MR32(y+4u);
-        if (nw) n8_ref(c, nw, 4u, 0x65cd52u);
+        if (nw) n8_ref(c, nw, 4u, GA(0x65cd52u));
         uint32_t o2 = MR32(y2+4u);
-        if (o2){ n8_ref(c, o2, 8u, 0x65cd5fu); MR32(y2+4u) = 0; }
+        if (o2){ n8_ref(c, o2, 8u, GA(0x65cd5fu)); MR32(y2+4u) = 0; }
         MR32(y2+4u) = MR32(y+4u);
     }
 }
@@ -1119,7 +1119,7 @@ void sub_0066d7e9(CPU *c){
     PUSH32(c->ebp); PUSH32(c->ebx); PUSH32(c->esi); PUSH32(c->edi);   /* 65ccd8's prologue */
     n8_store(c, th, tex, ix, o40);
     c->esp += 16u;
-    c->ecx = th; PUSH32(rec); PUSH32(0x66d8afu); sub_0066056c(c);
+    c->ecx = th; PUSH32(rec); PUSH32(GA(0x66d8afu)); sub_0066056c(c);
     r = c->eax;
     c->esp += 16u;
 done:
@@ -1150,21 +1150,21 @@ static inline int n4_core(CPU *c, uint32_t th, uint32_t a, uint32_t b, uint32_t 
             if (mode == 4u){
                 uint32_t P2 = rec*0x64u + MR32(th+0x2cu);
                 c->ecx = th;
-                if (MR8(P2+8u) & 1u){ PUSH32(P2); PUSH32(0x669f73u); sub_00668e0d(c); }
-                else { PUSH32(0xffffu); PUSH32(rec); PUSH32(0x669f85u); sub_006691b1(c); }
+                if (MR8(P2+8u) & 1u){ PUSH32(P2); PUSH32(GA(0x669f73u)); sub_00668e0d(c); }
+                else { PUSH32(0xffffu); PUSH32(rec); PUSH32(GA(0x669f85u)); sub_006691b1(c); }
                 *res = 0; return 1;
             }
-            c->ecx = th; PUSH32(0xffffu); PUSH32(rec); PUSH32(0x669fa6u); sub_006691b1(c);
+            c->ecx = th; PUSH32(0xffffu); PUSH32(rec); PUSH32(GA(0x669fa6u)); sub_006691b1(c);
             *res = c->eax; return 1;
         }
         if (mode == 4u){
             if (!n6_samp(c, th, P, R, R + 0x64u, &r)){
-                c->ecx = th; PUSH32(R + 0x64u); PUSH32(R); PUSH32(P); PUSH32(0x669fe5u); sub_00668cd0_orig(c);
+                c->ecx = th; PUSH32(R + 0x64u); PUSH32(R); PUSH32(P); PUSH32(GA(0x669fe5u)); sub_00668cd0_orig(c);
                 r = c->eax;
             }
             *res = r; return 1;
         }
-        c->ecx = th; PUSH32((eld & 0xffff0000u) | el); PUSH32(rec); PUSH32(0x6693c1u); sub_006691b1(c);
+        c->ecx = th; PUSH32((eld & 0xffff0000u) | el); PUSH32(rec); PUSH32(GA(0x6693c1u)); sub_006691b1(c);
         *res = c->eax; return 1;
     }
     if (type - 1u > 2u) return 0;
@@ -1174,13 +1174,13 @@ static inline int n4_core(CPU *c, uint32_t th, uint32_t a, uint32_t b, uint32_t 
     if (dirty){
         n4_dirty++;
         MR32(R) = MR32(R+4u);
-        r = n4_eval(c, th, a, b, R, P, type == 3u ? 0x669533u : 0x669863u);
+        r = n4_eval(c, th, a, b, R, P, type == 3u ? GA(0x669533u) : GA(0x669863u));
         if ((int32_t)r < 0){ *res = r; return 1; }
     }
     uint32_t dev = MR32(th+8u), v = MR32(vp), st = code & 0xffffffu;
-    if (type == 1u)      r = n4_dev(c, dev, 1, 0xe4u,  0x66989eu, st, v, 0);
-    else if (type == 2u) r = n4_dev(c, dev, 2, 0x10cu, 0x6698bfu, el, st, v);
-    else if (MR32(th+0x3cu) != 1u) r = n4_dev(c, dev, 3, 0x114u, 0x6698eau, el, st, v);
+    if (type == 1u)      r = n4_dev(c, dev, 1, 0xe4u,  GA(0x66989eu), st, v, 0);
+    else if (type == 2u) r = n4_dev(c, dev, 2, 0x10cu, GA(0x6698bfu), el, st, v);
+    else if (MR32(th+0x3cu) != 1u) r = n4_dev(c, dev, 3, 0x114u, GA(0x6698eau), el, st, v);
     *res = r;
     return 1;
 }
@@ -1446,29 +1446,29 @@ static void n5_pass(CPU *c){
     c->ebp = fp; c->ebx = a; c->esi = P; c->edi = th;
     n5_calls++;
     if (MR8(th+0x118u) & 8u){
-        c->ecx = th; PUSH32(P+0x1cu); PUSH32(MR16(P+0x18u) != 0xffffu); PUSH32(0x6691e5u);
+        c->ecx = th; PUSH32(P+0x1cu); PUSH32(MR16(P+0x18u) != 0xffffu); PUSH32(GA(0x6691e5u));
         sub_0066404c(c); r = c->eax; if ((int32_t)r < 0) goto done;
-        c->ecx = th; PUSH32(P+0x24u); PUSH32(MR16(P+0x1au) != 0xffffu); PUSH32(0x669204u);
+        c->ecx = th; PUSH32(P+0x24u); PUSH32(MR16(P+0x1au) != 0xffffu); PUSH32(GA(0x669204u));
         sub_006641a7(c); r = c->eax; if ((int32_t)r < 0) goto done;
     }
     if (MR8(P+8u) & 8u){
         c->ecx = th; PUSH32(a);
-        if (MR16(P+0x18u) == 0xffffu){ PUSH32(0x669241u); sub_00667d61(c); }
-        else { PUSH32(0x669222u); sub_00666e07(c); }
+        if (MR16(P+0x18u) == 0xffffu){ PUSH32(GA(0x669241u)); sub_00667d61(c); }
+        else { PUSH32(GA(0x669222u)); sub_00666e07(c); }
         r = c->eax; if ((int32_t)r < 0) goto done;
     }
     if (MR32(th+0x3cu) == 4u){
         if (MR8(P+8u) & 1u){
-            c->ecx = th; PUSH32(P); PUSH32(0x66923au); sub_00668e0d(c);
+            c->ecx = th; PUSH32(P); PUSH32(GA(0x66923au)); sub_00668e0d(c);
             r = c->eax; goto done;
         }
         for (uint32_t b = 0; b < MR16(P+0x36u); b++){
-            r = n5_state(c, th, aw, b, el, 0x669259u);
+            r = n5_state(c, th, aw, b, el, GA(0x669259u));
             if ((int32_t)r < 0) goto done;
         }
     } else {
         for (uint32_t b = 0; b < MR16(P+0x36u); b++){
-            r = n5_state(c, th, aw, b, el, 0x66927cu);
+            r = n5_state(c, th, aw, b, el, GA(0x66927cu));
             if ((int32_t)r < 0 && MR32(th+0x3cu) != 1u) goto done;
         }
     }
@@ -1685,7 +1685,7 @@ static void efx_set_add(uint32_t *s, int *n, int cap, uint32_t v){
     if (*n < cap) s[(*n)++] = v;
 }
 void efx_stat_note(CPU *c, uint32_t addr){
-    if (!efx_vt[0]) for (int i = 0; i < EFX_NM; i++) efx_vt[i] = MR32(0x7b6fe8u + 4u*i);
+    if (!efx_vt[0]) for (int i = 0; i < EFX_NM; i++) efx_vt[i] = MR32(GA(0x7b6fe8u) + 4u*i);
     int k = -1;
     for (int i = 0; i < EFX_NM; i++) if (efx_vt[i] == addr){ k = i; break; }
     if (k < 0) return;
