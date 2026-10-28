@@ -46,6 +46,9 @@ final class LauncherModel: ObservableObject {
     @Published var countsError: String? = nil
     @Published var loadingCounts = false
     @Published var importingTextures = false
+    @Published var runtimeOptions: RuntimeOptions {
+        didSet { if let data = try? JSONEncoder().encode(runtimeOptions) { defaults.set(data, forKey: Prefs.runtimeOptions) } }
+    }
 
     private let defaults = UserDefaults.standard
     private var builder: PortableBuilder?
@@ -83,6 +86,8 @@ final class LauncherModel: ObservableObject {
         playerName = defaults.string(forKey: Prefs.playerName) ?? ""
         uiTextures = defaults.string(forKey: Prefs.uiTextures) == "uhud" ? "uhud" : "original"
         texturePack = defaults.string(forKey: Prefs.texturePack) ?? ""
+        runtimeOptions = defaults.data(forKey: Prefs.runtimeOptions)
+            .flatMap { try? JSONDecoder().decode(RuntimeOptions.self, from: $0) } ?? RuntimeOptions()
     }
 
     var location: GameLocation? {
@@ -93,7 +98,15 @@ final class LauncherModel: ObservableObject {
     }
     var isReady: Bool { if case .ready = game { return true }; return false }
     var onlineError: String? { online ? LaunchSettings.onlineError(server: serverURL, name: playerName) : nil }
-    var canPlay: Bool { isReady && onlineError == nil && job == nil && !importingTextures }
+    var canPlay: Bool { isReady && onlineError == nil && runtimeError == nil && job == nil && !importingTextures }
+    var installedLanguages: Set<String> { RuntimeOptions.installedLanguages(in: location?.folder) }
+    var runtimeError: String? {
+        do { _ = try runtimeOptions.environment() } catch { return error.localizedDescription }
+        if isReady && !installedLanguages.contains(runtimeOptions.language) {
+            return "That language is not installed in this game folder. Choose an installed language or add its language pack."
+        }
+        return nil
+    }
 
     var textureStatus: String {
         if !texturePack.isEmpty {
@@ -154,6 +167,7 @@ final class LauncherModel: ObservableObject {
     func play() {
         guard case .ready(let loc) = game else { return }
         if let error = onlineError { alert("Check the online settings", error); return }
+        if let error = runtimeError { alert("Check the game settings", error); return }
         guard !importingTextures else { return }
         let env = ProcessInfo.processInfo.environment
         let fromEnv = !(env["NFSU2_DATA"] ?? "").isEmpty      // a one-off override: don't remember it
@@ -164,7 +178,7 @@ final class LauncherModel: ObservableObject {
         do {
             child = try LaunchSettings.environment(inherited: env, online: online, server: serverURL, name: playerName,
                 textures: uiTextures, pack: texturePack.isEmpty ? nil : texturePack,
-                data: loc.exe.path, saves: Paths.saves.path, registry: Paths.registry.path)
+                data: loc.exe.path, saves: Paths.saves.path, registry: Paths.registry.path, runtime: runtimeOptions)
         } catch { alert("Check the launch settings", error.localizedDescription); return }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
@@ -198,6 +212,16 @@ final class LauncherModel: ObservableObject {
     }
 
     // MARK: tools
+
+    func chooseMusicFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.message = "Choose a folder of music to play instead of the game soundtrack."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        var options = runtimeOptions
+        options.musicFolder = folder.path; options.customMusic = true
+        runtimeOptions = options
+    }
 
     private func clearCounts() {
         countsGeneration += 1

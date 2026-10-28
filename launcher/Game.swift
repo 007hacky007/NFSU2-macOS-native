@@ -60,6 +60,7 @@ enum Paths {
 }
 
 enum Prefs {
+    static let runtimeOptions = "LauncherRuntimeOptions"
     // Shared with the engine (same bundle id, same defaults domain).
     static let gameFolder = "OyunDizini"          // name kept for existing installs
     static let fullscreen = "NFSUFullScreen"

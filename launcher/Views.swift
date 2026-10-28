@@ -317,7 +317,9 @@ struct LauncherView: View {
                     VStack(spacing: 12) {
                         GameCard(model: model)
                         GraphicsCard(model: model)
+                        RuntimeSettingsCard(model: model)
                         TexturesCard(model: model)
+                        MusicCard(model: model)
                         OnlineCard(model: model)
                         MoreCard(model: model)
                     }

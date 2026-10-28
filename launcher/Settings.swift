@@ -46,9 +46,12 @@ enum LaunchSettings {
     }
 
     static func environment(inherited: [String: String], online: Bool, server: String, name: String,
-                            textures: String, pack: String?, data: String, saves: String, registry: String) throws -> [String: String] {
+                            textures: String, pack: String?, data: String, saves: String, registry: String,
+                            runtime: RuntimeOptions = RuntimeOptions()) throws -> [String: String] {
         if online, let error = onlineError(server: server, name: name) { throw SettingsError(error) }
         var env = inherited
+        for key in RuntimeOptions.environmentKeys { env.removeValue(forKey: key) }
+        env.merge(try runtime.environment()) { _, chosen in chosen }
         for key in ["NFSU2_SERVER_URL", "NFSU2_ROAM_NAME", "NFSU2_NET_NAME", "NFSU2_UI_TEXPACK"] { env.removeValue(forKey: key) }
         env["NFSU2_DATA"] = data
         env["NFSU2_SAVEDIR"] = saves
