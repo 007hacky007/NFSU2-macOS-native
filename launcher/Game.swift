@@ -47,6 +47,12 @@ enum Paths {
     static var logs: URL { home.appendingPathComponent("Library/Logs/NFSU2") }
     static var registry: URL { home.appendingPathComponent(".nfsu2_registry") }
     static var importedTextures: URL { home.appendingPathComponent("Library/Application Support/NFSU2/Textures/uhud.pak") }
+    static var screenshots: URL {
+        let override = ProcessInfo.processInfo.environment["NFSU2_APPSUPPORT"]
+        let support = override.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
+            ?? home.appendingPathComponent("Library/Application Support/NFSU2")
+        return support.appendingPathComponent("Screenshots", isDirectory: true)
+    }
 
     /// The engine binary for the supported North American SPEED2.EXE.
     static func engine(_ build: ExeBuild?, hd: Bool) -> URL {

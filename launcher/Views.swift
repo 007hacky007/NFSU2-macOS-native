@@ -167,6 +167,7 @@ struct MoreCard: View {
                 Spacer(minLength: 0)
                 Button("Report a Problem") { model.reportProblem() }.buttonStyle(SecondaryButtonStyle())
             }
+            Button("Screenshots...") { model.showScreenshots() }.buttonStyle(SecondaryButtonStyle())
             if let n = model.notice {
                 Text(n).font(.system(size: 11)).foregroundColor(Theme.accent)
             }

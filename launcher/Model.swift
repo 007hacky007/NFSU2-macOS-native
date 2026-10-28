@@ -213,6 +213,8 @@ final class LauncherModel: ObservableObject {
 
     // MARK: tools
 
+    func showScreenshots() { PhotoGalleryWindow.show(folder: Paths.screenshots) }
+
     func manageSaves() {
         SaveManagerWindow.show(saves: Paths.saves, registry: Paths.registry,
             serverURL: serverURL, gameRunning: { [weak self] in self?.isPlaying ?? true })
