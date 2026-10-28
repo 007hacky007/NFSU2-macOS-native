@@ -19,6 +19,8 @@ This fork started from [TalhaMudo/NFSU2Recomp](https://github.com/TalhaMudo/NFSU
 | Shaders and compiler | Earlier shader translation and instruction handling | Fixed declared `ps_2_0` texture coordinates, updated x87 precision and SSE2 handling, and optional register-local lifting |
 | Launcher and portable copies | Engine/full-screen selection and portable export | Adds multiplayer/UHUD, installed languages, frame rate and controller settings; portable copies retain movies and `server.dll` |
 | Music | Game soundtrack | Optional local music folder, system decoding, track metadata and native playback controls |
+| Photo and drift modes | Original game presentation | Native photo camera/PNG gallery and a free-roam drift score overlay |
+| Other cars' headlights | Player's own road lighting | Native Metal projector lighting for other players or all cars, with an off option |
 | Save tools | Career saves on disk | Native profile manager, ZIP backup/import/export and optional encrypted cloud exchange compatible with the browser |
 | Executables | EU and NA v1.2 | NA v1.2 only; EU support was intentionally dropped |
 | Verification | Earlier ISA/function tests and integrity checks | 610 ISA, 65 function/runtime, 287 free-roam and 240 Winsock checks, plus launcher, UHUD, save-path and local WebSocket tests |
@@ -55,9 +57,21 @@ The compiler includes x87 precision control, corrected SSE2 instructions and ret
 
 The launcher offers installed languages, display-matched or 30/60/120/240 FPS limits, controller enable/hotplug mode and stick/trigger dead zones. Languages require the corresponding files in `LANGUAGES` or `LANGPACKS`; the app does not download them. Cutscenes keep the game's own frame limit. Button bindings remain in the game's Controls menu.
 
+Expand **Display and gameplay** for 50/75/100/150/200% resolution scale, wide/original HUD placement, movie subtitles/framing, cutscene bars, other cars' headlights and background pause/run. Extra headlights can light the road from other players or all cars; Off keeps the player's own original lighting. These projectors have the same lack of wall/car shadows as the original game's headlight.
+
 Under **Music**, choose **Music folder** and select a local folder. Supported files are decoded through macOS audio APIs; WAV, MP3, AAC/M4A and FLAC have been checked with synthetic fixtures. Other formats depend on the installed system decoders. Unsupported or corrupt tracks are skipped. Filename or embedded artist/title metadata appears through the existing EA Trax hooks, and the game's music volume and pause controls still apply.
 
 Open **Game Tools** from the game application menu or press **Cmd+Shift+M** for Pause/Resume, Next track, Shuffle and the switch back to the game soundtrack. Folder playback reads local files and makes no network requests.
+
+## Photo mode and drift HUD
+
+Press **F12** during supported offline driving to enter photo mode: the world and race clock stop and the game HUD disappears. Press F12 or Space to save a PNG, then Esc to resume. In menus and network races, F12 takes a screenshot without freezing the game. The game application menu also has **Photo Mode** controls, and **Cmd+Shift+P** enters photo mode where allowed.
+
+Use WASD/Q/E to move, arrows to turn, mouse drag to orbit, right drag to pan and scroll to change distance. Brackets change FOV; Z/C change tilt; Tab switches orbit/free camera; R resets; Shift moves faster. Controller sticks move/turn, A captures, B exits, X switches camera and Y resets. Physical controller operation remains untested.
+
+Photos are saved under `~/Library/Application Support/NFSU2/Screenshots`, outside the game folder. **Screenshots...** in the launcher opens thumbnails and a preview, with reveal/export and confirmed deletion. Captures use unique filenames. `NFSU2_APPSUPPORT` also relocates the screenshot folder for isolated testing.
+
+In free roam, press **X** to toggle drift handling. The native overlay shows current points, multiplier/next-level progress, best and total, plus banked/lost feedback. It hides when inactive or in photo mode. Drift physics and scoring come from the shared runtime.
 
 ## UHUD
 
@@ -79,6 +93,10 @@ Defaults, both editable in the launcher:
 The game requests a relay connection when multiplayer needs it. Free roam and the game's Online/LAN traffic share that connection. Queue tickets and resume tokens are retained across reconnects; voluntarily leaving releases the server place. Offline is the default and makes no game-network connection.
 
 **Game Tools** (**Cmd+Shift+M**) shows the free-roam race lobby, players, countdown and nearby notices. At a multiplayer race marker, use Open/Join/Start or Leave lobby. The panel also offers the donor's 152 preset quick-chat phrases, solid/ghost cars, and up to four named crews with colour pickers. Matching crew names share a public crew. The game's original Online/LAN menus remain available for Online races. Multiplayer session logic and phrase IDs match nfsu2-web.
+
+**Quick chat groups...** configures four named groups of four phrases. During active multiplayer free roam, press 1-4 twice or use the controller's right stick twice to choose a group and phrase. Nearby messages appear above cars as well as in Game Tools. Selection times out or cancels on focus loss; offline driving and network races keep their normal input.
+
+The launcher's optional **Free-roam room** filters players by matching room names on the next launch. Empty means everyone. Rooms are public; other players on the server can still see your name. The launcher rejects names that the shared runtime would refuse.
 
 ## Saves and portable copies
 
@@ -104,6 +122,9 @@ Cloud saves use the donor's PBKDF2/AES-GCM format and 256 KiB encrypted limit. D
 sh tests/launcher_settings.sh
 sh tests/runtime_options.sh
 sh tests/native_controls.sh
+sh tests/native_scene.sh
+sh tests/photo_gallery.sh
+sh tests/headlights_native.sh
 sh tests/radio_native.sh
 sh tests/save_manager.sh
 sh tests/vault.sh
@@ -114,7 +135,7 @@ The native test suite covers instruction semantics, lifted functions, heap/virtu
 
 `tests/vault.sh` checks encryption/ZIP interoperability with Node WebCrypto and builds the HTTP harness. With the sibling nfsu2-web donor and its server built at `out/server-rs-target/debug/nfsu2-server`, `python3 tests/vault_local.py` checks browser/native cloud exchange, conflicts, redirect refusal and bounded responses on loopback. Set `NFSU2_WEB_DONOR` if the donor is elsewhere.
 
-Scripted game scenarios use isolated saves and registry files through `tools/autorun.sh`. Build and runtime results are recorded in `docs/superpowers/plans/2026-10-28-native-online-uhud.md` and `docs/superpowers/plans/2026-10-28-native-controls-radio-saves.md`.
+Scripted game scenarios use isolated saves and registry files through `tools/autorun.sh`. Build and runtime results are recorded in `docs/superpowers/plans/2026-10-28-native-online-uhud.md`, `docs/superpowers/plans/2026-10-28-native-controls-radio-saves.md` and `docs/superpowers/plans/2026-10-28-native-photo-drift-polish.md`. The remaining web feature list is in `docs/roadmap/web-parity.md`.
 
 ## Source notices
 

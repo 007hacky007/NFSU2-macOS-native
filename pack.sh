@@ -233,6 +233,8 @@ THE WINDOW
                   HD = smoother edges and real reflections; the Mac gets warmer.
                   "Start in full screen" (Cmd-F also switches while playing).
   Game settings   Installed language, frame rate, controller mode and dead zones.
+                  Expand Display and gameplay for resolution scale, HUD,
+                  subtitles, movie framing, headlights and background behavior.
   HUD textures    Original or UHUD; reads TEXPACKS/uhud.pak from your game
                   folder, or an imported prepared pack.
   Multiplayer     Offline by default. Online uses an explicit player name
@@ -242,6 +244,10 @@ THE WINDOW
                   preset chat, crews and solid/ghost cars.
   Manage Saves    Back up, export or restore career ZIPs while the game is stopped.
                   Optional encrypted cloud exchange is manual; keep your keyphrase.
+  Screenshots     Browse, preview, export or delete captured PNGs.
+                  F12 enters photo mode during supported offline driving;
+                  F12 again saves a photo, Esc resumes. Elsewhere it captures
+                  a screenshot without freezing. X toggles free-roam drift mode.
   Portable copy   "Make Copy..." builds one app with the game inside it
                   (about 1.4 GB) that runs on its own, e.g. on another Mac.
                   It contains the game: keep it for yourself.
