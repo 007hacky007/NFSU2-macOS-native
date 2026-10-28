@@ -213,6 +213,11 @@ final class LauncherModel: ObservableObject {
 
     // MARK: tools
 
+    func manageSaves() {
+        SaveManagerWindow.show(saves: Paths.saves, registry: Paths.registry,
+            serverURL: serverURL, gameRunning: { [weak self] in self?.isPlaying ?? true })
+    }
+
     func chooseMusicFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
