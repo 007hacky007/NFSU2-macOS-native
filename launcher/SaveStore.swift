@@ -51,9 +51,12 @@ struct SaveStore {
 
     static func profileName(_ path: String) -> String? {
         let parts = path.split(separator: "/")
-        guard parts.count == 3, parts[0] == Substring(profileRoot), parts[1].lowercased() == parts[2].lowercased(),
+        guard parts.count == 3, parts[0].lowercased() == profileRoot.lowercased(), parts[1].lowercased() == parts[2].lowercased(),
               !parts[1].contains(" ") else { return nil }
         return String(parts[1])
+    }
+    static func isProfilePath(_ path: String) -> Bool {
+        path.split(separator: "/").first?.lowercased() == profileRoot.lowercased()
     }
     private func safeExisting(_ url: URL) throws {
         var current = url
@@ -99,7 +102,9 @@ struct SaveStore {
         }.sorted { $0.modified > $1.modified }
     }
     func backup(label: String = "backup") throws -> URL {
-        let data = try SaveArchive.encode(snapshot())
+        try keepArchive(SaveArchive.encode(snapshot()), label: label)
+    }
+    func keepArchive(_ data: Data, label: String) throws -> URL {
         try safeExisting(backups)
         try fm.createDirectory(at: backups, withIntermediateDirectories: true)
         let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
@@ -120,8 +125,9 @@ struct SaveStore {
             if let name = profileName(e.path) { try SaveProfile.validate(e.data, name: name); profiles.insert(name.lowercased()) }
         }
         guard !profiles.isEmpty else { throw SaveError("The archive contains no valid NFS Underground 2 profiles.") }
-        for e in entries where e.path.hasPrefix(profileRoot + "/") {
+        for e in entries where isProfilePath(e.path) {
             let parts = e.path.split(separator: "/")
+            guard parts.count >= 3 else { throw SaveError("The archive contains an incomplete profile folder.") }
             let owner = String(parts[1]).components(separatedBy: " ").first!.lowercased()
             guard parts.count >= 3, profiles.contains(owner) else { throw SaveError("The archive contains an incomplete profile folder.") }
         }
@@ -134,12 +140,11 @@ struct SaveStore {
         let names = Set(imported.compactMap { Self.profileName($0.path)?.lowercased() })
         let fullBackup = !cloud && imported.contains { $0.path == "registry.txt" || $0.path == "settings.ini" }
         var next = fullBackup ? [] : previous.filter { entry in
-            if cloud { return !entry.path.hasPrefix(Self.profileRoot + "/") || entry.path.split(separator: "/").dropFirst().first?.contains(" ") == true }
+            if cloud { return !Self.isProfilePath(entry.path) || entry.path.split(separator: "/").dropFirst().first?.contains(" ") == true }
             let p = entry.path.split(separator: "/")
-            return p.count < 2 || p[0] != Substring(Self.profileRoot) || !names.contains(p[1].lowercased())
+            return p.count < 2 || p[0].lowercased() != Self.profileRoot.lowercased() || !names.contains(p[1].lowercased())
         }
         for e in imported {
-            if cloud && !e.path.hasPrefix(Self.profileRoot + "/") { continue }
             next.removeAll { $0.path.lowercased() == e.path.lowercased() }; next.append(e)
         }
         try SaveArchive.validatePaths(next)
@@ -150,7 +155,8 @@ struct SaveStore {
         guard let free = space?.uint64Value, free >= UInt64(needed) else { throw SaveError("Not enough free disk space to stage and back up this restore.") }
         let stage = parent.appendingPathComponent(".save-stage-\(UUID().uuidString)", isDirectory: true)
         let regStage = registry.deletingLastPathComponent().appendingPathComponent(".registry-stage-\(UUID().uuidString)")
-        defer { try? fm.removeItem(at: stage); try? fm.removeItem(at: regStage) }
+        var removeStage = true
+        defer { if removeStage { try? fm.removeItem(at: stage) }; try? fm.removeItem(at: regStage) }
         try fm.createDirectory(at: stage, withIntermediateDirectories: true)
         for e in next where e.path != "registry.txt" {
             let url = stage.appendingPathComponent(e.path)
@@ -162,14 +168,22 @@ struct SaveStore {
         if restoreRegistry, let reg = next.first(where: { $0.path == "registry.txt" }) { try reg.data.write(to: regStage) }
         guard !gameRunning() else { throw SaveError("The game started during restore. Saves were not changed.") }
         _ = try backup(label: "before-restore")
+        guard !gameRunning() else { throw SaveError("The game started during restore. Saves were not changed.") }
         try safeExisting(saves); try safeExisting(registry)
         let existed = fm.fileExists(atPath: saves.path)
         if existed {
             guard renameatx_np(AT_FDCWD, stage.path, AT_FDCWD, saves.path, UInt32(RENAME_SWAP)) == 0 else { throw SaveError("Could not atomically replace the save folder.") }
         } else { try fm.moveItem(at: stage, to: saves) }
         if restoreRegistry && rename(regStage.path, registry.path) != 0 {
-            if existed { _ = renameatx_np(AT_FDCWD, stage.path, AT_FDCWD, saves.path, UInt32(RENAME_SWAP)) }
-            else { try? fm.moveItem(at: saves, to: stage) }
+            if existed {
+                guard renameatx_np(AT_FDCWD, stage.path, AT_FDCWD, saves.path, UInt32(RENAME_SWAP)) == 0 else {
+                    removeStage = false
+                    throw SaveError("Registry restore and rollback failed. Your previous save folder is kept beside the saves as \(stage.lastPathComponent). Restore the before-restore ZIP from the backups folder before playing.")
+                }
+            } else {
+                do { try fm.moveItem(at: saves, to: stage) }
+                catch { throw SaveError("Registry restore and rollback failed. The imported folder was kept. Restore the before-restore ZIP from the backups folder before playing.") }
+            }
             throw SaveError("Registry restore failed. Previous saves and the pre-restore backup were kept.")
         }
     }
