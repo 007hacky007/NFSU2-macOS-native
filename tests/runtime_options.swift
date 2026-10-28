@@ -45,7 +45,7 @@ struct RuntimeOptionsTests {
             let invalid = try JSONDecoder().decode(RuntimeOptions.self, from: JSONSerialization.data(withJSONObject: json))
             do { _ = try invalid.environment(); assertionFailure("accepted invalid \(key)") } catch {}
         }
-        for room in [String(repeating: "a", count: 64), String(repeating: "ø", count: 32)] {
+        for room in [String(repeating: "a", count: 64), String(repeating: "ø", count: 32), "1488"] {
             var invalid = options; invalid.roamRoom = room
             do { _ = try invalid.environment(); assertionFailure("invalid room") } catch {}
         }

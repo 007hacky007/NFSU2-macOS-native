@@ -64,10 +64,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # --- launcher (rebuilt when a launcher/*.swift is newer) ---
 LAUNCHER="$ROOT/out/nfsu2_launcher"
-if [ ! -x "$LAUNCHER" ] || [ -n "$(find "$ROOT/launcher" -name '*.swift' -newer "$LAUNCHER" 2>/dev/null)" ]; then
+if [ ! -x "$LAUNCHER" ] || [ "$ROOT/runtime/names.h" -nt "$LAUNCHER" ] || [ -n "$(find "$ROOT/launcher" -name '*.swift' -newer "$LAUNCHER" 2>/dev/null)" ]; then
   echo "building the launcher..."
   # -target: runs on macOS 11 like the engine; -swift-version 5: no Swift 6 strict concurrency
-  swiftc -swift-version 5 -O -target arm64-apple-macos11.0 -o "$LAUNCHER" "$ROOT"/launcher/*.swift \
+  swiftc -swift-version 5 -O -target arm64-apple-macos11.0 -import-objc-header "$ROOT/runtime/names.h" -o "$LAUNCHER" "$ROOT"/launcher/*.swift \
     || { echo "warning: launcher build failed (swiftc missing?), bundling without it"; rm -f "$LAUNCHER"; }
 fi
 
