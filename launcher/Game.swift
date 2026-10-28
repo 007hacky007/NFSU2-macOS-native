@@ -17,10 +17,8 @@ struct ExeBuild: Equatable {
 
 enum SupportedExe {
     static let builds = [
-        ExeBuild(name: "European v1.2", size: 4_788_224,
-                 sha256: "8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297", engineSuffix: ""),
         ExeBuild(name: "North American v1.2", size: 4_800_512,
-                 sha256: "f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7", engineSuffix: "-na"),
+                 sha256: "f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7", engineSuffix: ""),
     ]
     static let names = ["SPEED2.EXE", "speed2.exe", "Speed2.exe"]
 }
@@ -48,8 +46,9 @@ enum Paths {
     static var saves: URL { home.appendingPathComponent("Library/Application Support/NFSU2 Saves") }
     static var logs: URL { home.appendingPathComponent("Library/Logs/NFSU2") }
     static var registry: URL { home.appendingPathComponent(".nfsu2_registry") }
+    static var importedTextures: URL { home.appendingPathComponent("Library/Application Support/NFSU2/Textures/uhud.pak") }
 
-    /// The engine binary for a build of SPEED2.EXE (nil: the European one).
+    /// The engine binary for the supported North American SPEED2.EXE.
     static func engine(_ build: ExeBuild?, hd: Bool) -> URL {
         macOS.appendingPathComponent("nfsu2-engine" + (build?.engineSuffix ?? "") + (hd ? "-hd" : ""))
     }
@@ -67,6 +66,12 @@ enum Prefs {
     // Launcher only.
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
+    static let online = "LauncherOnline"
+    static let serverURL = "LauncherServerURL"
+    static let countsURL = "LauncherCountsURL"
+    static let playerName = "LauncherPlayerName"
+    static let uiTextures = "LauncherUITextures"
+    static let texturePack = "LauncherTexturePack"
 }
 
 enum Locator {

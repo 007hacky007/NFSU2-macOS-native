@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Derive the stdcall argument count of every import from the push sequence at its call sites.
-   Also count fs:/gs: segment usage (SEH/TLS)."""
-import sys, os, struct, collections
+"""Infer each import's stdcall argument count from the push sequences at its call sites.
+   Also count fs:/gs: segment use (SEH/TLS)."""
+import sys, struct, collections
 sys.path.insert(0,'tools')
 import pefile
 from capstone import *
@@ -10,15 +10,27 @@ from lift import Lifter
 EXE=sys.argv[1]; pe=pefile.PE(EXE); IB=pe.OPTIONAL_HEADER.ImageBase; L=Lifter(EXE)
 pe.parse_data_directories()
 iat={}
-for e in pe.DIRECTORY_ENTRY_IMPORT:
+# IMPDLL=<original module>: read the import table from the unrelocated file
+# (pefile refuses the relocated analysis copy's import directory) and move
+# the IAT addresses to this image's base.
+import os
+_ipe=pefile.PE(os.environ['IMPDLL']) if os.environ.get('IMPDLL') else pe
+_idelta=IB-_ipe.OPTIONAL_HEADER.ImageBase
+for e in _ipe.DIRECTORY_ENTRY_IMPORT:
     for imp in e.imports:
-        iat[imp.address]=(e.dll.decode('latin1'), imp.name.decode('latin1') if imp.name else f"#{imp.ordinal}")
+        iat[(imp.address+_idelta)&0xffffffff]=(e.dll.decode('latin1'), imp.name.decode('latin1') if imp.name else f"#{imp.ordinal}")
 def rd32(a):
     for nm,va,vs,d in L.secs:
         if va<=a<va+len(d)-3: return struct.unpack_from('<I',d,a-va)[0]
 md=L.md
 seeds={IB+pe.OPTIONAL_HEADER.AddressOfEntryPoint}
-for a in (int(x,16) for x in open(os.environ.get('RELOCS','out/relocs.txt'))):
+# Second guest modules (gen.sh, server.dll): RELOCS = the module's fixup
+# slots, IMPOUT = output file, SYMPFX = table prefix (g_<pfx>imp), STRICT=1 =
+# every import must be in KNOWN (no guessed stdcall counts for a module).
+import os
+RELOCS=os.environ.get('RELOCS','out/relocs.txt'); IMPOUT=os.environ.get('IMPOUT','gen/all/impargs.c')
+SYMPFX=os.environ.get('SYMPFX',''); STRICT=os.environ.get('STRICT','')=='1'
+for a in (int(x,16) for x in open(RELOCS)):
     v=rd32(a)
     if v is not None and L.in_text(v): seeds.add(v)
 cov=bytearray(L.TSZ); q=collections.deque(seeds); seen=set(seeds)
@@ -47,7 +59,7 @@ while q:
                 prev_was_mov_ebp_esp=False
                 for prev in reversed(recent):
                     m2=prev.mnemonic; ops2=prev.op_str
-                    # function prologue: if we see 'mov ebp, esp' the arguments are over
+                    # function prologue: once we see 'mov ebp, esp' the arguments are over
                     if m2=='mov' and ops2.replace(' ','')=='ebp,esp':
                         hit_prologue=True; break
                     if m2=='sub' and ops2.startswith('esp'):
@@ -57,7 +69,7 @@ while q:
                         continue
                     else: break
                 if hit_prologue and n>0:
-                    n = max(0, n)   # ran into a prologue: the count is unreliable, mark it
+                    n = max(0, n)   # ran into the prologue: the count is unreliable, mark it
                     argv.setdefault(t, collections.Counter())
                     unreliable.add(t)
                 argv[t][n]+=1
@@ -77,7 +89,7 @@ while q:
         if m in ('ret','retf','int3','hlt','ud2'): break
         va=i.address+i.size
 
-print("=== SEGMENT PREFIX USAGE (SEH / TLS indicator) ===")
+print("=== SEGMENT PREFIX USE (a sign of SEH / TLS) ===")
 for s,n in seg.most_common(): print(f"  {s}: {n} accesses")
 print("  most common patterns:")
 for (s,m),n in seg_sites.most_common(8): print(f"    {s}: {m:8s} {n}")
@@ -156,7 +168,7 @@ KNOWN={
  'lineAnswer':3,'lineMakeCall':5,'lineGetID':6,'lineClose':1,'lineNegotiateAPIVersion':6,
  'lineOpen':9,'lineGetDevCaps':5,'lineInitialize':5,'lineShutdown':1,
  'wvsprintfA':3,'PostThreadMessageA':4,'SetRect':5,'SetActiveWindow':1,'GetForegroundWindow':0,
- 'wsprintfA':0,   # cdecl variadic: the caller cleans up -> the callee NEVER cleans up
+ 'wsprintfA':0,   # cdecl variadic: the caller cleans up -> the callee NEVER does
  'timeSetEvent':5,'timeKillEvent':1,'timeGetDevCaps':2,
  'shutdown':2,'getpeername':3,'WSAIoctl':9,
  'timeGetTime':0,'timeBeginPeriod':1,'timeEndPeriod':1,'joyGetPosEx':2,'joyGetNumDevs':0,
@@ -166,6 +178,7 @@ KNOWN={
  'send':4,'recv':4,'sendto':6,'recvfrom':6,'closesocket':1,'select':5,'ioctlsocket':3,
  'setsockopt':5,'getsockopt':5,'htons':1,'ntohs':1,'htonl':1,'ntohl':1,'inet_addr':1,
  'inet_ntoa':1,'gethostbyname':1,'gethostname':2,'WSAGetLastError':0,'getsockname':3,
+ 'GetFileTime':4,
 }
 hit=miss=0; rows=[]
 for a,(dll,nm) in iat.items():
@@ -174,13 +187,15 @@ for a,(dll,nm) in iat.items():
     rows.append((dll,nm,best,sum(cnt.values()) if cnt else 0,a))
     if nm in KNOWN and cnt:
         if KNOWN[nm]==best: hit+=1
-        else: miss+=1; print(f"  MISMATCH {nm}: derived {best}, actual {KNOWN[nm]}  (distribution {dict(cnt)})")
-print(f"\n=== ARGUMENT COUNT DERIVATION ACCURACY ===")
-print(f"  across {hit+miss} known functions: {hit} correct, {miss} wrong = %{100.0*hit/max(hit+miss,1):.1f}")
-IMPOUT=os.path.join(os.environ.get('GENOUT','gen/all'),'impargs.c')
+        else: miss+=1; print(f"  MISMATCH {nm}: inferred {best}, real {KNOWN[nm]}  (distribution {dict(cnt)})")
+print(f"\n=== ARGUMENT COUNT INFERENCE ACCURACY ===")
+print(f"  of {hit+miss} known functions: {hit} right, {miss} wrong = {100.0*hit/max(hit+miss,1):.1f}%")
+if STRICT:
+    unk=sorted({nm for dll,nm,n,sites,a in rows if nm not in KNOWN})
+    if unk: sys.exit(f"argcount: no known stdcall argument count for {', '.join(unk)} (add them to KNOWN)")
 with open(IMPOUT,'w') as f:
     f.write('#include <stdint.h>\ntypedef struct { uint32_t iat; const char*dll; const char*name; int nargs; } ImpEnt;\n')
-    f.write(f'const uint32_t g_imp_count = {len(rows)};\nconst ImpEnt g_imp[] = {{\n')
+    f.write(f'const uint32_t g_{SYMPFX}imp_count = {len(rows)};\nconst ImpEnt g_{SYMPFX}imp[] = {{\n')
     for dll,nm,n,sites,a in sorted(rows,key=lambda r:r[4]):
         n2 = KNOWN.get(nm, n)
         f.write(f'  {{0x{a:08x}u,"{dll}","{nm}",{n2}}},\n')

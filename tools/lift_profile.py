@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Instruction-level profile of the lifted code: which x86 instruction kinds does the
-game thread's time go to?
+"""Instruction-level profile of the lifted code: which x86 instruction kinds
+does the game thread's time go to?
 
-    python3 tools/lift_profile.py <PERFLOG directory> [--src gen/prof] [--start 6400 --end 9400]
+    python3 tools/lift_profile.py <PERFLOG dir> [--src gen/prof] [--from 6400 --to 9400]
 
-Requirements: the recording must be taken with a binary built from annotated shards
-(COMMENTS=1) and with -gline-tables-only (see PROJECT.md "Lifter profile").  Each
-sample's leaf PC is mapped with atos -i to a shard line, and the line to the
-preceding "/* address  instruction operands */" comment, i.e. to the x86 instruction.
-Standard library + atos only.
+Requirements: the recording must come from a binary built from annotated shards
+(COMMENTS=1) and with -gline-tables-only.  --from/--to bound the window by guest
+frame.  Each sample's leaf PC is mapped with atos -i to a shard line, and the line
+to the preceding "/* address  instruction operands */" comment, i.e. to the x86
+instruction.  Standard library + atos only.
 """
 import bisect, collections, os, re, struct, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import session_report as sr
 
-INSN = re.compile(r'^\s*/\* ([0-9a-f]{8})  (\S+)(?: (.*?))? \*/\s*$')
+INSN_RE = re.compile(r'^\s*/\* ([0-9a-f]{8})  (\S+)(?: (.*?))? \*/\s*$')
 
 
 def category(mn, ops):
@@ -63,19 +63,19 @@ def main():
     m = sr.read_meta(d)
     binary = m['binary']
     lo, hi = (int(x, 16) for x in m['text'].split())
-    samples = [o for o in sr.read_samples(d) if o[2] == 0]
+    samp = [o for o in sr.read_samples(d) if o[2] == 0]
     # race window: by guest frame (gframe)
-    start = int(sys.argv[sys.argv.index('--start') + 1]) if '--start' in sys.argv else 0
-    end = int(sys.argv[sys.argv.index('--end') + 1]) if '--end' in sys.argv else 1 << 31
-    samples = [o for o in samples if start <= o[1] < end]
-    sb = sr.Symbol(d, m)
+    frame_from = int(sys.argv[sys.argv.index('--from') + 1]) if '--from' in sys.argv else 0
+    frame_to = int(sys.argv[sys.argv.index('--to') + 1]) if '--to' in sys.argv else 1 << 31
+    samp = [o for o in samp if frame_from <= o[1] < frame_to]
+    sb = sr.Symbols(d, m)
 
-    # wait samples (frame limiter sleep etc.) excluded: work only
-    work = [o for o in samples if not sr.WAIT.search(sb(o[3][0]))]
-    print(f'{len(samples)} samples, {len(work)} work (excluding waits)')
+    # waiting samples (frame limiter sleep etc.) left out: busy work only
+    busy = [o for o in samp if not sr.WAITING.search(sb(o[3][0]))]
+    print(f'{len(samp)} samples, {len(busy)} busy (not waiting)')
 
     # leaf PCs in the main binary -> atos -i
-    pcs = sorted({o[3][0] for o in work if lo <= o[3][0] < hi})
+    pcs = sorted({o[3][0] for o in busy if lo <= o[3][0] < hi})
     where = {}
     tmp = os.path.join(d, '_pcs.txt')
     with open(tmp, 'w') as f:
@@ -83,9 +83,9 @@ def main():
             f.write('0x%x\n' % p)
     out = subprocess.run(['atos', '-i', '-o', binary, '-l', hex(lo), '-f', tmp], capture_output=True, text=True).stdout
     os.remove(tmp)
-    # atos -i: one or more lines per address (nested frames), blank line between addresses
+    # atos -i: one or more lines per address (inlined frames), a blank line between addresses
     groups = out.split('\n\n')
-    if len(groups) < len(pcs):        # some versions don't put a blank line: one address per line
+    if len(groups) < len(pcs):        # some versions print no blank line: one address per line
         groups = out.splitlines()
     for p, g in zip(pcs, groups):
         lines = [s for s in g.strip().splitlines() if s.strip()]
@@ -100,21 +100,21 @@ def main():
 
     files = {}
 
-    def insn(shard, line):
+    def insn_at(shard, line):
         if shard not in files:
             files[shard] = open(os.path.join(src, shard), errors='replace').read().split('\n')
         L = files[shard]
         for k in range(line - 1, max(-1, line - 60), -1):
-            mm = INSN.match(L[k])
+            mm = INSN_RE.match(L[k])
             if mm:
                 return int(mm.group(1), 16), mm.group(2), mm.group(3)
             if L[k].startswith('void sub_') or L[k].startswith('L_'):
                 break
         return None, '(function entry/block)', ''
 
-    cat = collections.Counter(); mnem = collections.Counter(); helpers = collections.Counter()
+    kinds = collections.Counter(); mnem = collections.Counter(); helpers = collections.Counter()
     outside = collections.Counter(); addrs = collections.Counter()
-    for o in work:
+    for o in busy:
         p = o[3][0]
         if not (lo <= p < hi):
             outside[sb(p)] += 1
@@ -123,27 +123,27 @@ def main():
         if not shard:
             outside['(runtime) ' + sb(p)] += 1
             continue
-        a, mn, ops = insn(*shard)
+        a, mn, ops = insn_at(*shard)
         k = category(mn, ops) if a is not None else mn
-        cat[k] += 1
+        kinds[k] += 1
         mnem[mn] += 1
         if a is not None:
             addrs[a] += 1
         if helper:
             helpers[helper] += 1
-    N = len(work)
-    lifted = sum(cat.values())
-    print(f'\nin lifted code: {lifted} samples ({100 * lifted / N:.1f}% of work); outside {N - lifted}')
-    print('\n== x86 instruction kind (share within lifted code) ==')
-    for k, v in cat.most_common():
+    N = len(busy)
+    lifted = sum(kinds.values())
+    print(f'\nin lifted code: {lifted} samples ({100 * lifted / N:.1f}% of busy); outside {N - lifted}')
+    print('\n== x86 instruction kind (share within the lifted code) ==')
+    for k, v in kinds.most_common():
         print(f'  {100 * v / lifted:5.1f}%  {k}')
-    print('\n== most common instructions ==')
+    print('\n== most frequent instructions ==')
     for k, v in mnem.most_common(25):
         print(f'  {100 * v / lifted:5.1f}%  {k}')
     print('\n== inline helpers (cpu.h) ==')
     for k, v in helpers.most_common(12):
         print(f'  {100 * v / lifted:5.1f}%  {k}')
-    print('\n== outside lifted code (work samples) ==')
+    print('\n== outside the lifted code (busy samples) ==')
     for k, v in outside.most_common(15):
         print(f'  {100 * v / N:5.1f}%  {k}')
     print('\n== hottest x86 addresses ==')

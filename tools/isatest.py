@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""x86 instruction semantics verification suite.
-   Hand-encoded machine code + the results expected from the Intel spec."""
+"""Validation suite for x86 instruction semantics.
+   Hand-encoded machine code + the results the Intel spec expects."""
 import sys, os, subprocess, struct
 sys.path.insert(0,'tools')
+# lift the tests the way gen.sh lifts the game (x87 precision control on;
+# the tests run at CW 0x037F unless they load another word)
+os.environ.setdefault('X87PC', '1')
 from lift import RawLifter, Unsupported
 
 TESTS = []
-def T(name, code, setup=None, mem=None, expect=None, fmem=None, memf=None, fmemf=None):
+# calls: offsets in code of further functions the test calls (each is lifted as a
+# function of its own); retpast: offsets of callees that may return past their
+# caller (the lifter's tools/retpast.txt list); env: lifter options set while
+# the test is lifted (e.g. RETEIP=0)
+def T(name, code, setup=None, mem=None, expect=None, fmem=None, memf=None, fmemf=None, calls=(), retpast=(), env=None):
     TESTS.append(dict(name=name, code=bytes(code), setup=setup or {},
                       mem=mem or {}, expect=expect or {}, fmem=fmem or {},
-                      memf=memf or {}, fmemf=fmemf or {}))
+                      memf=memf or {}, fmemf=fmemf or {}, calls=calls, retpast=retpast, env=env or {}))
 
 def imm32(v): return list(struct.pack('<I', v & 0xffffffff))
 MOV_EAX = lambda v: [0xB8]+imm32(v)
 MOV_ECX = lambda v: [0xB9]+imm32(v)
 MOV_EDX = lambda v: [0xBA]+imm32(v)
 
-# ---------------- shifts / rotates ----------------
+# ---------------- shift / rotate ----------------
 T("shr eax,1  (eax=3)",      [0xD1,0xE8], {'eax':3},          expect={'eax':1,'cf':1,'zf':0})
 T("shr eax,1  (eax=2)",      [0xD1,0xE8], {'eax':2},          expect={'eax':1,'cf':0})
 T("shr eax,4  (eax=0xFF)",   [0xC1,0xE8,4], {'eax':0xFF},     expect={'eax':0x0F,'cf':1})
@@ -80,13 +87,13 @@ T("setne al (equal)",    [0x3D]+imm32(5)+[0x0F,0x95,0xC0], {'eax':5}, expect={'e
 T("setl al (-1 < 1)",   [0x3D]+imm32(1)+[0x0F,0x9C,0xC0], {'eax':0xFFFFFFFF}, expect={'eax':0xFFFFFF01})
 T("setg al (2 > 1)",    [0x3D]+imm32(1)+[0x0F,0x9F,0xC0], {'eax':2}, expect={'eax':1})
 
-# ---------------- stack (bugs found!) ----------------
-T("push [esp+4] must push the right slot",
+# ---------------- stack (bugs found here!) ----------------
+T("push [esp+4] pushes the right slot",
   [0x52, 0x51, 0xFF,0x74,0x24,0x04, 0x58, 0x59, 0x5A],  # push edx;push ecx;push [esp+4];pop eax;pop ecx;pop edx
   {'edx':0xAAAA1111,'ecx':0xBBBB2222}, expect={'eax':0xAAAA1111,'ecx':0xBBBB2222,'edx':0xAAAA1111})
-T("push esp must push the original esp",
+T("push esp pushes the original esp",
   [0x54, 0x58],                                 # push esp; pop eax
-  {}, expect={})   # when esp comes back eax = old esp; special check below
+  {}, expect={})   # once esp is back, eax = the old esp; checked separately below
 T("pop order",
   [0x52, 0x51, 0x58, 0x5A],                     # push edx; push ecx; pop eax; pop edx
   {'edx':0x11112222,'ecx':0x33334444}, expect={'eax':0x33334444,'edx':0x11112222})
@@ -197,7 +204,7 @@ T("inc ax (0xFFFF)",   [0x66,0x40], {'eax':0x0000FFFF}, expect={'eax':0x00000000
 T("neg al (1)",        [0xF6,0xD8], {'eax':0x00000001}, expect={'eax':0x000000FF,'cf':1})
 T("imul dx (word)",    [0x66,0xF7,0xEA], {'eax':0x0003,'edx':0x0004}, expect={'eax':0x000C,'edx':0})
 
-# ---------------- all conditional setcc ----------------
+# ---------------- every conditional setcc ----------------
 def cc(name, opc, a, b, want):
     T(f"set{name} ({a} ? {b})", [0xB8]+imm32(a)+[0x3D]+imm32(b)+[0x0F,opc,0xC2],
       {'edx':0}, expect={'edx':want})
@@ -208,10 +215,10 @@ cc('be',0x96, 2, 2, 1);         cc('a' ,0x97, 3, 2, 1)
 cc('s' ,0x98, 1, 2, 1);         cc('ns',0x99, 2, 1, 1)
 cc('l' ,0x9C, 0xFFFFFFFF, 1, 1);cc('ge',0x9D, 1, 0xFFFFFFFF, 1)
 cc('le',0x9E, 0xFFFFFFFF, 1, 1);cc('g' ,0x9F, 1, 0xFFFFFFFF, 1)
-cc('l_greater',0x9C, 1, 0xFFFFFFFF, 0)
+cc('l_signed',0x9C, 1, 0xFFFFFFFF, 0)
 cc('b_unsigned',0x92, 1, 0xFFFFFFFF, 1)
 
-# ---------------- ek string ----------------
+# ---------------- more string ----------------
 MS = 0x00C20000
 T("rep movsb", [0xFC, 0xF3,0xA4], {'ecx':5,'esi':MS,'edi':MS+0x100},
   mem={MS:0x44434241, MS+4:0x00000045}, expect={'ecx':0}, fmem={MS+0x100:0x44434241})
@@ -227,7 +234,7 @@ T("repe cmpsd (equal block)", [0xFC, 0xB9,3,0,0,0, 0xF3,0xA7],
   mem={MS+0x600:1,MS+0x604:2,MS+0x608:3, MS+0x620:1,MS+0x624:2,MS+0x628:3},
   expect={'ecx':0,'zf':1})
 
-# ---------------- ek x87 ----------------
+# ---------------- more x87 ----------------
 FB = 0x00C30000
 T("fld1 + fldz + faddp", [0xD9,0xE8, 0xD9,0xEE, 0xDE,0xC1, 0xD9,0x1D]+a32(FB),
   {}, expect={}, fmemf={FB:1.0})
@@ -250,7 +257,7 @@ T("fiadd dword", [0xD9,0x05]+a32(FB+0x80)+[0xDA,0x05]+a32(FB+0x84)+[0xD9,0x1D]+a
 T("fimul dword", [0xD9,0x05]+a32(FB+0x90)+[0xDA,0x0D]+a32(FB+0x94)+[0xD9,0x1D]+a32(FB+0x98),
   {}, memf={FB+0x90:2.5}, mem={FB+0x94:4}, expect={}, fmemf={FB+0x98:10.0})
 
-# ---------------- x87 rounding check (RC field) ----------------
+# ---------------- x87 rounding control (RC field) ----------------
 # fistp must follow the RC field of the control word.  The CRT's __ftol routine
 # sets RC=11 (truncate); using nearbyint gives one too many for fractions >= 0.5.
 FD = 0x00C40000
@@ -269,6 +276,30 @@ _rc("fistp RC=down   3.7 -> 3",    0x077F,  3.7,  3)
 _rc("fistp RC=down   -3.2 -> -4",  0x077F, -3.2, -4)
 _rc("fistp RC=up     3.2 -> 4",    0x0B7F,  3.2,  4)
 _rc("fistp RC=up     -3.7 -> -3",  0x0B7F, -3.7, -3)
+
+# x87 NaN propagation (Intel SDM vol. 1 table 4-7): with two NaN operands the
+# result is the one with the larger significand, whichever is the
+# destination.  The drift oracle found the integrator 0x5AA480 summing NaN
+# garbage of unused state slots.
+FN_ = 0x00C70000
+T("fadd QNaN+QNaN -> larger significand (dst smaller)",
+  [0xD9,0x05]+a32(FN_)+[0xD8,0x05]+a32(FN_+4)+[0xD9,0x1D]+a32(FN_+8),
+  {}, mem={FN_:0x7FC00001, FN_+4:0x7FC00100}, expect={}, fmem={FN_+8:0x7FC00100})
+T("fadd QNaN+QNaN -> larger significand (dst larger)",
+  [0xD9,0x05]+a32(FN_+0x10)+[0xD8,0x05]+a32(FN_+0x14)+[0xD9,0x1D]+a32(FN_+0x18),
+  {}, mem={FN_+0x10:0x7FC00100, FN_+0x14:0xFFC00001}, expect={}, fmem={FN_+0x18:0x7FC00100})
+# x87 precision control (X87PC=1): fldcw [FP]; fld1; fdiv dword [FP+4] (3.0);
+# fstp qword [FP+8].  PC=24 rounds the quotient to a float, PC=53 does not.
+FP_ = 0x00C71000
+def _pc(name, cw, lo, hi, base):
+    T(name, [0xD9,0x2D]+a32(base) + [0xD9,0xE8] + [0xD8,0x35]+a32(base+4) + [0xDD,0x1D]+a32(base+8),
+      {}, mem={base:cw}, memf={base+4:3.0}, expect={}, fmem={base+8:lo, base+12:hi})
+_pc("fdiv 1/3 at PC=24 (CW 0x007F) -> float-rounded", 0x007F, 0x60000000, 0x3FD55555, FP_)
+_pc("fdiv 1/3 at PC=53 (CW 0x027F) -> double",        0x027F, 0x55555555, 0x3FD55555, FP_+0x20)
+_pc("fdiv 1/3 at PC=64 (CW 0x037F) -> double",        0x037F, 0x55555555, 0x3FD55555, FP_+0x40)
+T("fmul QNaN*1.0 -> the NaN",
+  [0xD9,0x05]+a32(FN_+0x20)+[0xD8,0x0D]+a32(FN_+0x24)+[0xD9,0x1D]+a32(FN_+0x28),
+  {}, mem={FN_+0x20:0x3F800000, FN_+0x24:0x7FC0ABC0}, expect={}, fmem={FN_+0x28:0x7FC0ABC0})
 # CRT __ftol pattern: fnstcw / or ah,0xc / fldcw / fistp
 T("__ftol pattern (2.6+0.001 -> 2)",
   [0xD9,0x3D]+a32(FD+0x20) +                    # fnstcw [FD+0x20]
@@ -326,6 +357,77 @@ T("psraw mm0,4 (negative)", [0x0F,0x6F,0x05]+a32(MM2+0xE0)+[0x0F,0x71,0xE0,0x04]
 T("packuswb", [0x0F,0x6F,0x05]+a32(MM2+0x100)+[0x0F,0x67,0x05]+a32(MM2+0x108)+[0x0F,0x7F,0x05]+a32(MM2+0x110),
   {}, mem={MM2+0x100:0x00FF0001, MM2+0x104:0xFFFF0100, MM2+0x108:0x00020003, MM2+0x10C:0x00040005},
   fmem={MM2+0x110:0x00FFFF01, MM2+0x114:0x04050203})
+# a register or memory count is all 64 bits of it: 2^32 is more than 63 (the
+# qword is emptied), 2^32+1 more than 15 (each word becomes its sign)
+T("psrlq mm1,mm0 (count 2^32)", [0x0F,0x6F,0x0D]+a32(MM2+0x120)+[0x0F,0x6F,0x05]+a32(MM2+0x128)+[0x0F,0xD3,0xC8]+[0x0F,0x7F,0x0D]+a32(MM2+0x130),
+  {}, mem={MM2+0x120:0x9ABCDEF0, MM2+0x124:0x12345678, MM2+0x128:0x00000000, MM2+0x12C:0x00000001,
+           MM2+0x130:0xFFFFFFFF, MM2+0x134:0xFFFFFFFF},
+  fmem={MM2+0x130:0x00000000, MM2+0x134:0x00000000})
+T("psraw mm0,[m] (count 2^32+1)", [0x0F,0x6F,0x05]+a32(MM2+0x140)+[0x0F,0xE1,0x05]+a32(MM2+0x148)+[0x0F,0x7F,0x05]+a32(MM2+0x150),
+  {}, mem={MM2+0x140:0x7FFF8000, MM2+0x144:0x0001FFFE, MM2+0x148:0x00000001, MM2+0x14C:0x00000001},
+  fmem={MM2+0x150:0x0000FFFF, MM2+0x154:0x0000FFFF})
+# SSE2: the xmm forms of the MMX instructions work on all 128 bits.  A pack fills
+# the low qword from the destination's elements and the high qword from the
+# source's; an unpack interleaves the low (high) qwords of both into the whole
+# register; the saturating adds and subtracts and the shifts do both halves, by
+# one count.  They were lifted per 64-bit half (the VP6 decoder's SSE2 code).
+# xmm0 = [x], xmm1 = [x+0x10] (or the operand itself), result [x+0x20].
+X2 = [0x00C80000]
+def _x2(name, op, a, b, want, m128=False):
+    x = X2[0]; X2[0] += 0x40
+    T(name + " (128-bit)", [0xF3,0x0F,0x6F,0x05]+a32(x)+[0xF3,0x0F,0x6F,0x0D]+a32(x+0x10)
+      + op + (a32(x+0x10) if m128 else []) + [0xF3,0x0F,0x7F,0x05]+a32(x+0x20),
+      {}, mem={x+4*k: v for k, v in enumerate(a + b)}, fmem={x+0x20+4*k: v for k, v in enumerate(want)})
+_W1 = [0x7F010080, 0xFF7FFF80, 0x80001234, 0x00010000]; _W2 = [0x00FE0101, 0xFFFF0003, 0x7FFF0040, 0x80010100]
+_B1 = [0x13121110, 0x17161514, 0x1B1A1918, 0x1F1E1D1C]; _B2 = [0xA3A2A1A0, 0xA7A6A5A4, 0xABAAA9A8, 0xAFAEADAC]
+_S1 = [0x7FF08010, 0x00FF7FFF, 0xFF00C000, 0x40018000]; _S2 = [0x00207FF0, 0x0001FFFF, 0x0100C000, 0x3FFF0001]
+_x2("packsswb xmm0,xmm1", [0x66,0x0F,0x63,0xC1], _W1, _W2, [0x80807F7F, 0x0100807F, 0xFF037F7F, 0x807F7F40])
+_x2("packssdw xmm0,xmm1", [0x66,0x0F,0x6B,0xC1], [0x00007FFF, 0xFFFF8000, 0x00012345, 0xFFFE0000],
+    [0x00000005, 0x80000000, 0xFFFFFFF0, 0x7FFFFFFF], [0x80007FFF, 0x80007FFF, 0x80000005, 0x7FFFFFF0])
+_x2("packuswb xmm0,xmm1", [0x66,0x0F,0x67,0xC1], _W1, _W2, [0x0000FF80, 0x010000FF, 0x0003FEFF, 0x00FFFF40])
+_x2("packuswb xmm0,[m128]", [0x66,0x0F,0x67,0x05], _W2, _W1, [0x0003FEFF, 0x00FFFF40, 0x0000FF80, 0x010000FF], m128=True)
+_x2("punpcklbw xmm0,xmm1", [0x66,0x0F,0x60,0xC1], _B1, _B2, [0xA111A010, 0xA313A212, 0xA515A414, 0xA717A616])
+_x2("punpckhbw xmm0,xmm1", [0x66,0x0F,0x68,0xC1], _B1, _B2, [0xA919A818, 0xAB1BAA1A, 0xAD1DAC1C, 0xAF1FAE1E])
+_x2("punpcklwd xmm0,xmm1", [0x66,0x0F,0x61,0xC1], _B1, _B2, [0xA1A01110, 0xA3A21312, 0xA5A41514, 0xA7A61716])
+_x2("punpckhwd xmm0,xmm1", [0x66,0x0F,0x69,0xC1], _B1, _B2, [0xA9A81918, 0xABAA1B1A, 0xADAC1D1C, 0xAFAE1F1E])
+_x2("punpckldq xmm0,xmm1", [0x66,0x0F,0x62,0xC1], _B1, _B2, [0x13121110, 0xA3A2A1A0, 0x17161514, 0xA7A6A5A4])
+_x2("punpckhdq xmm0,xmm1", [0x66,0x0F,0x6A,0xC1], _B1, _B2, [0x1B1A1918, 0xABAAA9A8, 0x1F1E1D1C, 0xAFAEADAC])
+_x2("punpckhbw xmm0,[m128]", [0x66,0x0F,0x68,0x05], _B1, _B2, [0xA919A818, 0xAB1BAA1A, 0xAD1DAC1C, 0xAF1FAE1E], m128=True)
+_x2("paddsw xmm0,xmm1", [0x66,0x0F,0xED,0xC1], _S1, _S2, [0x7FFF0000, 0x01007FFE, 0x00008000, 0x7FFF8001])
+_x2("paddusb xmm0,xmm1", [0x66,0x0F,0xDC,0xC1], _S1, _S2, [0x7FFFFFFF, 0x00FFFFFF, 0xFF00FF00, 0x7FFF8001])
+_x2("psubsb xmm0,xmm1", [0x66,0x0F,0xE8,0xC1], _S1, _S2, [0x7FD08020, 0x00FE7F00, 0xFE000000, 0x010280FF])
+_x2("psubusw xmm0,[m128]", [0x66,0x0F,0xD9,0x05], _S1, _S2, [0x7FD00020, 0x00FE0000, 0xFE000000, 0x00027FFF], m128=True)
+_x2("psllw xmm0,3", [0x66,0x0F,0x71,0xF0,0x03], _S1, _S2, [0xFF800080, 0x07F8FFF8, 0xF8000000, 0x00080000])
+_x2("psrad xmm0,9", [0x66,0x0F,0x72,0xE0,0x09], _S1, _S2, [0x003FF840, 0x00007FBF, 0xFFFF8060, 0x002000C0])
+_x2("psrlq xmm0,4", [0x66,0x0F,0x73,0xD0,0x04], _S1, _S2, [0xF7FF0801, 0x000FF7FF, 0x0FF00C00, 0x04001800])
+_x2("psllq xmm0,xmm1 (count 12)", [0x66,0x0F,0xF3,0xC1], _S1, [12, 0, 0x55, 0x66], [0x08010000, 0xF7FFF7FF, 0x0C000000, 0x18000FF0])
+# the count is the destination's own low qword: read before either half is shifted
+_x2("psrlw xmm0,xmm0 (count 4)", [0x66,0x0F,0xD1,0xC0], [4, 0, 0xF00FABCD, 0x8000FFF0], [0, 0, 0, 0],
+    [0x00000000, 0x00000000, 0x0F000ABC, 0x08000FFF])
+# all 64 bits of the count: 2^32+4 is more than 15 (each word becomes its sign), not 4
+_x2("psraw xmm0,xmm1 (count 2^32+4)", [0x66,0x0F,0xE1,0xC1], _S1, [4, 1, 0x55, 0x66], [0x0000FFFF, 0x00000000, 0xFFFFFFFF, 0x0000FFFF])
+# A callee that returns past its caller (tools/retpast.txt), in the shape of the
+# CRT's x87 2^x core (0x7653de): a range check (fcompp, fnstsw into the frame at
+# ebp, test 0x41, jne) and, out of range, 'pop eax' -- its own return address --
+# and a ret that goes to its caller's caller.  The test calls F (+0x12), F calls
+# H (+0x21) and adds 1 and sets ebx only when H comes back to it.  ZF, CF and
+# SF start at 1; out of range H's test leaves them 0, which the early return
+# hands on (CF and SF check the FLAGABI lift: H's own jne reads only ZF).  With
+# RETEIP=0 (a ret only pops) H still writes c->eip: F compares it.
+RP = 0x00C90000
+def _rp(name, x, rp, res, expect, env=None):
+    T(name, [0xD9,0x05]+a32(rp) + [0xE8,0x07,0,0,0] + [0xD9,0x1D]+a32(rp+8) + [0xC3]   # fld [rp]; call F; fstp [rp+8]
+      + [0xE8,0x0A,0,0,0, 0xD9,0xE8, 0xDE,0xC1, 0xBB,1,0,0,0, 0xC3]                     # F: call H; fld1; faddp; mov ebx,1
+      + [0xD9,0xC0, 0xD9,0xE1, 0xD9,0x05]+a32(rp+4) + [0xDE,0xD9]                       # H: fld st0; fabs; fld [limit]; fcompp
+      + [0x9B, 0xDD,0xBD,0x60,0xFF,0xFF,0xFF, 0xF6,0x85,0x61,0xFF,0xFF,0xFF,0x41]       # fnstsw [ebp-0xa0]; test [ebp-0x9f],0x41
+      + [0x75,0x01, 0xC3, 0x58, 0xDD,0xD8, 0xD9,0x05]+a32(rp+12) + [0xC3],              # jne; ret | pop eax; fstp st0; fld [rp+12]
+      {'ebp':rp+0x200, 'ebx':0, 'zf':1, 'cf':1, 'sf':1}, memf={rp:x, rp+4:100.0, rp+12:7.0}, expect=expect, fmemf={rp+8:res},
+      calls=(0x12, 0x21), retpast=(0x21,), env=env)
+_rp("call returning past its caller: in range", 3.0, RP, 4.0, {'ebx':1})
+_rp("call returning past its caller: out of range", 1000.0, RP+0x400, 7.0, {'ebx':0, 'zf':0, 'cf':0, 'sf':0, 'eax':0x00401017})
+_rp("call returning past its caller: in range, RETEIP=0", 3.0, RP+0x800, 4.0, {'ebx':1}, env={'RETEIP':'0'})
+_rp("call returning past its caller: out of range, RETEIP=0", 1000.0, RP+0xC00, 7.0, {'ebx':0, 'zf':0, 'cf':0, 'sf':0, 'eax':0x00401017},
+    env={'RETEIP':'0'})
 T("pushal/popal", [0x60, 0xB8,0x99,0,0,0, 0x61],   # pushad; mov eax,0x99; popad
   {'eax':0x11223344,'ecx':0x55667788}, expect={'eax':0x11223344,'ecx':0x55667788})
 FC = 0x00C60000
@@ -342,6 +444,67 @@ T("addsd xmm0,[m]", [0xF2,0x0F,0x10,0x05]+a32(FC+0x60)+[0xF2,0x0F,0x58,0x05]+a32
 T("movhlps", [0x0F,0x28,0x05]+a32(FC+0x80)+[0x0F,0x12,0xC0]+[0x0F,0x29,0x05]+a32(FC+0x90),
   {}, mem={FC+0x80:1,FC+0x84:2,FC+0x88:3,FC+0x8C:4},
   fmem={FC+0x90:3, FC+0x94:4})
+# v12na: MMX<->SSE conversions (0x73392f cvtpi2ps trapped in the race)
+T("cvtpi2ps xmm0,[m64] (upper half kept)",
+  [0x0F,0x28,0x05]+a32(FC+0xA0)+[0x0F,0x2A,0x05]+a32(FC+0xB0)+[0x0F,0x29,0x05]+a32(FC+0xC0),
+  {}, memf={FC+0xA0:9.0,FC+0xA4:9.0,FC+0xA8:9.0,FC+0xAC:9.0},
+  mem={FC+0xB0:0xFFFFFFFD, FC+0xB4:7},
+  fmemf={FC+0xC0:-3.0, FC+0xC4:7.0, FC+0xC8:9.0, FC+0xCC:9.0})
+T("cvttps2pi mm0,[m64] (truncation)",
+  [0x0F,0x2C,0x05]+a32(FC+0xD0)+[0x0F,0x7F,0x05]+a32(FC+0xD8),
+  {}, memf={FC+0xD0:2.7, FC+0xD4:-2.7}, fmem={FC+0xD8:2, FC+0xDC:0xFFFFFFFE})
+# v12na: fsincos / fcmov / xlatb / shufps memory / fxam
+T("fsincos (0.5): ST0=cos, ST1=sin",
+  [0xD9,0x05]+a32(FC+0x100)+[0xD9,0xFB]+[0xD9,0x1D]+a32(FC+0x104)+[0xD9,0x1D]+a32(FC+0x108),
+  {}, memf={FC+0x100:0.5}, fmemf={FC+0x104:0.8775825618903728, FC+0x108:0.479425538604203})
+T("fcmovb st0,st1 (CF=1 copies)",
+  [0xD9,0x05]+a32(FC+0x110)+[0xD9,0x05]+a32(FC+0x114)+[0xF9]+[0xDA,0xC1]+[0xD9,0x1D]+a32(FC+0x118)+[0xDD,0xD8],
+  {}, memf={FC+0x110:7.0, FC+0x114:3.0}, fmemf={FC+0x118:7.0})
+T("fcmovb st0,st1 (CF=0 does not copy)",
+  [0xD9,0x05]+a32(FC+0x120)+[0xD9,0x05]+a32(FC+0x124)+[0xF8]+[0xDA,0xC1]+[0xD9,0x1D]+a32(FC+0x128)+[0xDD,0xD8],
+  {}, memf={FC+0x120:7.0, FC+0x124:3.0}, fmemf={FC+0x128:3.0})
+T("xlatb", [0xD7], {'ebx':FC+0x130, 'eax':0x11223302}, mem={FC+0x130:0x44332211},
+  expect={'eax':0x11223333})
+T("shufps xmm0,[m128],0x4e",
+  [0x0F,0x28,0x05]+a32(FC+0x140)+[0x0F,0xC6,0x05]+a32(FC+0x150)+[0x4E]+[0x0F,0x29,0x05]+a32(FC+0x160),
+  {}, mem={FC+0x140:1,FC+0x144:2,FC+0x148:3,FC+0x14C:4, FC+0x150:5,FC+0x154:6,FC+0x158:7,FC+0x15C:8},
+  fmem={FC+0x160:3, FC+0x164:4, FC+0x168:5, FC+0x16C:6})
+T("cvtps2pi mm0,[m64] (nearest even)",
+  [0x0F,0x2D,0x05]+a32(FC+0xE0)+[0x0F,0x7F,0x05]+a32(FC+0xE8),
+  {}, memf={FC+0xE0:2.5, FC+0xE4:3.5}, fmem={FC+0xE8:2, FC+0xEC:4})
+
+# ---------------- switch jump tables (JTSWITCH=1 only) ----------------
+# Lifted as a C switch whose cases check the table entry in guest memory (the
+# tables are written there with mem=); without JTSWITCH the jmp is a tail call
+# through the dispatcher, which this harness does not have.
+if os.environ.get('JTSWITCH', '') == '1':
+    _B = 0x00401000
+    # cmp eax,2; ja default; jmp [eax*4+tab]; case0/1/2: mov ebx,10/20/30; default: mov ebx,99; ret; tab
+    _JT1 = ([0x3D]+imm32(2)+[0x77,0x1C, 0xFF,0x24,0x85]+imm32(_B+0x29)
+            + [0xBB]+imm32(10)+[0xEB,0x13] + [0xBB]+imm32(20)+[0xEB,0x0C] + [0xBB]+imm32(30)+[0xEB,0x05]
+            + [0xBB]+imm32(99) + [0xC3] + imm32(_B+0x0E)+imm32(_B+0x15)+imm32(_B+0x1C))
+    _JT1M = {_B+0x29:_B+0x0E, _B+0x2D:_B+0x15, _B+0x31:_B+0x1C}
+    for _v, _w in ((0, 10), (1, 20), (2, 30), (3, 99), (0xFFFFFFFF, 99)):
+        T(f"switch [eax*4] (eax={_v:#x})", _JT1, {'eax':_v, 'ebx':0}, mem=_JT1M, expect={'ebx':_w})
+    # MSVC's two-level switch: cmp eax,3; ja default; movzx ecx, byte [eax+idx]; jmp [ecx*4+tab];
+    # case0/1: mov ebx,10/20; default: mov ebx,99; ret; idx = 1,0,1,0; tab
+    _JT2 = ([0x3D]+imm32(3)+[0x77,0x1C, 0x0F,0xB6,0x88]+imm32(_B+0x29) + [0xFF,0x24,0x8D]+imm32(_B+0x2D)
+            + [0xBB]+imm32(10)+[0xEB,0x0C] + [0xBB]+imm32(20)+[0xEB,0x05] + [0xBB]+imm32(99) + [0xC3]
+            + [1,0,1,0] + imm32(_B+0x15)+imm32(_B+0x1C))
+    _JT2M = {_B+0x29:0x00010001, _B+0x2D:_B+0x15, _B+0x31:_B+0x1C}
+    for _v, _w, _x in ((0, 20, 1), (1, 10, 0), (2, 20, 1), (3, 10, 0), (4, 99, None)):
+        _e = {'ebx':_w}
+        if _x is not None: _e['ecx'] = _x
+        T(f"two-level switch (eax={_v})", _JT2, {'eax':_v, 'ebx':0, 'ecx':0x55}, mem=_JT2M, expect=_e)
+    # instructions that leave the flags and the index alone between them (sub_00468160's shape):
+    # cmp eax,1; push esi; ja default; mov ecx,esi; jmp [eax*4+tab]; case0/1: mov ebx,10/20;
+    # default: mov ebx,99; pop esi; ret; tab
+    _JT3 = ([0x3D]+imm32(1)+[0x56, 0x77,0x17, 0x8B,0xCE, 0xFF,0x24,0x85]+imm32(_B+0x26)
+            + [0xBB]+imm32(10)+[0xEB,0x0C] + [0xBB]+imm32(20)+[0xEB,0x05] + [0xBB]+imm32(99) + [0x5E, 0xC3]
+            + imm32(_B+0x11)+imm32(_B+0x18))
+    _JT3M = {_B+0x26:_B+0x11, _B+0x2A:_B+0x18}
+    for _v, _w, _c in ((0, 10, 0x1234), (1, 20, 0x1234), (2, 99, 0x77)):   # default: ja before the mov
+        T(f"switch after push/mov (eax={_v})", _JT3, {'eax':_v, 'ebx':0, 'ecx':0x77, 'esi':0x1234}, mem=_JT3M, expect={'ebx':_w, 'ecx':_c, 'esi':0x1234})
 
 # =====================  GENERATOR / RUNNER  =====================
 BASE = 0x00401000
@@ -349,12 +512,22 @@ def build():
     fns=[]; body=[]
     for i,t in enumerate(TESTS):
         L = RawLifter(t['code'] + b'\xc3', base=BASE, comments=False)
+        L.retpast = {BASE + x for x in t['retpast']}
+        keep = {k: os.environ.get(k) for k in t['env']}; os.environ.update(t['env'])
         try:
             code,_ = L.lift(BASE)
+            more = [L.lift(BASE + x)[0] for x in t['calls']]
         except Unsupported as e:
             print(f"  !! {t['name']}: could not be lifted ({e})"); fns.append(None); continue
-        code = code.replace(f"sub_{BASE:08x}", f"test_{i}")
-        body.append(code); fns.append(f"test_{i}")
+        finally:
+            for k, v in keep.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+        names = {f"sub_{BASE:08x}": f"test_{i}", **{f"sub_{BASE + x:08x}": f"test_{i}_{x:x}" for x in t['calls']}}
+        for a, b in names.items():
+            code = code.replace(a, b); more = [s.replace(a, b) for s in more]
+        body += [f"void test_{i}_{x:x}(CPU *c);" for x in t['calls']] + more + [code]
+        fns.append(f"test_{i}")
     return fns, body
 
 REGS = ['eax','ecx','edx','ebx','esp','ebp','esi','edi']
@@ -364,11 +537,16 @@ def gen_c(fns, body):
     o=[]
     o.append('#include "cpu.h"\n#include <stdio.h>\n#include <string.h>\n#include <math.h>')
     o.append('void mem_commit(uint32_t,uint32_t);')
+    o.append('guest_fn_t g_dtab[DISPATCH_TEXT_SIZE];   /* empty: indirect calls go to the stub below */')
     o.append('void dispatch_indirect(CPU*c,uint32_t a){(void)c;(void)a;}')
     o.append('void unsupported_insn(CPU*c,uint32_t a,const char*m){(void)c;(void)a;(void)m;fprintf(stderr,"TRAP 0x%x %s\\n",a,m);}')
     o.append('void guest_hook(CPU*c,uint32_t a){(void)c;(void)a;}')
     o.append('void cpuid_shim(CPU*c){(void)c;} uint64_t rdtsc_shim(void){return 0;}')
+    # LREGS=1 (tools/lregs.py): the lifted bodies name the registers in locals; the harness below does not
+    lr = os.environ.get('LREGS', '') == '1'
+    if lr: o.append('#undef RG_\n#define RG_(x) _r_##x')
     o.append('\n'.join(body))
+    if lr: o.append('#undef RG_\n#define RG_(x) c->x')
     o.append('static CPU cpu; static CPU *const c=&cpu;')
     o.append('#define STK 0x00B00000u')
     o.append('static int pass=0, fail=0;')
@@ -417,4 +595,4 @@ if __name__=='__main__':
     src = gen_c(fns, body)
     os.makedirs('gen', exist_ok=True)
     open('gen/isatest.c','w').write(src)
-    print(f"gen/isatest.c written ({len(TESTS)} test)")
+    print(f"gen/isatest.c written ({len(TESTS)} tests)")

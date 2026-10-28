@@ -2,6 +2,13 @@
 import AppKit
 import Darwin
 
+// Counts are fetched only on request. Do not follow a server to another endpoint.
+private final class CountsRequestDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+}
+
 final class LauncherModel: ObservableObject {
     enum Engine: String { case original, hd }
 
@@ -21,6 +28,24 @@ final class LauncherModel: ObservableObject {
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
+    @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online); clearCounts() } }
+    @Published var serverURL: String {
+        didSet {
+            defaults.set(serverURL, forKey: Prefs.serverURL)
+            if countsURL == LaunchSettings.countsURL(for: oldValue) {
+                countsURL = LaunchSettings.countsURL(for: serverURL)
+            }
+            clearCounts()
+        }
+    }
+    @Published var countsURL: String { didSet { defaults.set(countsURL, forKey: Prefs.countsURL); clearCounts() } }
+    @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
+    @Published var uiTextures: String { didSet { defaults.set(uiTextures, forKey: Prefs.uiTextures) } }
+    @Published var texturePack: String { didSet { defaults.set(texturePack, forKey: Prefs.texturePack) } }
+    @Published var counts: String? = nil
+    @Published var countsError: String? = nil
+    @Published var loadingCounts = false
+    @Published var importingTextures = false
 
     private let defaults = UserDefaults.standard
     private var builder: PortableBuilder?
@@ -28,8 +53,11 @@ final class LauncherModel: ObservableObject {
     var isPlaying: Bool { engineWatch != nil }
     var isCopying: Bool { builder != nil }
     private var quitWhenCopyStops = false
+    private var countsTask: URLSessionDataTask?
+    private var countsSession: URLSession?
+    private var countsGeneration = 0
 
-    /// Engines for the found SPEED2.EXE (European ones until it is known).
+    /// Engines for the supported SPEED2.EXE.
     func hasEngine(_ e: Engine) -> Bool {
         FileManager.default.isExecutableFile(atPath: Paths.engine(location?.build, hd: e == .hd).path)
     }
@@ -48,6 +76,13 @@ final class LauncherModel: ObservableObject {
         engineForced = ProcessInfo.processInfo.environment["NFSU2_ENGINE"] != nil
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
+        online = defaults.bool(forKey: Prefs.online)
+        let savedServer = defaults.string(forKey: Prefs.serverURL) ?? LaunchSettings.defaultServer
+        serverURL = savedServer
+        countsURL = defaults.string(forKey: Prefs.countsURL) ?? LaunchSettings.countsURL(for: savedServer)
+        playerName = defaults.string(forKey: Prefs.playerName) ?? ""
+        uiTextures = defaults.string(forKey: Prefs.uiTextures) == "uhud" ? "uhud" : "original"
+        texturePack = defaults.string(forKey: Prefs.texturePack) ?? ""
     }
 
     var location: GameLocation? {
@@ -57,6 +92,21 @@ final class LauncherModel: ObservableObject {
         }
     }
     var isReady: Bool { if case .ready = game { return true }; return false }
+    var onlineError: String? { online ? LaunchSettings.onlineError(server: serverURL, name: playerName) : nil }
+    var canPlay: Bool { isReady && onlineError == nil && job == nil && !importingTextures }
+
+    var textureStatus: String {
+        if !texturePack.isEmpty {
+            return FileManager.default.fileExists(atPath: texturePack)
+                ? "Using the imported UHUD pack."
+                : "Imported pack missing. Import it again or use the game folder."
+        }
+        if let folder = location?.folder,
+           FileManager.default.fileExists(atPath: folder.appendingPathComponent("TEXPACKS/uhud.pak").path) {
+            return "UHUD pack found in the game folder."
+        }
+        return "Choose a prepared uhud.pak, or place one in the game's TEXPACKS folder. Missing packs use the original textures."
+    }
 
     /// Synchronous: used once at startup, before deciding whether to show the window.
     func refreshNow() {
@@ -103,12 +153,19 @@ final class LauncherModel: ObservableObject {
 
     func play() {
         guard case .ready(let loc) = game else { return }
+        if let error = onlineError { alert("Check the online settings", error); return }
+        guard !importingTextures else { return }
         let env = ProcessInfo.processInfo.environment
         let fromEnv = !(env["NFSU2_DATA"] ?? "").isEmpty      // a one-off override: don't remember it
         if !loc.embedded && !fromEnv { defaults.set(loc.folder.path, forKey: Prefs.gameFolder) }
         if !engineForced { defaults.set(engine.rawValue, forKey: Prefs.engine) }
         defaults.synchronize()
-        if !fromEnv { setenv("NFSU2_DATA", loc.exe.path, 1) }
+        let child: [String: String]
+        do {
+            child = try LaunchSettings.environment(inherited: env, online: online, server: serverURL, name: playerName,
+                textures: uiTextures, pack: texturePack.isEmpty ? nil : texturePack,
+                data: loc.exe.path, saves: Paths.saves.path, registry: Paths.registry.path)
+        } catch { alert("Check the launch settings", error.localizedDescription); return }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
@@ -117,8 +174,9 @@ final class LauncherModel: ObservableObject {
         // player granted here (Downloads, Documents...) are not asked for again.
         var pid: pid_t = 0
         var argv: [UnsafeMutablePointer<CChar>?] = [strdup(path), nil]
-        let rc = posix_spawn(&pid, path, nil, nil, &argv, environ)
-        free(argv[0])
+        var envp = child.keys.sorted().map { strdup("\($0)=\(child[$0]!)") } + [nil]
+        defer { for pointer in argv + envp { free(pointer) } }
+        let rc = posix_spawn(&pid, path, nil, nil, &argv, &envp)
         guard rc == 0 else {
             alert("The game could not be started", "\(path)\n\n\(String(cString: strerror(rc)))")
             return
@@ -140,6 +198,73 @@ final class LauncherModel: ObservableObject {
     }
 
     // MARK: tools
+
+    private func clearCounts() {
+        countsGeneration += 1
+        countsTask?.cancel(); countsTask = nil
+        countsSession?.invalidateAndCancel(); countsSession = nil
+        loadingCounts = false; counts = nil; countsError = nil
+    }
+
+    func refreshCounts() {
+        guard online else { return }
+        clearCounts()
+        guard let url = LaunchSettings.countsEndpoint(countsURL) else {
+            countsError = "Use https:// for player counts, or http:// with a loopback address."
+            return
+        }
+        loadingCounts = true
+        let generation = countsGeneration
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 12
+        config.httpShouldSetCookies = false
+        config.httpAdditionalHeaders = ["User-Agent": "NFSU2-Launcher", "Accept": "application/json"]
+        let session = URLSession(configuration: config, delegate: CountsRequestDelegate(), delegateQueue: nil)
+        countsSession = session
+        countsTask = session.dataTask(with: url) { data, response, error in
+            var result: String?, failure: String?
+            do {
+                if let error = error { throw error }
+                guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+                      let data = data, data.count <= 64_000 else {
+                    throw SettingsError("The server did not return player counts.")
+                }
+                let counts = try JSONDecoder().decode(PlayerCounts.self, from: data)
+                guard counts.valid else { throw SettingsError("The server returned invalid player counts.") }
+                result = counts.summary
+            } catch { failure = error.localizedDescription }
+            session.finishTasksAndInvalidate()
+            DispatchQueue.main.async {
+                guard self.countsGeneration == generation else { return }
+                self.loadingCounts = false
+                self.counts = result; self.countsError = failure
+                self.countsTask = nil; self.countsSession = nil
+            }
+        }
+        countsTask?.resume()
+    }
+
+    func importTextures() {
+        let panel = NSOpenPanel()
+        panel.title = "Import a Prepared UHUD Pack"
+        panel.message = "Choose uhud.pak. A private copy is kept in Application Support; your game folder stays unchanged."
+        panel.allowedFileTypes = ["pak"]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        importingTextures = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            var failure: String?
+            do { try TexturePack.install(from: source, to: Paths.importedTextures) }
+            catch { failure = error.localizedDescription }
+            DispatchQueue.main.async {
+                self.importingTextures = false
+                if let failure = failure { self.alert("Could not import the texture pack", failure); return }
+                self.texturePack = Paths.importedTextures.path
+                self.uiTextures = "uhud"
+            }
+        }
+    }
 
     func openSaves() {
         try? FileManager.default.createDirectory(at: Paths.saves, withIntermediateDirectories: true)

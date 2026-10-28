@@ -14,11 +14,11 @@
 #define WMASK(t)   ((unsigned)(((t) >> 16) & 0xFu))
 #define SATUR(t)   (((t) & 0x00100000u) != 0)
 /* Destination SHIFT modifier (D3DSP_DSTSHIFT, bits 24-27).
- * In ps_1_x brightness scaling is done with it: _x2 _x4 _x8 _d2 _d4 _d8.
- * It was never applied -> every shader writing "mul_x2_sat" came out at HALF
- * brightness (NFSU2 has 23 ps_1_1 shaders: headlights, reflections, road
- * surface).  The 4 bits are SIGNED: 0..7 = x2^n, 8..15 = x2^(n-16), i.e.
- * 0xF = /2. */
+ * ps_1_x does its brightness scaling with it: _x2 _x4 _x8 _d2 _d4 _d8.
+ * It was never applied -> every shader that writes "mul_x2_sat" came out
+ * at HALF brightness (NFSU2 has 23 ps_1_1 shaders: headlights,
+ * reflections, the road surface).  The 4 bits are SIGNED: 0..7 = x2^n,
+ * 8..15 = x2^(n-16), so 0xF = /2. */
 #define DSHIFT(t)  ((int)(((t) >> 24) & 0xFu) >= 8 ? \
                     (int)(((t) >> 24) & 0xFu) - 16 : (int)(((t) >> 24) & 0xFu))
 #define SWIZ(t)    ((unsigned)(((t) >> 16) & 0xFFu))
@@ -50,23 +50,23 @@ typedef struct {
     int      has_dst;
     unsigned dst;
     unsigned src[4];
-    unsigned rel[4];        /* relative addressing token, otherwise 0 */
+    unsigned rel[4];        /* relative addressing token, else 0 */
     float    imm[4];        /* for def / defi */
     int      match;         /* if->else|endif, rep->endrep, loop->endloop */
     int      match2;        /* else->endif */
     unsigned cmp;           /* ifc/breakc comparison code */
     /* --- pre-decoded operand plan (for speed) ---------------------------
-     * src_read/dst_write re-decoded the token for every VERTEX: bit extraction,
-     * a reg_ptr call, a swizzle loop, a switch, memcpy.  Yet all of these depend
-     * only on the INSTRUCTION.  They are decoded once here and only arithmetic is
-     * left in the vertex loop. */
+     * src_read/dst_write decoded the token again for every VERTEX: bit
+     * extraction, a reg_ptr call, a swizzle loop, a switch, a memcpy.  Yet
+     * all of that depends on the INSTRUCTION alone.  It is decoded once
+     * here, leaving only arithmetic in the vertex loop. */
     unsigned char fsrc;        /* all sources plain (no reladdr/mod) */
-    unsigned char fdst;        /* dst = r#, full mask, no saturate     */
+    unsigned char fdst;        /* dst = r#, full mask, no satur       */
     signed char   s_type[4];
     short         s_num[4];
-    unsigned char s_def[4];    /* is the constant def'd (use p->def)   */
+    unsigned char s_def[4];    /* constant has a def (use p->def)     */
     unsigned char s_sw[4][4];
-    unsigned char s_swk[4];    /* 0=identity(.xyzw) 1=single component 2=general */
+    unsigned char s_swk[4];    /* 0=identity(.xyzw) 1=one component 2=general */
     short         d_num;
 } VSIns;
 
@@ -76,11 +76,11 @@ struct VSProg {
     VSIns    *ins;
     unsigned  n;
     float     def[256][4];      /* constants defined with def */
-    unsigned  defmask[8];       /* which c# were def'd (bit field) */
+    unsigned  defmask[8];       /* which c# have a def (bit field) */
     int32_t   defi[16][4];
     int       inmap[16][2];     /* v# -> (usage, index); usage<0 = unused */
-    int       smptype[16];      /* s# texture type: 2=2D 3=CUBE 4=VOLUME, 0=undeclared */
-    int       maxreg;           /* the highest temp register used (r#) */
+    int       smptype[16];      /* s# texture type: 2=2D 3=CUBE 4=VOLUME, 0=not declared */
+    int       maxreg;           /* highest temp register used (r#) */
     unsigned  unknown;
 };
 
@@ -90,9 +90,9 @@ static int is_param(uint32_t t){ return (t & 0x80000000u) != 0; }
 VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
     if (!tok || max_dw < 2) return 0;
     uint32_t ver = tok[0];
-    /* 0xFFFE = vertex shader, 0xFFFF = pixel shader.  Both use the same token
-     * format; pixel shaders are (for now) accepted only for disassembly/
-     * inspection. */
+    /* 0xFFFE = vertex shader, 0xFFFF = pixel shader.  Both use the same
+     * token format; pixel shaders are accepted (for now) only for
+     * disassembly/inspection. */
     if ((ver >> 16) != 0xFFFEu && (ver >> 16) != 0xFFFFu) return 0;
 
     VSProg *p = calloc(1, sizeof *p);
@@ -126,7 +126,7 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
         ix->cmp = (t >> 16) & 0x7u;               /* for ifc/breakc */
 
         unsigned len = ILEN(t);
-        size_t body = i + 1;                      /* the first operand token */
+        size_t body = i + 1;                      /* first operand token */
         size_t next;
 
         if (op == O_DEF || op == O_DEFI){
@@ -158,20 +158,20 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
                     p->inmap[rn][1] = (int)((ut & 0x000F0000u) >> 16);
                 }
             }
-            /* ps_2_0: `dcl_2d s0` / `dcl_cube s1` -- the texture TYPE is in bits 27-30
-             * of the *DCL token* (D3DSAMPLER_TEXTURE_TYPE: 2=2D, 3=CUBE,
-             * 4=VOLUME).  NOT in the DST token: in SM2+ bits 28-30 of dst are the
-             * high bits of the register type, reading from there gives "4" for
-             * everything. */
+            /* ps_2_0: `dcl_2d s0` / `dcl_cube s1` -- the texture TYPE is in
+             * bits 27-30 *of the DCL token* (D3DSAMPLER_TEXTURE_TYPE:
+             * 2=2D, 3=CUBE, 4=VOLUME).  NOT in the dst token: in SM2+ bits
+             * 28-30 of dst are the high bits of the register type, and
+             * reading it from there makes everything come out as "4". */
             if (RT(ix->dst) == R_SAMPLER){
                 int rn = RN(ix->dst);
                 if (rn >= 0 && rn < 16)
                     p->smptype[rn] = (int)((ut >> 27) & 0xFu);
             }
         } else {
-            /* scan operands by bit31; trust the SM2+ length field if present */
+            /* scan operands by bit31; trust the SM2+ length field when present */
             size_t j = body;
-            if (PRED(t)) { /* the predicate register is last; skipped below */ }
+            if (PRED(t)) { /* predicate register comes last; skipped below */ }
             size_t limit = len ? (body + len) : max_dw;
             if (limit > max_dw) limit = max_dw;
             int first = 1;
@@ -202,7 +202,7 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
         p->n++;
     }
 
-    /* flow control matching */
+    /* flow-control matching */
     int stack[64]; int sp = 0;
     for (unsigned k = 0; k < p->n; k++){
         unsigned op = p->ins[k].op;
@@ -220,7 +220,7 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
             }
         }
     }
-    /* Compute the highest temp register number once here, so that only the
+    /* Compute the highest temp register number once here, so only the
      * registers in use need clearing per vertex. */
     for (unsigned q = 0; q < p->n; q++){
         VSIns *x = &p->ins[q];
@@ -243,8 +243,9 @@ VSProg *vs_compile(const uint32_t *tok, size_t max_dw){
             unsigned sw = SWIZ(tok);
             for (int c2 = 0; c2 < 4; c2++)
                 x->s_sw[t][c2] = (unsigned char)((sw >> (2*c2)) & 3u);
-            /* Tell the two most frequent cases apart: .xyzw (a single 16-byte read) and
-             * a single-component broadcast like .xxxx.  The rest is the general path. */
+            /* Tell apart the two most common cases: .xyzw (one 16-byte read)
+             * and a one-component broadcast like .xxxx.  The rest take the
+             * general path. */
             if (sw == 0xE4u) x->s_swk[t] = 0u;
             else if (x->s_sw[t][0]==x->s_sw[t][1] && x->s_sw[t][1]==x->s_sw[t][2] &&
                      x->s_sw[t][2]==x->s_sw[t][3]) x->s_swk[t] = 1u;
@@ -304,9 +305,9 @@ static const float *reg_ptr(Exec *e, int type, int num, float tmp[4]){
         if (type == R_CONST2) n += 2048; else if (type == R_CONST3) n += 4096;
         else if (type == R_CONST4) n += 6144;
         if (n < 0 || n >= 256) return ZERO4;
-        /* def'd constants don't override what the game wrote; def is only a default,
-         * but in D3D def constants aren't a separate space: a constant embedded in
-         * the shader is always in effect. */
+        /* def'd constants do not overwrite what the game wrote; def is only a
+         * default, but in D3D def constants are not a separate space: the
+         * constant embedded in the shader always wins. */
         if (e->p->defmask[n >> 5] & (1u << (n & 31))) return e->p->def[n];
         return e->k->f[n];
     }
@@ -399,8 +400,8 @@ static int cmp_ok(unsigned c, float a, float b){
 
 int vs_run(const VSProg *p, const VSConst *k, const float v[16][4], VSOut *o){
     if (!p || !k || !o) return 0;
-    /* Clearing the 512-byte r[32][4] PER vertex turned out to be the most expensive
-     * work in the measurement (~45% of the time in vs_run).  Only zero the
+    /* Clearing the 512-byte r[32][4] PER VERTEX measured as the most
+     * expensive part (~45% of the time in vs_run).  Zero only the
      * registers the program actually uses. */
     Exec e;
     { int mr = p->maxreg; if (mr < 0) mr = -1; if (mr > 31) mr = 31;
@@ -486,12 +487,12 @@ int vs_run(const VSProg *p, const VSConst *k, const float v[16][4], VSOut *o){
         case O_LOG: { float a=fabsf(s[0][0]);
                       float r=(a==0.f)?-3.402823466e38f:log2f(a);
                       d[0]=d[1]=d[2]=d[3]=r; DSTW(x,d); } break;
-        /* CAUTION: expp/logp are NOT the "low precision" versions of exp/log; they
-         * write DIFFERENT values to the four components.  Both were translated
-         * as exp2/log2.  NFSU2's skinning shader takes the FRACTIONAL part of the
-         * bone index with "expp r6.y, v4.zzzz"; when we wrote exp2 to .y, the
-         * third bone matrix's index became garbage and crowd/cutscene characters
-         * fell apart. */
+        /* NOTE: expp/logp are NOT the "low precision" form of exp/log;
+         * they write DIFFERENT values to the four components.  Both were
+         * translated as exp2/log2.  NFSU2's skinning shader takes the
+         * FRACTIONAL part of the bone index with "expp r6.y, v4.zzzz";
+         * writing exp2 to .y made the third bone matrix index garbage and
+         * crowd/cutscene characters fell apart. */
         case O_EXPP: { float w=s[0][0], f=floorf(w);
                       d[0]=exp2f(f); d[1]=w-f; d[2]=exp2f(w); d[3]=1.f;
                       DSTW(x,d); } break;
@@ -643,24 +644,25 @@ void vs_disasm(const VSProg *p, FILE *f){
 /* ====================================================================
  * Pixel shader -> Metal Shading Language
  *
- * We translate the game's own ps_1_x / ps_2_0 shaders to MSL to run them
- * exactly on the GPU.  A fixed "color * texture" approach couldn't get car
- * paint and lighting right; an exact result needs the shader itself.
+ * The game's own ps_1_x / ps_2_0 shaders are translated to MSL so they
+ * run unchanged on the GPU.  A fixed "colour * texture" approach could
+ * not get car paint and lighting right; an exact result needs the
+ * shader itself.
  *
  * Register mapping:  r# -> r[#]   t# (R_ADDR) -> t[#]   v# -> v[#]
- *                    c# -> an embedded constant if def'd, otherwise P.c[#]
+ *                    c# -> the embedded constant if def'd, else P.c[#]
  * Output: r0 in ps_1_x, oC0 in ps_2_0 -> both become "oC".
  * ==================================================================== */
 static const char SWCH[4] = { 'x','y','z','w' };
-/* The constant buffer's name in MSL: "P" in the pixel shader, "K" in the vertex
- * shader.  Since msl_src is shared by both generators, it is chosen here. */
+/* Name of the constant buffer in MSL: "P" in the pixel shader, "K" in the
+ * vertex shader.  msl_src is shared by both generators, so it is chosen here. */
 static const char *g_cbuf = "P";
 
-/* CAUTION: this generator was first written only for PIXEL shaders.  On the
- * vertex side the register space differs: v0..v15 (pixel: v0/v1), r0..r31
- * (pixel: r0..r7), and R_ADDR is a texture register on the pixel side and the
- * address register a0 on the vertex side.  Generating without looking at the
- * mode folded v2+ inputs into v[0] and r8+ registers into r[0]. */
+/* NOTE: this generator was first written for PIXEL shaders only.
+ * The vertex side has a different register space: v0..v15 (pixel: v0/v1),
+ * r0..r31 (pixel: r0..r7), and R_ADDR is a texture register on the pixel
+ * side but the address register a0 on the vertex side.  Generating without
+ * looking at the mode folded v2+ inputs into v[0] and r8+ registers into r[0]. */
 #define VSMODE() (g_cbuf[0] == 'K')
 static void msl_reg(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned rel){
     int ty = RT(tok), n = RN(tok);
@@ -730,7 +732,7 @@ static void msl_src(char *o, size_t cap, const VSProg *p, unsigned tok, unsigned
     }
 }
 
-/* Destination: register + write mask.  ncomp gives the number of components in the mask. */
+/* Destination: register + write mask.  Returns the number of components in the mask. */
 static int msl_dst(char *o, size_t cap, const VSProg *p, unsigned tok){
     char reg[96]; msl_reg(reg, sizeof reg, p, tok, 0);
     unsigned m = WMASK(tok);
@@ -742,10 +744,10 @@ static int msl_dst(char *o, size_t cap, const VSProg *p, unsigned tok){
     return k-1;
 }
 
-/* The component letters of the destination write mask (like ".yz"); full mask -> "".
- * CAUTION: in D3D the mask works COMPONENT BY COMPONENT (r0.yz = r1  ->  r0.y=r1.y,
- * r0.z=r1.z).  The previous version squeezed the expression to the front
- * ((expr).xy), so for every non-contiguous mask it took the WRONG component. */
+/* Component letters of the destination write mask (like ".yz"); full mask -> "".
+ * NOTE: in D3D the mask works COMPONENT BY COMPONENT (r0.yz = r1  ->  r0.y=r1.y,
+ * r0.z=r1.z).  The previous version packed the expression to the front
+ * ((expr).xy), so any mask not starting at x took the WRONG component. */
 static void msl_mask_swz(char *o, size_t cap, unsigned tok){
     unsigned m = WMASK(tok);
     if (cap) o[0] = 0;
@@ -765,37 +767,26 @@ static void msl_fit(char *o, size_t cap, const char *expr, int n){
 
 int ps_uses_colorout(const VSProg *p);
 /* cubemask: which stages have a CUBE texture bound (bit k = stage k).
- * In D3D9 ps_1_x doesn't declare the texture TYPE -- the type comes from the
- * binding; so we generate two variants of the same shader and pick one at draw
- * time based on the bound texture. */
-/* reflk >= 0 (HD only): the REFLECTION SEPARATION variant.  The sample of stage k
- * (road reflection or cube map) is used linearly in the body (measured: ps 5, 6,
- * 265 -- no saturate in between).  The body runs three times:
- *   ev 0: the real sample   -> color (exactly the same as the original)
+ * In D3D9, ps_1_x does not declare the texture TYPE -- the type comes from
+ * the binding; so two variants are generated from the same shader and one
+ * is picked at draw time by the bound texture. */
+/* reflk >= 0 (HD only): the REFLECTION SPLIT variant.  Stage k's sample
+ * (road reflection or cube map) is used linearly in the body (measured:
+ * ps 5, 6, 265 -- no saturate in between).  The body runs three times:
+ *   ev 0: real sample       -> colour (identical to the original)
  *   ev 1: sample.rgb = 0    -> A
  *   ev 2: sample.rgb = 1    -> A + B
- * B = o2 - o1 (including fog) and the original sample R0 are written to the
- * G-buffer; at the end of the scene the composite pass computes
- * color + B*(R_new - R0) (see metal.m "HD: SSR").  Class: 1 = 2D (road), 2 = cube (car).
- * Format and encoding of the targets: metal.m "G-BUFFER PACKING" (both sides
- * must match; HD_GPACK=0 the old layout).                               */
+ * B = o2 - o1 (fog included) and the original sample R0 go to the G-buffer;
+ * at the end of the scene the composite pass computes colour +
+ * B*(R_new - R0) (see metal.m "HD: SSR").  Class: 1 = 2D (road), 2 = cube
+ * (car).  Target formats and encoding: metal.m "G-BUFFER PACKING" (both
+ * sides must match; HD_GPACK=0 is the old layout).                       */
 static int hd_gpack(void){
     static int v = -1;
     if (v < 0){ const char *e = getenv("HD_GPACK"); v = (e && *e == '0') ? 0 : 1; }
     return v;
 }
 int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubemask, int reflk);
-/* POST-PROCESS CHAIN (metal.m): the tile memory read variant.  While g_fb_in >= 0
- * the stage 0 sample comes from the [[color(g_fb_in)]] input (the same value for a
- * fullscreen quad sitting 1:1 on texel centers) and the result is written to
- * [[color(g_fb_out)]]. */
-static int g_fb_in = -1, g_fb_out = -1;
-int ps_to_msl_fb(const VSProg *p, int id, char *out, size_t cap, int in_idx, int out_idx){
-    g_fb_in = in_idx; g_fb_out = out_idx;
-    int r = ps_to_msl_ex2(p, id, out, cap, 0u, -1);
-    g_fb_in = g_fb_out = -1;
-    return r;
-}
 int ps_to_msl_ex(const VSProg *p, int id, char *out, size_t cap, unsigned cubemask){
     return ps_to_msl_ex2(p, id, out, cap, cubemask, -1);
 }
@@ -814,65 +805,67 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
       if (anycube || getenv("SMPTYPE")){
           fprintf(stderr, "  [ps%d] sampler types: s0=%d s1=%d s2=%d s3=%d%s\n",
                   id, p->smptype[0], p->smptype[1], p->smptype[2], p->smptype[3],
-                  anycube ? "   <- HAS CUBE" : "");
+                  anycube ? "   <- HAS A CUBE" : "");
       } }
-    if (g_fb_in >= 0)
-        EMIT("struct PSFB%d { float4 c [[color(%d)]]; };\n"
-             "fragment PSFB%d ps_%d(VOut i [[stage_in]], float4 fbin [[color(%d)]],\n",
-             id, g_fb_out, id, id, g_fb_in);
-    else
-        EMIT("fragment %s ps_%d(VOut i [[stage_in]],\n", NFS_ENHANCED ? "PSOut" : "float4", id);
+    EMIT("fragment %s ps_%d(VOut i [[stage_in]],\n", NFS_ENHANCED ? "PSOut" : "float4", id);
     for (int k = 0; k < 4; k++)
         EMIT("    %s<float> s%d [[texture(%d)]],\n",
              ((cubemask >> k) & 1u) ? "texturecube" : "texture2d", k, k);
-    /* A SAMPLER PER STAGE.  At first all four textures used a single "sm", so the
-     * address mode of stage 0 also went to the others.  The road's diffuse texture
-     * wants WRAP; the headlight texture and the falloff ramp want CLAMP.  With WRAP
-     * the headlight cone repeated along the WHOLE road and the ground blew out
-     * bright from end to end. */
+    /* ONE SAMPLER PER STAGE.  All four textures used to share one "sm",
+     * so stage 0's address mode applied to the others too.  The road's
+     * diffuse texture wants WRAP; the headlight texture and the falloff
+     * ramp want CLAMP.  With WRAP the headlight cone repeated along the
+     * WHOLE road and the ground glowed blown-out from end to end. */
     EMIT("    sampler sm0 [[sampler(0)]], sampler sm1 [[sampler(1)]],\n");
     EMIT("    sampler sm2 [[sampler(2)]], sampler sm3 [[sampler(3)]],\n");
-    EMIT("    constant PSPar &P [[buffer(0)]],\n");
-    /* alpha test diagnostic (kAT 2): counter of fragments to discard, only in that variant */
-    EMIT("    device atomic_uint *atdbg [[buffer(6), function_constant(kATD)]]) {\n");
+    EMIT("    constant PSPar &P [[buffer(0)]]) {\n");
     EMIT("  float4 r[16]; for (int q=0;q<16;q++) r[q]=float4(0.0);\n");
     EMIT("  float4 t[4]; for (int q=0;q<4;q++) t[q]=float4(0.0);\n");
-    /* D3D9: in ps_1_1 - ps_2_0 the color inputs (v0/v1) are clamped to [0,1] before
-     * the shader uses them ("diffuse and specular colors are saturated").  The
-     * vertex shader can write values outside [0,1] to oD0/oD1 (measured
-     * 2026-10-19: 1.18 billion fragments in race + menu, mostly car paint ps 265).
-     * The kCS function constant (metal.m COLOR CLAMPING; RENKSAT=0 old behavior). */
-    if (((p->version >> 8) & 0xFFu) < 3u)
-        EMIT("  float4 v[2] = { kCS ? saturate(i.col0) : i.col0, kCS ? saturate(i.col1) : i.col1 };\n");
+    /* ps_2_0 declares texture inputs without a texcoord instruction. */
+    if (p->version >= 0x0200) {
+        for (unsigned q = 0; q < p->n; q++) {
+            const VSIns *x = &p->ins[q];
+            if (x->op == O_DCL && RT(x->dst) == R_ADDR) {
+                unsigned k = RN(x->dst) & 3u;
+                EMIT("  t[%u] = i.uv%u;\n", k, k);
+            }
+        }
+    }
+    /* D3D9 clamps diffuse/specular inputs before ps_1_x and ps_2_0 run. */
+    if (p->version < 0x0300)
+        EMIT("  float4 v[2] = { saturate(i.col0), saturate(i.col1) };\n");
     else
         EMIT("  float4 v[2] = { i.col0, i.col1 };\n");
     EMIT("  float4 oC = float4(0.0);\n");
-    /* The stage -> coordinate set mapping changes with D3DTSS_TEXCOORDINDEX (in the
-     * trace, stages 1 and 2 use coordinate 0 in 422 thousand calls) and
+    /* The stage -> coordinate set mapping changes with D3DTSS_TEXCOORDINDEX
+     * (in a trace of 422 thousand calls stages 1 and 2 use coordinate 0) and
      * D3DTTFF_PROJECTED needs a divide.  Both are in P.proj: idx + 16*mode. */
     EMIT("#define TSEL(i) (int(P.proj[i]))\n");
-    /* CAUTION: the texture coordinate was read from a DYNAMICALLY INDEXED local array
-     * (float4 uv[4]).  The Metal compiler puts such an array in scratch memory;
-     * since the sampling coordinate no longer came directly from an interpolant,
-     * the TEXTURE DERIVATIVES (mip selection) broke and a mip one or two levels
-     * too coarse was selected along every triangle EDGE.  On screen the frame and
-     * diagonal of every quad showed up as a 1-pixel line (most visible on letters;
-     * measured: 2676 -> 533 dark pixels on the diagonal).
-     * Solution: remove the array and do a SINGLE selection among the
-     * interpolants.  Since the selection condition is uniform (uniform buffer),
-     * the branching doesn't affect the derivatives. */
-    /* The sampling coordinate must come DIRECTLY from the interpolant.  It used to be
-     * produced with a ternary chain + a conditional divide; when the derivative quad
-     * spilled over a triangle edge the LOD blew up and a 2-pixel line formed on the
-     * frame of EVERY quad / along the diagonal shared by two triangles.  (Measured:
-     * LOD >> 1 at the edge; lodMaxClamp=1 removed the line, while the mip content
-     * was complete.)
-     * The D3DTSS_TEXCOORDINDEX selection is now done in the VERTEX shader; here
-     * stage k reads i.uvk directly.  The projective divide is single and
-     * CONTINUOUS: the old "abs(w)<1e-6 ? 1.0 : w" guard jumped between 1.0 and
-     * 1e-6 at the edge and shifted the coordinate by six orders of magnitude. */
-    /* Compute only for stages that ACTUALLY sample.  Producing all four meant 4
-     * divides + 8 selects per pixel (measured: race frame 15.7 -> 18.7 ms). */
+    /* NOTE: the texture coordinate used to be read from a DYNAMICALLY
+     * INDEXED local array (float4 uv[4]).  The Metal compiler puts such an
+     * array in scratch memory; since the sampling coordinate no longer
+     * came straight from the interpolant, the TEXTURE DERIVATIVES (mip
+     * selection) broke and a mip one or two levels too coarse was picked
+     * along every triangle EDGE.  On screen the frame and diagonal of
+     * every quad showed as a 1-pixel line (most visible in text;
+     * measured: 2676 -> 533 dark pixels along the diagonal).
+     * Fix: drop the array and pick a SINGLE one of the interpolants.
+     * The selection condition is uniform (uniform buffer), so the
+     * branch does not affect the derivatives. */
+    /* The sampling coordinate must come DIRECTLY from the interpolant.  It
+     * used to be built from a ternary chain + a conditional divide; when
+     * the derivative quad spilled over a triangle edge the LOD blew up and
+     * a 2-pixel line appeared on the frame of EVERY quad / on the diagonal
+     * shared by two triangles.  (Measured: LOD >> 1 at the edge;
+     * lodMaxClamp=1 removed the line, while the mip contents were intact.)
+     * The D3DTSS_TEXCOORDINDEX selection is now done in the VERTEX shader,
+     * and here stage k reads i.uvk directly.  The projective divide is
+     * single and CONTINUOUS: the old "abs(w)<1e-6 ? 1.0 : w" guard jumped
+     * between 1.0 and 1e-6 at the edge and shifted the coordinate by six
+     * orders of magnitude. */
+    /* Compute only for the stages that ACTUALLY sample.  Generating all
+     * four meant 4 divides + 8 selects per pixel (measured: race frame
+     * 15.7 -> 18.7 ms). */
     unsigned tcuse = 0;
     for (unsigned q2 = 0; q2 < p->n; q2++){
         const VSIns *y = &p->ins[q2];
@@ -887,11 +880,11 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
              " tc%d = q.xy / d; }\n", k, k, k, k, k);
     }
 #if NFS_ENHANCED
-    /* HD blur mode (see enhance.c): while P.pad0 > 0, in a multi-tap 2D shader the
-     * tap offsets are scaled about the center by P.pad0 and the textures are read
-     * from mip level P.pad1.  Only enabled for road reflection blur draws; for
-     * every other draw pad0 = 0 (the branch comes from the constant buffer, so it
-     * is the same for the whole wave). */
+    /* HD blur mode (see enhance.c): while P.pad0 > 0, a multi-sample 2D
+     * shader scales its sample offsets around the centre by P.pad0 and
+     * reads the textures from mip level P.pad1.  Only switched on for the
+     * road reflection blur draws; every other draw has pad0 = 0 (the branch
+     * is on the constant buffer, so it is the same for the whole wave). */
     int hdblur = __builtin_popcount(tcuse) >= 2 && !(cubemask & tcuse);
     if (hdblur){
         int n = __builtin_popcount(tcuse);
@@ -904,11 +897,9 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
 #else
     int hdblur = 0;
 #endif
-    /* Sampling per stage: uv2 is used for 2D, uv3 for cubes. */
+    /* Per-stage sampling: uv2 is used for 2D, uv3 for cube. */
     for (int k = 0; k < 4; k++){
-        if (g_fb_in >= 0 && k == 0)
-            EMIT("#define SMP0(uv2, uv3) fbin\n");
-        else if (hdblur && !((cubemask >> k) & 1u))
+        if (hdblur && !((cubemask >> k) & 1u))
             EMIT("#define SMP%d(uv2, uv3) (P.pad0 > 0.0 ? s%d.sample(sm%d, uv2, level(P.pad1)) : s%d.sample(sm%d, uv2))\n",
                  k, k, k, k, k);
         else
@@ -945,21 +936,21 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
              * ps_1_4 : "texld rN, tM"      -> rN = sample(sN, uvM)
              * ps_2_0 : "texld dst, coord, sampler"
              *
-             * CAUTION: the result USED TO ALWAYS be written to the t[] array.
-             * In ps_1_4/ps_2_0 the destination can be a TEMP register (r0); then
-             * the following instructions read zero and the shader returned black.
-             * Symptom: with bleach-bypass on the whole 3D scene went dark (the main
-             * menu completely black) -- the composite shaders wrote
-             * "t[0]=sample(...)" and read r[0] right after.  Now the destination is
-             * written through the same common path as the other instructions
-             * (including mask/saturate/shift). */
+             * NOTE: the result used to ALWAYS go to the t[] array.
+             * In ps_1_4/ps_2_0 the destination can be a TEMP register (r0);
+             * the following instructions then read zero and the shader
+             * returned black.  Symptom: with bleach-bypass on, the whole
+             * 3D scene went dark (main menu fully black) -- the composite
+             * shaders wrote "t[0]=sample(...)" and read r[0] right after.
+             * Now the destination is written through the same common path
+             * as the other instructions (mask/saturate/shift included). */
             int dn = RN(x->dst) & 3;
             if (x->nsrc >= 2){                     /* ps_2_0 */
                 int smp = RN(x->src[1]) & 3;
                 char cs[160]; msl_src(cs, sizeof cs, p, x->src[0], x->rel[0]);
                 snprintf(ex, sizeof ex, "SMP%d((%s).xy, (%s).xyz)", smp, cs, cs);
             } else if (x->nsrc == 1 && RT(x->src[0]) == R_ADDR){
-                /* ps_1_4: the source tM is a texture COORDINATE, not a sample VALUE */
+                /* ps_1_4: source tM is a texture COORDINATE, not a sample VALUE */
                 snprintf(ex, sizeof ex, "SMP%d(TCRD(%d), TPICK(%d).xyz)",
                          dn, RN(x->src[0]) & 3, RN(x->src[0]) & 3);
             } else if (x->nsrc == 1){
@@ -968,7 +959,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
             } else {                               /* ps_1_x: tex tN */
                 snprintf(ex, sizeof ex, "SMP%d(TCRD(%d), TPICK(%d).xyz)", dn, dn, dn);
                 if (reflk >= 0 && dn == reflk){
-                    /* we only support this form: destination t[dn] */
+                    /* only this form is supported: destination t[dn] */
                     EMIT("  t[%d] = %s;\n", dn, ex);
                     EMIT("  if (hd_ev == 0) hd_rs = t[%d]; else t[%d].rgb = float3(hd_ev == 1 ? 0.0 : 1.0);\n", dn, dn);
                     hd_seen = 1;
@@ -1003,7 +994,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         case O_POW:    snprintf(ex, sizeof ex, "float4(pow(abs((%s).x), (%s).x))", s0, s1); break;
         case O_NRM:    snprintf(ex, sizeof ex, "float4(length((%s).xyz) == 0.0 ? float3(0.0) : normalize((%s).xyz), 1.0)", s0, s0); break;
         case O_EXP: snprintf(ex, sizeof ex, "float4(exp2((%s).x))", s0); break;
-        /* expp: (2^floor(w), frac(w), 2^w, 1) -- NOT the equivalent of exp */
+        /* expp: (2^floor(w), frac(w), 2^w, 1) -- NOT equivalent to exp */
         case O_EXPP: snprintf(ex, sizeof ex,
                         "float4(exp2(floor((%s).x)), fract((%s).x), exp2((%s).x), 1.0)",
                         s0, s0, s0); break;
@@ -1024,26 +1015,14 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         if (sat) EMIT("  %s = saturate(%s);\n", d, fit);
         else     EMIT("  %s = %s;\n", d, fit);
     }
-    /* The ps_1_x result is in r0, ps_2_0's in oC0.  Return whichever was written. */
+    /* ps_1_x leaves its result in r0, ps_2_0 in oC0.  Return whichever was written. */
     EMIT("  float4 res = %s;\n", ps_uses_colorout(p) ? "oC" : "r[0]");
-    /* The alpha test via a function constant (kAT, metal.m kPrelude): a draw without
-     * the test is drawn with the variant that has no discard_fragment, so the GPU can
-     * do hidden surface removal (HSR).  kAT 2 = diagnostic: fragments to discard are
-     * magenta. */
-    EMIT("  if (kAT == 1 && res.a < P.aref) discard_fragment();\n");
-    EMIT("  bool at_kill = (kAT == 2 && res.a < P.aref);\n");
+    EMIT("  if (res.a < P.aref) discard_fragment();\n");
     EMIT("#undef TSEL\n#undef TPICK\n#undef TCRD\n");
     /* D3D9 fog: C = f*Cs + (1-f)*Cfog, RGB only.  P.fog.a = FOGENABLE. */
     EMIT("  res.rgb = mix(P.fog.rgb, res.rgb, mix(1.0, saturate(i.fog), P.fog.a));\n");
-    EMIT("  if (kATD) { if (at_kill) { atomic_fetch_add_explicit(&atdbg[%d], 1u, memory_order_relaxed);"
-         " res = float4(1.0, 0.0, 1.0, 1.0); }\n", id);
-    /* diagnostic: a fragment arriving with a vertex color outside [0,1] (D3D9 clamps oD0/oD1) */
-    EMIT("    if (any(i.col0 < 0.0) || any(i.col0 > 1.0) || any(i.col1 < 0.0) || any(i.col1 > 1.0))"
-         " atomic_fetch_add_explicit(&atdbg[4096 + %d], 1u, memory_order_relaxed); }\n", id);
-    if (g_fb_in >= 0){
-        EMIT("  PSFB%d fbo; fbo.c = res; return fbo;\n}\n", id);
-    } else if (reflk >= 0){
-        if (!hd_seen) return 0;             /* the stage has a different format: no variant */
+    if (reflk >= 0){
+        if (!hd_seen) return 0;             /* stage in another form: no variant */
         int cls = ((cubemask >> reflk) & 1u) ? 2 : 1;
         EMIT("  hd_o[hd_ev] = res;\n  }\n");
         EMIT("  PSOut hd_out; hd_out.c0 = hd_o[0];\n");
@@ -1058,15 +1037,16 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
         } else {
             EMIT("  hd_out.c1 = float4(hd_o[2].rgb - hd_o[1].rgb, %d.0);\n", cls);
             EMIT("  hd_out.c2 = float4(saturate(hd_rs.rgb), 1.0);\n");
-            /* cube: the sampling vector = the reflection direction (the ray for car paint) */
+            /* cube: sampling vector = reflection direction (the ray for car paint) */
             if (cls == 2) EMIT("  hd_out.c3 = float4(i.uv%d.xyz, 1.0);\n", reflk);
             else          EMIT("  hd_out.c3 = float4(0.0);\n");
         }
         EMIT("  return hd_out;\n}\n");
     } else if (NFS_ENHANCED){
-        /* HD: an opaque draw without reflection ZEROES the G-buffer (it must cover the
-         * data of the road in front of it); for blended draws the write mask is off.
-         * In the packed layout a zero direction is written with code 512 (see metal.m). */
+        /* HD: an opaque draw without reflection CLEARS the G-buffer (it must
+         * cover the data of the road behind it); blended draws have the
+         * write mask off.  In the packed layout a zero direction is written
+         * as code 512 (see metal.m). */
         EMIT("  PSOut hd_out; hd_out.c0 = res; hd_out.c1 = float4(0.0); hd_out.c2 = float4(0.0);\n");
         EMIT("  hd_out.c3 = float4(%s);\n", hd_gpack() ? "float3(512.0 / 1023.0), 0.0" : "0.0");
         EMIT("  return hd_out;\n}\n");
@@ -1076,7 +1056,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
     return (int)o;
 }
 
-/* Does the shader write to oC0 (ps_2_0) or to r0 (ps_1_x)? */
+/* Does the shader write oC0 (ps_2_0) or r0 (ps_1_x)? */
 int ps_uses_colorout(const VSProg *p){
     if (!p) return 0;
     for (unsigned q = 0; q < p->n; q++)
@@ -1087,19 +1067,20 @@ int ps_uses_colorout(const VSProg *p){
 /* ====================================================================
  * VERTEX shader -> Metal Shading Language
  *
- * Until now the vertex transform was INTERPRETED on the CPU: in the measurement
- * ~45% of the run time was inside vs_run and the ceiling was ~3.5 M vertices/s.
- * We translate the game's own vs_1_1/vs_2_x bytecode to MSL and run it on the GPU.
+ * Until now vertex transformation was INTERPRETED on the CPU: measured,
+ * ~45% of the run time was in vs_run and the ceiling was ~3.5 M
+ * vertices/s.  The game's own vs_1_1/vs_2_x bytecode is translated to MSL
+ * and run on the GPU.
  *
- * Vertex data is sent to the GPU RAW; the read layout (offset/type) is taken from
- * the D3D vertex declaration and EMBEDDED in the shader, so there is no
- * MTLVertexDescriptor combination explosion.
+ * Vertex data goes to the GPU RAW; the read layout (offset/type) is taken
+ * from the D3D vertex declaration and BAKED into the shader, so there is
+ * no MTLVertexDescriptor combinatorial explosion.
  * ==================================================================== */
 
-/* D3DDECLTYPE -> an MSL expression (read from the raw byte buffer).
- * CAUTION: must be EXACTLY the same as decl_fetch in com.c; if they diverge the
- * CPU and GPU paths silently produce different images.  (In the first version
- * UBYTE4 was wrongly divided by 255 and types 8..12 didn't exist at all.) */
+/* D3DDECLTYPE -> MSL expression (read from the raw byte buffer).
+ * NOTE: must match decl_fetch in com.c EXACTLY; if they diverge the CPU and
+ * GPU paths silently produce different images.  (In the first version
+ * UBYTE4 was wrongly divided by 255 and types 8..12 were missing.) */
 static int decl_read_msl(char *o, size_t cap, unsigned type, unsigned off){
     switch (type){
     case 0: snprintf(o,cap,"float4(LDF(%u),0.0,0.0,1.0)",off); break;          /* FLOAT1 */
@@ -1130,7 +1111,7 @@ static int decl_read_msl(char *o, size_t cap, unsigned type, unsigned off){
     return 1;
 }
 
-/* dst register -> the MSL destination.  Outputs: oPos, oD0/oD1, oT0..oT3 */
+/* dst register -> MSL destination.  Outputs: oPos, oD0/oD1, oT0..oT3 */
 static int vs_dst_msl(char *o, size_t cap, unsigned tok){
     int ty = RT(tok), n = RN(tok);
     switch (ty){
@@ -1145,9 +1126,9 @@ static int vs_dst_msl(char *o, size_t cap, unsigned tok){
     }
 }
 
-/* The HIGHEST constant register the shader touches (+1).  To upload only as much
- * of the constant buffer as needed instead of 4 KB per draw.  With relative
- * addressing the bound can't be known -> 256. */
+/* The HIGHEST constant register the shader touches (+1).  Lets the
+ * constant buffer upload only as much as is needed instead of 4 KB per
+ * draw.  With relative addressing the bound is unknown -> 256. */
 int vs_kmax(const VSProg *p){
     if (!p) return 0;
     int mx = -1;
@@ -1176,25 +1157,28 @@ int vs_kmax(const VSProg *p){
     return mx + 1;
 }
 
-/* Does the shader write oFog (RASTOUT#1)?  In D3D9, with a vertex shader present,
- * the fog factor comes from this register; the fixed-function stage blends the
- * pixel toward FOGCOLOR.  We were dropping oFog -> there was no fog at all. */
-/* Find the CONSTANT REGISTER that produces oPos.  The position matrix is NOT in
- * c0..c3 in every shader (measured: in vs_9 c0..c3 hold other constants and the
- * "c3.w==0 -> perspective" test gave false positives).
+/* Does the shader write oFog (RASTOUT#1)?  In D3D9, with a vertex shader
+ * bound, the fog factor comes from this register; the fixed-function stage
+ * blends the pixel toward FOGCOLOR.  We used to drop oFog -> no fog at all. */
+/* Find the CONSTANT REGISTER that produces oPos.  The position matrix is
+ * NOT in c0..c3 in every shader (measured: in vs_9, c0..c3 hold other
+ * constants and the "c3.w==0 -> perspective" test gave a false positive).
  * Returns: the c# producing oPos.x (-1 if none); *wreg = the c# producing oPos.w. */
-int vs_pos_creg(const VSProg *p, int *wreg){
-    int cx = -1, cw = -1;
-    if (wreg) *wreg = -1;
-    if (!p) return -1;
-    /* TEMP REGISTER TRACKING: the road shaders (vs_4, vs_14) first compute the
-     * position into temps and then move it:
+/* Constant register that produces oPos.x/y/w (reg[0]/reg[1]/reg[3]), -1 if
+ * none; vs_pos_creg and vs_pos_creg_y below. */
+static void pos_cregs(const VSProg *p, int reg[4]){
+    int cx = -1, cy = -1, cw = -1;
+    reg[0] = reg[1] = reg[2] = reg[3] = -1;
+    if (!p) return;
+    /* TEMP REGISTER TRACE: the road shaders (vs_4, vs_14) compute the
+     * position into temps first and move it afterwards:
      *     dp4 r1.x, v0, c0 ... dp4 r0.w, v0, c3 ... mov oPos.x, r1.xxxx
      *     mov oPos.yzw, r0
-     * The old version only saw dp4/m4x4 writing DIRECTLY to oPos and returned -1
-     * for these shaders -> the widescreen (Hor+) correction WAS NEVER APPLIED TO
-     * THE ROAD SURFACE (the road stretched 1/0.75 horizontally).
-     * tsrc[register][component] = the constant producing that component with "dp4 v0, c#". */
+     * The old version only saw dp4/m4x4 writing oPos DIRECTLY and returned
+     * -1 for these shaders -> the widescreen (Hor+) fix was NEVER APPLIED
+     * TO THE ROAD SURFACE (road stretched 1/0.75 horizontally).
+     * tsrc[register][component] = the constant producing that component
+     * with "dp4 v0, c#". */
     int16_t tsrc[32][4];
     memset(tsrc, 0xFF, sizeof tsrc);
     for (unsigned q = 0; q < p->n; q++){
@@ -1212,26 +1196,35 @@ int vs_pos_creg(const VSProg *p, int *wreg){
         if (RT(x->dst) != R_RASTOUT || RN(x->dst) != 0) continue;   /* not oPos */
         if (x->op == O_M4x4 || x->op == O_M4x3){
             if (x->nsrc >= 2 && RT(x->src[1]) == R_CONST && !RELADDR(x->src[1])){
-                cx = RN(x->src[1]); cw = cx + 3; }
+                cx = RN(x->src[1]); cy = cx + 1; cw = cx + 3; }
         } else if (x->op == O_DP4 && x->nsrc >= 2 &&
                    RT(x->src[1]) == R_CONST && !RELADDR(x->src[1])){
             if (m & 1u) cx = RN(x->src[1]);
+            if (m & 2u) cy = RN(x->src[1]);
             if (m & 8u) cw = RN(x->src[1]);
         } else if (x->op == O_MOV && x->nsrc >= 1 && RT(x->src[0]) == R_TEMP &&
                    RN(x->src[0]) < 32 && SMOD(x->src[0]) == 0u){
-            for (int c = 0; c < 4; c += 3){                 /* only x and w */
-                if (!(m & (1u << c))) continue;
+            for (int c = 0; c < 4; c++){                    /* x, y and w */
+                if (c == 2 || !(m & (1u << c))) continue;
                 int sc = (int)((SWIZ(x->src[0]) >> (2 * c)) & 3u);
                 int k = tsrc[RN(x->src[0])][sc];
-                if (k >= 0){ if (c == 0) cx = k; else cw = k; }
+                if (k >= 0){ if (c == 0) cx = k; else if (c == 1) cy = k; else cw = k; }
             }
         }
     }
-    if (wreg) *wreg = cw;
-    return cx;
+    reg[0] = cx; reg[1] = cy; reg[3] = cw;
+}
+int vs_pos_creg(const VSProg *p, int *wreg){
+    int r[4]; pos_cregs(p, r);
+    if (wreg) *wreg = r[3];
+    return r[0];
+}
+int vs_pos_creg_y(const VSProg *p){
+    int r[4]; pos_cregs(p, r);
+    return r[1];
 }
 
-/* The register of the fog constants: the NFSU2 pattern (vs_4, vs_14, ...)
+/* Register of the fog constants: the NFSU2 pattern (vs_4, vs_14, ...)
  *     add r.w, -r.wwww, cK.xxxx ; mul r.w, r.wwww, cK.yyyy ; max r.w, r.wwww, cK.zzzz
  *     min oFog, r.wwww, c#.yyyy
  * i.e. fog = clamp((cK.x - depth) * cK.y, cK.z, 1).  Returns: K or -1. */
@@ -1252,9 +1245,9 @@ int vs_fog_creg(const VSProg *p){
 /* Headlight projection (vs_13 scene, vs_14 road):
  *     dp4 oT1.x, v0, cK ; .y cK+1 ; .z cK+2 ; oT1.w = v0.c[K+3]
  *     mad oT2.x, r, cA.xxxx, cA.yyyy        (falloff ramp = scale*w + offset)
- * Returns K (-1 if the pattern isn't there); ramp[0..1] = scale, offset.  HD ray
- * tracing rebuilds the headlight term at the hit point for static copies with
- * this matrix. */
+ * Returns K (-1 without the pattern); ramp[0..1] = scale, offset.  HD ray
+ * tracing rebuilds the headlight term at the hit point with this matrix
+ * in the static copies. */
 int vs_light_creg(const VSProg *p, float ramp[2]){
     if (!p) return -1;
     int pr = vs_input_reg(p, 0, 0), k[3] = { -1, -1, -1 };
@@ -1293,12 +1286,6 @@ int vs_writes_fog(const VSProg *p){
     return 0;
 }
 
-/* see metal.m COLOR CLAMPING */
-int vs_colsat_on(void){
-    static int on = -1; if (on < 0){ const char *e = getenv("RENKSAT"); on = (e && *e == '0') ? 0 : 1; }
-    return on;
-}
-int vs_version_major(const VSProg *p){ return p ? (int)((p->version >> 8) & 0xFFu) : 0; }
 int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t cap){
     if (!p || !out || cap < 1024) return 0;
     g_cbuf = "K";                       /* vertex: K.c[0..255] */
@@ -1306,15 +1293,14 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     #define VEMIT(...) do{ int _w = snprintf(out+o, cap-o, __VA_ARGS__); \
                            if (_w < 0 || (size_t)_w >= cap-o) return 0; o += (size_t)_w; }while(0)
 
-    /* The constant buffer is sized per shader: instead of uploading 4 KB per draw,
-     * only the touched constants are sent. */
+    /* The constant buffer is sized per shader: instead of uploading 4 KB
+     * per draw, only the constants it touches are sent. */
     { int nk = vs_kmax(p); if (nk < 1) nk = 1;
       VEMIT("struct VSPar { uint stride; uint tsel; uint pad1; uint pad2;\n");
       VEMIT("               float4 c[%d]; };\n", nk); }
     VEMIT("vertex VOut vs_%d(uint vid [[vertex_id]],\n", id);
     VEMIT("    device const uchar *VB [[buffer(1)]],\n");
-    VEMIT("    constant VSPar &K [[buffer(2)]],\n");
-    VEMIT("    constant float4 &UVB [[buffer(3)]]) {\n");     /* UV OLCEGI (metal.m) */
+    VEMIT("    constant VSPar &K [[buffer(2)]]) {\n");
     VEMIT("  device const uchar *B = VB + vid * K.stride;\n");
     VEMIT("#define LDF(x)  (as_type<float>(*(device const uint*)(B+(x))))\n");
     VEMIT("#define LDB(x)  ((float)(B[(x)]))\n");
@@ -1324,7 +1310,7 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     VEMIT("  float4 r[32]; for (int q=0;q<32;q++) r[q]=float4(0.0);\n");
     VEMIT("  float4 v[16]; for (int q=0;q<16;q++) v[q]=float4(0.0,0.0,0.0,1.0);\n");
     VEMIT("  float4 oPos=float4(0.0,0.0,0.0,1.0), dummy=float4(0.0);\n");
-    /* the oFog default 1.0 = NO FOG; the right behavior if the shader doesn't write it. */
+    /* oFog defaults to 1.0 = NO FOG; the right behaviour if the shader does not write it. */
     VEMIT("  float4 oFog=float4(1.0);\n");
     VEMIT("  float4 oD[2]  = { float4(1.0), float4(0.0) };\n");
     VEMIT("  float4 oT[4]  = { float4(0.0), float4(0.0), float4(0.0), float4(0.0) };\n");
@@ -1388,8 +1374,8 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
         case O_NRM:  snprintf(ex,sizeof ex,"float4(length((%s).xyz)==0.0?float3(0.0):normalize((%s).xyz),1.0)", s0, s0); break;
         case O_SGN:  snprintf(ex,sizeof ex,"sign(%s)", s0); break;
         case O_M4x4: case O_M4x3: case O_M3x3: case O_M3x4: case O_M3x2: {
-            /* m?x? dst, src0, src1 : src1 is the first of CONSECUTIVE constant registers.
-             * The row count depends on the instruction. */
+            /* m?x? dst, src0, src1 : src1 is the first of CONSECUTIVE constant
+             * registers.  The row count depends on the instruction. */
             int rows = (x->op==O_M4x4) ? 4 : (x->op==O_M4x3 ? 3 :
                        (x->op==O_M3x3 ? 3 : (x->op==O_M3x4 ? 4 : 2)));
             int vec3 = (x->op==O_M3x3 || x->op==O_M3x4 || x->op==O_M3x2);
@@ -1423,9 +1409,9 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
         case O_DST:  snprintf(ex,sizeof ex,
                         "float4(1.0,(%s).y*(%s).y,(%s).z,(%s).w)", s0,s1,s0,s1); break;
         default:
-            /* An untranslatable instruction (flow control, call, etc.).  Silently skipping it
-             * produces a WRONG shader; we reject the translation entirely and fall
-             * back to the proven CPU path. */
+            /* Untranslatable instruction (flow control, call, etc.).  Silently
+             * skipping it produces a WRONG shader; reject the translation
+             * entirely and fall back to the proven CPU path. */
             g_cbuf = "P";
             return 0;
         }
@@ -1443,17 +1429,9 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     size_t body_b = o;
     VEMIT("  VOut O;\n");
     VEMIT("  O.pos = oPos;\n");
-    /* D3D9 vs_1_1 - vs_2_x: oD0/oD1 are clamped to [0,1] (on the ps side v0/v1 are
-     * "8 bit unsigned, (0, +1)"); clamping is per vertex, BEFORE interpolation --
-     * the hardware color interpolators carried [0,1].  RENKSAT=0 old (no clamping). */
-    if (vs_colsat_on() && ((p->version >> 8) & 0xFFu) < 3u)
-        VEMIT("  O.col0 = saturate(oD[0]); O.col1 = saturate(oD[1]);\n");
-    else
-        VEMIT("  O.col0 = oD[0]; O.col1 = oD[1];\n");
-    /* D3DTSS_TEXCOORDINDEX: stage k reads oT[sel].  The selection is done HERE so the
-     * coordinate stays a pure interpolant in the pixel shader. */
-    /* UV SCALE (metal.m): K.pad1 = the oT sets to correct, UVB.xy = the difference */
-    VEMIT("  for (int q = 0; q < 4; q++) if ((K.pad1 >> q) & 1u) oT[q].xy += UVB.xy;\n");
+    VEMIT("  O.col0 = oD[0]; O.col1 = oD[1];\n");
+    /* D3DTSS_TEXCOORDINDEX: stage k reads oT[sel].  The selection is made HERE
+     * so the coordinate stays a pure interpolant in the pixel shader. */
     VEMIT("  O.uv0 = oT[(K.tsel      ) & 3u]; O.uv1 = oT[(K.tsel >>  8) & 3u];\n");
     VEMIT("  O.uv2 = oT[(K.tsel >> 16) & 3u]; O.uv3 = oT[(K.tsel >> 24) & 3u];\n");
     VEMIT("  O.fog = oFog.x;\n");
@@ -1461,13 +1439,13 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
     VEMIT("#undef LDF\n#undef LDB\n#undef LDS\n#undef LDU\n");
     VEMIT("  return O;\n}\n");
 #if NFS_ENHANCED
-    /* CAPTURE KERNEL (ray tracing): the same body, output to a buffer.
-     * One dispatch covers ALL draws using the same shader; per vertex ITEM[g] gives
-     * the draw record (raw vertex and constant offsets).
-     * The world position comes out of clip space WITHOUT cancellation error: in
-     * perspective oPos.w = view depth, so view = (x/P00', y/P11, w) and
-     * world = view * V^-1 (at near 0.5 / far 16 km the z-w difference collapses in
-     * float32; this path never uses that difference). */
+    /* CAPTURE KERNEL (ray tracing): same body, output to a buffer.
+     * One dispatch covers ALL draws that use the same shader; ITEM[g]
+     * gives the draw record per vertex (raw vertex and constant offset).
+     * The world position comes out of clip space WITHOUT cancellation
+     * error: in perspective oPos.w = view depth, so view = (x/P00', y/P11, w)
+     * and world = view * V^-1 (with near 0.5 / far 16 km the z-w difference
+     * collapses in float32; this path never uses that difference). */
     {
         size_t blen = body_b - body_a;
         VEMIT("kernel void vsk_%d(uint tid [[thread_position_in_grid]],\n", id);
@@ -1478,7 +1456,7 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
         VEMIT("  if (tid >= C.count) return;\n");
         VEMIT("  uint g = C.first + tid; HDRec rc = REC[ITEM[g]]; uint vid = g - rc.first;\n");
         VEMIT("  device const VSPar &K = *(device const VSPar *)(KBASE + rc.koff);\n");
-        /* indexed record (metal.m PERSISTENT VERTEX / INDEX POOL): vertices and indices are in the pool */
+        /* indexed record (metal.m PERSISTENT VERTEX / INDEX POOL): vertices and indices in the pool */
         VEMIT("  device const uchar *VB0 = VBASE;\n");
         VEMIT("  if (rc.isz != 0u){ uint ix = (rc.isz == 4u) ? *(device const uint *)(POOL + rc.ib + vid * 4u)\n");
         VEMIT("                                              : uint(*(device const ushort *)(POOL + rc.ib + vid * 2u));\n");
@@ -1510,3 +1488,9 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
 int ps_to_msl(const VSProg *p, int id, char *out, size_t cap){
     return ps_to_msl_ex(p, id, out, cap, 0u);
 }
+
+#if defined(__wasm__) || defined(VSEMU_WGSL)
+/* WGSL backend for the browser build (docs/web/gpu-abi.md); web-only code
+ * lives in runtime/web/ and shares the parser's private types from here. */
+#include "web/vsemu_wgsl.inc"
+#endif

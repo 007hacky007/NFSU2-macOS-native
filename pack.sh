@@ -7,7 +7,7 @@
 #   Contents/MacOS/NFSU2              launcher (the bundle's executable)
 #   Contents/MacOS/nfsu2-engine       out/nfsu2_boot     (original)
 #   Contents/MacOS/nfsu2-engine-hd    out/nfsu2_hd_boot  (HD, if built)
-#   Contents/MacOS/nfsu2-engine-na[-hd]  out/nfsu2_na[_hd]_boot  (North American v1.2, if built)
+# The engines both target the North American v1.2 executable.
 # Without swiftc the engine itself becomes Contents/MacOS/NFSU2 (no window), as before.
 #
 #   ./pack.sh                 the port only (~70 MB, both engines) -- the game data is the user's
@@ -83,19 +83,13 @@ if [ -x "$LAUNCHER" ]; then
       cp "$ROOT/out/nfsu2_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-hd"; ENGINES+=(nfsu2-engine-hd)
     fi
   fi
-  # North American v1.2 engines (BUILD=na ./build.sh && BUILD=na ./link.sh), if built;
-  # the launcher picks them by the SPEED2.EXE it finds.
-  if [ "$HD" = 0 ] && [ -x "$ROOT/out/nfsu2_na_boot" ]; then
-    cp "$ROOT/out/nfsu2_na_boot" "$APP/Contents/MacOS/nfsu2-engine-na"; ENGINES+=(nfsu2-engine-na)
-  fi
-  if [ "$ORIG_ONLY" = 0 ] && [ -x "$ROOT/out/nfsu2_na_hd_boot" ]; then
-    cp "$ROOT/out/nfsu2_na_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-na-hd"; ENGINES+=(nfsu2-engine-na-hd)
-  fi
 else
   cp "$BIN" "$APP/Contents/MacOS/NFSU2"     # old layout: the engine is the executable
 fi
 chmod +x "$APP/Contents/MacOS/"*
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+cp "$ROOT/app/registry-defaults.txt" "$APP/Contents/Resources/"
+cp "$ROOT/third_party/nfsu2-web-LICENSE" "$APP/Contents/Resources/"
 
 # --- icon ---
 if [ -x "$ROOT/.venv/bin/python" ]; then
@@ -112,10 +106,9 @@ if [ "$EMBED" = 1 ]; then
   [ -f "$SRC/SPEED2.EXE" ] || { echo "game data not found: $SRC"; exit 1; }
   echo "embedding the game data in the bundle..."
   cp -Rc "$SRC" "$APP/Contents/Resources/Game"
-  # MOVIES: no VP6 decoder, the game skips them anyway (~249 MB).
-  # dinput8.dll / SCRIPTS / server.*: Windows plugins, not loaded by the native port.
-  rm -rf "$APP/Contents/Resources/Game/MOVIES" "$APP/Contents/Resources/Game/SCRIPTS" \
-         "$APP/Contents/Resources/Game/dinput8.dll" "$APP/Contents/Resources/Game/server.dll" \
+  # Movies and server.dll are used by the native runtime; Windows plugins are not.
+  rm -rf "$APP/Contents/Resources/Game/SCRIPTS" \
+         "$APP/Contents/Resources/Game/dinput8.dll" \
          "$APP/Contents/Resources/Game/server.cfg" "$APP/Contents/Resources/Game/SafeMode.bat"
   find "$APP/Contents/Resources/Game" -name .DS_Store -delete
 fi
@@ -153,6 +146,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>To read the game files (SPEED2.EXE).</string>
   <key>NSRemovableVolumesUsageDescription</key>
     <string>To read the game files (SPEED2.EXE).</string>
+  <key>NSLocalNetworkUsageDescription</key>
+    <string>To play races and free roam with other players.</string>
   <key>NSHumanReadableCopyright</key>
     <string>x86 -> ARM64 static recompilation port. The game itself is not included in this bundle.</string>
 </dict>
@@ -197,9 +192,8 @@ if [ "$WITH_DATA" = 1 ]; then
   STEP3="3. Keep $NAME.app and the \"Need for Speed Underground 2\" folder next to
    each other; the app finds the game there by itself.  Move them together."
 else
-  DATA="Your own copy of the PC game, with one of these SPEED2.EXE files (v1.2
-    without the CD check): the European one (4,788,224 bytes) or the North
-    American one (4,800,512 bytes).  The app picks the matching engine.
+  DATA="Your own copy of the PC game, with the North American v1.2
+    SPEED2.EXE (4,800,512 bytes, without the CD check).
     The US v1.0 disc SPEED2.EXE is copy-protected and cannot run.
     The game files are NOT included."
   STEP3="3. The first time, the window asks where the game is: click
@@ -238,6 +232,10 @@ THE WINDOW
   Graphics        Original = the PC look, least power.
                   HD = smoother edges and real reflections; the Mac gets warmer.
                   "Start in full screen" (Cmd-F also switches while playing).
+  HUD textures    Original or UHUD; reads TEXPACKS/uhud.pak from your game
+                  folder, or an imported prepared pack.
+  Multiplayer     Offline by default. Online uses an explicit player name
+                  and a configurable server (default nfsu2.xyz).
   Portable copy   "Make Copy..." builds one app with the game inside it
                   (about 1.4 GB) that runs on its own, e.g. on another Mac.
                   It contains the game: keep it for yourself.
@@ -280,8 +278,7 @@ if [ "$WITH_DATA" = 1 ]; then
   SRC="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2"
   [ -f "$SRC/SPEED2.EXE" ] || { echo "game data not found: $SRC"; exit 1; }
   echo "copying the game data (large, a few minutes)..."
-  # MOVIES: no VP6 decoder, the game skips them anyway (~249 MB)
-  rsync -a --exclude='MOVIES/' "$SRC/" "$DIST/Need for Speed Underground 2/"
+  rsync -a "$SRC/" "$DIST/Need for Speed Underground 2/"
 fi
 echo "distribution folder: $DIST  ($(du -sh "$DIST" | cut -f1))"
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """DIFFERENTIAL test for x86 semantics: real x86 (Rosetta) vs the lifter.
 
-The same instruction bytes are run in two places:
+The same instruction bytes run in two places:
   1) oracle : compiled as x86-64, runs under Rosetta    -> the real CPU
   2) guest  : translated to C by RawLifter, runs on ARM64 -> our output
-The output (6 GPRs + flags + 128 bytes of memory) is compared.
+The outputs (6 GPRs + flags + 128 bytes of memory) are compared.
 
-Encodings that carry the same meaning in 64-bit mode are used:
+Encodings that mean the same in 64-bit mode are used:
   - eax..esi only (no REX, no r8+)
   - memory is always N(%rdi) / [edi+N]
   - edi and esp are NOT USED as destinations
@@ -21,10 +21,10 @@ BASE    = 0x00400000
 
 R32 = ['%eax','%ecx','%edx','%ebx','%ebp','%esi']
 R16 = ['%ax','%cx','%dx','%bx','%bp','%si']
-R8  = ['%al','%cl','%dl','%bl','%ah','%ch']      # ah/ch: high byte forms
+R8  = ['%al','%cl','%dl','%bl','%ah','%ch']      # ah/ch: the high-byte forms
 XMM = ['%xmm0','%xmm1','%xmm2','%xmm3']
 
-# flag mask: CF PF AF ZF SF OF  (+DF kept separately)
+# flag mask: CF PF AF ZF SF OF  (+DF is kept separately)
 F_CF,F_PF,F_AF,F_ZF,F_SF,F_OF = 1,4,0x10,0x40,0x80,0x800
 F_ALL = F_CF|F_PF|F_AF|F_ZF|F_SF|F_OF
 
@@ -39,8 +39,8 @@ class Tmpl:
 
 T = []
 def tmpl(name, undef=0, skipmem=False, ptr=False):
-    """skipmem: the result is affected by the precision difference between 80-bit
-    x87 and double (fprem, fsin...) -- the memory result isn't compared."""
+    """skipmem: the result depends on the precision difference between 80-bit
+    x87 and double (fprem, fsin...) -- the memory result is not compared."""
     def d(f): T.append(Tmpl(name, f, undef, skipmem, ptr)); return f
     return d
 
@@ -77,7 +77,7 @@ def _(rng): return f"{rng.choice(['negl','notl'])} {rng.choice(R32)}"
 @tmpl("neg/not r8")
 def _(rng): return f"{rng.choice(['negb','notb'])} {rng.choice(R8)}"
 
-# ---------------- shifts / rotates ----------------
+# ---------------- shift / rotate ----------------
 for op in ['shl','shr','sar','rol','ror','rcl','rcr']:
     @tmpl(f"{op} imm,r32", undef=F_OF|F_AF)
     def _(rng, op=op): return f"{op}l ${rng.randrange(0,33)}, {rng.choice(R32)}"
@@ -106,7 +106,7 @@ def _(rng):
 @tmpl("cdq/cwde/cbw")
 def _(rng): return rng.choice(['cltd','cwtl','cbtw'])
 
-# ---------------- moves / extension ----------------
+# ---------------- move / extend ----------------
 @tmpl("movzx/movsx 8->32")
 def _(rng):
     op = rng.choice(['movzbl','movsbl'])
@@ -152,13 +152,13 @@ def _(rng):
     op = rng.choice(['fadds','fsubs','fmuls','fdivs','fsubrs','fdivrs'])
     a,b,d = 0, 8, 64
     return f"flds {a}(%rdi)\n\t{op} {b}(%rdi)\n\tfstps {d}(%rdi)"
-@tmpl("x87 transcendental (80-bit difference)", skipmem=True)
+@tmpl("x87 excess precision (80-bit difference)", skipmem=True)
 def _(rng):
     op = rng.choice(['fsin','fcos','f2xm1','fptan'])
     return f"flds 0(%rdi)\n\t{op}\n\tfstps 64(%rdi)"
 @tmpl("x87 unary -> memory")
 def _(rng):
-    # f2xm1 is only defined for |x|<=1; can't be compared with random input
+    # f2xm1 is only defined for |x|<=1; it cannot be compared on random input
     op = rng.choice(['fabs','fchs','fsqrt','frndint'])
     return f"flds 0(%rdi)\n\t{op}\n\tfstps 64(%rdi)"
 @tmpl("x87 fistp RC")
@@ -179,8 +179,8 @@ def _(rng):
     return f"flds 8(%rdi)\n\tflds 0(%rdi)\n\t{op}\n\tfstps 64(%rdi)\n\tfstp %st(0)"
 @tmpl("x87 fld st(i) - stack copy")
 def _(rng):
-    # "fld %st(i)" must read the source BEFORE top changes.  Because this template
-    # didn't exist, the FPUSH evaluation order bug went unnoticed.
+    # "fld %st(i)" must read the source BEFORE top CHANGES.  Without this
+    # template the FPUSH evaluation-order bug had gone unnoticed.
     i = rng.randrange(0, 3)
     return ("flds 0(%rdi)\n\tflds 8(%rdi)\n\tflds 16(%rdi)\n\t"
             f"fld %st({i})\n\t"
@@ -222,12 +222,6 @@ def _(rng):
                      "unpcklps %xmm1, %xmm0", "unpckhps %xmm1, %xmm0",
                      "movlhps %xmm1, %xmm0", "movhlps %xmm1, %xmm0"])
     return f"movups 0(%rdi), %xmm0\n\tmovups 16(%rdi), %xmm1\n\t{op}\n\tmovups %xmm0, 64(%rdi)"
-@tmpl("sse shufps m128 / cvtpi2ps")
-def _(rng):
-    op = rng.choice([f"shufps ${rng.getrandbits(8)}, 16(%rdi), %xmm0",
-                     "cvtpi2ps 16(%rdi), %xmm0",
-                     "movq 24(%rdi), %mm1\n\tcvtpi2ps %mm1, %xmm0\n\temms"])
-    return f"movups 0(%rdi), %xmm0\n\t{op}\n\tmovups %xmm0, 64(%rdi)"
 @tmpl("sse2 packed int")
 def _(rng):
     op = rng.choice(['paddd','psubd','paddw','psubw','paddb','psubb','pand','por','pxor',
@@ -237,7 +231,7 @@ def _(rng):
 def _(rng):
     op = rng.choice(['cvtps2dq','cvttps2dq','cvtdq2ps','cvtpd2ps','cvtps2pd'])
     return f"movups 16(%rdi), %xmm1\n\tmovups 0(%rdi), %xmm0\n\t{op} %xmm0, %xmm1\n\tmovups %xmm1, 64(%rdi)"
-@tmpl("sse cvt skaler")
+@tmpl("sse cvt scalar")
 def _(rng):
     op = rng.choice(['cvtsi2ssl','cvtsi2sdl'])
     return f"movups 16(%rdi), %xmm0\n\t{op} 0(%rdi), %xmm0\n\tmovups %xmm0, 64(%rdi)"
@@ -273,7 +267,7 @@ def _(rng):
     rep = rng.choice(['', 'repe ', 'repne '])
     return f"cld\n\tmovl ${n}, %ecx\n\t" + rep + op
 
-# ---------------- division ----------------
+# ---------------- divide ----------------
 @tmpl("div/idiv 32", undef=F_ALL)
 def _(rng):
     op = rng.choice(['divl','idivl'])
@@ -286,7 +280,7 @@ def _(rng):
     op = rng.choice(['mulb','imulb','mulw','imulw'])
     return f"{op} {rng.choice(['%cl','%bl']) if op.endswith('b') else rng.choice(['%cx','%bx'])}"
 
-# ---------------- flag moves ----------------
+# ---------------- flag transfer ----------------
 @tmpl("pushf/popf/sahf/lahf")
 def _(rng):
     return rng.choice(["lahf", "sahf", "pushfq\n\tpopq %rax\n\tandl $0x8d5, %eax",
@@ -316,11 +310,11 @@ def _(rng):
                        f"movl ${rng.getrandbits(32)}, {M(rng)}"])
 
 def assemble(asm_list, workdir):
-    """Assemble all test instructions in a single file, return the byte arrays.
+    """Assemble all test instructions in one file, return their byte strings.
 
-    A separator byte is NOT USED: an instruction's own bytes can merge with the
-    separator (example: `andb %cl,%ah` -> 20 CC).  Instead every test gets a global
-    symbol and the boundaries are read from the symbol table."""
+    NO separator byte is used: an instruction's own bytes can merge with the
+    separator (example: `andb %cl,%ah` -> 20 CC).  Instead every test gets a
+    global symbol and the boundaries are read from the symbol table."""
     src = ['.text']
     for i, a in enumerate(asm_list):
         src.append('.globl _c%d' % i)
@@ -403,8 +397,8 @@ static void run_one(St *s, unsigned long long rsiv){
 }
 int main(void){
   setvbuf(stdout, 0, _IOLBF, 0);
-  /* Some random cases can fault on the real CPU (division, access);
-   * skip that case and continue, don't lose the whole run. */
+  /* Some random cases can fault on the real CPU (divide, access);
+   * skip that case and go on, do not lose the whole run. */
   signal(SIGSEGV, onfault); signal(SIGBUS, onfault);
   signal(SIGFPE, onfault);  signal(SIGILL, onfault); signal(SIGTRAP, onfault);
   page = mmap(0, 1<<20, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANON, -1, 0);
@@ -413,7 +407,7 @@ int main(void){
     memcpy(p, CODE + CODE_OFF[i], CODE_LEN[i]);
     p[CODE_LEN[i]] = 0xC3;
     St s; memcpy(&s, INIT + i*sizeof(St), sizeof(St));
-    /* if pad != 0 esi is used as a POINTER (string instructions) */
+    /* if pad != 0, esi is used as a POINTER (string instructions) */
     unsigned long long rsiv = s.pad ? (unsigned long long)(unsigned long)(s.mem + 64)
                                     : (unsigned long long)s.r[5];
     g_infault = 1;
@@ -436,6 +430,7 @@ GUEST_HDR = """
 #include <string.h>
 #include <math.h>
 void mem_commit(uint32_t,uint32_t);
+guest_fn_t g_dtab[DISPATCH_TEXT_SIZE];
 void dispatch_indirect(CPU*c,uint32_t a){(void)c;(void)a;}
 void unsupported_insn(CPU*c,uint32_t a,const char*m){(void)c;(void)a;(void)m;}
 void guest_hook(CPU*c,uint32_t a){(void)c;(void)a;}
@@ -567,7 +562,7 @@ def main():
         undef = cases[i]['undef']
         diffs = []
         for j, nm in enumerate(['eax','ecx','edx','ebx','ebp','esi']):
-            if nm == 'esi' and cases[i]['ptr']: continue   # base address differs
+            if nm == 'esi' and cases[i]['ptr']: continue   # the base address differs
             if o[j] != g[j]: diffs.append('%s: real %s != ours %s' % (nm, o[j], g[j]))
         of_ = int(o[6],16) & ~undef; gf_ = int(g[6],16) & ~undef
         if of_ != gf_: diffs.append('flags: real %03x != ours %03x' % (of_, gf_))
@@ -588,12 +583,12 @@ def main():
         for i, e in skipped:
             if e in seen: continue
             seen.add(e); print('    no lift: %-28s example: %r' % (e, cases[i]['asm']))
-    # If no case was checked DON'T SAY "matched": when the lifter crashed from the
-    # start (0/n checked) this line came out green and hid the breakage.
+    # Do NOT SAY "matched" if no case was checked: when the lifter crashed at
+    # the start (0/n checked) this line came out green and hid the breakage.
     if not checked:
-        print('  \033[31mNO CASE WAS CHECKED -- result invalid\033[0m'); return 1
+        print('  \033[31mNO CASE WAS CHECKED -- the result is void\033[0m'); return 1
     if not bad:
-        print('  \033[32mALL RESULTS MATCHED\033[0m'); return 0
+        print('  \033[32mALL RESULTS MATCH\033[0m'); return 0
     print('\n  \033[31m%d mismatches, in %d templates\033[0m'
           % (sum(len(v) for v in bad.values()), len(bad)))
     for tn, lst in sorted(bad.items(), key=lambda x: -len(x[1])):

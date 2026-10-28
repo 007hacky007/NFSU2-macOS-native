@@ -1,40 +1,14 @@
 #!/usr/bin/env python3
-"""Analyze a real game session recording (PERFLOG) -> <dir>/report.md
+"""Analyse a recording of a real game session (PERFLOG) -> <dir>/report.md
 
-    python3 tools/session_report.py <dir> [--window 5]
+    python3 tools/session_report.py <dir> [--window 5]   (window length, s)
 
-Input: the files runtime/perflog.c writes (+ the powermetrics output power.txt
-if present).  Standard library + `nm` only.  Recordings made before the English
-rename (konuk.csv, saniye.csv, Turkish column names, ...) are read too.
+Input: the files runtime/perflog.c writes (+ the powermetrics output power.txt,
+if present).  Standard library + `nm` only.
 """
 import bisect, collections, csv, datetime, glob, os, re, statistics as st, struct, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Old (Turkish) names -> current names, so older recordings still work.
-OLD_COLS = {
-    'gkare': 'gframe', 'duvar_us': 'wall_us', 'uyku_us': 'sleep_us', 'present_bekle_us': 'present_wait_us',
-    'derleme_us': 'compile_us', 'doku_n': 'tex_n', 'doku_kb': 'tex_kb', 'doku_us': 'tex_us',
-    'kare': 'frame', 'aralik_us': 'interval_us', 'drawable_bekle_us': 'drawable_wait_us', 'kodlama_us': 'encode_us',
-    'cizim': 'draws', 'kose': 'verts', 'dusen': 'dropped', 'doku_farkli': 'tex_distinct',
-    'enerji_nj': 'energy_nj', 'penerji_nj': 'penergy_nj', 'komut': 'instr', 'cevrim': 'cycles',
-    'pkomut': 'pinstr', 'pcevrim': 'pcycles', 'kull_t': 'user_t', 'sis_t': 'sys_t', 'pkull_t': 'puser_t',
-    'psis_t': 'psys_t', 'gpu_kullanim': 'gpu_util', 'termal': 'thermal', 'bellek': 'memory',
-    'rol': 'role', 'ad': 'name', 'kull_ns': 'user_ns', 'sis_ns': 'sys_ns',
-    'cpu_ort': 'cpu_avg', 'gpu_ort': 'gpu_avg', 'sistem_w': 'system_w',
-}
-OLD_VALUES = {'KONUK': 'GUEST', 'ANA': 'MAIN'}
-OLD_META = {'ikili': 'binary', 'kaydirma': 'slide', 'metin': 'text', 'zaman_tabani': 'timebase',
-            'surum': 'version', 'baslangic_epoch_us': 'start_epoch_us'}
-
-
-def path_of(d, *names):
-    """The first of the given names that exists in d (current name first, then old ones)."""
-    for n in names:
-        p = os.path.join(d, n)
-        if os.path.exists(p):
-            return p
-    return os.path.join(d, names[0])
 
 
 def read_csv(path):
@@ -42,20 +16,19 @@ def read_csv(path):
         return []
     with open(path, newline='') as f:
         r = csv.reader(f)
-        head = next(r, None)
-        if not head:
+        header = next(r, None)
+        if not header:
             return []
-        head = [OLD_COLS.get(h, h) for h in head]
         out = []
         for row in r:
-            if len(row) != len(head):
+            if len(row) != len(header):
                 continue
             d = {}
-            for k, v in zip(head, row):
+            for k, v in zip(header, row):
                 try:
                     d[k] = float(v)
                 except ValueError:
-                    d[k] = OLD_VALUES.get(v, v)
+                    d[k] = v
             out.append(d)
         return out
 
@@ -64,13 +37,13 @@ def read_meta(d):
     m = {}
     for l in open(os.path.join(d, 'meta.txt')):
         k, _, v = l.strip().partition(' ')
-        m.setdefault(OLD_META.get(k, k), v)
+        m.setdefault(k, v)
     return m
 
 
 # ---- symbols ----
 def source_map():
-    """runtime/*.c|m function definitions -> file name (for categories)"""
+    """runtime/*.c|m function definitions -> file name (for the category)"""
     h = {}
     defn = re.compile(r'^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;]*$')
     for path in glob.glob(os.path.join(ROOT, 'runtime', '*.[cm]')):
@@ -84,7 +57,7 @@ def source_map():
     return h
 
 
-class Symbol:
+class Symbols:
     def __init__(self, d, m):
         self.slide = int(m.get('slide', '0'))
         lo, hi = m.get('text', '0 0').split()
@@ -97,13 +70,13 @@ class Symbol:
             if len(p) >= 3 and p[1] in 'tT':
                 self.addr.append(int(p[0], 16) + self.slide)
                 self.name.append(p[2][1:] if p[2].startswith('_') else p[2])
-        self.sys = {}
-        sy = path_of(d, 'symbols.txt', 'sembol.txt')
+        self.sys_names = {}
+        sy = os.path.join(d, 'symbols.txt')
         if os.path.exists(sy):
             for l in open(sy):
                 p = l.split()
                 if len(p) >= 2:
-                    self.sys[int(p[0], 16)] = p[1]
+                    self.sys_names[int(p[0], 16)] = p[1] + ('' if len(p) < 3 else '')
         self.cache = {}
 
     def __call__(self, pc):
@@ -114,29 +87,29 @@ class Symbol:
             i = bisect.bisect_right(self.addr, pc) - 1
             r = self.name[i] if i >= 0 else '?'
         else:
-            r = self.sys.get(pc, '?system')
+            r = self.sys_names.get(pc, '?system')
         self.cache[pc] = r
         return r
 
 
-WAIT = re.compile(r'kevent|psynch|mach_msg|semwait|nanosleep|__ulock|swtch|__select|workq|__wait4|cond_wait')
+WAITING = re.compile(r'kevent|psynch|mach_msg|semwait|nanosleep|__ulock|swtch|__select|workq|__wait4|cond_wait')
 
 
-def category(name, src):
+def category(name, sources):
     m = re.match(r'sub_00([0-9a-f]{6})', name)
     if m:
         a = int(m.group(1), 16)
         return 'D3DX (lift)' if 0x650000 <= a < 0x690000 else 'game (lift)'
-    if WAIT.search(name):
+    if WAITING.search(name):
         return 'wait/sleep'
     if re.match(r'(n[4-8]_|dxn|nat_|pl_plan|efx_)', name):
         return 'D3DX (native)'
-    k = src.get(name)
+    k = sources.get(name)
     if k:
         return {'com.c': 'D3D9 layer (com.c)', 'metal.m': 'Metal (metal.m)', 'd3dx_hle.c': 'D3DX (native)',
                 'win32.c': 'Win32', 'win32_ext.c': 'Win32', 'vsemu.c': 'vsemu', 'dispatch.c': 'dispatch',
                 'genexec.c': 'dispatch', 'mem.c': 'memory', 'enhance.c': 'HD (enhance)',
-                'audio.m': 'audio', 'perflog.c': 'perflog'}.get(k, k)
+                'audio.m': 'sound', 'perflog.c': 'perflog'}.get(k, k)
     if name.startswith(('x87_', 'fcompare', 'fsw_', 'FLAGS', 'parity')):
         return 'game (lift)'
     if name in ('?', '?system'):
@@ -149,7 +122,7 @@ def category(name, src):
 
 
 def read_samples(d):
-    path = path_of(d, 'samples.bin', 'ornek.bin')
+    path = os.path.join(d, 'samples.bin')
     data = open(path, 'rb').read() if os.path.exists(path) else b''
     i, out = 0, []
     while i + 16 <= len(data):
@@ -200,130 +173,101 @@ def mean(xs):
 def main():
     d = sys.argv[1]
     win_s = 5.0
-    for flag in ('--window', '--pencere'):
-        if flag in sys.argv:
-            win_s = float(sys.argv[sys.argv.index(flag) + 1])
+    if '--window' in sys.argv:
+        win_s = float(sys.argv[sys.argv.index('--window') + 1])
     m = read_meta(d)
     epoch0 = int(m.get('start_epoch_us', '0')) / 1e6
-    guest = read_csv(path_of(d, 'guest.csv', 'konuk.csv'))
+    guest = read_csv(os.path.join(d, 'guest.csv'))
     render = read_csv(os.path.join(d, 'render.csv'))
     gpu = {int(r['frame']): r['gpu_us'] for r in read_csv(os.path.join(d, 'gpu.csv'))}
-    sec = read_csv(path_of(d, 'seconds.csv', 'saniye.csv'))
+    sec = read_csv(os.path.join(d, 'persec.csv'))
     thr = read_csv(os.path.join(d, 'thread.csv'))
-    power = read_power(path_of(d, 'power.txt', 'guc.txt'))
+    power = read_power(os.path.join(d, 'power.txt'))
     for g in power:
-        g['tms'] = (g['t'] - g['dt'] / 2 - epoch0) * 1e3   # middle of the sample, in session time
-    # session.sh + tools/smcread: SMC temperature / fan (1 s), empty if missing
-    temp = read_csv(path_of(d, 'temperature.csv', 'sicaklik.csv'))
-    for c in temp:
-        c['tms'] = (c['epoch_s'] - epoch0) * 1e3
-    screens = sorted(glob.glob(os.path.join(d, 'screens', '*.jpg')) or glob.glob(os.path.join(d, 'ekran', '*.jpg')))
-    screen_t = [(float(os.path.basename(e).split('_')[0]), e) for e in screens]
+        g['tms'] = (g['t'] - g['dt'] / 2 - epoch0) * 1e3   # sample midpoint, in session time
+    thumbs = sorted(glob.glob(os.path.join(d, 'thumbs', '*.jpg')))
+    thumb_t = [(float(os.path.basename(e).split('_')[0]), e) for e in thumbs]
 
-    sb = Symbol(d, m)
-    src = source_map()
-    samples = read_samples(d)
+    sb = Symbols(d, m)
+    sources = source_map()
+    samp = read_samples(d)
 
     R = []
-    out = R.append
+    emit = R.append
     duration = (render[-1]['t_ms'] - render[0]['t_ms']) / 1e3 if len(render) > 1 else 0
-    out('# Session report: %s\n' % os.path.basename(os.path.normpath(d)))
-    out('version **%s**, build **%s**, binary `%s`, duration %.0f s, %d frames (render), %d guest frames, %d samples, %d screenshots\n'
-        % (('v' + m['version']) if m.get('version') else 'untagged', m.get('build', '?'), os.path.basename(m.get('binary', '?')),
-           duration, len(render), len(guest), len(samples), len(screens)))
+    emit('# Session report: %s\n' % os.path.basename(os.path.normpath(d)))
+    emit('build **%s**, binary `%s`, duration %.0f s, %d frames (render), %d guest frames, %d samples, %d screenshots\n'
+        % (m.get('build', '?'), os.path.basename(m.get('binary', '?')), duration, len(render), len(guest), len(samp), len(thumbs)))
 
     # ---- overview ----
-    iv = [r['interval_us'] / 1e3 for r in render if r['interval_us'] > 0]
-    if iv:
-        fps = 1000 / st.mean(iv)
-        out('## Overview\n')
-        out('| measure | value |\n|---|---|')
-        out('| mean fps | %.1f |' % fps)
-        for thr_ms in (9, 12, 20, 34):
-            n = sum(1 for x in iv if x > thr_ms)
-            out('| frames > %d ms | %d (%.2f%%) |' % (thr_ms, n, 100 * n / len(iv)))
-        out('| longest frame | %.1f ms |' % max(iv))
+    ar = [r['interval_us'] / 1e3 for r in render if r['interval_us'] > 0]
+    if ar:
+        fps = 1000 / st.mean(ar)
+        emit('## Overview\n')
+        emit('| measure | value |\n|---|---|')
+        emit('| average fps | %.1f |' % fps)
+        for limit in (9, 12, 20, 34):
+            n = sum(1 for x in ar if x > limit)
+            emit('| frames > %d ms | %d (%.2f%%) |' % (limit, n, 100 * n / len(ar)))
+        emit('| longest frame | %.1f ms |' % max(ar))
         if guest:
-            out('| guest CPU / frame | %.2f ms |' % mean(k['cpu_us'] / 1e3 for k in guest))
-            out('| frame limiter sleep (idle margin) / frame | %.2f ms |' % mean(k['sleep_us'] / 1e3 for k in guest))
-        out('| main thread encoding / frame | %.2f ms |' % mean(r['encode_us'] / 1e3 for r in render))
+            emit('| guest CPU / frame | %.2f ms |' % mean(k['cpu_us'] / 1e3 for k in guest))
+            emit('| frame limiter sleep (idle margin) / frame | %.2f ms |' % mean(k['sleep_us'] / 1e3 for k in guest))
+        emit('| main thread encoding / frame | %.2f ms |' % mean(r['encode_us'] / 1e3 for r in render))
         if gpu:
-            out('| GPU / frame | %.2f ms |' % mean(v / 1e3 for v in gpu.values()))
-        out('| draws / frame | %.0f |' % mean(r['draws'] for r in render))
+            emit('| GPU / frame | %.2f ms |' % mean(v / 1e3 for v in gpu.values()))
+        emit('| draws / frame | %.0f |' % mean(r['draws'] for r in render))
         if len(sec) > 1:
             dt = (sec[-1]['t_ms'] - sec[0]['t_ms']) / 1e3
-            out('| process CPU energy (rusage) | %.2f W (P cores %.2f W) |'
+            emit('| process CPU energy (rusage) | %.2f W (P cores %.2f W) |'
                 % ((sec[-1]['energy_nj'] - sec[0]['energy_nj']) / 1e9 / dt,
                    (sec[-1]['penergy_nj'] - sec[0]['penergy_nj']) / 1e9 / dt))
             cyc = sec[-1]['cycles'] - sec[0]['cycles']
             ins = sec[-1]['instr'] - sec[0]['instr']
             if cyc > 0:
-                out('| IPC | %.2f |' % (ins / cyc))
+                emit('| IPC | %.2f |' % (ins / cyc))
         if power:
-            out('| powermetrics total / CPU / GPU | %.2f / %.2f / %.2f W |'
+            emit('| powermetrics total / CPU / GPU | %.2f / %.2f / %.2f W |'
                 % (mean(g['top'] for g in power), mean(g['cpu'] for g in power), mean(g['gpu'] for g in power)))
-            out('| GPU frequency / P0 frequency | %.0f / %.0f MHz |' % (mean(g.get('gf') for g in power), mean(g.get('pf') for g in power)))
-        if temp:
-            ok = lambda k: [c[k] for c in temp if c[k] > 0]
-            out('| temperature CPU / GPU (mean / max) | %.1f / %.1f C, %.1f / %.1f C |'
-                % (mean(ok('cpu_avg')), max(ok('cpu_max') or [0]), mean(ok('gpu_avg')), max(ok('gpu_max') or [0])))
-            fv = [c[k] for c in temp for k in ('fan0', 'fan1') if c[k] >= 0]   # 0 = fan stopped (valid)
-            out('| fan (mean / max) | %.0f / %.0f rpm%s |' % (mean(fv), max(fv or [0]), ' (fans never spun)' if fv and max(fv) == 0 else ''))
-            out('| system power (SMC PSTR, display included) mean / max | %.1f / %.1f W |' % (mean(ok('system_w')), max(ok('system_w') or [0])))
-        # session.sh: the real display refresh rate (DLINK=2) and battery/power mode.
-        # Tells at a glance whether a drop comes from the game or the system.
-        tl = path_of(d, 'game_full.log', 'oyun_tam.log')
-        if os.path.exists(tl):
-            hz = [float(x) for x in re.findall(r'^\[(?:display|ekran)\] ([\d.]+) Hz', open(tl, errors='replace').read(), re.M)]
-            if hz:
-                out('| display refresh (min / mean / max) | %.0f / %.0f / %.0f Hz |' % (min(hz), st.mean(hz), max(hz)))
-        for names, label in ((('battery_start.txt', 'pil_bas.txt'), 'battery / power mode (start)'),
-                             (('battery_end.txt', 'pil_son.txt'), 'battery / power mode (end)')):
-            pp = path_of(d, *names)
-            if os.path.exists(pp):
-                t = open(pp, errors='replace').read()
-                p = re.search(r'(\d+)%; ([^;]+);', t); lp = re.search(r'lowpowermode\s+(\d)', t)
-                src_kind = 'charger' if 'AC Power' in t else 'battery'
-                out('| %s | %s%s, %s (%s), Low Power Mode %s |' % (label, p.group(1) if p else '?', '%' if p else '',
-                    src_kind, (p.group(2) if p else '?'), ('on' if lp and lp.group(1) == '1' else 'off')))
-        out('')
+            emit('| GPU frequency / P0 frequency | %.0f / %.0f MHz |' % (mean(g.get('gf') for g in power), mean(g.get('pf') for g in power)))
+        emit('')
 
     # ---- events ----
     if guest:
-        total = lambda k: sum(x[k] for x in guest)
-        out('## Events (session total)\n')
-        out('| event | count | time |\n|---|---|---|')
-        out('| VS compiles | %d | |' % total('vs_n'))
-        out('| PS compiles | %d | |' % total('ps_n'))
-        out('| PSO creations | %d | |' % total('pso_n'))
-        out('| total compile time | | %.1f ms |' % (total('compile_us') / 1e3))
-        out('| texture creations | %d | |' % total('tex_n'))
-        out('| texture uploads | %.1f MB | %.1f ms |' % (total('tex_kb') / 1024, total('tex_us') / 1e3))
-        out('')
+        top = lambda k: sum(x[k] for x in guest)
+        emit('## Events (session total)\n')
+        emit('| event | count | time |\n|---|---|---|')
+        emit('| VS compiles | %d | |' % top('vs_n'))
+        emit('| PS compiles | %d | |' % top('ps_n'))
+        emit('| PSO creations | %d | |' % top('pso_n'))
+        emit('| compile time in total | | %.1f ms |' % (top('compile_us') / 1e3))
+        emit('| texture creations | %d | |' % top('tex_n'))
+        emit('| texture uploads | %.1f MB | %.1f ms |' % (top('tex_kb') / 1024, top('tex_us') / 1e3))
+        emit('')
 
     # ---- timeline ----
-    t_start = render[0]['t_ms'] if render else 0
-    t_end = render[-1]['t_ms'] if render else 0
+    t_first = render[0]['t_ms'] if render else 0
+    t_last = render[-1]['t_ms'] if render else 0
     windows = []
-    t = t_start
-    while t < t_end:
+    t = t_first
+    while t < t_last:
         a, b = t, t + win_s * 1000
         rr = [r for r in render if a <= r['t_ms'] < b]
-        kk = [k for k in guest if a <= k['t_ms'] < b]
+        gw = [k for k in guest if a <= k['t_ms'] < b]
+        ss = [s for s in sec if a - 1000 <= s['t_ms'] < b + 1000]
         gg = [g for g in power if a <= g['tms'] < b]
-        cc = [c for c in temp if a <= c['tms'] < b]
         w = {'a': a, 'b': b, 'n': len(rr)}
         if rr:
             w['fps'] = len(rr) / (win_s)
             w['encode'] = mean(r['encode_us'] / 1e3 for r in rr)
             w['draws'] = mean(r['draws'] for r in rr)
             w['gpu'] = mean(gpu.get(int(r['frame'])) for r in rr) / 1e3 if gpu else float('nan')
-            w['max'] = max(r['interval_us'] for r in rr) / 1e3
-        if kk:
-            w['gcpu'] = mean(k['cpu_us'] / 1e3 for k in kk)
-            w['sleep'] = mean(k['sleep_us'] / 1e3 for k in kk)
-            w['compiles'] = sum(k['vs_n'] + k['ps_n'] + k['pso_n'] for k in kk)
-            w['tex_mb'] = sum(k['tex_kb'] for k in kk) / 1024
+            w['longest'] = max(r['interval_us'] for r in rr) / 1e3
+        if gw:
+            w['gcpu'] = mean(k['cpu_us'] / 1e3 for k in gw)
+            w['sleep'] = mean(k['sleep_us'] / 1e3 for k in gw)
+            w['compiles'] = sum(k['vs_n'] + k['ps_n'] + k['pso_n'] for k in gw)
+            w['tex_mb'] = sum(k['tex_kb'] for k in gw) / 1024
         ss2 = [s for s in sec if a <= s['t_ms'] <= b]
         if len(ss2) >= 2:
             dt = (ss2[-1]['t_ms'] - ss2[0]['t_ms']) / 1e3
@@ -333,11 +277,8 @@ def main():
             w['pm_cpu'] = mean(g['cpu'] for g in gg)
             w['pm_gpu'] = mean(g['gpu'] for g in gg)
             w['pm_gf'] = mean(g.get('gf') for g in gg)
-        if cc:
-            w['gpu_c'] = max(c['gpu_max'] for c in cc)
-            w['fan'] = mean([c[k] for c in cc for k in ('fan0', 'fan1') if c[k] >= 0])
-        e = [x for x in screen_t if a <= x[0] < b]
-        w['screen'] = os.path.relpath(e[len(e) // 2][1], d) if e else ''
+        e = [x for x in thumb_t if a <= x[0] < b]
+        w['thumb'] = os.path.relpath(e[len(e) // 2][1], d) if e else ''
         windows.append(w)
         t = b
 
@@ -345,18 +286,18 @@ def main():
         v = w.get(k)
         return '' if v is None or v != v else fmt % v
 
-    out('## Timeline (%.0f s windows)\n' % win_s)
-    out('Guest CPU = the game thread\'s real CPU time per frame; sleep = the frame limiter\'s '
+    emit('## Timeline (%.0f s windows)\n' % win_s)
+    emit('Guest CPU = the game thread\'s real CPU time per frame; sleep = the frame limiter\'s '
         'idle margin (high = relaxed).  CPU W = the process\'s own energy counter (no sudo needed); pm = powermetrics.\n')
-    out('| t (s) | fps | guest CPU ms | sleep ms | encode ms | GPU ms | draws | longest ms | CPU W | pm CPU W | pm GPU W | GPU MHz | thermal | GPU C | fan | compiles | tex MB | screen |')
-    out('|' + '---|' * 18)
+    emit('| t (s) | fps | guest CPU ms | sleep ms | encoding ms | GPU ms | draws | longest ms | CPU W | pm CPU W | pm GPU W | GPU MHz | thermal | compiles | texture MB | screen |')
+    emit('|' + '---|' * 16)
     for w in windows:
-        out('| %.0f | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
-            (w['a'] - t_start) / 1e3, f(w, 'fps', '%.1f'), f(w, 'gcpu'), f(w, 'sleep'), f(w, 'encode'), f(w, 'gpu'),
-            f(w, 'draws', '%.0f'), f(w, 'max', '%.1f'), f(w, 'cpuw'), f(w, 'pm_cpu'), f(w, 'pm_gpu'),
-            f(w, 'pm_gf', '%.0f'), f(w, 'thermal', '%.0f'), f(w, 'gpu_c', '%.0f'), f(w, 'fan', '%.0f'), f(w, 'compiles', '%.0f'), f(w, 'tex_mb', '%.1f'),
-            ('![](%s)' % w['screen']) if w['screen'] else ''))
-    out('')
+        emit('| %.0f | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            (w['a'] - t_first) / 1e3, f(w, 'fps', '%.1f'), f(w, 'gcpu'), f(w, 'sleep'), f(w, 'encode'), f(w, 'gpu'),
+            f(w, 'draws', '%.0f'), f(w, 'longest', '%.1f'), f(w, 'cpuw'), f(w, 'pm_cpu'), f(w, 'pm_gpu'),
+            f(w, 'pm_gf', '%.0f'), f(w, 'thermal', '%.0f'), f(w, 'compiles', '%.0f'), f(w, 'tex_mb', '%.1f'),
+            ('![](%s)' % w['thumb']) if w['thumb'] else ''))
+    emit('')
 
     # ---- sample profile ----
     def profile(sel, title, n_self=30, n_incl=25):
@@ -366,59 +307,59 @@ def main():
         for _, _, _, pcs in sel:
             names = [sb(p) for p in pcs]
             self_c[names[0]] += 1
-            cat_c[category(names[0], src)] += 1
+            cat_c[category(names[0], sources)] += 1
             for a in set(names):
                 if a not in ('?', '?system'):
                     incl_c[a] += 1
         N = len(sel)
-        out('### %s (%d samples)\n' % (title, N))
-        out('| category (self) | share |\n|---|---|')
+        emit('### %s (%d samples)\n' % (title, N))
+        emit('| category (self) | share |\n|---|---|')
         for k, v in cat_c.most_common():
-            out('| %s | %.1f%% |' % (k, 100 * v / N))
-        out('\n| function (self) | share | category |\n|---|---|---|')
+            emit('| %s | %.1f%% |' % (k, 100 * v / N))
+        emit('\n| function (self) | share | category |\n|---|---|---|')
         for k, v in self_c.most_common(n_self):
-            out('| `%s` | %.2f%% | %s |' % (k, 100 * v / N, category(k, src)))
-        out('\n| function (inclusive) | share |\n|---|---|')
+            emit('| `%s` | %.2f%% | %s |' % (k, 100 * v / N, category(k, sources)))
+        emit('\n| function (inclusive) | share |\n|---|---|')
         for k, v in incl_c.most_common(n_incl):
-            out('| `%s` | %.1f%% |' % (k, 100 * v / N))
-        out('')
+            emit('| `%s` | %.1f%% |' % (k, 100 * v / N))
+        emit('')
 
-    guest_s = [o for o in samples if o[2] == 0]
-    main_s = [o for o in samples if o[2] == 1]
-    out('## Profile: game thread (1 ms sampling, wall clock)\n')
-    out('Share = sample ratio; wait/sleep included.  For ms/frame: share x frame time (~8.33 ms).\n')
-    profile(guest_s, 'Whole session')
+    guest_samp = [o for o in samp if o[2] == 0]
+    main_samp = [o for o in samp if o[2] == 1]
+    emit('## Profile: the game thread (1 ms sampling, wall clock)\n')
+    emit('Share = share of the samples; waiting/sleep included.  For ms/frame: share x frame time (~8.33 ms).\n')
+    profile(guest_samp, 'Whole session')
 
     # heaviest windows: by guest CPU
     heavy = sorted([w for w in windows if w.get('gcpu') == w.get('gcpu') and w.get('n', 0) > 50],
-                   key=lambda w: -w['gcpu'])[:3]
+                  key=lambda w: -w['gcpu'])[:3]
     for w in heavy:
-        sel = [o for o in guest_s if w['a'] <= o[0] < w['b']]
-        profile(sel, 'Heaviest window: t=%.0f-%.0f s, guest CPU %.2f ms/frame, GPU %s ms %s'
-                % ((w['a'] - t_start) / 1e3, (w['b'] - t_start) / 1e3, w['gcpu'], f(w, 'gpu'),
-                   ('![](%s)' % w['screen']) if w['screen'] else ''), 20, 0)
-    out('## Profile: main (render) thread (4 ms sampling)\n')
-    profile(main_s, 'Whole session', 20, 15)
+        win_samp = [o for o in guest_samp if w['a'] <= o[0] < w['b']]
+        profile(win_samp, 'Heaviest window: t=%.0f-%.0f s, guest CPU %.2f ms/frame, GPU %s ms %s'
+               % ((w['a'] - t_first) / 1e3, (w['b'] - t_first) / 1e3, w['gcpu'], f(w, 'gpu'),
+                  ('![](%s)' % w['thumb']) if w['thumb'] else ''), 20, 0)
+    emit('## Profile: the main (render) thread (4 ms sampling)\n')
+    profile(main_samp, 'Whole session', 20, 15)
 
     # ---- hitches ----
-    out('## Hitches (frame interval > 12 ms)\n')
+    emit('## Hitches (frame interval > 12 ms)\n')
     hitches = [r for r in render if r['interval_us'] > 12000]
     if not hitches:
-        out('none\n')
+        emit('none\n')
     else:
-        out('| t (s) | frame | interval ms | nearby guest CPU ms (max) | compiles | tex KB | GPU ms | screen |\n|---|---|---|---|---|---|---|---|')
+        emit('| t (s) | frame | interval ms | nearby guest CPU ms (max) | compiles | texture KB | GPU ms | screen |\n|---|---|---|---|---|---|---|---|')
         for r in hitches[:60]:
-            kk = [k for k in guest if r['t_ms'] - 60 <= k['t_ms'] <= r['t_ms'] + 20]
-            e = min(screen_t, key=lambda x: abs(x[0] - r['t_ms'])) if screen_t else None
-            out('| %.2f | %d | %.1f | %s | %d | %d | %s | %s |' % (
-                (r['t_ms'] - t_start) / 1e3, r['frame'], r['interval_us'] / 1e3,
-                '%.1f' % max(k['cpu_us'] / 1e3 for k in kk) if kk else '',
-                sum(k['vs_n'] + k['ps_n'] + k['pso_n'] for k in kk), sum(k['tex_kb'] for k in kk),
+            gw = [k for k in guest if r['t_ms'] - 60 <= k['t_ms'] <= r['t_ms'] + 20]
+            e = min(thumb_t, key=lambda x: abs(x[0] - r['t_ms'])) if thumb_t else None
+            emit('| %.2f | %d | %.1f | %s | %d | %d | %s | %s |' % (
+                (r['t_ms'] - t_first) / 1e3, r['frame'], r['interval_us'] / 1e3,
+                '%.1f' % max(k['cpu_us'] / 1e3 for k in gw) if gw else '',
+                sum(k['vs_n'] + k['ps_n'] + k['pso_n'] for k in gw), sum(k['tex_kb'] for k in gw),
                 '%.1f' % (gpu[int(r['frame'])] / 1e3) if int(r['frame']) in gpu else '',
                 ('![](%s)' % os.path.relpath(e[1], d)) if e and abs(e[0] - r['t_ms']) < 1500 else ''))
         if len(hitches) > 60:
-            out('\n... %d hitches in total' % len(hitches))
-        out('')
+            emit('\n... %d hitches in total' % len(hitches))
+        emit('')
 
     # ---- threads ----
     if thr:
@@ -431,26 +372,26 @@ def main():
         rows = []
         for tid, r in last.items():
             a = first[tid]
-            us = (r['user_ns'] - a['user_ns']) / 1e9 / dt
+            usr = (r['user_ns'] - a['user_ns']) / 1e9 / dt
             sy = (r['sys_ns'] - a['sys_ns']) / 1e9 / dt
-            rows.append((us + sy, us, sy, r.get('role', ''), r.get('name', ''), tid))
+            rows.append((usr + sy, usr, sy, r.get('role', ''), r.get('name', ''), tid))
         rows.sort(reverse=True)
-        out('## Threads (cores = CPU s / wall s)\n')
-        # samples of the other threads (role 2, 10 ms): most common PC < LR per thread
-        other = collections.defaultdict(collections.Counter)
-        for _, tid32, role, pcs in samples:
+        emit('## Threads (cores = CPU s / wall s)\n')
+        # samples of the other threads (role 2, 10 ms): most frequent PC < LR per thread
+        others = collections.defaultdict(collections.Counter)
+        for _, tid32, role, pcs in samp:
             if role == 2:
-                other[tid32][' < '.join(sb(p) for p in pcs[:2])] += 1
-        out('| role | name | total | user | system | most common (PC < LR, 10 ms samples) |\n|---|---|---|---|---|---|')
-        for t_, us, sy, role, name, tid in rows[:16]:
-            c = other.get(tid & 0xFFFFFFFF)
-            top = ''
+                others[tid32][' < '.join(sb(p) for p in pcs[:2])] += 1
+        emit('| role | name | total | user | system | most frequent (PC < LR, 10 ms samples) |\n|---|---|---|---|---|---|')
+        for t_, usr, sy, role, name, tid in rows[:16]:
+            c = others.get(tid & 0xFFFFFFFF)
+            top_pcs = ''
             if c:
                 N = sum(c.values())
-                top = '; '.join('`%s` %.0f%%' % (k, 100 * v / N) for k, v in c.most_common(3))
-            out('| %s | %s | %.3f | %.3f | %.3f | %s |' % (role, name or tid, t_, us, sy, top))
-        out('| | **total** | **%.3f** | %.3f | %.3f | |' % (sum(x[0] for x in rows), sum(x[1] for x in rows), sum(x[2] for x in rows)))
-        out('')
+                top_pcs = '; '.join('`%s` %.0f%%' % (k, 100 * v / N) for k, v in c.most_common(3))
+            emit('| %s | %s | %.3f | %.3f | %.3f | %s |' % (role, name or tid, t_, usr, sy, top_pcs))
+        emit('| | **total** | **%.3f** | %.3f | %.3f | |' % (sum(x[0] for x in rows), sum(x[1] for x in rows), sum(x[2] for x in rows)))
+        emit('')
 
     open(os.path.join(d, 'report.md'), 'w').write('\n'.join(R) + '\n')
     print('\n'.join(R[:40]))

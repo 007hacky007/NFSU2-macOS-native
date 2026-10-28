@@ -82,7 +82,7 @@ struct GameCard: View {
                         "\(l.folder.path) has the \(b.name) SPEED2.EXE, but this copy of the app has no engine for it. Use a release that includes it.")
             }
             return (Theme.bad, "This SPEED2.EXE is a different version",
-                    "Found \(formatBytes(Int64(size))) at \(l.folder.path). The port runs the European v1.2 (4,788,224 bytes) and North American v1.2 (4,800,512 bytes) SPEED2.EXE without the CD check; other versions, such as the US disc one, would crash.")
+                    "Found \(formatBytes(Int64(size))) at \(l.folder.path). This app requires the supported North American v1.2 SPEED2.EXE (4,800,512 bytes). European and other executable builds are not supported.")
         }
     }
 
@@ -174,6 +174,78 @@ struct MoreCard: View {
     }
 }
 
+struct OnlineCard: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        Card("Play mode") {
+            Picker("Play mode", selection: $model.online) {
+                Text("Offline").tag(false)
+                Text("Online").tag(true)
+            }
+            .pickerStyle(SegmentedPickerStyle()).labelsHidden().frame(width: 210)
+            if model.online {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Player name").font(.system(size: 11)).foregroundColor(Theme.dim)
+                    TextField("Player name", text: $model.playerName).textFieldStyle(RoundedBorderTextFieldStyle())
+                    Text("Your chosen name is shared with other players. Use 3-15 letters, numbers, _ or -.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                    Text("WebSocket server").font(.system(size: 11)).foregroundColor(Theme.dim)
+                    TextField("wss://server/lan", text: $model.serverURL).textFieldStyle(RoundedBorderTextFieldStyle())
+                    Text("Player and crew counts").font(.system(size: 11)).foregroundColor(Theme.dim)
+                    TextField("https://server/players", text: $model.countsURL).textFieldStyle(RoundedBorderTextFieldStyle())
+                    HStack {
+                        Button(model.loadingCounts ? "Checking..." : "Check Player Counts") { model.refreshCounts() }
+                            .buttonStyle(SecondaryButtonStyle()).disabled(model.loadingCounts)
+                        Text("Contacts the selected counts server.")
+                            .font(.system(size: 10.5)).foregroundColor(Theme.dim)
+                    }
+                    if let counts = model.counts {
+                        Text(counts).font(.system(size: 11)).foregroundColor(Theme.accent)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = model.countsError {
+                        Text(error).font(.system(size: 11)).foregroundColor(Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = model.onlineError {
+                        Text(error).font(.system(size: 11)).foregroundColor(Theme.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } else {
+                Text("Play without connecting to a multiplayer server.")
+                    .font(.system(size: 11)).foregroundColor(Theme.dim)
+            }
+        }
+    }
+}
+
+struct TexturesCard: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        Card("Menus and HUD") {
+            HStack {
+                Picker("Textures", selection: $model.uiTextures) {
+                    Text("Original").tag("original")
+                    Text("UHUD").tag("uhud")
+                }
+                .pickerStyle(SegmentedPickerStyle()).labelsHidden().frame(width: 210)
+                Spacer()
+                Button(model.importingTextures ? "Importing..." : "Import UHUD Pack...") { model.importTextures() }
+                    .buttonStyle(SecondaryButtonStyle()).disabled(model.importingTextures)
+            }
+            if model.uiTextures == "uhud" {
+                Text(model.textureStatus).font(.system(size: 11)).foregroundColor(Theme.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !model.texturePack.isEmpty {
+                    Button("Use Game Folder Pack") { model.texturePack = "" }
+                        .buttonStyle(SecondaryButtonStyle())
+                }
+            }
+        }
+    }
+}
+
 struct JobOverlay: View {
     @ObservedObject var model: LauncherModel
     let job: LauncherModel.Job
@@ -241,9 +313,16 @@ struct LauncherView: View {
                 }
                 .padding(.bottom, 4)
 
-                GameCard(model: model)
-                GraphicsCard(model: model)
-                MoreCard(model: model)
+                ScrollView {
+                    VStack(spacing: 12) {
+                        GameCard(model: model)
+                        GraphicsCard(model: model)
+                        TexturesCard(model: model)
+                        OnlineCard(model: model)
+                        MoreCard(model: model)
+                    }
+                    .padding(.bottom, 2)
+                }
 
                 Spacer(minLength: 0)
                 HStack(alignment: .center) {
@@ -258,12 +337,12 @@ struct LauncherView: View {
                     Button("Play") { model.play() }
                         .buttonStyle(PrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
-                        .disabled(!model.isReady || model.job != nil)
+                        .disabled(!model.canPlay)
                 }
             }
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(minWidth: 560, minHeight: 600)
     }
 }

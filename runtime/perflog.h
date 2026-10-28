@@ -1,4 +1,4 @@
-/* PERFLOG=<dir>: real game session recording (see perflog.c) */
+/* PERFLOG=<dir>: recording of a real game session (see perflog.c) */
 #ifndef PERFLOG_H
 #define PERFLOG_H
 #include <stdint.h>

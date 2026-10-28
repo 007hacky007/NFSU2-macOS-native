@@ -1,4 +1,4 @@
-/* D3D9 interface method tables: name + stdcall argument count (including 'this') */
+/* D3D9 interface method tables: name + stdcall argument count ('this' included) */
 #ifndef D3D9_TABLES_H
 #define D3D9_TABLES_H
 typedef struct { const char *name; unsigned char nargs; } Method;
@@ -53,7 +53,7 @@ static const Method M_DEVICE[] = {
  {"DrawRectPatch",4},{"DrawTriPatch",4},{"DeletePatch",2},{"CreateQuery",3},
 };
 
-/* common prefix for IDirect3DResource9 derivatives */
+/* common prefix for the IDirect3DResource9 derivatives */
 #define RES_HEAD \
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},\
  {"SetPrivateData",5},{"GetPrivateData",4},{"FreePrivateData",2},\
@@ -93,7 +93,7 @@ static const Method M_QUERY[] = {
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},{"GetType",1},
  {"GetDataSize",1},{"Issue",2},{"GetData",4},
 };
-/* a wide empty vtable for simple/unknown objects (prevents unresolved calls) */
+/* wide empty vtable for simple/unknown objects (prevents unresolvable calls) */
 static const Method M_SIMPLE[] = {
  {"QueryInterface",3},{"AddRef",1},{"Release",1},{"GetDevice",2},
  {"GetFunction",3},{"GetDeclaration",3},
@@ -116,6 +116,12 @@ static const Method M_DIDEV[] = {
  {"SendForceFeedbackCommand",2},{"EnumCreatedEffectObjects",4},{"Escape",2},{"Poll",1},
  {"SendDeviceData",5},{"EnumEffectsInFile",5},{"WriteEffectToFile",5},
  {"BuildActionMap",4},{"SetActionMap",4},{"GetImageInfo",2},
+};
+/* the pad's force-feedback effects (dinput_pad.c) */
+static const Method M_DIEFF[] = {
+ {"QueryInterface",3},{"AddRef",1},{"Release",1},
+ {"Initialize",4},{"GetEffectGuid",2},{"GetParameters",3},{"SetParameters",3},
+ {"Start",3},{"Stop",1},{"GetEffectStatus",2},{"Download",1},{"Unload",1},{"Escape",2},
 };
 /* --- DirectSound --- */
 static const Method M_DS[] = {

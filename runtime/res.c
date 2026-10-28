@@ -23,7 +23,7 @@ static int name_eq(uint32_t name_rva, const char *want){
     return want[len] == 0;
 }
 
-/* search in dir; if want_str is NULL, want_id is used. Returns the entry offset if found. */
+/* search inside dir; want_id is used when want_str is NULL. Returns the entry offset if found. */
 static uint32_t dir_find(uint32_t dir, const char *want_str, uint32_t want_id, uint32_t *is_dir){
     uint32_t nnamed = MR16(dir + 12), nid = MR16(dir + 14);
     uint32_t base = dir + 16;
@@ -61,7 +61,7 @@ static uint32_t dir_first(uint32_t dir, uint32_t *is_dir){
 
 uint64_t g_res_found = 0, g_res_missed = 0;
 
-/* lpName/lpType: if the high word is 0 it is an integer id, otherwise a guest string pointer */
+/* lpName/lpType: high word 0 means an integer id, otherwise a guest string pointer */
 uint32_t res_find(uint32_t lpName, uint32_t lpType, int wide){
     if (!g_res_dir_va) return 0;
     char nbuf[128], tbuf[128];
@@ -92,7 +92,7 @@ uint32_t res_find(uint32_t lpName, uint32_t lpType, int wide){
         fprintf(stderr,"  [resource] type=%s%u name=%s -> VA 0x%08x size %u  first: %02x %02x %02x %02x (signature %s)\n",
                 ts?"":"#", ts?0u:tid, ns?ns:"(id)", da, sz,
                 MR8(da),MR8(da+1),MR8(da+2),MR8(da+3),
-                MR32(da)==0xFEFF0901u?"EFEKT OK":"?" ); } }
+                MR32(da)==0xFEFF0901u?"EFFECT OK":"?" ); } }
     return leaf;                      /* IMAGE_RESOURCE_DATA_ENTRY address = HRSRC */
 }
 uint32_t res_data(uint32_t hrsrc){ return hrsrc ? g_image_base + MR32(hrsrc) : 0; }

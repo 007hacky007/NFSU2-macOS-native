@@ -1,6 +1,6 @@
 /* COM bridge: offers the guest COM objects with native implementations.
  * Guest object: [obj+0]=vtable.  vtable entry: 0xE0000000|(iface<<16)|method
- * All methods are stdcall, the first argument is 'this'.               */
+ * All methods are stdcall, first argument 'this'.                       */
 #include <time.h>
 #include <stdatomic.h>
 #include "cpu.h"
@@ -9,13 +9,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include <unistd.h>
 
 /* getenv() SCANS the environment array and takes a lock on every call.  On
- * per-draw paths (for example the "PDLIST" check in SetVertexShaderConstantF
- * was the FIRST term of an && chain) it has a measurable cost: in the profile
- * getenv+__findenv_locked ate 3% of the guest thread.
- * Environment variables don't change during a run -> resolve once, keep. */
+ * per-draw paths (for example the "PDLIST" check in
+ * SetVertexShaderConstantF was the FIRST term of an && chain) that has a
+ * measurable cost: in the profile getenv+__findenv_locked ate 3% of the
+ * guest thread.  Environment variables do not change during a run ->
+ * resolve once, keep. */
 #define ENVC(nm_) ({ static const char *_ev_; static int _ei_; \
                      if (!_ei_){ _ei_ = 1; _ev_ = getenv(nm_); } _ev_; })
 
@@ -25,7 +25,7 @@ void guest_backtrace(CPU*,int);
 void dispatch_indirect(CPU*,uint32_t);
 static int g_verbose = -1;
 static int VB(void){ if(g_verbose<0) g_verbose = ENVC("VERBOSE")?1:0; return g_verbose; }
-/* Metal bridge (metal.m) - a no-op if absent */
+/* Metal bridge (metal.m) - inert when absent */
 int  metal_available(void);
 void metal_set_clear_color(unsigned argb);
 void metal_present(void);
@@ -37,14 +37,22 @@ long metal_tex_uploaded(void);
 void metal_begin_frame(void);
 #include "gfx.h"
 #include "vsemu.h"
+#ifdef __wasm__
+/* The browser renderer takes WGSL instead of MSL (docs/web/gpu-abi.md). */
+#include "web/wgsl.h"
+#define SHADER_TEXT_CAP (256*1024)
+#else
+#define SHADER_TEXT_CAP (16384)
+#endif
+#include "widescreen.h"
 #include "enhance.h"
 
-/* The COM dispatch compares the method NAME: a run has 144 MILLION com_calls
+/* COM dispatch compares the method NAME: a run has 144 MILLION com_calls
  * and each one did dozens of strcmps in an if-else chain (in the profile
- * strcmp+_platform_strcmp were 3.6% of the guest thread, com_call itself 9.3%).
- * The name is already known from the (interface, slot) pair; but instead of
- * rewriting the whole chain, make the comparison CHEAP: almost all matches are
- * eliminated at the first character, so don't make the call at all. */
+ * strcmp+_platform_strcmp was 3.6% of the guest thread, com_call itself
+ * 9.3%).  The name is already fixed by the (interface, slot) pair; but
+ * instead of rewriting the whole chain, make the comparison CHEAP: almost
+ * all mismatches are rejected on the first character, so skip the call. */
 #define NMEQ(nmv_, lit_) ((nmv_)[0] == (lit_)[0] && !strcmp((nmv_), (lit_)))
 unsigned metal_create_texture(unsigned w, unsigned h, unsigned levels, unsigned d3dfmt);
 unsigned metal_create_texture_ex(unsigned w, unsigned h, unsigned levels,
@@ -56,35 +64,83 @@ void     metal_upload_texture(unsigned id_, unsigned level, const void *data,
                               unsigned pitch, unsigned w, unsigned h, unsigned d3dfmt);
 unsigned metal_level_pitch(unsigned w, unsigned level, unsigned d3dfmt);
 unsigned metal_level_rows(unsigned h, unsigned level, unsigned d3dfmt);
-void     metal_fill_keyboard(unsigned char *dst, unsigned n);
+#include "texrep.h"     /* optional texture packs; inert unless configured */
 void     metal_fill_mouse(unsigned char *dst, unsigned n);
 void     metal_get_cursor(int *x, int *y);
 #define NEL(a) ((unsigned)(sizeof(a)/sizeof(*(a))))
 
 #define COM_MAGIC 0xE0000000u
+/* v12na: COM objects and Lock buffers come from two internal guest heaps
+ * (heap.c) and are freed on the last Release.  NFSU2_HEAP=bump keeps the old
+ * bump arenas below (nothing is ever reused there). */
+uint32_t gheap_alloc_c(CPU *c, int heap, uint32_t n, int zero);
+void     gheap_free_c(CPU *c, int heap, uint32_t p);
+int      gheap_bump(void);
+int      gheap_check_block(CPU *c, uint32_t p, const char *what);
+extern int g_gh_com, g_gh_gbuf;
+static CPU *g_com_cpu;                   /* com_call's CPU: call sites for heap stats/checks */
+static uint64_t g_com_bytes = 0, g_gbuf_bytes = 0;   /* live, heap mode */
 #define COM_BASE  0x30000000u
 #define COM_MAX   0x38000000u
 static uint32_t com_ptr = COM_BASE;
 static uint32_t com_alloc(uint32_t n){
     n=(n+15)&~15u;
+    if (!gheap_bump()){ uint32_t p = gheap_alloc_c(g_com_cpu, g_gh_com, n, 1); if (p) g_com_bytes += n; return p; }
     if (com_ptr+n > COM_MAX) return 0;
     uint32_t p=com_ptr; com_ptr+=n; mem_commit(p,n); memset(g_mem+p,0,n); return p;
 }
-/* general allocator on the guest side (for Lock etc.) */
+static void com_free(uint32_t p, uint32_t n){
+    if (!p || gheap_bump()) return;
+    gheap_free_c(g_com_cpu, g_gh_com, p); g_com_bytes -= (n + 15u) & ~15u;
+}
+/* guest-side general allocator (for Lock etc.) */
 #define GBUF_BASE 0x38000000u
 #define GBUF_MAX  0x60000000u
 static uint32_t gbuf_ptr = GBUF_BASE;
+/* Lock buffers get a little slack past the computed size: the bump arena
+ * used to commit 1 MB extra after each buffer because some paths wrote a
+ * bit beyond it.  Under NFSU2_HEAPCHECK there is no slack, so the tail canary
+ * reports such writes (checked at Unlock). */
+static uint32_t gbuf_slack(void){
+    static int s = -1;
+    if (s < 0){ const char *e = getenv("NFSU2_HEAPCHECK"); s = (e && *e && *e != '0') ? 0 : 256; }
+    return (uint32_t)s;
+}
 static uint32_t gbuf_alloc(uint32_t n){
+    if (!gheap_bump()){
+        uint32_t p = gheap_alloc_c(g_com_cpu, g_gh_gbuf, n + gbuf_slack(), 1);
+        if (p) g_gbuf_bytes += n + gbuf_slack();
+        return p; }
     n=(n+63)&~63u;
     if (gbuf_ptr+n > GBUF_MAX) return 0;
     uint32_t p=gbuf_ptr; gbuf_ptr+=n;
-    /* The FULL size + a safety margin is committed per buffer.  Some of the game's
-     * paths (high texture/LOD settings) write a little more than we computed;
-     * since what follows wasn't committed, it crashed (measured: 0x38098000).
-     * The margin removes this class of crash; since mmap is lazy no physical
-     * memory is spent. */
+    /* Each buffer commits its FULL size + a safety margin.  Some game
+     * paths (high texture/LOD settings) write a little more than we
+     * compute; what followed was not committed, so it crashed
+     * (measured: 0x38098000).  The margin removes this class of crash;
+     * mmap is lazy, so no physical memory is spent. */
     mem_commit(p, n + (1u<<20));
     return p;
+}
+/* guest scratch memory for runtime/dinput_pad.c (callback structs) */
+uint32_t com_scratch(uint32_t n){ return gbuf_alloc(n); }
+/* runtime/dinput_pad.c: the DirectInput gamepad (device kind 3) */
+int      dipad_guid(uint32_t guid);
+void     dipad_created(uint32_t dev, uint32_t guid);
+int      dipad_enum(CPU *c, uint32_t devtype, uint32_t cb, uint32_t ref, uint32_t flags);
+uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint32_t *args);
+/* ... and its force-feedback effects (IDirectInputEffect) */
+uint32_t dipad_effect_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint32_t *args);
+void     dipad_effect_free(uint32_t obj);
+/* runtime/dinput_kbd.c: the DirectInput keyboard (device kind 1) */
+void     dikbd_created(uint32_t dev);
+uint32_t dikbd_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint32_t *args);
+void     dikbd_report(void);
+uint32_t gheap_usize(uint32_t p);
+static void gbuf_free(uint32_t p){
+    if (!p || gheap_bump()) return;
+    uint32_t n = gheap_usize(p);
+    gheap_free_c(g_com_cpu, g_gh_gbuf, p); g_gbuf_bytes -= n;
 }
 
 typedef struct { const char *name; const Method *m; unsigned n; } Iface;
@@ -106,27 +162,72 @@ static const Iface g_if[] = {
     {"IDirectInputDevice8",      M_DIDEV,      NEL(M_DIDEV)},
     {"IDirectSound",             M_DS,         NEL(M_DS)},
     {"IDirectSoundBuffer",       M_DSBUF,      NEL(M_DSBUF)},
+    {"IDirectInputEffect",       M_DIEFF,      NEL(M_DIEFF)},
 };
 enum { IF_D3D9=1, IF_DEV, IF_TEX, IF_VB, IF_IB, IF_SURF, IF_SIMPLE,
        IF_VSHADER, IF_VDECL, IF_STATEBLOCK, IF_SWAPCHAIN, IF_QUERY,
-       IF_DI8, IF_DIDEV, IF_DS, IF_DSBUF };
+       IF_DI8, IF_DIDEV, IF_DS, IF_DSBUF, IF_DIEFF };
 
+static uint64_t g_com_new_n[NEL(g_if)];   /* per interface: objects created */
+static uint64_t g_com_del_n[NEL(g_if)];   /* ... and destroyed (last Release) */
+/* --- COM object lifetime (v12na) --------------------------------------------
+ * Every object carries a 16-byte header in front of it, in the same block:
+ * reference count, flags, parent (surfaces of a texture), interface.  The
+ * vtable is shared per interface, so "obj+0 == that vtable" identifies one
+ * of our objects.  Semantics follow D3D9: Create* and Get* hand out a
+ * reference, the device holds one on every bound resource (SetTexture,
+ * SetStreamSource, SetIndices, SetRenderTarget, SetDepthStencilSurface) and
+ * state blocks on the resources they record; a texture's surfaces share the
+ * texture's count; device-owned objects (back buffer, implicit depth
+ * surface, device, swap chain) are never destroyed.  On the last Release
+ * the object, its Lock buffers and its Metal texture are freed (metal.m
+ * delays the Metal side until no recorded frame can use it).
+ * NFSU2_COMFREE=0 (escape hatch): counts are kept but nothing is destroyed. */
+#define CH_REF(o)    MR32((o) - 16u)
+#define CH_FLAGS(o)  MR32((o) - 12u)
+#define CH_PARENT(o) MR32((o) - 8u)
+#define CH_IFACE(o)  MR32((o) - 4u)
+#define CF_CUBE   1u      /* cube texture */
+#define CF_DEVICE 2u      /* owned by the device: Release never destroys it */
+#define CF_CHILD  4u      /* surface of a texture: AddRef/Release go to the parent */
+#define CF_DEAD   8u
+static uint32_t g_vtab[NEL(g_if)];
+static uint64_t g_com_live = 0, g_com_overrel = 0, g_com_bad = 0;
+int com_frees(void){
+    static int v = -1;
+    if (v < 0){ const char *e = getenv("NFSU2_COMFREE"); v = !(e && *e == '0'); }
+    return v;
+}
 static uint32_t com_new(uint32_t iface, uint32_t extra){
     unsigned n = g_if[iface].n;
-    uint32_t vt = com_alloc(n*4u);
-    for (unsigned i=0;i<n;i++) MR32(vt+4u*i) = COM_MAGIC | (iface<<16) | i;
-    uint32_t obj = com_alloc(4u+extra);
-    /* ZERO the extra area.  Object fields (size, format, texture id, cube face
-     * index...) are always read assuming "0 = not set up"; if com_alloc doesn't
-     * give fresh memory, garbage values are read. */
+    g_com_new_n[iface]++;
+    uint32_t vt = g_vtab[iface];
+    if (!vt){
+        vt = com_alloc(n*4u);
+        for (unsigned i=0;i<n;i++) MR32(vt+4u*i) = COM_MAGIC | (iface<<16) | i;
+        g_vtab[iface] = vt;
+    }
+    uint32_t blk = com_alloc(16u+4u+extra);
+    if (!blk) return 0;
+    uint32_t obj = blk + 16u;
+    CH_REF(obj) = 1; CH_FLAGS(obj) = 0; CH_PARENT(obj) = 0; CH_IFACE(obj) = iface | (extra << 16);
+    g_com_live++;
+    if (ENVC("NFSU2_COMLOG"))                         /* test-only: lifetime trace */
+        fprintf(stderr, "[com] create %s 0x%08x (caller 0x%08x)\n", g_if[iface].name, obj, g_com_cpu ? g_com_cpu->eip : 0u);
+    /* ZERO the extra area.  Object fields (size, format, texture id,
+     * cube face index...) are always read assuming "0 = not set";
+     * if com_alloc does not return fresh memory, garbage is read. */
     for (uint32_t q = 0; q < 4u + extra; q += 4u) MR32(obj + q) = 0u;
     MR32(obj) = vt;
     return obj;
 }
 
-#define PSCUBE 256   /* must be the SAME as in metal.m: cube ps variant */
+/* dinput_pad.c CreateEffect: a new IDirectInputEffect (16 bytes of its own) */
+uint32_t com_new_dieffect(void){ return com_new(IF_DIEFF, 16u); }
+
+#define PSCUBE 256   /* must MATCH metal.m: cube ps variant */
 uint64_t g_com_calls=0, g_com_unimpl=0;
-/* per-method call counter: a work list for the render layer */
+/* per-method call counter: the work list for the render layer */
 #define MSTAT_IF 20
 #define MSTAT_M  128
 static uint64_t g_mstat[MSTAT_IF][MSTAT_M];
@@ -134,9 +235,9 @@ static uint64_t g_present=0, g_draw=0;
 static uint32_t g_d3d9=0, g_dev=0, g_cur_decl=0, g_cur_fvf=0, g_cur_tex=0;
 
 /* ---------------- vertex shader (interpreted on the CPU) ----------------
- * NFSU2 does all its draws with DrawPrimitiveUP and the positions are RAW
- * (POSITION, not POSITIONT): to place them correctly on screen the vertex
- * shader must be run. See runtime/vsemu.c                              */
+ * NFSU2 does all its drawing with DrawPrimitiveUP and the positions are RAW
+ * (POSITION, not POSITIONT): placing them correctly on screen requires
+ * running the vertex shader.  See runtime/vsemu.c                     */
 #define MAXVS 1024
 static VSProg  *g_vsprog[MAXVS];
 static unsigned g_vsprogn = 1;          /* 0 = "no shader" */
@@ -159,62 +260,49 @@ static uint64_t g_tex_fail = 0;
 static uint64_t g_dikey_calls=0, g_dikey_hits=0;
 static uint64_t g_mat_ok=0, g_mat_bad=0;
 static uint64_t g_di_enum=0, g_di_objs=0;
-/* --- DirectInput action map -------------------------------------------
- * The game drives the menu with an "action map": more than one key is bound to
- * each action (example: arrow-up and W -> the same action).  Semantic format:
- *   dwSemantic = 0x81000400 | DIK_scancode
- * The game reads actions BUFFERED with GetDeviceData; if we don't produce
- * events nothing happens in the menu.                                  */
-#define DI_KB_SEM_BASE 0x81000400u
 /* --- vertex/index buffer draw path (3D models) ------------------
  * The game draws 3D geometry with DrawIndexedPrimitive; the UI with
- * DrawPrimitiveUP.  Since this path wasn't implemented, ALL 3D model geometry
- * (including the car in the menu) was silently dropped.            */
+ * DrawPrimitiveUP.  While this path was not implemented ALL 3D model
+ * geometry (including the car in the menu) was silently dropped.   */
 static uint32_t g_ss_vb = 0, g_ss_off = 0, g_ss_stride = 0;
 static uint32_t g_ib_obj = 0;
 static uint32_t g_idx_scratch = 0;
 static uint64_t g_dip_draws = 0, g_dip_skip = 0, g_dip_tris = 0;
-static uint32_t g_act_of_key[256];      /* DIK -> uAppData (0 = not bound) */
-static uint32_t g_act_ofs[256];         /* DIK -> offset in the action array */
-static int      g_act_count = 0;
-static unsigned char g_kb_prev[256];
-static uint32_t g_di_seq = 1;
-static uint64_t g_di_events = 0;
-static uint32_t host_us_ms(void){ uint64_t host_us(void); return (uint32_t)(host_us()/1000ull); }
 static uint32_t *g_lk_tid=0; static unsigned *g_lk_cnt=0; static uint64_t *g_lk_byt=0;
 static uint32_t *g_lock_obj=0; static unsigned *g_lock_cnt=0; static int g_lock_n=0;
 static uint64_t g_snd_bytes=0, g_snd_nonzero=0, g_snd_zero=0, g_snd_play=0;
 static uint32_t g_cur_rt = 0;
 /* D3DRENDERSTATETYPE values; the defaults are D3D9's initial state */
-/* Resolutions to offer in the game's settings menu (desktop last). */
+/* Resolutions offered in the game's settings menu (desktop last). */
 /* The game's OWN internal resolution table.  Measured experimentally:
- * g_RacingResolution in the registry is an index into this table; 6 and above
- * OVERFLOW the game's own array (garbage like 8126268x268571776 reached
- * CreateDevice).  Previously 12 modes were advertised here, so the settings menu
- * showed more than the 6 rows the game supports, and selecting an extra row led
- * to an array overflow -> crash.  Vanilla NFSU2 only supports 4:3/5:4; there is
- * no widescreen. */
-/* Why we don't extend the table: ADVERTISING a 7th mode overflows the game's own
- * array and produces a garbage size (8126268x268571776 every time); the game
- * stores it and creates its render targets at that size too.  Patching the table
- * in guest memory was also tried; it wasn't found as a contiguous {w,h} array.
- * So the row count stays at 6, and only the LABELS and the real device size are
- * ours. */
-/* --- Resolution rows in the settings menu ----------------------------
- * The game's internal table (g_RacingResolution 0..5, selected row [0x870d1c])
- * is fixed and all 4:3.  The text in the menu comes from READY-MADE strings in
- * .rdata (sub_0049b690: row -> "640x480".."1600x1200"; display only, the size
- * isn't read from this text).  The EnumAdapterModes list only decides which rows
- * CAN BE SELECTED: the game looks up the table value in the list.  Measured
- * (2026-09-27, the user's screen): when the list was replaced with the labels,
- * the arrows couldn't go to any row; previously, too, since the desktop mode was
- * reported as 1920x1080, the 1600x1200 row (the so-called "1080p") could never
- * be selected.
+ * g_RacingResolution in the registry is an index into this table; 6 and
+ * above OVERRUN the game's own array (CreateDevice received garbage like
+ * 8126268x268571776).  Earlier 12 modes were advertised here, so the
+ * settings menu showed more than the 6 rows the game supports and picking
+ * an extra row caused an array overrun -> crash.  Vanilla NFSU2 supports
+ * only 4:3/5:4; there is no widescreen. */
+/* Why we do not extend the table: ADVERTISING a 7th mode overruns the
+ * game's own array and produces a garbage size (8126268x268571776 every
+ * time); the game keeps it and creates its render targets at that size.
+ * Patching the table in guest memory was tried too; it could not be found
+ * as a contiguous {w,h} array.  So the row count stays at 6; only the
+ * LABELS and the real device size are ours. */
+/* --- Resolution rows in the settings menu ---------------------------
+ * The game's internal table (g_RacingResolution 0..5, selected row
+ * [0x870d1c]) is fixed and all 4:3.  The menu text comes from READY-MADE
+ * strings in .rdata (sub_0049b690: row -> "640x480".."1600x1200"; display
+ * only, the size is not read from this text).  The EnumAdapterModes list
+ * only decides which rows CAN BE SELECTED: the game looks up the table
+ * value in the list.  Measured (2026-09-27, the user's display): with the
+ * list replaced by the labels the arrows could not reach any row; before
+ * that, because the desktop mode was reported as 1920x1080, the 1600x1200
+ * row (the so-called "1080p") could never be selected.
  *
- * Arrangement: list = the game's table (all 6 rows selectable), desktop mode
- * >= 1600x1200, the menu strings are rewritten in memory and the device is set up
- * at the row's REAL resolution (the aspect difference via Hor+, res_pick).
- * The string slots are 8/8/12/12/12/12 bytes: short labels for the first two rows.
+ * Layout: list = the game's table (all 6 rows selectable), desktop
+ * mode >= 1600x1200, the menu strings are rewritten in memory and the
+ * device is set up at the row's REAL resolution (aspect difference Hor+,
+ * res_pick).  Text slots are 8/8/12/12/12/12 bytes: short labels for the
+ * first two rows.
  * NOWIDE=1: the game's original table and strings. */
 static const uint32_t g_tbl[6][2] = {
     {640,480},{800,600},{1024,768},{1280,960},{1280,1024},{1600,1200},
@@ -223,12 +311,12 @@ static uint32_t g_modes[6][2] = {
     {1280,720},{1920,1080},{2560,1440},{0,0},{3840,2160},{1600,1200},
 };
 #define ROW_NATIVE 3
-static const uint32_t g_lbl_addr[6] = {GA(0x0078fa1cu),GA(0x0078fa14u),GA(0x0078fa08u),GA(0x0078f9fcu),GA(0x0078f9f0u),GA(0x0078f9e4u)};
+static const uint32_t g_lbl_addr[6] = {0x0078fa1cu,0x0078fa14u,0x0078fa08u,0x0078f9fcu,0x0078f9f0u,0x0078f9e4u};
 static const uint32_t g_lbl_cap[6]  = {8,8,12,12,12,12};
 static void label_put(int row, const char *txt){
     uint32_t a = g_lbl_addr[row], n = (uint32_t)strlen(txt);
     if (n + 1 > g_lbl_cap[row] || !mem_is_committed(a) || !mem_is_committed(a + g_lbl_cap[row] - 1)) return;
-    /* is the expected original string in place (let's not write into another EXE version) */
+    /* is the expected original text in place (do not write into another EXE version) */
     uint8_t c0 = MR8(a);
     if (!(c0 >= '0' && c0 <= '9')) return;
     memset(g_mem + a, 0, g_lbl_cap[row]); memcpy(g_mem + a, txt, n);
@@ -236,11 +324,11 @@ static void label_put(int row, const char *txt){
 static int g_cur_row = -1;             /* the game's active row (-1 = unknown) */
 static int g_row4_on = 1;              /* is the 4K row selectable (see modes_refresh) */
 static int modemap_on(void){ return !ENVC("NOWIDE"); }
-/* The rows are generated from the VIEW's (window / fullscreen) aspect ratio:
- * "1080p" = 1080 lines at the view's aspect ratio.  This way the drawing surface
- * fills the window without bars, and the resolution only changes quality.  The
- * "Screen" row is the view's own pixel count (1:1, upper limit 9 MP); 1600x1200
- * deliberately stays 4:3 (the original look, bars at the sides). */
+/* The rows are derived from the VIEW's (window / full screen) aspect:
+ * "1080p" = 1080 lines at the view's aspect.  So the drawable fills the
+ * window without bars, and the resolution only changes the quality.  The
+ * "Screen" row is the view's own pixel count (1:1, 9 MP upper limit);
+ * 1600x1200 stays 4:3 on purpose (the original look, bars at the sides). */
 static void modes_refresh(void){
     unsigned vw = 0, vh = 0;
     void metal_view_size(unsigned*, unsigned*); metal_view_size(&vw, &vh);
@@ -251,21 +339,31 @@ static void modes_refresh(void){
         unsigned hh = hts[i], ww = (unsigned)((double)hh * vw / vh + 0.5) & ~1u;
         g_modes[i][0] = ww; g_modes[i][1] = hh;
     }
-    double dw = vw, dh = vh;
-    const char *mp = ENVC("NFSMAXPIX"); double maxpix = (mp && *mp) ? atof(mp) : 9.0e6;
+    /* NFSU2_RENDER (widescreen.c): backing pixels, panel pixels or a scale.
+     * NFSMAXPIX bounds the size at a scale of 1 and below; a scale above 1 is
+     * chosen to go beyond it and multiplies the bounded size (bounded after
+     * the scale, 150% and 200% both came out at ~104% on a 4K screen), up to
+     * 8192 a side: WebGPU's default texture limit (gpu/index.ts asks for no
+     * more). */
+    double rf = ws_render_factor(), up = rf > 1.0 ? rf : 1.0;
+    double dw = vw * rf / up, dh = vh * rf / up;
+    double maxpix = ws_max_pixels();
     if (maxpix > 1.0e5 && dw * dh > maxpix){ double k = sqrt(maxpix / (dw * dh)); dw *= k; dh *= k; }
+    dw *= up; dh *= up;
+    if (dw > 8192.0 || dh > 8192.0){ double k = 8192.0 / (dw > dh ? dw : dh); dw *= k; dh *= k; }
     unsigned w = (unsigned)dw & ~1u, h = (unsigned)dh & ~1u;
     g_modes[ROW_NATIVE][0] = w; g_modes[ROW_NATIVE][1] = h;
-    /* The 4K row only if the screen can show it (screen row >= 2160).
-     * On a smaller screen (MacBook ~3K) 4K was being shown downscaled: ~1.6x the
-     * pixels, no gain on screen, the laptop heats up (user request 2026-10-14).
-     * The row can't be deleted (the table has 6 rows); it is reported to the game
-     * as UNSELECTABLE: EnumAdapterModes doesn't give 1280x1024 in its 5th entry.
-     * Read from the game code: sub_005be5b0 marks availability ([0x86e880+4*row])
-     * by looking up the table value in the list, sub_0049b600 skips unavailable
-     * rows with the arrows, sub_005be6a0 drops to the next available row below if
-     * the saved row is unavailable (4K -> screen).  If this row is reached anyway,
-     * the screen resolution and its label are used. */
+    /* The 4K row only if the display can show it (screen row >= 2160).
+     * On a smaller display (MacBook ~3K) 4K was shown downscaled: ~1.6x
+     * the pixels, no gain on screen, the laptop heats up (user request
+     * 2026-10-14).  The row cannot be removed (the table has 6 rows); it is
+     * reported to the game as NOT SELECTABLE: EnumAdapterModes does not
+     * return 1280x1024 in its 5th entry.  Read from the game code:
+     * sub_005be5a0 marks availability ([0x86e880+4*row]) by looking up the
+     * table value in the list, sub_0049b600 skips an unavailable row with
+     * the arrows, sub_005be690 drops to the next available row below when
+     * the saved row is unavailable (4K -> screen).  If this row is reached
+     * anyway, the screen resolution and its label are used. */
     g_row4_on = 2160u <= h;
     if (!g_row4_on){ g_modes[4][0] = w; g_modes[4][1] = h; }
     if (!modemap_on()) return;
@@ -286,39 +384,39 @@ static int tbl_row(uint32_t w, uint32_t h){
     return -1;
 }
 
-uint32_t g_rs[256] = {0};        /* also read by the inline no-effect check in d3dx_hle.c */
-/* RSLOG=1: measure WHICH render states the game sets.  Instead of applying a
- * state we don't handle by blind guessing, first verify that it is used. */
+uint32_t g_rs[256] = {0};        /* also read by d3dx_hle.c's in-line no-op check */
+/* RSLOG=1: measure WHICH render states the game sets.  Instead of applying
+ * a state we do not handle on a blind guess, first confirm it is used. */
 static uint32_t g_rs_hits[256] = {0};
-static uint32_t g_rs_vals[256][4];        /* the first 4 distinct values */
+static uint32_t g_rs_vals[256][4];        /* first 4 distinct values */
 static uint8_t  g_rs_nval[256] = {0};
 
-/* ---- D3D9 state blocks ----------------------------------------------
- * The game records state with BeginStateBlock/EndStateBlock, then captures and
- * restores it with Capture/Apply around effect passes (in the trace 367 records,
- * 418 Captures, 326 Applys).  These were returned as EMPTY objects, so Apply
- * restored nothing: blend mode, alpha test and texture stage operations leaked
- * over from the previous pass -> overly bright light streaks and wrongly dark
- * surfaces. */
+/* ---- D3D9 state blocks ------------------------------------------------
+ * The game records state with BeginStateBlock/EndStateBlock, then saves
+ * and restores it around effect passes with Capture/Apply (in the trace
+ * 367 recordings, 418 Captures, 326 Applies).  These used to come back as
+ * EMPTY objects, so Apply restored nothing: blend mode, alpha test and
+ * texture stage operations leaked over from the previous pass -> overly
+ * bright light streaks and wrongly dark surfaces. */
 #define MAXSB     512
 #define MAXSBREC  128
 typedef struct { uint32_t magic; uint32_t a[8]; int nargs; } SBRec;
 typedef struct { SBRec r[MAXSBREC]; int n; int used; } SBlock;
 static SBlock  g_sb[MAXSB];
 static int     g_sbn = 1;          /* 0 = invalid */
-int     g_sb_rec = 0;       /* the block being recorded, 0 = no recording (read by d3dx_hle.c) */
+int     g_sb_rec = 0;       /* block being recorded, 0 = not recording (read by d3dx_hle.c) */
 int     g_sb_replay = 0;
 static uint64_t g_sb_applied = 0, g_sb_captured = 0, g_sb_dropped = 0, g_sb_full = 0;
 
-/* Raw state shadows: Capture reads from these (the values the game GAVE). */
+/* Raw state shadows: Capture reads from these (the values the game SET). */
 static uint32_t g_raw_vs = 0, g_raw_ps = 0, g_raw_decl = 0, g_raw_fvf = 0;
 static uint32_t g_raw_tex[8] = {0};
 /* The D3D DEFAULT of D3DTSS_TEXCOORDINDEX is the stage number, NOT 0.
- * When the table started at zero, stages 1 and 2 -- the headlight texture and
- * the falloff ramp -- were sampled with the road's own (repeating) diffuse UV;
- * the headlight cone was copied along the whole road and the ground blew out
- * bright from end to end.  The game never writes this state because the default
- * should already be right. */
+ * With the table starting at zero, stages 1 and 2 -- the headlight texture
+ * and the falloff ramp -- were sampled with the road's own (repeating)
+ * diffuse UV; the headlight cone was copied all along the road and the
+ * whole surface glowed in blotches.  The game never writes this state
+ * because the default should already be right. */
 uint32_t g_tss_raw[8][40] = {
     [0] = { [11] = 0u }, [1] = { [11] = 1u }, [2] = { [11] = 2u },
     [3] = { [11] = 3u }, [4] = { [11] = 4u }, [5] = { [11] = 5u },
@@ -327,12 +425,13 @@ uint32_t g_tss_raw[8][40] = {
 uint32_t g_smp_raw[16][20];
 
 /* Is this method recorded into a state block? */
-/* --- method ID ------------------------------------------------------------
- * The dispatch used to compare the method NAME.  NMEQ's first-letter filter
- * didn't help: almost all D3D9 device methods start with "Set"/"Get"/"Draw", so a
- * FULL strcmp still ran at every step of the chain (measured: 11% of the guest
- * thread was strcmp, 2335 samples of it from com_call).  The id is now resolved
- * ONCE per method (an (iface,slot) -> id cache), and the chain is pure integer
+/* --- method IDENTITY ----------------------------------------------------
+ * Dispatch used to compare the method NAME.  NMEQ's first-letter filter
+ * did not help: almost all D3D9 device methods start with
+ * "Set"/"Get"/"Draw", so every step of the chain still ran a FULL
+ * strcmp (measured: 11% of the guest thread was strcmp, 2335 samples of
+ * it from com_call).  The identity is now resolved ONCE per method
+ * ((iface,slot) -> id cache), and the chain is all integer
  * comparisons.  A run has 377 million com_calls. */
 enum {
     MID__none = 0,
@@ -598,7 +697,7 @@ static const char *const g_midname[MID__count] = {
 static int mid_resolve(const char *nm){
     for (int i = 1; i < MID__count; i++)
         if (nm[0] == g_midname[i][0] && !strcmp(nm, g_midname[i])) return i;
-    return -1;                       /* unknown: don't search again */
+    return -1;                       /* unknown: do not search again */
 }
 #define MIDIF 32
 #define MIDM 160
@@ -621,11 +720,11 @@ static int sb_recordable(int mid){
 static int g_rs_init = 0;
 /* 19=SRCBLEND 20=DESTBLEND 22=CULLMODE 27=ALPHABLENDENABLE
  * 15=ALPHATESTENABLE 24=ALPHAREF 25=ALPHAFUNC 168=COLORWRITEENABLE 171=BLENDOP */
-/* If g_rs[] didn't change, rs_apply() is pure waste: the game calls
- * SetRenderState 91.5 MILLION times in a run and the vast majority rewrite the
- * same value.  Since rs_apply derives entirely from g_rs, skipping it gives
- * exactly the same result.  The flag is STICKY: changes made while Metal isn't
- * ready yet are still applied when the device arrives. */
+/* If g_rs[] has not changed, rs_apply() is pure waste: in a run the game
+ * calls SetRenderState 91.5 MILLION times and most of those rewrite the
+ * same value.  rs_apply derives entirely from g_rs, so skipping it gives
+ * exactly the same result.  The flag is STICKY: changes made while metal
+ * is not ready yet are still applied once the device arrives. */
 int g_rs_dirty = 1;
 static uint64_t g_rs_skip = 0, g_rs_run = 0;
 static void rs_apply(void){
@@ -647,25 +746,25 @@ static void rs_apply(void){
         aref = (float)(g_rs[24] & 0xFFu) / 255.0f;
     metal_set_blend(key, aref);
     /* D3DRS_BLENDFACTOR (193): when SRCBLEND/DESTBLEND = BLENDFACTOR /
-     * INVBLENDFACTOR, blending crossfades with this CONSTANT color.
+     * INVBLENDFACTOR the blend cross-fades with this CONSTANT colour.
      * In Metal this is encoder state (setBlendColor), not pipeline state. */
     { void metal_set_blendcolor(uint32_t argb);
       metal_set_blendcolor(g_rs[193]); }
-    /* D3DRS_CULLMODE (22): 1=NONE 2=CW 3=CCW.  It was never applied; since Metal's
-     * default is CullModeNone, the BACK FACES of everything were drawn too.  The
-     * far side of a closed body z-fights with the near side -> constantly
-     * flickering blotches on the car's doors/bumpers, building edges and the
-     * skyline. */
+    /* D3DRS_CULLMODE (22): 1=NONE 2=CW 3=CCW.  It was never applied; since
+     * Metal's default is CullModeNone, the BACK FACES of everything were
+     * drawn too.  The far side of a closed body then races the near side in
+     * depth -> constantly flickering patches on the car's doors/bumpers, on
+     * building edges and along the sky line. */
     { void metal_set_cull(unsigned);
       metal_set_cull(g_rs[22] ? g_rs[22] : 3u); }
-    /* D3DRS_FOGENABLE (28) + D3DRS_FOGCOLOR (34).  With a vertex shader present the
-     * fog factor comes from oFog; the fixed-function stage blends the pixel toward
-     * FOGCOLOR.  Measured: FOGENABLE is set 5.3M times, 6 of the 18 vertex shaders
-     * write oFog. */
+    /* D3DRS_FOGENABLE (28) + D3DRS_FOGCOLOR (34).  With a vertex shader
+     * the fog factor comes from oFog; the fixed-function stage blends the
+     * pixel towards FOGCOLOR.  Measured: FOGENABLE is set 5.3M times, 6 of
+     * the 18 vertex shaders write oFog. */
     { void metal_set_fog(unsigned, unsigned);
       metal_set_fog(g_rs[28], g_rs[34]); }
     /* Depth: 7=ZENABLE 14=ZWRITEENABLE 23=ZFUNC (default LESSEQUAL=4).
-     * Since the UI draws with Z off, this must be carried per draw. */
+     * The UI draws with Z off, so this must be carried per draw. */
     { void metal_set_depth(unsigned);
       unsigned zf = g_rs[23] ? (g_rs[23] & 7u) : 4u;
       unsigned dm = (g_rs[7] ? 1u : 0u) | (g_rs[14] ? 2u : 0u) | (zf << 2);
@@ -674,39 +773,234 @@ static void rs_apply(void){
 static uint64_t g_rt_set=0, g_rt_screen=0;
 static uint64_t g_rt_tex=0;
 static uint32_t g_bb_w = 1280, g_bb_h = 720;   /* back buffer size */
-/* Cube textures share the IDirect3DTexture9 vtable; storing which object is a
- * cube inside the object is UNSAFE (2D objects are allocated smaller, reading
- * past the allocated area reads neighboring heap data).  A separate registry: */
-/* The registry must be UNBOUNDED: the game recreates 2 cube textures on every
- * device Reset (resolution / fullscreen change, two Resets each).  The old
- * 64-entry table filled up at the 32nd change; the next cube was taken for "2D",
- * GetCubeMapSurface returned with the wrong argument count, the stack shifted by
- * 4 bytes and the game crashed (user log: sub_005b9920 after exactly 64 Resets,
- * address 0x80).  Since COM objects are never released (com_alloc is a bump
- * pointer), addresses aren't reused; a bitmap is safe. */
-static uint8_t g_cube_bits[(COM_MAX - COM_BASE) / 16u / 8u];
+/* Cube textures share the IDirect3DTexture9 vtable.  v12na: the cube
+ * flag lives in the object header (CF_CUBE).  The old address bitmap was
+ * only valid while COM memory was never reused, and that table had to be
+ * unbounded because the game recreates its two cube maps on every Reset. */
 static unsigned g_cube_n = 0;
 static void cube_mark(uint32_t obj){
-    if (obj < COM_BASE || obj >= COM_MAX) return;
-    uint32_t k = (obj - COM_BASE) >> 4;
-    g_cube_bits[k >> 3] |= (uint8_t)(1u << (k & 7u)); g_cube_n++;
+    if (obj && mem_is_committed(obj - 12u)){ CH_FLAGS(obj) |= CF_CUBE; g_cube_n++; }
 }
 static int is_cube_tex(uint32_t obj){
-    if (obj < COM_BASE || obj >= COM_MAX || (obj & 15u)) return 0;
-    uint32_t k = (obj - COM_BASE) >> 4;
-    return (g_cube_bits[k >> 3] >> (k & 7u)) & 1u;
+    return obj && !(obj & 15u) && mem_is_committed(obj - 12u) && (CH_FLAGS(obj) & CF_CUBE);
 }
+
+/* ---- reference counting (see com_new) ------------------------------------ */
+void metal_free_texture(unsigned);
+void metal_mirror_forget(uint32_t);
+static uint32_t g_bind_tex[8], g_bind_vb[4], g_bind_ib, g_bind_rt[4], g_bind_ds;
+static uint64_t g_child_uncached = 0;
+static int com_valid(uint32_t o){
+    if (!o || (o & 15u) || !mem_is_committed(o - 16u) || !mem_is_committed(o + 3u)) return 0;
+    uint32_t i = CH_IFACE(o) & 0xFFFFu;
+    return i > 0 && i < NEL(g_if) && g_vtab[i] && MR32(o) == g_vtab[i];
+}
+static uint32_t com_addref(uint32_t o){
+    if (!com_valid(o)) return 1;
+    if (CH_FLAGS(o) & CF_CHILD){ uint32_t p = CH_PARENT(o); return com_valid(p) ? com_addref(p) : 1u; }
+    return ++CH_REF(o);
+}
+static void com_destroy(uint32_t o);
+static void sb_destroy(uint32_t o);
+static uint32_t com_release(uint32_t o){
+    if (!com_valid(o)){ g_com_bad++; return 0; }
+    if (CH_FLAGS(o) & CF_CHILD){ uint32_t p = CH_PARENT(o); return com_valid(p) ? com_release(p) : 0u; }
+    uint32_t r = CH_REF(o);
+    if (!r){                                      /* more Releases than references: keep it */
+        if (g_com_overrel++ < 8)
+            fprintf(stderr, "[com] Release on %s 0x%08x with no reference left (caller 0x%08x)%s\n",
+                    g_if[CH_IFACE(o) & 0xFFFFu].name, o, g_com_cpu ? g_com_cpu->eip : 0u,
+                    (CH_FLAGS(o) & CF_DEVICE) ? ", device-owned" : "");
+        return 0; }
+    CH_REF(o) = --r;
+    if (!r && !(CH_FLAGS(o) & CF_DEVICE)){
+        if (com_frees()) com_destroy(o);
+        else if ((CH_IFACE(o) & 0xFFFFu) == IF_STATEBLOCK) sb_destroy(o);   /* the slot table is finite */
+    }
+    return r;
+}
+/* d3dx_hle.c: the native effect SetTexture path counts its references.  It
+ * runs outside com_call, so it names its CPU: a last Release frees through
+ * gheap_free_c(g_com_cpu), and the CPU of the last COM call may belong to a
+ * thread that has ended since (its CPU lived on that thread's stack). */
+uint32_t com_obj_addref(CPU *c, uint32_t o){ g_com_cpu = c; return com_addref(o); }
+uint32_t com_obj_release(CPU *c, uint32_t o){ g_com_cpu = c; return com_release(o); }
+/* n AddRefs (n > 0) or -n Releases of o in a row (d3dx_hle.c n8_ring) */
+void com_obj_refn(CPU *c, uint32_t o, int32_t n){
+    g_com_cpu = c;
+    for (; n > 0; n--) com_addref(o);
+    for (; n < 0; n++) com_release(o);
+}
+/* win32_ext.c: a guest thread ends; its CPU must not be used again. */
+void com_forget_cpu(CPU *c){ if (g_com_cpu == c) g_com_cpu = 0; }
+/* The device holds a reference on whatever is bound. */
+static void bind_set(uint32_t *slot, uint32_t o){
+    uint32_t old = *slot;
+    if (old == o) return;
+    if (o) com_addref(o);
+    *slot = o;
+    if (old) com_release(old);
+}
+/* Surface (face, level) of texture t.  One cached child per slot at
+ * +64..+103 (2D: level; cube: face + 6*level); it shares the texture's
+ * count.  GetSurfaceLevel used to create a new object on every call. */
+static uint32_t tex_child(uint32_t t, uint32_t face, uint32_t level, int cube){
+    uint32_t k = cube ? face + 6u * level : level;
+    uint32_t slot = (k < 10u) ? t + 64u + 4u * k : 0u;
+    uint32_t sf = slot ? MR32(slot) : 0u;
+    if (sf && com_valid(sf) && CH_PARENT(sf) == t) return sf;
+    sf = com_new(IF_SURF, 64);
+    if (!sf) return 0;
+    CH_FLAGS(sf) |= CF_CHILD; CH_PARENT(sf) = t; CH_REF(sf) = 0;
+    if (slot) MR32(slot) = sf; else g_child_uncached++;
+    return sf;
+}
+static uint32_t g_present_no;
+static void com_drop(uint32_t o){
+    uint32_t iv = CH_IFACE(o), iface = iv & 0xFFFFu, extra = iv >> 16;
+    if (ENVC("NFSU2_COMLOG"))                         /* test-only: lifetime trace */
+        fprintf(stderr, "[com] destroy %s 0x%08x (frame %u, caller 0x%08x)\n",
+                iface < NEL(g_if) ? g_if[iface].name : "?", o, g_present_no, g_com_cpu ? g_com_cpu->eip : 0u);
+    CH_FLAGS(o) |= CF_DEAD; MR32(o) = 0;              /* a stale call now faults loudly */
+    if (iface < NEL(g_if)) g_com_del_n[iface]++;
+    g_com_live--;
+    com_free(o - 16u, 16u + 4u + extra);
+}
+static void sb_destroy(uint32_t o);
+/* Created depth-surface ids (metal.m g_ztex; 1 = the implicit surface).
+ * A released id is not handed out again for three presents: frames recorded
+ * before the release may still be encoded on the main thread, and the first
+ * pass that names a re-created id drops its Metal depth texture
+ * (metal_z_forget) and sizes the new one by its own target.  At a Reset the
+ * game releases its 8 depth surfaces and creates 8 new ones at once; with
+ * the ids reused at once (last in, first out) a pre-Reset pass on the old
+ * 128x128 target could take the forget meant for the new 1024x1024 mirror
+ * depth, and the mirror, road and car reflections drew without a Z test
+ * until the next Reset.  As with textures (metal.m
+ * g_tfq): metal_present waits for the main thread's previous frame, so three
+ * presents after the release no recorded frame names the old surface. */
+#define ZID_QUARANTINE 3u
+static uint8_t  g_zid_state[64];                  /* 0 free, 1 live, 2 released */
+static uint32_t g_zid_freed_at[64];               /* g_present_no at the release */
+static uint32_t g_zid_next = 2;                    /* where the next search starts */
+static uint32_t g_present_no;
+static void zid_release(uint32_t zid){
+    if (zid < 2u || zid >= 64u) return;
+    g_zid_state[zid] = 2; g_zid_freed_at[zid] = g_present_no;
+}
+static uint32_t zid_take(void){
+    uint32_t pick = 0, oldest = 0;
+    for (uint32_t k = 0; k < 62u; k++){
+        uint32_t z = 2u + (g_zid_next - 2u + k) % 62u;
+        if (g_zid_state[z] == 1) continue;
+        uint32_t age = g_present_no - g_zid_freed_at[z];
+        if (g_zid_state[z] == 0 || age >= ZID_QUARANTINE){ pick = z; break; }
+        if (!pick || age > oldest){ pick = z; oldest = age; }   /* none free yet: the longest released */
+    }
+    if (!pick) pick = g_zid_next;                  /* 62 live surfaces: share an id (as before) */
+    g_zid_next = pick + 1u >= 64u ? 2u : pick + 1u;
+    g_zid_state[pick] = 1;
+    return pick;
+}
+/* DirectSound buffers: a duplicate shares the original's PCM block, which
+ * is freed when the last buffer using it goes. */
+static struct { uint32_t data; int n; } g_dsshare[64];
+static void ds_share(uint32_t data, int d){
+    if (!data) return;
+    for (int i = 0; i < 64; i++) if (g_dsshare[i].data == data){
+        g_dsshare[i].n += d;
+        if (g_dsshare[i].n <= 0){ g_dsshare[i].data = 0; gbuf_free(data); }
+        return; }
+    if (d > 0) for (int i = 0; i < 64; i++) if (!g_dsshare[i].data){ g_dsshare[i].data = data; g_dsshare[i].n = d; return; }
+    /* table full / unknown block: keep it (a leak, never a use after free) */
+}
+static void com_destroy(uint32_t o){
+    uint32_t iface = CH_IFACE(o) & 0xFFFFu;
+    switch (iface){
+    case IF_TEX: {
+        uint32_t tid = MR32(o + 28u);
+        if (tid && metal_available()) metal_free_texture(tid);
+        for (uint32_t k = 0; k < 8u; k++){ gbuf_free(MR32(o + 32u + 4u*k)); MR32(o + 32u + 4u*k) = 0; }
+        if (CH_FLAGS(o) & CF_CUBE)
+            for (uint32_t k = 0; k < 8u; k++){ gbuf_free(MR32(o + 104u + 4u*k)); MR32(o + 104u + 4u*k) = 0; }
+        for (uint32_t k = 0; k < 10u; k++){
+            uint32_t sf = MR32(o + 64u + 4u*k);
+            if (sf && com_valid(sf) && CH_PARENT(sf) == o){ gbuf_free(MR32(sf + 32u)); com_drop(sf); }
+        }
+        break; }
+    case IF_VB: case IF_IB:
+        gbuf_free(MR32(o + 8u)); MR32(o + 8u) = 0;
+        if (metal_available()){ metal_mirror_forget(o); if (iface == IF_IB) metal_mirror_forget(o + 2u); }
+        break;
+    case IF_SURF:
+        if (MR32(o + 40u) == 3u && MR32(o + 28u) && metal_available()) metal_free_texture(MR32(o + 28u));
+        if (MR32(o + 56u) == 0x5A535246u) zid_release(MR32(o + 52u));   /* CreateDepthStencilSurface id (ZSURF_MAGIC) */
+        gbuf_free(MR32(o + 32u));
+        break;
+    case IF_STATEBLOCK: sb_destroy(o); break;
+    case IF_QUERY: case IF_SWAPCHAIN: break;
+    case IF_DSBUF: {
+        /* the game silences buffers by releasing them (see Release); the
+         * mixer forgets the slot first, then the PCM block can go */
+        void audio_unregister(int);
+        if (MR32(o + 28u)) audio_unregister((int)MR32(o + 28u));
+        MR32(o + 28u) = 0;
+        ds_share(MR32(o + 8u), -1);
+        break; }
+    case IF_DIEFF: dipad_effect_free(o); break;
+    default: return;                    /* devices, input, sound: never freed */
+    }
+    com_drop(o);
+}
+/* State blocks hold a reference on the textures and buffers they record. */
+static int rec_mid(uint32_t magic){
+    uint32_t mm = magic & 0xFFFFu, ifc = (magic >> 16) & 0x1FFFu;
+    if (ifc >= NEL(g_if) || mm >= g_if[ifc].n) return 0;
+    if (ifc < MIDIF && mm < MIDM){
+        int md = g_midc[ifc][mm];
+        if (!md) md = g_midc[ifc][mm] = (int16_t)mid_resolve(g_if[ifc].m[mm].name);
+        return md;
+    }
+    return mid_resolve(g_if[ifc].m[mm].name);
+}
+static int sb_objarg(int mid){
+    return MID(SetTexture) || MID(SetStreamSource) ? 2 : MID(SetIndices) ? 1 : 0;
+}
+static void sb_destroy(uint32_t o){
+    int bi = mem_is_committed(o + 11u) ? (int)MR32(o + 8u) : 0;
+    if (bi <= 0 || bi >= MAXSB) return;
+    SBlock *B = &g_sb[bi];
+    for (int k = 0; k < B->n; k++){
+        int oa = sb_objarg(rec_mid(B->r[k].magic));
+        if (oa && B->r[k].a[oa]){ uint32_t x = B->r[k].a[oa]; B->r[k].a[oa] = 0; com_release(x); }
+    }
+    B->used = 0; B->n = 0;
+    if (g_sb_rec == bi) g_sb_rec = 0;
+    MR32(o + 8u) = 0;
+}
+
+/* Device-owned singletons: back buffer, implicit depth surface, "no depth". */
+static uint32_t g_bb_surf = 0, g_zimp_surf = 0, g_znull_surf = 0;
+static uint32_t g_swap0 = 0;
+static uint32_t dev_surface_kind(uint32_t *slot, uint32_t iface){
+    if (!*slot){ *slot = com_new(iface, 64); if (*slot){ CH_FLAGS(*slot) |= CF_DEVICE; CH_REF(*slot) = 0; } }
+    return *slot;
+}
+/* Lock-generation seed per VB/IB (+48): metal_mirror keys on (address,
+ * generation), and addresses are reused now. */
+static uint32_t buf_serial(void){ static uint32_t n = 0; return (++n) << 12; }
+
 static uint64_t g_st_ok=0, g_st_null=0, g_st_zero=0, g_st_other=0;
 static uint32_t g_tex_stage[4] = {0,0,0,0};
 static float    g_psc[32][4];                    /* ps constants c0..c31 */
-static uint32_t g_psc_max = 0;                   /* the highest index seen + 1 */
+static uint32_t g_psc_max = 0;                   /* highest index seen + 1 */
 static uint32_t g_psc_drop = 0;                  /* writes above 32 (dropped) */
 static int      g_cur_ps_id = 0;                 /* active ps id */
 static int      g_psn = 0;                       /* number of registered ps */
 static uint64_t g_stage_hist[4] = {0,0,0,0};
 static float g_rmin[3] = { 1e30f, 1e30f, 1e30f };
 static float g_rmax[3] = { -1e30f, -1e30f, -1e30f };
-/* the last 8 SetVertexShaderConstantF calls (for diagnostics) */
+/* last 8 SetVertexShaderConstantF calls (for diagnostics) */
 static struct { uint32_t sr, pd, n; } g_sc[8];
 static unsigned g_scn = 0;
 
@@ -741,17 +1035,31 @@ static void decl_fetch(uint32_t addr, unsigned type, float out[4]){
     }
 }
 
-/* --- DRAWDUMP=<frame#>: dump every draw in that frame in detail --- */
-static uint32_t g_present_no = 0;
+/* --- DRAWDUMP=<frame#>: dump every draw of that frame in detail --- */
+static uint32_t g_present_no;
 #define ZSURF_MAGIC 0x5A535246u   /* 'ZSRF': Z surface object, +52 = id */
-static uint32_t g_cur_zid = 1;           /* the bound Z surface (0 = none) */
-/* --- device loss / rebuild -----------------------------------------------
- * When the window mode changes (fullscreen <-> windowed) the drawing resolution
- * must change too; since the game's render targets are tied to the device size,
- * ONLY the game itself can do this with Reset.  As with alt-tab on Windows, we
- * report the device as "lost": Present returns D3DERR_DEVICELOST,
- * TestCooperativeLevel D3DERR_DEVICENOTRESET, the game releases its resources
- * and calls Reset, and res_pick picks the size for the new mode. */
+static uint32_t g_cur_zid = 1;           /* bound Z surface (0 = none) */
+/* Back buffer surface (+40 = 1); its size follows Reset. */
+static uint32_t bb_surface(void){
+    uint32_t sf = dev_surface_kind(&g_bb_surf, IF_SURF);
+    if (sf){ MR32(sf+4)=g_bb_w; MR32(sf+8)=g_bb_h; MR32(sf+20)=22u; MR32(sf+40)=1; }
+    return sf;
+}
+/* Implicit depth surface (zid 1) and the "no depth" surface (zid 0). */
+static uint32_t z_surface(uint32_t zid){
+    uint32_t sf = dev_surface_kind(zid ? &g_zimp_surf : &g_znull_surf, IF_SURF);
+    if (sf){ MR32(sf+4)=g_bb_w; MR32(sf+8)=g_bb_h; MR32(sf+20)=80u; MR32(sf+40)=4;
+             MR32(sf+52)=zid; MR32(sf+56)=ZSURF_MAGIC; }
+    return sf;
+}
+/* --- device loss / re-creation -----------------------------------------
+ * When the window mode changes (full screen <-> window) the drawing
+ * resolution must change too; the game's render targets depend on the
+ * device size, so ONLY the game itself can do that, with Reset.  As on
+ * Windows at alt-tab we report the device as "lost": Present returns
+ * D3DERR_DEVICELOST, TestCooperativeLevel D3DERR_DEVICENOTRESET, the game
+ * releases its resources and calls Reset, res_pick picks a size for the
+ * new mode. */
 static _Atomic int g_lost = 0;
 static unsigned long g_tcl_n = 0, g_tcl_lost_n = 0, g_lost_presents = 0, g_resets = 0;
 void com_request_reset(void){
@@ -786,8 +1094,8 @@ static void dd_decl(uint32_t d){
 int g_com_trace = 0;
 void com_set_trace(int v){ g_com_trace=v; }
 void draw_stats_save(uint64_t*,uint64_t*);
-/* During replay (state block Apply) the arguments come from the record, not the
- * guest stack. */
+/* During replay (state block Apply) the arguments come from the record,
+ * not from the guest stack. */
 static const uint32_t *g_arg_ovr = 0;
 static uint32_t A(CPU*c,int i){
     if (g_arg_ovr) return g_arg_ovr[i & 7];
@@ -795,10 +1103,10 @@ static uint32_t A(CPU*c,int i){
 }
 
 /* --- run a guest callback as stdcall --------------------
- * DirectInput's EnumDevices family works with callbacks.  If the callback is never
- * made the game finds NO input devices: the mouse cursor is read but menu actions
- * aren't bound to anything.
- * The CPU state is preserved; since it is stdcall the callee cleans up the arguments. */
+ * DirectInput's EnumDevices family works with callbacks.  If the callback
+ * is never made the game finds NO input device at all: the mouse cursor
+ * is read but menu actions are bound to nothing.
+ * The CPU state is preserved; with stdcall the callee pops the arguments. */
 uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args){
     if (!fn) return 0;
     CPU save = *c;
@@ -806,7 +1114,7 @@ uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args){
     PUSH32(0xDEADBEEFu);                    /* fake return address */
     dispatch_indirect(c, fn);
     uint32_t ret = c->eax;
-    *c = save;                              /* go back to the state before the call */
+    *c = save;                              /* back to the pre-call state */
     return ret;
 }
 
@@ -818,6 +1126,8 @@ static void put_guid(uint32_t p, uint32_t d1, uint16_t d2, uint16_t d3,
 }
 
 /* Fill a DIDEVICEINSTANCEA (580 bytes) and return its address. */
+static uint32_t make_devinst(int keyboard);
+uint32_t com_devinst(int keyboard){ return make_devinst(keyboard); }   /* dinput_kbd.c */
 static uint32_t make_devinst(int keyboard){
     static uint32_t kb = 0, ms = 0;
     uint32_t *slot = keyboard ? &kb : &ms;
@@ -828,8 +1138,8 @@ static uint32_t make_devinst(int keyboard){
     static const uint8_t tail[8] = {0xBF,0xC7,0x44,0x45,0x53,0x54,0x00,0x00};
     put_guid(p+4,  keyboard?0x6F1D2B61u:0x6F1D2B60u, 0xD5A0, 0x11CF, tail);
     put_guid(p+20, keyboard?0x6F1D2B61u:0x6F1D2B60u, 0xD5A0, 0x11CF, tail);
-    /* dwDevType: subtype << 8 | type.  0x13=KEYBOARD, 0x12=MOUSE */
-    MR32(p+36) = keyboard ? 0x0313u : 0x0212u;
+    /* dwDevType: subtype << 8 | type.  0x13=KEYBOARD (PCENH), 0x12=MOUSE */
+    MR32(p+36) = keyboard ? 0x0413u : 0x0212u;
     snprintf((char*)(g_mem+p+40),  260, "%s", keyboard ? "Keyboard" : "Mouse");
     snprintf((char*)(g_mem+p+300), 260, "%s", keyboard ? "Keyboard" : "Mouse");
     *slot = p;
@@ -846,8 +1156,8 @@ static int g_fixmat = -1;
 static uint64_t g_t_draw_ns = 0, g_v_xform = 0;
 static uint64_t g_t_vs_ns = 0;
 static uint64_t g_v_per_vs[64] = {0};
-/* Draw path timing statistics (exit report) only with DRAWTIME=1: two clock reads
- * per draw were ~0.8% of the guest thread in the real game. */
+/* Draw path timing statistics (exit report) only with DRAWTIME=1: two clock
+ * reads per draw were ~0.8% of the guest thread in the real game. */
 static inline uint64_t now_ns(void){
     static int on = -1;
     if (on < 0) on = getenv("DRAWTIME") != NULL;
@@ -855,9 +1165,9 @@ static inline uint64_t now_ns(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
     return (uint64_t)ts.tv_sec*1000000000ull + (uint64_t)ts.tv_nsec;
 }
-/* The GPU shader id corresponding to a (vertex shader, vertex declaration)
- * pair.  Since the same bytecode can be used with different declarations, the
- * key is both together. */
+/* GPU shader id for a (vertex shader, vertex declaration) pair.  The
+ * same bytecode can be used with different declarations, so the key is
+ * the two together. */
 #define MAXGVS 256
 static struct { uint32_t vs, decl; int gid, state; } g_gvs[MAXGVS];
 static int g_gvsn = 0, g_gvs_next = 1;
@@ -883,18 +1193,23 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
     }
     int gid = g_gvs_next;
     /* GPUVSMASK: which translated shaders are allowed (bit0=vs_1).
-     * For isolating an image bug per shader. */
-    { static long mask = -1;
+     * For bisecting an image bug shader by shader. */
+    { static long long mask = -1;        /* 64 bits on wasm32 too (ids go past 32) */
       if (mask < 0){ const char *em = ENVC("GPUVSMASK");
-                     mask = (em && *em) ? strtol(em, 0, 0) : -1L; }
-      if (mask >= 0 && !((mask >> (gid-1)) & 1L)){
+                     mask = (em && *em) ? strtoll(em, 0, 0) : -1LL; }
+      if (mask >= 0 && !((mask >> (gid-1)) & 1LL)){
           if (ENVC("GPUVSLOG"))
               fprintf(stderr, "  [gpuvs] shader=%u decl=%08x -> outside the mask, on the CPU\n", vs, decl);
-          g_gvs_next++;         /* consume the id anyway so the mask bits don't shift */
+          g_gvs_next++;         /* consume the id anyway so the mask bits do not shift */
           return -1;
       } }
     static char msl[160*1024];          /* HD: + capture kernel */
+#ifdef __wasm__
+    int len = vs_to_wgsl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl);
+    if (wgsl_dump_on()) wgsl_dump_vs(gid, (int)vs, decl, (const int (*)[2])dcl, msl, len);
+#else
     int len = vs_to_msl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl);
+#endif
     if (len <= 0){ g_gpuvs_fail++; return -1; }
     void metal_register_vs(int, const char *);
     int  metal_vs_ready(int);
@@ -903,9 +1218,15 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
     g_gvs_next++;
     g_gvs[slot].gid = gid; g_gvs[slot].state = 1;
     g_gvs_nk[gid] = vs_kmax(prog);
+#ifdef __wasm__
+    /* the falloff of a lit shader (oT2.x = s * w + o) for the other cars' headlights */
+    { float rp[2]; void headlights_vs_ramp(float, float);
+      if (vs_light_creg(prog, rp) >= 0) headlights_vs_ramp(rp[0], rp[1]); }
+#endif
 #if NFS_ENHANCED
-    /* HD ray tracing attempt: the offset/type of the position element, the constant
-     * register of the position matrix and whether it is skinned (BLENDINDICES = usage 2). */
+    /* HD ray tracing experiment: offset/type of the position element, the
+     * constant register of the position matrix and whether it is skinned
+     * (BLENDINDICES = usage 2). */
     { int pr = vs_input_reg(prog, 0, 0), po = -1, pty = -1, cw = -1;
       for (int k = 0; k < nel; k++) if (el[k].reg == pr){ po = (int)el[k].off; pty = (int)el[k].type; }
       int cx = vs_pos_creg(prog, &cw);
@@ -920,7 +1241,7 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
         fprintf(stderr, "  [gpuvs] shader=%u decl=%08x -> vs_%d (%u instructions, %d constants)%s\n",
                 vs, decl, gid, vs_ninstr(prog), g_gvs_nk[gid],
                 vs_writes_fog(prog) ? "  [WRITES oFog]" : "");
-    /* GPUVSDUMP=<gid>: write the generated MSL and the source bytecode. */
+    /* GPUVSDUMP=<gid>: print the generated MSL and the source bytecode. */
     { const char *dv = ENVC("GPUVSDUMP");
       if (dv && *dv && atoi(dv) == gid){
           fprintf(stderr, "--- vs_%d source disassembly ---\n", gid);
@@ -930,35 +1251,30 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
     return gid;
 }
 
-/* The game's front-end WorldViewProj matrix arrives broken (only rows 2 and 3
- * written).  FIXMAT: if it is broken, put in a reasonable matrix.  The decision
- * doesn't change during a draw, so it is made once OUTSIDE the vertex loop; both
- * the CPU and GPU paths use the same helper so they don't diverge. */
-/* --- Widescreen (Hor+) ---------------------------------------------------
- * NFSU2 was designed for 4:3: ALL 6 rows of the internal resolution table are 4:3
- * and index 6+ overflows the array, so 1080p can't be selected from the menu.
- * When the device is made 1920x1080 the game produces the same 4:3 image and it
- * gets STRETCHED horizontally (measured: the 1080p frame is a pure stretch of the
- * 4:3 frame -- difference 2.03, vertical crop hypothesis 34.2).
+/* The game's front-end WorldViewProj matrix arrives broken (only rows 2
+ * and 3 are written).  FIXMAT: if it is broken, put in a sensible matrix.
+ * The decision does not change during a draw, so it is made once OUTSIDE
+ * the vertex loop; the CPU and GPU paths use the same helper so the two
+ * do not diverge. */
+/* --- Widescreen (Hor+) -------------------------------------------------
+ * NFSU2 is designed for 4:3: ALL 6 rows of the internal resolution table
+ * are 4:3 and index 6+ overruns the array, so 1080p cannot be picked in
+ * the menu.  With the device at 1920x1080 the game renders the same 4:3
+ * image and STRETCHES it horizontally (measured: the 1080p frame is a
+ * pure stretch of the 4:3 frame -- difference 2.03, vertical-crop
+ * hypothesis 34.2).
  * Fix: in perspective draws scale clip-space x by game_aspect/device_aspect.
- * Proportions are fixed and MORE of the scene is visible horizontally (Hor+).
- * Telling them apart: oPos.w = dot(v, c3); in perspective c3.w=0, in an
- * orthographic (UI) matrix c3.w=1.  The UI isn't touched. */
+ * The proportions are corrected and MORE of the scene shows horizontally
+ * (Hor+).  Telling them apart: oPos.w = dot(v, c3); c3.w=0 in perspective,
+ * c3.w=1 in the orthographic (UI) matrix.  The UI is left alone. */
 static float g_aspfix = 1.f;
-/* The Hor+ factor (for clip-space x); the HD composite pass uses it to bring the
- * camera into the same space as the geometry drawn on screen. */
-float com_aspfix(void){ return g_aspfix; }
-/* translation programs: the variants (HD reflection, post-process chain) are generated at draw time */
-static VSProg *g_psprog[256];
-/* POST-PROCESS CHAIN (metal.m): the MSL of the ps's tile memory read variant.
- * Length on success, otherwise 0. */
-int com_ps_fb_msl(int base, int vid, int in_idx, int out_idx, char *msl, size_t cap){
-    if (base <= 0 || base >= 256 || !g_psprog[base]) return 0;
-    return ps_to_msl_fb(g_psprog[base], vid, msl, cap, in_idx, out_idx);
-}
+/* Hor+ factor (for clip-space x); the HD composite pass uses it to bring
+ * the camera into the same space as the geometry drawn on screen. */
+float com_aspfix(void){ return ws_persp_x(); }
 #if NFS_ENHANCED
-/* Reflection separation variant: base ps (cube=1 for the cube variant), reflection
- * stage k, Metal id vid.  1 on success. */
+static VSProg *g_psprog[256];
+/* Reflection-separation variant: base ps (cube=1 for the cube variant),
+ * reflection stage k, Metal id vid.  1 on success. */
 int com_ps_refl_variant(int base, int cube, int k, int vid){
     if (base <= 0 || base >= 256 || !g_psprog[base]) return 0;
     static char msl[32768];
@@ -970,18 +1286,21 @@ int com_ps_refl_variant(int base, int cube, int k, int vid){
     return 1;
 }
 #endif
-static uint32_t g_req_w = 0, g_req_h = 0;   /* the resolution the game thinks it has */
+static uint32_t g_req_w = 0, g_req_h = 0;   /* the resolution the game believes it has */
 unsigned long g_asp_persp = 0, g_asp_ortho = 0;
-/* The resolution the game asks for -> the resolution the device will REALLY draw at.
- * Three rules are gathered in one place: the NFSRES pin, the widescreen choice
- * from the menu, and Retina pixel density.  CreateDevice and Reset MUST use the
- * same rule: Reset used to pass the raw value through, so when the resolution was
- * changed in-game the correction was silently undone. */
+/* Perspective draws the renderer rescaled into an off-screen target
+ * (NFSU2_FOV=renderer): cube map faces and other render targets. */
+static unsigned long g_asp_cube = 0, g_asp_rt = 0;
+/* Resolution the game asks for -> resolution the device REALLY draws at.
+ * Three rules are gathered in one place: the NFSRES pin, the widescreen
+ * choice from the menu and the Retina pixel density.  CreateDevice and
+ * Reset MUST use the same rule: Reset used to pass the raw value through,
+ * so changing the resolution in game silently undid the correction. */
 static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
     static int rdone = 0, pinned = 0;
     static uint32_t rw = 0, rh = 0;
     *dw = gw; *dh = gh;
-    /* The cursor must be in the space the game THINKS it is in, not the drawing surface. */
+    /* The cursor must be in the space the game BELIEVES in, not on the drawable. */
     { void metal_set_game_size(unsigned,unsigned); metal_set_game_size(gw, gh); }
     if (!rdone){ rdone = 1; const char *e = ENVC("NFSRES");
         if (e && *e){ unsigned a = 0, b = 0;
@@ -1005,19 +1324,18 @@ static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
             if (nw > bw || nh > bh){ aw = nw; ah = nh; } }
     }
     if (!aw || !ah){
-        /* No override: device = what the game asked for.  Values left over from a
-         * previous CreateDevice must not stay stale after a Reset (RT resizing and
-         * GetDisplayMode look at them). */
+        /* No override: device = what the game asked for.  Values left over
+         * from an earlier CreateDevice must not go stale after a Reset
+         * (RT resizing and GetDisplayMode look at them). */
         g_req_w = g_req_h = 0; g_aspfix = 1.f;
-        { void metal_set_ui_aspect(float); metal_set_ui_aspect(1.f); }
-        { void metal_set_uv_scale(unsigned, unsigned, unsigned, unsigned); metal_set_uv_scale(0, 0, 0, 0); }
+        ws_set_mapping(1.f);
+        { void metal_set_ui_aspect(float, float); metal_set_ui_aspect(1.f, 1.f); }
         return;
     }
     g_req_w = gw; g_req_h = gh;
-    { void metal_set_uv_scale(unsigned, unsigned, unsigned, unsigned);   /* see metal.m UV SCALE */
-      metal_set_uv_scale(gw, gh, aw, ah); }
-    /* The game keeps drawing for its own aspect ratio; we compensate for the
-     * difference in clip space.  If the ratio is preserved exactly this factor stays 1.0. */
+    /* The game keeps drawing for its own aspect; we compensate for the
+     * difference in clip space.  If the aspect is kept exactly, this
+     * factor stays 1.0. */
     if (gw && gh){
         float ga = (float)gw / (float)gh, da = (float)aw / (float)ah;
         g_aspfix = ga / da;
@@ -1025,19 +1343,21 @@ static void res_pick(uint32_t gw, uint32_t gh, uint32_t *dw, uint32_t *dh){
         if (ov && *ov) g_aspfix = (float)atof(ov);
     }
     *dw = aw; *dh = ah;
-    { static int hf = -1;
-      if (hf < 0){ const char *e = ENVC("HUDFIX"); hf = !(e && *e && *e=='0'); }
-      void metal_set_ui_aspect(float); metal_set_ui_aspect(hf && g_aspfix < 1.f ? g_aspfix : 1.f); }
+    /* widescreen.c decides what the renderer and the game hooks do with
+     * the ratio; the mouse maps onto the 4:3 HUD the same way. */
+    ws_set_mapping(g_aspfix);
+    { void metal_set_ui_aspect(float, float); metal_set_ui_aspect(ws_ui_x(), ws_ui_y()); }
     fprintf(stderr,"com: device resolution %ux%u -> %ux%u (aspfix=%.4f)\n",
             gw, gh, aw, ah, (double)g_aspfix);
 }
-/* Copy ONLY the part of the constant file this shader reads.  The whole file
- * (4416 bytes) used to be copied per draw, just to scale a single row (16 bytes):
- * 1316 copies per frame in a race, 5.7 MB, 0.14 ms (measured).  Downstream never
- * reads outside [0, vs_kmax): the GPU path gives metal_draw_raw exactly vs_kmax
- * rows, and the CPU path vs_run doesn't exceed this bound either (with relative
- * addressing vs_kmax is 256 anyway). */
-static int16_t g_vs_kmax[MAXVS];          /* 0 = not looked at yet */
+/* Copy ONLY the part of the constant file this shader reads.
+ * Previously the whole file (4416 bytes) was copied per draw just to
+ * scale one row (16 bytes): 1316 copies per frame in a race, 5.7 MB,
+ * 0.14 ms (measured).  Downstream never reads outside [0, vs_kmax): the
+ * GPU path hands metal_draw_raw exactly vs_kmax rows, and the CPU path
+ * vs_run stays within that bound too (with relative addressing vs_kmax
+ * is 256 anyway). */
+static int16_t g_vs_kmax[MAXVS];          /* 0 = not looked up yet */
 static void vsk_copy_used(VSConst *dst, const VSConst *src, const VSProg *prog){
     unsigned vs = g_cur_vs;
     int n = (vs < MAXVS) ? g_vs_kmax[vs] : 0;
@@ -1047,94 +1367,102 @@ static void vsk_copy_used(VSConst *dst, const VSConst *src, const VSProg *prog){
     memcpy(dst->i, src->i, sizeof dst->i);
     memcpy(dst->b, src->b, sizeof dst->b);
 }
-/* The constant register of the position matrix depends on the shader; resolve
- * it once and keep it (-2 = not looked at yet). */
-static int8_t g_pos_cx[MAXVS], g_pos_cw[MAXVS]; static uint8_t g_pos_seen[MAXVS];
+/* The constant register of the position matrix differs per shader; resolve
+ * it once and keep it (-2 = not looked up yet). */
+static int8_t g_pos_cx[MAXVS], g_pos_cy[MAXVS], g_pos_cw[MAXVS]; static uint8_t g_pos_seen[MAXVS];
 static unsigned long g_asp_np[MAXVS], g_asp_no[MAXVS]; static float g_asp_cw3[MAXVS];
-/* Is this orthographic draw a full-width bar (clip x -1..1, part of the height)?
- * The cinematic letterbox bars are.  With HUDFIX they were narrowed to the centre
- * like the HUD, so in a cinematic the bars stopped at the old 4:3 edges and the
- * scene showed through at the sides.  Such bars are left at full width.  Only
- * small draws (<= 64 vertices, float3/float4 position) are looked at.
- * HUDWIDE=0: old behaviour. */
-typedef struct { uint32_t vp, nv, stride; int p_off, p_type; } VtxView;
-static unsigned long g_asp_wide = 0;
-static float g_wide_ylo, g_wide_yhi;
-static int ortho_full_width(const VSConst *vsk, int cx, const VtxView *vv){
-    if (!vv || !vv->vp || !vv->nv || vv->nv > 64u || !vv->stride || vv->p_off < 0) return 0;
-    if (vv->p_type != 2 && vv->p_type != 3) return 0;        /* FLOAT3 / FLOAT4 */
-    const float *r = vsk->f[cx], *ry = vsk->f[cx + 1];
-    float lo = 1e30f, hi = -1e30f, ylo = 1e30f, yhi = -1e30f;
-    for (uint32_t i = 0; i < vv->nv; i++){
-        uint32_t a = vv->vp + i * vv->stride + (uint32_t)vv->p_off;
-        if (!mem_is_committed(a + 11)) return 0;
-        float x = MRF32(a), y = MRF32(a + 4), z = MRF32(a + 8);
-        float w = (vv->p_type == 3) ? MRF32(a + 12) : 1.f;
-        float cxv = x * r[0] + y * r[1] + z * r[2] + w * r[3];
-        float cyv = x * ry[0] + y * ry[1] + z * ry[2] + w * ry[3];
-        if (cxv < lo) lo = cxv; if (cxv > hi) hi = cxv;
-        if (cyv < ylo) ylo = cyv; if (cyv > yhi) yhi = cyv;
-    }
-    g_wide_ylo = ylo; g_wide_yhi = yhi;
-    /* Bars only: full width but part of the height and on screen (measured: the
-     * cinematic bars are y 0.75..1 and -1..-0.75).  A full-screen picture (splash,
-     * loading screen, y -1..1 or larger) keeps its 4:3 shape. */
-    return lo <= -0.98f && hi >= 0.98f && (yhi - ylo) < 1.9f && yhi > -1.f && ylo < 1.f;
+/* WSLOG=1 (diagnostic): first draw of every (target, shader, kind) with the
+ * position rows, so it is visible which passes the aspect fix touches. */
+static void ws_log_draw(const char *kind, const VSConst *vsk, int cx, int cw){
+    static int on = -1, n = 0;
+    static struct { unsigned rt, vs; char k; } seen[512];
+    if (on < 0) on = ENVC("WSLOG") != NULL;
+    if (!on || n >= 512) return;
+    for (int i = 0; i < n; i++)
+        if (seen[i].rt == g_cur_rt && seen[i].vs == g_cur_vs && seen[i].k == kind[0]) return;
+    seen[n].rt = g_cur_rt; seen[n].vs = g_cur_vs; seen[n].k = kind[0]; n++;
+    unsigned w = 0, h = 0; void metal_tex_size(unsigned, unsigned*, unsigned*);
+    metal_tex_size(g_cur_rt, &w, &h);
+    fprintf(stderr, "  [ws] f=%u rt=%u (%ux%u) vs=%u ps=%d %s", g_present_no, g_cur_rt, w, h,
+            g_cur_vs, g_cur_ps_id, kind);
+    if (cx >= 0) fprintf(stderr, " cx=c%d(%.5f %.5f %.5f %.5f)", cx,
+            vsk->f[cx][0], vsk->f[cx][1], vsk->f[cx][2], vsk->f[cx][3]);
+    if (cw >= 0) fprintf(stderr, " cw=c%d(%.5f %.5f %.5f %.5f)", cw,
+            vsk->f[cw][0], vsk->f[cw][1], vsk->f[cw][2], vsk->f[cw][3]);
+    fprintf(stderr, "\n");
 }
-static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const VtxView *vv){
+/* this draw's 2D UI band (aspect_apply), 1 = none */
+static float g_ui_clip = 1.f;
+static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog){
     if (g_aspfix == 1.f || !prog) return vsk;
     unsigned vs = g_cur_vs;
     if (vs >= MAXVS) return vsk;
     if (!g_pos_seen[vs]){
-        int w = -1; int x = vs_pos_creg(prog, &w);
+        int w = -1; int x = vs_pos_creg(prog, &w), y = vs_pos_creg_y(prog);
         g_pos_cx[vs] = (int8_t)((x >= 0 && x <= 120) ? x : -1);
+        g_pos_cy[vs] = (int8_t)((y >= 0 && y <= 121) ? y : -1);
         g_pos_cw[vs] = (int8_t)((w >= 0 && w <= 123) ? w : -1);
         g_pos_seen[vs] = 1;
     }
-    int cx = g_pos_cx[vs], cw = g_pos_cw[vs];
-    if (cx < 0 || cw < 0){ g_asp_ortho++; return vsk; }
-    /* Perspective?  oPos.w = dot(v, c[cw]).  In an orthographic/screen matrix this
-     * row is (0,0,0,1): w is a constant 1.  In perspective the xyz part becomes the
-     * view axis and is NOT ZERO (the w component is the camera distance --
-     * measured: 5.79 / 222.0 / -86.5, so the "w==0" test was wrong). */
+    int cx = g_pos_cx[vs], cy = g_pos_cy[vs], cw = g_pos_cw[vs];
+    if (cx < 0 || cw < 0){ g_asp_ortho++; ws_log_draw("none", vsk, cx, cw); return vsk; }
+    /* Perspective?  oPos.w = dot(v, c[cw]).  In an orthographic/screen matrix
+     * this row is (0,0,0,1): w is constant 1.  In a perspective one the xyz
+     * part is the view axis and is NOT ZERO (the w component is the camera
+     * distance -- measured: 5.79 / 222.0 / -86.5, so a "w==0" test was wrong). */
     g_asp_cw3[vs] = vsk->f[cw][3];
-    { float ax = fabsf(vsk->f[cw][0]) + fabsf(vsk->f[cw][1]) + fabsf(vsk->f[cw][2]);
-      if (ax < 1e-6f){ g_asp_ortho++; g_asp_no[vs]++;
-        /* HUDFIX=1: also scale the UI about the center, so circles stay circular.
-         * CAUTION: fullscreen post-process quads are orthographic too; if they get
-         * shrunk, bars appear at the edges. */
-        { static int hf = -1;
-          if (hf < 0){ const char *e = ENVC("HUDFIX"); hf = !(e && *e && *e=='0'); }
-          static int hw = -1;
-          if (hw < 0){ const char *e = ENVC("HUDWIDE"); hw = !(e && *e && *e=='0'); }
-          if (hf && hw && ortho_full_width(vsk, cx, vv)){
-              g_asp_wide++;
-              { const char *al = ENVC("ASPLOG"); static int nw = 0;
-                static uint32_t seen[256]; static int ns = 0; int dup = 0;
-                uint32_t key = (uint32_t)g_cur_ps_id * 2654435761u ^ g_tex_stage[0] * 40503u
-                             ^ (uint32_t)(int)(g_wide_ylo * 100.f) * 977u ^ (uint32_t)(int)(g_wide_yhi * 100.f);
-                for (int q = 0; q < ns; q++) if (seen[q] == key) dup = 1;
-                if (!dup && ns < 256) seen[ns++] = key;
-                if (al && !dup && (long)g_present_no >= atol(al) && nw < 200){ nw++;
-                      fprintf(stderr,"  [asp-wide] frame=%ld vs=%u ps=%d tex0=%u nv=%u y=%.3f..%.3f\n",
-                              (long)g_present_no, vs, g_cur_ps_id, g_tex_stage[0], vv->nv,
-                              (double)g_wide_ylo, (double)g_wide_yhi); } }
-              return vsk; }
-          if (hf){ static VSConst ht; vsk_copy_used(&ht, vsk, prog);
-                   for (int k = 0; k < 4; k++) ht.f[cx][k] *= g_aspfix;
-                   return &ht; } }
+    float sx, sy;
+    float ax = fabsf(vsk->f[cw][0]) + fabsf(vsk->f[cw][1]) + fabsf(vsk->f[cw][2]);
+    int ortho = ax < 1e-6f;
+    if (ortho){
+        g_asp_ortho++; g_asp_no[vs]++; ws_log_draw("ortho", vsk, cx, cw);
+        /* The 4:3 HUD is shown in the middle of the screen, so circles stay
+         * circles (HUDFIX=0: stretched).  Full-screen post-processing quads
+         * have no position matrix and never get here.  Only for the screen
+         * (and screen-sized targets): the rear-view mirror's rounded mask is
+         * an identity-matrix quad drawn into its own 256x256 target, and
+         * narrowing it left the target's corners unmasked (stale content
+         * beside the mirror). */
+        sx = ws_ui_x(); sy = ws_ui_y();
+        if (g_cur_rt){
+            static unsigned rt_seen = 0; static int rt_screen = 0;
+            if (g_cur_rt != rt_seen){
+                unsigned w = 0, h = 0; void metal_tex_size(unsigned, unsigned *, unsigned *);
+                metal_tex_size(g_cur_rt, &w, &h);
+                rt_seen = g_cur_rt; rt_screen = (w == g_bb_w && h == g_bb_h);
+            }
+            if (!rt_screen) sx = sy = 1.f;
+        }
+        /* A quad the game draws over the whole target (the rain tint) is in
+         * HUD units too, but must cover the whole screen (widescreen.c). */
+        if (ws_fill_target()) sx = sy = 1.f;
+        /* Narrower than 4:3 the HUD space is a band across the middle, and
+         * what the game parks outside 640x480 would show above and below it:
+         * the draw is kept to the band (gpu_web.c metal_set_ui_clip), but for
+         * the cutscene bars, which belong on the picture's edges. */
+        if (sy < 1.f && !ws_take_border_quad()) g_ui_clip = sy;
         if (ENVC("ASPLOG")){ static int no = 0;
             if (no < 6){ no++;
-                fprintf(stderr,"  [asp-orto] vs=%u cx=%d cw=%d  c%d=(%.4f %.4f %.4f %.4f)"
+                fprintf(stderr,"  [asp-ortho] vs=%u cx=%d cw=%d  c%d=(%.4f %.4f %.4f %.4f)"
                         "  c%d=(%.4f %.4f %.4f %.4f)\n", vs, cx, cw,
                         cx, vsk->f[cx][0],vsk->f[cx][1],vsk->f[cx][2],vsk->f[cx][3],
                         cw, vsk->f[cw][0],vsk->f[cw][1],vsk->f[cw][2],vsk->f[cw][3]); } }
-        return vsk; } }
-    g_asp_persp++; g_asp_np[vs]++;
+    } else {
+        g_asp_persp++; g_asp_np[vs]++; ws_log_draw("persp", vsk, cx, cw);
+        /* Hor+ is applied in the game's projection setup (widescreen.c);
+         * NFSU2_FOV=renderer scales every perspective draw here instead. */
+        sx = ws_persp_x(); sy = ws_persp_y();
+    }
+    if (sx == 1.f && (sy == 1.f || cy < 0)) return vsk;
+    if (!ortho && g_cur_rt){ int metal_tex_is_cube(unsigned);
+        if (metal_tex_is_cube(g_cur_rt)) g_asp_cube++; else g_asp_rt++; }
     static VSConst tmp;
     vsk_copy_used(&tmp, vsk, prog);
-    for (int k = 0; k < 4; k++) tmp.f[cx][k] *= g_aspfix;
-    if (ENVC("ASPLOG")){ static int n = 0;
+    for (int k = 0; k < 4; k++){
+        tmp.f[cx][k] *= sx;
+        if (cy >= 0) tmp.f[cy][k] *= sy;
+    }
+    if (!ortho && ENVC("ASPLOG")){ static int n = 0;
         if (n < 6){ n++;
             fprintf(stderr,"  [asp] vs=%u c%d=(%.4f %.4f %.4f %.4f) -> (%.4f %.4f %.4f %.4f)"
                     "  c%d=(%.3f %.3f %.3f %.3f)\n", g_cur_vs, cx,
@@ -1144,9 +1472,12 @@ static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const
     return &tmp;
 }
 
+uint64_t g_fixmat_hits = 0;      /* v12na: how often the "broken WVP" pattern was seen */
 static const VSConst *fixmat_apply(const VSConst *vsk){
     if (!(vsk->f[3][3] == 0.f && vsk->f[3][0] == 0.f &&
           vsk->f[0][0] == 0.f && vsk->f[1][1] == 0.f)) return vsk;
+    if (g_fixmat_hits++ == 0) fprintf(stderr, "com: FIXMAT pattern seen for the first time (FIXMAT=%s)\n",
+                                      ENVC("FIXMAT") ? ENVC("FIXMAT") : "-");
     if (g_fixmat < 0){ const char *e6 = ENVC("FIXMAT");
                        g_fixmat = (e6 && *e6 && *e6 != '0') ? 1 : 0; }
     if (!g_fixmat) return vsk;
@@ -1164,8 +1495,8 @@ static const VSConst *fixmat_apply(const VSConst *vsk){
         return &tmp;
     }
     if (mode == 3){
-        /* The raw positions are already in clip space; the matrix the game wants to
-         * write is the identity. */
+        /* The raw positions are already in clip space; the matrix the
+         * game meant to write is the identity. */
         memset(tmp.f, 0, sizeof tmp.f);
         tmp.f[0][0]=1.f; tmp.f[1][1]=1.f; tmp.f[2][2]=1.f; tmp.f[3][3]=1.f;
         return &tmp;
@@ -1192,11 +1523,11 @@ static const VSConst *fixmat_apply(const VSConst *vsk){
     return &tmp;
 }
 
-/* Per stage "which coordinate set + projective divide".
+/* Per stage: "which coordinate set + projective divide".
  * D3DTSS_TEXCOORDINDEX = 11, D3DTSS_TEXTURETRANSFORMFLAGS = 24.
  * Encoding: index + 16*mode  (mode 0 = no divide, 1 = /z, 2 = /w).
- * In the trace, stages 1 and 2 use COORDINATE 0 in 422 thousand calls; we were
- * giving stage N coordinate N. */
+ * In the trace, across 422 thousand calls, stages 1 and 2 use COORDINATE 0;
+ * we were giving stage N coordinate N. */
 /* Carry the game's D3DSAMP_* state over to the Metal sampler.
  * D3DSAMP: 1=ADDRESSU 2=ADDRESSV 5=MAGFILTER 6=MINFILTER 7=MIPFILTER
  *          9=MAXMIPLEVEL 10=MAXANISOTROPY
@@ -1229,24 +1560,77 @@ static void texproj_push(void){
         if (ci > 3u) ci = (unsigned)st;
         int pm = 0;
         if (ttf & 0x100u){                 /* D3DTTFF_PROJECTED */
-            /* NFSU2 writes this with a COUNT FIELD of 0 (measured: all 28 calls in the trace
-             * are exactly "D3DTTFF_PROJECTED").  The vertex shader produces a
-             * 4-component coordinate (oT1.xyz = dot(v0,c4..c6), oT1.w = r0.x), so a
-             * count of 0 -> divide by W.
+            /* NFSU2 writes this with a COUNT FIELD of 0 (measured: all 28
+             * calls in the trace are exactly "D3DTTFF_PROJECTED").  The vertex
+             * shader produces a 4-component coordinate (oT1.xyz = dot(v0,c4..c6),
+             * oT1.w = r0.x), so count 0 -> divide by W.
              * Without the divide the headlight texture spreads over the surface
-             * instead of forming a cone: the "headlight streaks" the user saw and the
-             * striped reflections on the ground (stage 3 = reflected_sampler) were this. */
+             * instead of forming a cone: that is the "headlight streaks" the
+             * user saw and the streaky reflections on the ground (stage 3 = reflected_sampler). */
             unsigned cnt = ttf & 7u;
-            pm = (cnt == 3u) ? 1 : 2;      /* 3 -> xy/z, the others -> xy/w */
+            pm = (cnt == 3u) ? 1 : 2;      /* 3 -> xy/z, others -> xy/w */
         }
         sel[st] = (float)(ci + 16u*(unsigned)pm);
     }
     metal_set_texproj(sel);
 }
 
-/* dip_indexed -> draw_up: this draw's vertices are to be read by index from the
- * mirrors in the pool (when n > 0).  If draw_up can't take the GPU path it returns
- * 0 and the caller falls back to the old (index expansion) path. */
+/* vertices of a DrawPrimitiveUP call with n primitives: D3DPT_POINTLIST 1,
+ * LINELIST 2, LINESTRIP 3, TRIANGLELIST 4, TRIANGLESTRIP 5, TRIANGLEFAN 6 */
+static uint32_t prim_verts(uint32_t pt, uint32_t n){
+    switch (pt){
+    case 1: return n;
+    case 2: return n * 2u;
+    case 3: return n + 1u;
+    case 4: return n * 3u;
+    default: return n + 2u;
+    }
+}
+
+/* The renderers draw triangles only: each line segment becomes a quad across
+ * its minor axis (the diamond rule covers one pixel per column of an x-major
+ * line), from the transformed vertices.  D3D9 lines are one pixel wide, a
+ * hairline at today's sizes: these are one HUD pixel (of 640x480) wide, in
+ * whole pixels.  The dyno chart draws its curves and rpm marker as
+ * one-segment line strips (0x50dcd0): taken for a triangle strip, each got
+ * a third vertex from the game's stack, near the middle of the screen. */
+static void draw_lines(const TVert *tv, uint32_t nv, uint32_t pt){
+    void metal_tex_size(unsigned, unsigned *, unsigned *);
+    void metal_set_cull(unsigned);
+    unsigned w = g_bb_w, h = g_bb_h;
+    if (g_cur_rt) metal_tex_size(g_cur_rt, &w, &h);
+    if (!w || !h) return;
+    float px = fminf((float)w / 640.f, (float)h / 480.f);
+    px = px < 1.f ? 1.f : roundf(px);
+    static TVert q[64 * 6];
+    unsigned nq = 0;
+    uint32_t nseg = (pt == 2u) ? nv / 2u : nv - 1u;
+    metal_set_cull(1u);                      /* lines are never culled */
+    for (uint32_t s = 0; s < nseg; s++){
+        const TVert *a = &tv[(pt == 2u) ? 2u * s : s], *b = a + 1;
+        if (a->w <= 0.f || b->w <= 0.f) continue;
+        float dx = (b->x / b->w - a->x / a->w) * (float)w;
+        float dy = (b->y / b->w - a->y / a->w) * (float)h;
+        if (dx == 0.f && dy == 0.f) continue;
+        /* half the width either side: NDC spans 2 / size per pixel */
+        float ox = 0.f, oy = 0.f;
+        if (fabsf(dx) >= fabsf(dy)) oy = px / (float)h; else ox = px / (float)w;
+        TVert *o = &q[nq];
+        o[0] = *a; o[0].x += ox * a->w; o[0].y += oy * a->w;
+        o[1] = *b; o[1].x += ox * b->w; o[1].y += oy * b->w;
+        o[2] = *a; o[2].x -= ox * a->w; o[2].y -= oy * a->w;
+        o[3] = o[2]; o[4] = o[1];
+        o[5] = *b; o[5].x -= ox * b->w; o[5].y -= oy * b->w;
+        nq += 6;
+        if (nq == sizeof q / sizeof q[0]){ metal_draw_tv(q, nq, 4u, g_cur_tex); nq = 0; }
+    }
+    if (nq) metal_draw_tv(q, nq, 4u, g_cur_tex);
+    metal_set_cull(g_rs[22] ? g_rs[22] : 3u);
+}
+
+/* dip_indexed -> draw_up: this draw's vertices are to be read by index from
+ * the copies in the pool (while n > 0).  If draw_up cannot take the GPU path
+ * it returns 0 and the caller falls back to the old (index expansion) path. */
 static struct { uint32_t n, vbo, ibo, isz; int32_t base; uint64_t gh; } g_ix;
 static uint64_t g_dip_ix = 0, g_dip_ixfb[6];
 static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
@@ -1259,12 +1643,17 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
         g_gpuvs = (e8 && *e8 && *e8 != '0') ? 1 : 0; }
     const VSProg *prog = (g_cur_vs && g_cur_vs < MAXVS) ? g_vsprog[g_cur_vs] : 0;
     vsk = fixmat_apply(vsk);
+    g_ui_clip = 1.f;
+    vsk = aspect_apply(vsk, prog);
+#ifdef __wasm__
+    { void metal_set_ui_clip(float); metal_set_ui_clip(g_ui_clip); }
+#endif
 
-    /* Declaration parsing ONCE per (declaration, shader).  It used to rebuild from
-     * scratch on every draw, reading up to 32 elements from guest memory and testing
-     * them with mem_is_committed (~1300 times per frame).  Safe: declaration objects
-     * are copied when created and never change, and com_alloc doesn't reuse
-     * addresses. */
+    /* Declaration parsing ONCE per (declaration, shader).
+     * Previously every draw rebuilt it from scratch, reading up to 32
+     * elements from guest memory and testing each with mem_is_committed
+     * (~1300 times per frame).  Safe: declaration objects are copied when
+     * created and never change, and com_alloc does not reuse addresses. */
     static struct { uint32_t decl; const VSProg *prog; int nel, p_off, p_type, c_off, c_type,
                     t_off, t_type, ok; DElem el[16]; } dcc[64];
     uint32_t d = g_cur_decl;
@@ -1281,8 +1670,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             unsigned st=MR16(e), of=MR16(e+2), ty=MR8(e+4), us=MR8(e+6), ui=MR8(e+7);
             if (st == 0xFFu && ty == 17u) break;
             if (st != 0) continue;                       /* stream 0 only */
-            /* DECLLOG=<ps>: print only the declarations drawing with that pixel shader,
-             * once, with ALL their elements. */
+            /* DECLLOG=<ps>: print only the declarations drawn with that
+             * pixel shader, once, with ALL their elements. */
             { const char *dl = ENVC("DECLLOG");
               if (dl && atoi(dl) == g_cur_ps_id){
                 static uint32_t seen[32]; static int sn = 0; int nw = 1;
@@ -1324,17 +1713,17 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     const DElem *el = dcc[dci].el; int nel = dcc[dci].nel;
     int p_off = dcc[dci].p_off, p_type = dcc[dci].p_type, c_off = dcc[dci].c_off,
         c_type = dcc[dci].c_type, t_off = dcc[dci].t_off, t_type = dcc[dci].t_type;
-    { VtxView vv = { vp, nv, stride, p_off, p_type };
-      vsk = aspect_apply(vsk, prog, &vv); }
 
     /* ---------------- GPU vertex shader (GPUVS) ----------------
-     * Measured: ~45% of the run time was in the vs_run interpreter on the CPU,
-     * ceiling ~3.5 M vertices/s.  The game's own bytecode is translated to MSL and
-     * run on the GPU; vertices are sent RAW, and the read layout is taken from the
-     * D3D declaration and embedded in the shader.
-     * An untranslatable shader (flow control etc.) doesn't silently run wrong:
-     * vs_to_msl returns 0 and we fall back to the proven CPU path. */
-    if (prog && nel && stride && stride <= 256u && g_gpuvs){
+     * Measured: ~45% of the run time was in the CPU vs_run interpreter,
+     * ceiling ~3.5 M vertices/s.  The game's own bytecode is translated to
+     * MSL and run on the GPU; vertices are sent RAW, and the fetch layout is
+     * taken from the D3D declaration and baked into the shader.
+     * A shader that cannot be translated (flow control etc.) does not run
+     * silently wrong: vs_to_msl returns 0 and we fall back to the proven CPU path.
+     * Lines take the CPU path: draw_lines widens them from the transformed vertices. */
+    int lines = (pt == 2u || pt == 3u);
+    if (prog && nel && stride && stride <= 256u && g_gpuvs && !lines){
         int gid = gpuvs_id(prog, g_cur_vs, g_cur_decl, el, nel);
         if (gid > 0){
             int  metal_draw_raw(const void*, unsigned, unsigned, unsigned,
@@ -1355,58 +1744,35 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                 }
                 return 0;
             }
-            /* Is it a quad that fully overwrites the target?  (see metal.m PASS LOAD)
-             * Only candidates that don't read the target: blending off, 4 channels
-             * written, no alpha test and no Z test, at most 6 vertices.  The vertices
-             * are transformed on the CPU; a few quads of the post-process chain per
-             * frame. */
-            { void metal_set_next_cov_clip(const float (*)[4], unsigned, unsigned);
-              if (nv <= 6u && (pt == 4u || pt == 5u || pt == 6u) && !g_rs[27] &&
-                  (g_rs[168] & 15u) == 15u && !g_rs[15] && (!g_rs[7] || (g_rs[23] & 15u) == 8u)){
-                  float cp[6][4], cuv[6][16];
-                  for (uint32_t i = 0; i < nv; i++){
-                      float v[16][4];
-                      for (int r2 = 0; r2 < 16; r2++){ v[r2][0]=v[r2][1]=v[r2][2]=0.f; v[r2][3]=1.f; }
-                      for (int k = 0; k < nel; k++)
-                          decl_fetch(vp + i*stride + el[k].off, el[k].type, v[el[k].reg]);
-                      VSOut so;
-                      vs_run(prog, vsk, (const float (*)[4])v, &so);
-                      memcpy(cp[i], so.pos, sizeof cp[i]);
-                      memcpy(cuv[i], so.tex, sizeof cuv[i]);          /* oT0..oT3 */
-                  }
-                  { void metal_set_next_cov_uv(const float (*)[16], unsigned);
-                    metal_set_next_cov_uv((const float (*)[16])cuv, nv); }
-                  metal_set_next_cov_clip((const float (*)[4])cp, nv, pt);
-              } }
             if (metal_draw_raw(g_mem + vp, nv, stride, pt, g_cur_tex, gid,
                                &vsk->f[0][0], (unsigned)g_gvs_nk[gid])){
                 g_vs_draws++; g_gpuvs_draws++; g_v_xform += nv;
                 g_t_draw_ns += now_ns() - _t0;
                 return 1;
             }
-            /* Couldn't be queued (arena overflow): let the CPU path continue --
-             * silently dropping it destroyed geometry. */
+            /* Could not be queued (arena overflow): let the CPU path carry on --
+             * silently dropping it made geometry disappear. */
             g_gpuvs_drop++;
         }
     }
-    if (g_ix.n) return 0;           /* an indexed source can't be given to the CPU path */
+    if (g_ix.n) return 0;           /* an indexed source cannot go to the CPU path */
 
     for (uint32_t i = 0; i < nv; i++){
         uint32_t o = vp + i*stride;
         TVert *out = &tv[i];
         if (prog && nel){
             /* DIAGNOSTIC (FIXMAT=1): the game's WVP matrix arrives as diag(0,0,1,1) --
-             * the X/Y scale is zero.  While looking for the root cause, put in a
-             * reasonable orthographic matrix to see the rest of the pipeline. */
-            /* Is the matrix healthy per draw?  If some draws arrive with the right matrix,
-             * the front end uses two different spaces. */
+             * X/Y scale zero.  While the root cause is hunted, put in a sensible
+             * orthographic matrix so the rest of the pipeline can be seen. */
+            /* Is the matrix sane per draw?  If some draws arrive with a correct
+             * matrix, the front end is using two different spaces. */
             { int degenerate = (vsk->f[3][3] == 0.f && vsk->f[3][0] == 0.f &&
                                 vsk->f[0][0] == 0.f && vsk->f[1][1] == 0.f);
               if (degenerate){ g_mat_bad++;
                   static uint32_t seen[8]; static int ns=0;
                   int f4=0; for(int q=0;q<ns;q++) if(seen[q]==g_cur_vs) f4=1;
                   if(!f4 && ns<8 && ENVC("MATLOG")){ seen[ns++]=g_cur_vs;
-                      fprintf(stderr,"  [matrix-BROKEN] shader=%u texture=%u last upload sr=%u n=%u pd=%08x\n",
+                      fprintf(stderr,"  [matrix-BAD] shader=%u tex=%u last upload sr=%u n=%u pd=%08x\n",
                               g_cur_vs, g_cur_tex,
                               g_scn?g_sc[(g_scn-1)&7].sr:0,
                               g_scn?g_sc[(g_scn-1)&7].n:0,
@@ -1416,7 +1782,7 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                   static uint32_t seenok[8]; static int nsok=0;
                   int f5=0; for(int q=0;q<nsok;q++) if(seenok[q]==g_cur_vs) f5=1;
                   if(!f5 && nsok<8 && ENVC("MATLOG")){ seenok[nsok++]=g_cur_vs;
-                      fprintf(stderr,"  [matrix-VALID] shader=%u texture=%u pd=%08x\n",
+                      fprintf(stderr,"  [matrix-VALID] shader=%u tex=%u pd=%08x\n",
                               g_cur_vs, g_cur_tex, g_scn?g_sc[(g_scn-1)&7].pd:0); }
                   static int shown = 0;
                   if (0){ shown++;
@@ -1433,8 +1799,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             for (int k = 0; k < nel; k++)
                 decl_fetch(o + el[k].off, el[k].type, v[el[k].reg]);
             VSOut so;
-            /* NOVS=1: MEASUREMENT only.  Skips the vertex shader interpreter to see whether
-             * the bottleneck really is here. */
+            /* NOVS=1: MEASUREMENT only.  Skips the vertex shader interpreter
+             * to see whether this really is the bottleneck. */
             static int novs = -1;
             if (novs < 0){ const char *e7 = ENVC("NOVS"); novs = (e7 && *e7 && *e7!='0'); }
             if (novs){ memset(&so, 0, sizeof so);
@@ -1444,18 +1810,13 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
             else { uint64_t _v0 = now_ns();
                    vs_run(prog, vsk, (const float (*)[4])v, &so);
                    g_t_vs_ns += now_ns() - _v0; }
-            /* D3D9: vs_1_1 - vs_2_x color outputs are clamped to [0,1] (same as the GPU path,
-             * see vsemu.c vs_to_msl) */
-            if (vs_colsat_on() && vs_version_major(prog) < 3)
-                for (int c2 = 0; c2 < 2; c2++) for (int k2 = 0; k2 < 4; k2++){
-                    float x = so.col[c2][k2]; so.col[c2][k2] = !(x > 0.f) ? 0.f : (x > 1.f ? 1.f : x); }
             out->x=so.pos[0]; out->y=so.pos[1]; out->z=so.pos[2]; out->w=so.pos[3];
             out->r=so.col[0][0]; out->g=so.col[0][1];
             out->b=so.col[0][2]; out->a=so.col[0][3];
             out->r1=so.col[1][0]; out->g1=so.col[1][1];
             out->b1=so.col[1][2]; out->a1=so.col[1][3];
-            /* On the GPU path the vertex shader does the selection; the CPU path must apply
-             * the SAME permutation, otherwise the two paths diverge. */
+            /* On the GPU path the vertex shader makes this selection; the CPU
+             * path must apply the SAME permutation or the two paths diverge. */
             for (int ts = 0; ts < 4; ts++){
                 unsigned ci = g_tss_raw[ts][11] & 0xFFFFu;
                 if (ci > 3u) ci = (unsigned)ts;
@@ -1478,8 +1839,8 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
     }
     if (prog && nel){
         g_vs_draws++;
-        /* The RAW position range of shaded draws: shows which space the UI is in and what
-         * the matrix should do. */
+        /* RAW position range of shader draws: shows which space the UI is
+         * in and what the matrix has to do. */
         for (uint32_t i3 = 0; i3 < nv; i3++){
             uint32_t o3 = vp + i3*stride;
             if (!mem_is_committed(o3 + (unsigned)p_off + 11)) break;
@@ -1539,11 +1900,11 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                         fprintf(stderr,"        v%d = %g %g %g %g\n", el[k].reg,
                                 v[el[k].reg][0],v[el[k].reg][1],v[el[k].reg][2],v[el[k].reg][3]);
                 }
-                fprintf(stderr,"        -> pos=(%g %g %g %g) color=(%.3g %.3g %.3g %.3g) uv=(%g %g)\n",
+                fprintf(stderr,"        -> pos=(%g %g %g %g) colour=(%.3g %.3g %.3g %.3g) uv=(%g %g)\n",
                         tv[i].x,tv[i].y,tv[i].z,tv[i].w,
                         tv[i].r,tv[i].g,tv[i].b,tv[i].a, tv[i].t[0][0],tv[i].t[0][1]);
             }
-            fprintf(stderr,"      last constant uploads (newest to oldest):\n");
+            fprintf(stderr,"      last constant uploads (newest first):\n");
             for (int q=1; q<=4 && q<=(int)g_scn; q++){
                 unsigned ix = (g_scn - q) & 7;
                 fprintf(stderr,"        sr=%-3u n=%-3u pd=%08x", g_sc[ix].sr, g_sc[ix].n, g_sc[ix].pd);
@@ -1555,18 +1916,19 @@ static int draw_up(uint32_t pt, uint32_t nv, uint32_t vp, uint32_t stride){
                         MRF32(g_sc[ix].pd+24), MRF32(g_sc[ix].pd+28));
                 fprintf(stderr,"\n");
             }
-            /* the c0..c7 in use */
+            /* c0..c7 in use */
             for (int q=0;q<8;q++)
                 fprintf(stderr,"        c%d = %g %g %g %g\n", q,
                         g_vsk.f[q][0],g_vsk.f[q][1],g_vsk.f[q][2],g_vsk.f[q][3]);
         }
     }
-    metal_draw_tv(tv, nv, pt, g_cur_tex);
+    if (lines) draw_lines(tv, nv, pt);
+    else metal_draw_tv(tv, nv, pt, g_cur_tex);
     return 1;
 }
 
-/* DrawIndexedPrimitive fast path: static VBs/IBs are mirrored in the pool and drawn
- * indexed (see metal.m PERSISTENT VERTEX / INDEX POOL).  0 = couldn't be applied,
+/* DrawIndexedPrimitive fast path: a static VB/IB is mirrored into the pool and
+ * drawn indexed (see metal.m PERSISTENT VERTEX / INDEX POOL).  0 = not applicable,
  * the caller falls back to the index expansion path. */
 static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t ntri, uint32_t isz){
     int metal_mirror(uint32_t, uint32_t, const void *, uint32_t, unsigned, uint32_t *, uint32_t *);
@@ -1574,12 +1936,12 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
     static int off = -1;             /* NOIX=1: off (A/B measurement, safety) */
     if (off < 0){ const char *e = ENVC("NOIX"); off = (e && *e && *e != '0'); }
     if (off) return 0;
-    if (pt != 4u || !g_gpuvs){ g_dip_ixfb[0]++; return 0; }         /* strip/fan: the old path */
+    if (pt != 4u || !g_gpuvs){ g_dip_ixfb[0]++; return 0; }         /* strip/fan: old path */
     uint32_t vb = g_ss_vb, ib = g_ib_obj, stride = g_ss_stride, so = g_ss_off;
     if (!mem_is_committed(vb+63) || !mem_is_committed(ib+63)){ g_dip_ixfb[1]++; return 0; }
     uint32_t vsz = MR32(vb+4), vba = MR32(vb+8), isb = MR32(ib+4), iba = MR32(ib+8);
-    /* if it was locked in the last 4 frames its content may be changing: instead of
-     * re-mirroring every frame, the old path (dynamic buffers always go there) */
+    /* locked in the last 4 frames, so its contents may be changing: rather than
+     * re-mirror every frame, take the old path (dynamic buffers always go there) */
     if ((uint32_t)g_present - MR32(vb+52) < 4u || (uint32_t)g_present - MR32(ib+52) < 4u){
         g_dip_ixfb[2]++; return 0; }
     uint32_t ni = ntri * 3u;
@@ -1587,9 +1949,9 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
         (uint64_t)(starti + ni) * isz > isb ||
         !mem_is_committed(vba + vsz - 1u) || !mem_is_committed(iba + isb - 1u)){
         g_dip_ixfb[3]++; return 0; }
-    /* The Metal index offset must be a multiple of 4; for an odd start with 16-bit
-     * indices a second mirror of the IB shifted by 2 bytes is used (key ib+2:
-     * com_alloc is 16-aligned, it doesn't collide with another object).
+    /* A Metal index offset must be a multiple of 4; for an odd start with
+     * 16-bit indices a second mirror of the IB, shifted by 2 bytes, is used
+     * (key ib+2: com_alloc aligns to 16, so it collides with no other object).
      * Measured: without this 19% of DIP draws fell back to the old path. */
     uint32_t sh = ((starti * isz) & 3u) ? 2u : 0u;
     if (sh && isz != 2u){ g_dip_ixfb[3]++; return 0; }
@@ -1597,8 +1959,8 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
     if (!metal_mirror(vb, MR32(vb+48), g_mem + vba, vsz, 0, &voff, NULL) ||
         !metal_mirror(ib + sh, MR32(ib+48), g_mem + iba + sh, isb - sh, isz, &ioff, &imax)){
         g_dip_ixfb[4]++; return 0; }
-    /* Bound: if the largest index of the whole IB fits this VB, no scan; if it doesn't
-     * (one IB serves several VBs), the draw's range. */
+    /* Bound: if the largest index of the whole IB fits this VB, no scan;
+     * if not (one IB serves several VBs), scan the draw's range. */
     if ((uint64_t)so + ((uint64_t)basev + imax + 1u) * stride > vsz){
         const uint8_t *P = metal_pool_cpu() + ioff + (size_t)starti * isz - sh;
         uint32_t mx = 0;
@@ -1606,8 +1968,8 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
         else          { const uint32_t *x = (const uint32_t *)P; for (uint32_t k = 0; k < ni; k++) if (x[k] > mx) mx = x[k]; }
         if ((uint64_t)so + ((uint64_t)basev + mx + 1u) * stride > vsz){ g_dip_ixfb[5]++; return 0; }
     }
-    /* geometry id (HD ray tracing cache): same mirror + same range = same geometry;
-     * the id changes when the generation changes */
+    /* geometry identity (HD ray tracing cache): same mirror + same range =
+     * same geometry; when the generation changes, so does the identity */
     uint64_t gh = 1469598103934665603ull;
     uint32_t kv[9] = { vb, MR32(vb+48), ib, MR32(ib+48), starti, ni, basev, stride, so };
     for (int q = 0; q < 9; q++){ gh = (gh ^ kv[q]) * 1099511628211ull; gh ^= gh >> 29; }
@@ -1619,13 +1981,13 @@ static int dip_indexed(uint32_t pt, uint32_t basev, uint32_t starti, uint32_t nt
     return ok;
 }
 
-/* ---- D3DX HLE Stage 2: call recording and no-effect check (dxrec.h) ----
- * D3DX's state assignment (sub_00669296) produces ~36 thousand device calls per
- * frame and 96% of them rewrite the value already on the device.  Here, whether
- * the values a handler would write if a call were made NOW are the same as the
- * current state is checked by repeating the handler's own logic.
- * Only the 8 methods below are supported; any other device call invalidates the
- * record (no skipping is done).                                          */
+/* ---- D3DX HLE stage 2: call recording and no-op check (dxrec.h) --------
+ * D3DX's state assignment (sub_00669286) issues ~36 thousand device calls
+ * per frame, and 96% of them rewrite the value the device already has.
+ * Here we check whether the values a handler would write if the call were
+ * made NOW equal the current state, by repeating the handler's own logic.
+ * Only the 8 methods below are supported; any other device call
+ * invalidates the record (nothing is skipped).                           */
 #include "dxrec.h"
 #define DXREC_DEPTH 8
 static DxRec *g_dxrec[DXREC_DEPTH];
@@ -1662,8 +2024,8 @@ void dxrec_append(const DxRec *src){
 }
 void dxrec_end(void){ if (g_dxrec_depth > 0) g_dxrec_depth--; }
 
-/* The number of bytes to copy/compare for constant methods with a data pointer
- * (the same as the handler's bounds). */
+/* Number of bytes to copy/compare for the constant methods that take a data
+ * pointer (same bounds as the handler's). */
 static uint32_t dxrec_datalen(int mid, const uint32_t *a){
     if (MID(SetVertexShaderConstantF)){ uint32_t n = a[2]; if (a[0] >= 256u) return 0;
         if (a[0] + n > 256u) n = 256u - a[0]; return n*16u; }
@@ -1705,11 +2067,11 @@ static int dxrec_call_redundant(int mid, const uint32_t *a, const uint8_t *d, ui
         return dlen == 0 || !memcmp(g_psc[a[0]], d, dlen);
     return 0;
 }
-/* The D3DX native path (d3dx_hle.c, Stage 4): would this device call have no
- * effect if made NOW?  If so the caller doesn't make it at all (saving the guest
- * dispatch + com_call).  NO during state block recording/replay, with an open
- * dxrec record or in an FXTRACE frame: the call must really be made so it gets
- * into the record/trace.
+/* D3DX native path (d3dx_hle.c, stage 4): would this device call be a no-op
+ * if made NOW?  If so the caller skips it entirely (saves the guest dispatch
+ * + com_call).  During state block recording/replay, an open dxrec record or
+ * an FXTRACE frame the answer is NO: the call must really be made so it
+ * lands in the record/trace.
  * kind: 1 SetRenderState(a0, a1), 2 SetTextureStageState(a0, a1, a2),
  *       3 SetSamplerState(a0, a1, a2), 4 SetTexture(a0, a1),
  *       5/6 Set{Vertex,Pixel}ShaderConstantF(a0, a1=data, a2), 7/8 Set{Vertex,Pixel}Shader(a0). */
@@ -1738,7 +2100,7 @@ static int dxrec_supported(int mid){
 }
 /* From com_call, BEFORE the handler: append to every open record. */
 static void dxrec_note(CPU *c, int iface, int mid, int nargs){
-    /* Counter calls that are no-ops for us (texture AddRef/Release) don't break the record. */
+    /* Reference count calls that are no-ops for us (texture AddRef/Release) do not spoil the record. */
     if ((MID(AddRef) || MID(Release)) && iface != IF_STATEBLOCK
         && iface != IF_DS && iface != IF_DSBUF) return;
     int okc = iface == IF_DEV && dxrec_supported(mid) && !dxrec_sb_recording()
@@ -1774,10 +2136,10 @@ int dxrec_redundant(const DxRec *r){
     return 1;
 }
 
-/* COMSTAT=<frame>: IDirect3DDevice9 method counts, whether they come from INSIDE
- * or OUTSIDE D3DX BeginPass / CommitChanges, and the REDUNDANT ratio (same as the
- * last value on the device).  For D3DX_HLE.md Stage 2; must be used together with
- * D3DXSTAT (that wrapper keeps the BeginPass depth). */
+/* COMSTAT=<frame>: IDirect3DDevice9 method counts, whether they came from
+ * INSIDE or OUTSIDE D3DX BeginPass / CommitChanges, and the REDUNDANT share
+ * (same as the device's last value).  For D3DX HLE stage 2; use together
+ * with D3DXSTAT (that wrapper keeps the BeginPass depth). */
 extern int g_dx_in_pass;
 static int g_cs_on = -1; static long g_cs_from = 0, g_cs_f0 = -1;
 static uint64_t cs_n[MID__count][2], cs_red[MID__count][2];
@@ -1834,10 +2196,10 @@ void comstat_report(void){
     }
 }
 
-/* FXTRACE=<frame>[,<frame>...]: prints every device call (arguments,
- * constant/matrix data) and the effect method markers from d3dx_hle.c in order in
- * those frames.  A behavioral reference so the native ID3DXEffect produces the
- * same device state as D3DX (D3DX_HLE.md, Stage 4). */
+/* FXTRACE=<frame>[,<frame>...]: in those frames print every device call
+ * (arguments, constant/matrix data) and the effect method markers from
+ * d3dx_hle.c, in order.  Behaviour reference so the native ID3DXEffect
+ * produces the same device state as D3DX (D3DX HLE stage 4). */
 int g_fxtr = 0;
 static uint32_t g_fxtr_fr[8]; static int g_fxtr_nf;
 __attribute__((constructor)) static void fxtr_init(void){
@@ -1874,6 +2236,7 @@ static void fxtr_dev(CPU *c, int iface, int mid, int nargs, const char *nm){
 int com_call(CPU *c, uint32_t magic){
     uint32_t iface=(magic>>16)&0x1FFFu, m=magic&0xFFFFu;
     g_com_calls++;
+    g_com_cpu = c;
     if (!g_sb_replay) POP32(c->eip);
     if (iface==0 || iface>=NEL(g_if) || m>=g_if[iface].n){
         fprintf(stderr,"  [COM] invalid interface/method %u:%u\n", iface, m);
@@ -1891,7 +2254,7 @@ int com_call(CPU *c, uint32_t magic){
 
     if (g_dxrec_depth) dxrec_note(c, (int)iface, mid, nargs);
     if (g_fxtr && fxtr_now()) fxtr_dev(c, (int)iface, mid, nargs, nm);
-    /* ZSEQ=<frame>: the target / Z surface / Clear / Z state sequence in that frame (diagnostic) */
+    /* ZSEQ=<frame>: the order of target / Z surface / Clear / Z state in that frame (diagnostic) */
     if (iface==IF_DEV && ENVC("ZSEQ") && g_present_no == (uint32_t)atoi(ENVC("ZSEQ"))){
         static unsigned nd = 0;
         if (nm[0]=='D' && nm[1]=='r'){ nd++; }
@@ -1913,33 +2276,34 @@ int com_call(CPU *c, uint32_t magic){
         if (g_cs_on) comstat(c, mid, nargs);
     }
 
-    /* --- CUBE TEXTURE: the same vtable slot, ONE MORE argument ---------------
-     * IDirect3DCubeTexture9 methods are in the same slots as their 2D counterparts
-     * but carry a FaceType parameter first.  The function bodies already told them
-     * apart; but the STACK CLEANUP (nargs) hadn't been fixed, so every call leaked
-     * 4 bytes.  With reflections on, when the game called GetCubeMapSurface for the
-     * 6 cube faces the stack shifted by exactly 24 bytes: the caller's epilogue
-     * popped from the wrong place, esi and the return address got corrupted and the
-     * game crashed on the first frame (reproduced exactly with
-     * g_CarEnvironmentMapEnable=1). */
-    /* Look at the CHEAP method id first: is_cube_tex() reads guest MEMORY and used to
-     * run on EVERY texture call -- in a run IDirect3DTexture9 AddRef+Release alone
-     * are 96.8 million calls. */
+    /* --- CUBE TEXTURE: same vtable slot, ONE MORE argument ---------------
+     * IDirect3DCubeTexture9 methods sit in the same slots as their 2D
+     * counterparts but take a leading FaceType parameter.  The function
+     * bodies already told them apart; but the STACK CLEANUP (nargs) had not
+     * been fixed, so every call leaked 4 bytes.  With reflections on, the
+     * game calls GetCubeMapSurface for the 6 cube faces and the stack slips
+     * by exactly 24 bytes: the caller's epilogue pops from the wrong place,
+     * esi and the return address are corrupted and the game crashed on the
+     * first frame (reproduced exactly with g_CarEnvironmentMapEnable=1). */
+    /* Check the CHEAP method id first: is_cube_tex() reads guest MEMORY
+     * and used to run on EVERY texture call -- in a run,
+     * IDirect3DTexture9 AddRef+Release alone are 96.8 million calls. */
     if (iface==IF_TEX &&
         (MID(GetSurfaceLevel) || MID(GetCubeMapSurface) ||
          MID(LockRect) || MID(UnlockRect) ||
          MID(AddDirtyRect)) && is_cube_tex(A(c,0)))
         nargs++;
 
-    /* --- state block RECORDING -------------------------------------------
-     * In D3D9 the device state DOESN'T CHANGE during recording; the call is only
-     * written to the block. */
+    /* --- state block RECORDING -----------------------------------------
+     * In D3D9 the device state does NOT change while recording; the call
+     * is only written into the block. */
     if (g_sb_rec && iface==IF_DEV && !g_sb_replay && sb_recordable(mid)){
         SBlock *B = &g_sb[g_sb_rec];
         if (B->n < MAXSBREC){
             SBRec *R = &B->r[B->n++];
             R->magic = magic; R->nargs = nargs;
             for (int i2 = 0; i2 < 8; i2++) R->a[i2] = (i2 < nargs) ? A(c,i2) : 0u;
+            { int oa = sb_objarg(mid); if (oa && R->a[oa]) com_addref(R->a[oa]); }
         } else g_sb_dropped++;
         c->eax = 0;
         c->esp += 4u*(uint32_t)nargs;
@@ -1948,29 +2312,25 @@ int com_call(CPU *c, uint32_t magic){
 
     /* --- common: IUnknown --- */
     if      (MID(QueryInterface)){
-        /* In DirectSound8 CreateSoundBuffer returns an IDirectSoundBuffer; the game does
-         * QueryInterface to get IDirectSoundBuffer8.  When E_NOINTERFACE is returned
-         * those sounds may never be used (measured: 4 buffers are created but none is
-         * written to).  We return the same object - the vtable slots are shared anyway. */
+        /* In DirectSound8, CreateSoundBuffer returns an IDirectSoundBuffer;
+         * the game calls QueryInterface to get the IDirectSoundBuffer8.
+         * Returning E_NOINTERFACE may leave those sounds never used at all
+         * (measured: 4 buffers are created but none is written to).
+         * We return the same object - the vtable slots are shared anyway. */
         uint32_t ppv = (nargs >= 3) ? A(c,2) : 0u;
         if ((iface==IF_DS || iface==IF_DSBUF) && ppv){
             mem_commit(ppv,4); MR32(ppv) = A(c,0); r = 0;
+            com_addref(A(c,0));                 /* v12na: a new interface is a reference */
         } else r=0x80004002u;
     }
-    else if (MID(AddRef))  r=1;
+    else if (MID(AddRef))  r = com_addref(A(c,0));
     else if (MID(Release)){
-        /* The game silences a sound buffer with Release, NOT Stop (measured: Stop=0,
-         * Release=7 in a 3-minute session).  Without stopping it, the menu music
-         * looped stale content during the race and clashed with the race sound. */
-        if (iface==IF_STATEBLOCK){
-            /* Give the block slot back: since the game keeps creating and releasing blocks
-             * throughout the session, without a pool it runs out. */
-            uint32_t self1=A(c,0);
-            int bi = (self1 && mem_is_committed(self1+11)) ? (int)MR32(self1+8) : 0;
-            if (bi > 0 && bi < MAXSB){ g_sb[bi].used = 0; g_sb[bi].n = 0;
-                                       if (g_sb_rec == bi) g_sb_rec = 0;
-                                       MR32(self1+8) = 0; }
-        }
+        /* The game silences a sound buffer with Release, NOT with Stop
+         * (measured: in a 3-minute session Stop=0, Release=7).  Without stopping
+         * it, the menu music looped stale contents for the whole race and
+         * clashed with the race audio. */
+        /* State blocks give their slot back when destroyed (sb_destroy):
+         * the game creates and drops blocks all session long. */
         if (iface==IF_DSBUF){
             uint32_t self0=A(c,0);
             if (self0 && mem_is_committed(self0+31) && MR32(self0+28)){
@@ -1979,22 +2339,22 @@ int com_call(CPU *c, uint32_t magic){
                 MR32(self0+12)=0;
             }
         }
-        r=0; }
+        r = com_release(A(c,0)); }
     /* --- IDirect3D9 --- */
     else if (iface==IF_D3D9){
         if      (MID(GetAdapterCount))     r=1;
-        /* The resolution list was a SINGLE row (1280x720), so the resolution couldn't be
-         * changed in the game's settings menu.  We give a real list; the selected mode
-         * goes to Metal via CreateDevice/Reset. */
+        /* The resolution list used to be ONE row (1280x720), so the
+         * resolution could not be changed in the game's settings menu.  We
+         * give a real list; the chosen mode reaches Metal via CreateDevice/Reset. */
         else if (MID(GetAdapterModeCount)) r=(uint32_t)NEL(g_modes);
         else if (MID(EnumAdapterModes)){
             uint32_t mode=A(c,3), pm=A(c,4);
             if (mode >= NEL(g_modes)) { r=0x8876086Cu; }
-            else { uint32_t fmt=A(c,2); if(!fmt) fmt=22u;   /* mirror the requested format */
-                   if (mode == 0 && modemap_on()) modes_refresh();   /* menu strings */
+            else { uint32_t fmt=A(c,2); if(!fmt) fmt=22u;   /* echo the requested format */
+                   if (mode == 0 && modemap_on()) modes_refresh();   /* menu labels */
                    const uint32_t *ml = g_tbl[mode];   /* selectability: the game's table */
                    if (mode == 4 && modemap_on() && !g_row4_on)
-                       ml = g_tbl[ROW_NATIVE];         /* 4K can't be selected: see modes_refresh */
+                       ml = g_tbl[ROW_NATIVE];         /* 4K not selectable: see modes_refresh */
                    if(pm){ mem_commit(pm,16);
                            MR32(pm)   = ml[0];
                            MR32(pm+4) = ml[1];
@@ -2004,7 +2364,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(GetAdapterDisplayMode)){
             uint32_t pm=A(c,2);
             if(pm){ mem_commit(pm,16);
-                    /* Desktop mode: the game eliminates rows larger than this
+                    /* Desktop mode: the game drops rows larger than this
                      * (which is why 1600x1200 could never be selected). */
                     const uint32_t *nl = mode_label(ROW_NATIVE);
                     MR32(pm)   = nl[0] > 1600u ? nl[0] : 1600u;
@@ -2012,75 +2372,79 @@ int com_call(CPU *c, uint32_t magic){
                     MR32(pm+8)=60; MR32(pm+12)=22; }
             r=0; }
         else if (MID(GetAdapterIdentifier)){
-            /* D3DADAPTER_IDENTIFIER9 is 1100 bytes: Driver[512], Description[512],
-             * DeviceName[32], DriverVersion@1056, VendorId@1064, DeviceId@1068,
-             * SubSysId@1072, Revision@1076, DeviceIdentifier@1080, WHQLLevel@1096.
-             * Only the two strings used to be written; VendorId / DeviceId kept
-             * whatever was in memory, the game's first-run hardware detection saw an
-             * unknown card and put EVERY graphics setting at its minimum (world detail
-             * 0: visible world pop-in, no crowds, reflections, shadows, fog, motion
-             * blur...).  Report a top card of the game's era (GeForce 6800 Ultra) and
-             * a driver of the time.  ADAPTERID=<vendor>:<device> (hex) overrides. */
             uint32_t p=A(c,3);
+            /* D3DADAPTER_IDENTIFIER9 (1100 bytes): Driver[512] Description[512]
+             * DeviceName[32] DriverVersion@1056 VendorId@1064 DeviceId@1068
+             * SubSysId@1072 Revision@1076 GUID@1080 WHQLLevel@1096.
+             * The game's first-run "system check" looks at VendorId/DeviceId
+             * ([0x86C548]/[0x86C54C]); reporting 0 made it fall into the
+             * unknown-vendor case, turn off ALL effects and pick 640x480.
+             * NVIDIA GeForce 6800 (0x10DE/0x0040) is the cleanest path.
+             * Can be changed with
+             * NFSU2_GPU_VENDOR / NFSU2_GPU_DEVICE. */
             if(p){ mem_commit(p,1100); memset(g_mem+p,0,1100);
                    strcpy((char*)(g_mem+p),"nv4_disp.dll");
-                   strcpy((char*)(g_mem+p+512),"NVIDIA GeForce 6800 Ultra (Apple Silicon / Metal)");
+                   strcpy((char*)(g_mem+p+512),"NFSU2 Native Renderer (Metal, reports GeForce 6800)");
                    strcpy((char*)(g_mem+p+1024),"\\\\.\\DISPLAY1");
-                   uint32_t ven = 0x10DEu, dev = 0x0040u;
-                   { const char *e = ENVC("ADAPTERID");
-                     if (e && *e){ ven = (uint32_t)strtoul(e, NULL, 16);
-                                   const char *q = strchr(e, ':'); if (q) dev = (uint32_t)strtoul(q + 1, NULL, 16); } }
-                   MR32(p+1056) = (10u << 16) | 7164u;       /* 6.14.10.7164 (ForceWare 71.64) */
-                   MR32(p+1060) = (6u << 16) | 14u;
-                   MR32(p+1064) = ven; MR32(p+1068) = dev;
-                   MR32(p+1072) = 0; MR32(p+1076) = 0xA1u;
-                   MR32(p+1096) = 1u; }
+                   MR32(p+1056) = 0x00000A55u; MR32(p+1060) = 0x00060000u;   /* 6.x.0.2645 */
+                   const char *gv = ENVC("NFSU2_GPU_VENDOR"), *gd = ENVC("NFSU2_GPU_DEVICE");
+                   MR32(p+1064) = gv && *gv ? (uint32_t)strtoul(gv,0,0) : 0x10DEu;
+                   MR32(p+1068) = gd && *gd ? (uint32_t)strtoul(gd,0,0) : 0x0040u;
+                   MR32(p+1076) = 0xA1u; MR32(p+1096) = 1u; }
             r=0; }
         else if (MID(GetDeviceCaps)){ uint32_t pc=A(c,3); if(pc) fill_caps(pc); r=0; }
         else if (MID(CreateDevice)){
-            if(!g_dev) g_dev=com_new(IF_DEV,256);
+            if(!g_dev){ g_dev=com_new(IF_DEV,256); CH_FLAGS(g_dev) |= CF_DEVICE; }
             /* (this, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
              *  pPresentationParameters, ppReturnedDeviceInterface)
-             * pPresentationParameters WAS NEVER READ: whatever resolution the game
-             * asked for, we stayed at 1280x720.  This is why changing the resolution
-             * from the settings menu had no effect -- the game recreates the device
-             * with the new size, and we gave back the same device and ignored the size. */
+             * pPresentationParameters was NEVER READ: whatever resolution
+             * the game asked for, we stayed at 1280x720.
+             * That is why changing the resolution in the settings menu had
+             * no effect -- the game recreates the device with the new size,
+             * and we handed back the same device and ignored the size. */
             uint32_t ppp=A(c,5);
+            /* x87 state, as Direct3D 9 leaves it: without
+             * D3DCREATE_FPU_PRESERVE (0x2) the calling thread's control
+             * word becomes single precision, round to nearest, all
+             * exceptions masked (PC=00, RC=00: cw & ~0xF3F | 0x3F).  The
+             * game passes 0x50/0x20 (0x5B9B88/0x5B9BB5), so its main
+             * thread runs at PC=24.  Only binaries lifted with X87PC=1 round
+             * to it (tools/lift.py); NFSU2_FPU_PRESERVE=1 keeps the old
+             * word for A/B runs. */
+            if (!(A(c,4) & 0x2u) && !ENVC("NFSU2_FPU_PRESERVE")){
+                uint16_t ocw = c->fcw;
+                c->fcw = (uint16_t)((c->fcw & ~0x0F3Fu) | 0x003Fu);
+                fprintf(stderr, "com: CreateDevice flags 0x%x: x87 control word %04x -> %04x\n",
+                        A(c,4), ocw, c->fcw);
+            }
             if (ppp && mem_is_committed(ppp+7)){
                 uint32_t w4=MR32(ppp), h4=MR32(ppp+4);
                 uint32_t win4 = mem_is_committed(ppp+35) ? MR32(ppp+32) : 1u;
                 fprintf(stderr,"com: CreateDevice request %ux%u (%s)\n",
                         w4, h4, win4 ? "windowed" : "fullscreen");
-                /* D3DPRESENT_PARAMETERS: SwapEffect@24, EnableAutoDepthStencil@36,
-                 * AutoDepthStencilFormat@40, Flags@44 (2 = DISCARD_DEPTHSTENCIL).
-                 * Measured (2026-10-18): swap 1 (DISCARD), Z format 75 (D24S8),
-                 * flags 0 -> the implicit Z MUST BE PRESERVED across frames. */
-                if (mem_is_committed(ppp+55))
-                    fprintf(stderr,"com: presentation parameters: swap %u, implicit Z %u (format %u), flags 0x%x, interval 0x%x\n",
-                            MR32(ppp+24), MR32(ppp+36), MR32(ppp+40), MR32(ppp+44), MR32(ppp+52));
-                if (w4 > 8192u || h4 > 8192u){      /* the game's array overflow */
+                if (w4 > 8192u || h4 > 8192u){      /* the game's array overrun */
                     fprintf(stderr,"com: invalid size ignored, keeping %ux%u\n",
                             g_bb_w, g_bb_h);
                     w4 = h4 = 0;
                 }
-                /* NFSRES=<width>x<height>: override the resolution the game asks for.
-                 * The game's own internal table has 6 rows, all 4:3; 1080p can't be
-                 * selected from the menu (index 6+ overflows the array). */
+                /* NFSRES=<w>x<h>: override the resolution the game asks for.
+                 * The game's own internal table has 6 rows, all 4:3; 1080p
+                 * cannot be picked from the menu (index 6+ overruns the array). */
                 { uint32_t dw = w4, dh = h4;
                   res_pick(w4, h4, &dw, &dh);
                   w4 = dw; h4 = dh; }
                 if (w4 && h4){
                     g_bb_w = w4; g_bb_h = h4;
                     void metal_want_size(unsigned,unsigned);
-                    metal_want_size(w4,h4);              /* if the window hasn't opened */
+                    metal_want_size(w4,h4);              /* if the window is not open yet */
                     if (metal_available()){ void metal_resize(unsigned,unsigned);
                                             metal_resize(w4,h4); }
                 }
             }
-            /* RESSCAN=1: find the game's OWN resolution table in guest memory.  The table
-             * isn't stored flat in the EXE, it is built at run time; patching it is
-             * the only clean way to carry 1080p everywhere in the game (aspect
-             * ratio, render targets, viewport). */
+            /* RESSCAN=1: find the game's OWN resolution table in guest memory.
+             * The table is not stored plainly in the EXE but built at run
+             * time; patching it is the only clean way to carry 1080p into
+             * every part of the game (aspect ratio, render targets, viewport). */
             if (ENVC("RESSCAN")){
                 static const uint32_t want[12] = {640,480,800,600,1024,768,
                                                   1280,960,1280,1024,1600,1200};
@@ -2097,7 +2461,7 @@ int com_call(CPU *c, uint32_t magic){
                             if (MR32(a + 4u*(uint32_t)k) != want[k]){ ok = 0; break; }
                         if (ok){ fprintf(stderr,"com: [resscan] table 0x%08x\n", a); found++; }
                     }
-                /* If the full array isn't found, report only the 1600x1200 pairs */
+                /* If the full sequence is not found, report just the 1600x1200 pairs */
                 if (!found){
                     int n2 = 0;
                     for (unsigned q = 0; q < sizeof rng/sizeof *rng && n2 < 12; q++)
@@ -2105,7 +2469,7 @@ int com_call(CPU *c, uint32_t magic){
                             if (!mem_is_committed(a) || !mem_is_committed(a+7u)) continue;
                             if (MR32(a)==1600u && MR32(a+4u)==1200u){
                                 fprintf(stderr,"com: [resscan] 1600x1200 @ 0x%08x  "
-                                        "previous: %u %u %u %u\n", a,
+                                        "before: %u %u %u %u\n", a,
                                         mem_is_committed(a-16u)?MR32(a-16u):0,
                                         mem_is_committed(a-12u)?MR32(a-12u):0,
                                         mem_is_committed(a-8u)?MR32(a-8u):0,
@@ -2152,8 +2516,8 @@ int com_call(CPU *c, uint32_t magic){
             r=0; }
         else if (MID(SetTexture)){
             /* CUBELOG=1: measure whether the cube texture really gets bound.
-             * There is NO cube support on the Metal side (a flat 2D is created);
-             * first verify that this path is used. */
+             * The Metal side has NO cube support (it is created as plain 2D);
+             * first confirm this path is used. */
             if (ENVC("CUBELOG") && A(c,2) && is_cube_tex(A(c,2))){
                 static unsigned n2 = 0;
                 if (n2 < 8){ n2++;
@@ -2161,9 +2525,9 @@ int com_call(CPU *c, uint32_t magic){
                             A(c,1), A(c,2), g_cur_vs); }
             }
             uint32_t stg=A(c,1), to=A(c,2);
-            if (stg < 8u) g_raw_tex[stg] = to;
-            /* Track all stages: car paint/reflections may be in the upper stages; for
-             * measurement only for now. */
+            if (stg < 8u){ g_raw_tex[stg] = to; bind_set(&g_bind_tex[stg], to); }
+            /* Track all stages: car paint/reflection may be in the upper
+             * stages; for now for measurement only. */
             if (stg < 4u)
                 g_tex_stage[stg] = (to && mem_is_committed(to+28)) ? MR32(to+28) : 0;
             if (stg==0){
@@ -2186,7 +2550,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (!strncmp(nm,"Draw",4)){
             g_draw++;
             { static const char *seen[8]; static int ns=0;
-              int f=0; for(int q=0;q<ns;q++) if(seen[q]==nm) f=1;   /* names from the g_if table: a pointer is enough */
+              int f=0; for(int q=0;q<ns;q++) if(seen[q]==nm) f=1;   /* names come from the g_if table: the pointer suffices */
               if(!f && ns<8){ seen[ns++]=nm;
                   fprintf(stderr,"  [draw-name] \"%s\"\n", nm); } }
             if (MID(DrawIndexedPrimitive)){
@@ -2247,15 +2611,16 @@ int com_call(CPU *c, uint32_t magic){
                 draw_stats_save(ptype, stride_hist);
                 if (metal_available()){
                     uint32_t nprim=A(c,2), vp=A(c,3);
-                    uint32_t nv = (pt==4) ? nprim*3u : nprim+2u;
-                    if (vp && stride && nv >= 3 && nv < 4096u &&
+                    uint32_t nv = prim_verts(pt, nprim);
+                    /* points: never drawn by the game */
+                    if (vp && stride && pt >= 2u && pt <= 6u && nv >= 2u && nv < 4096u &&
                         mem_is_committed(vp) && mem_is_committed(vp + nv*stride - 1))
                         draw_up(pt, nv, vp, stride);
                 }
                 if (dd_on()){
                     static uint32_t last_decl = 0xFFFFFFFFu; static int nd = 0;
                     uint32_t nprim=A(c,2), vp=A(c,3);
-                    uint32_t nv = (pt==4) ? nprim*3u : nprim+2u;
+                    uint32_t nv = prim_verts(pt, nprim);
                     if (g_cur_decl != last_decl){ last_decl = g_cur_decl; dd_decl(g_cur_decl); }
                     if (nd++ < 40){
                         fprintf(stderr,"   #%-3d type=%u verts=%-4u stride=%u tex=%u\n",
@@ -2266,7 +2631,7 @@ int com_call(CPU *c, uint32_t magic){
                             fprintf(stderr,"        [%u] ", v);
                             for (int w2=0; w2<8; w2++)
                                 fprintf(stderr,"%s%.4g", w2?" ":"", (double)MRF32(o+4*w2));
-                            fprintf(stderr,"  | ham:");
+                            fprintf(stderr,"  | raw:");
                             for (int w2=0; w2<8; w2++) fprintf(stderr," %08x", MR32(o+4*w2));
                             fprintf(stderr,"\n");
                         }
@@ -2280,12 +2645,12 @@ int com_call(CPU *c, uint32_t magic){
                             pt, A(c,2), stride, d, g_cur_fvf, el);
                     /* dump the first vertices' data */
                     { uint32_t vp = A(c,3), nprim = A(c,2);
-                      uint32_t nv = (pt==6||pt==5) ? nprim+2u : nprim*3u;
+                      uint32_t nv = prim_verts(pt, nprim);
                       if (nv > 6) nv = 6;
                       for (uint32_t v=0; v<nv; v++){
                         uint32_t o = vp + v*stride;
                         if (!mem_is_committed(o+24)) break;
-                        fprintf(stderr,"        v%u: pos=(%.2f, %.2f, %.2f) color=0x%08x uv=(%.3f, %.3f)\n",
+                        fprintf(stderr,"        v%u: pos=(%.2f, %.2f, %.2f) colour=0x%08x uv=(%.3f, %.3f)\n",
                                 v, MRF32(o), MRF32(o+4), MRF32(o+8), MR32(o+12),
                                 MRF32(o+16), MRF32(o+20));
                       } }
@@ -2319,12 +2684,12 @@ int com_call(CPU *c, uint32_t magic){
                 if (!mem_is_committed(o+15)) break;
                 memcpy(g_vsk.f[sr+k], g_mem+o, 16);
             }
-            /* VSKDUMP: dump the SURROUNDINGS of pd.  If the matrix is shifted by 2 vectors,
-             * the right rows should be at pd-32. */
-            /* WATCHVSK: who writes to this buffer?  Right after the upload make the page
-             * read-only; the writer of the next frame gets caught. */
-            /* PDLIST: list the distinct pd values and whether the matrix is broken.  For
-             * comparing good/broken blocks. */
+            /* VSKDUMP: dump the AREA AROUND pd.  If the matrix is shifted by
+             * 2 vectors, the right rows should sit at pd-32. */
+            /* WATCHVSK: who writes this buffer?  Make the page read-only right
+             * after the upload; the next frame's writer gets caught. */
+            /* PDLIST: list the distinct pd values and whether the matrix is
+             * broken.  For comparing good/broken blocks. */
             if (ENVC("PDLIST") && sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
                 static uint32_t seen[32]; static int ns=0;
                 int f=0; for (int q=0;q<ns;q++) if (seen[q]==pd) f=1;
@@ -2332,15 +2697,15 @@ int com_call(CPU *c, uint32_t magic){
                     float m00=MRF32(pd), m11=MRF32(pd+20), m33=MRF32(pd+60);
                     int bad = (m00==0.f && m11==0.f && m33==0.f);
                     fprintf(stderr,"  [pd] %08x n=%u %s  m00=%g m11=%g m33=%g\n",
-                            pd, n, bad?"BROKEN":"good  ", m00, m11, m33);
+                            pd, n, bad?"BAD ":"good", m00, m11, m33);
                 }
             }
-            /* OWNERSCAN: find the structure on the heap that points to pd, look for a name in it. */
+            /* OWNERSCAN: find the structure on the heap that points at pd, look for a name in it. */
             if (ENVC("OWNERSCAN") && sr==0 && n==5 && pd){
                 static int os_=0, oseen=0;
                 oseen++;
                 if (oseen > 400 && !os_){ os_=1;
-                    fprintf(stderr,"  [owner] structures pointing to pd=%08x:\n", pd);
+                    fprintf(stderr,"  [owner] structures pointing at pd=%08x:\n", pd);
                     int found = 0;
                     for (uint64_t A2 = 0x10000000ull; A2 < 0x30000000ull && found < 12; A2 += 4){
                         uint32_t a3 = (uint32_t)A2;
@@ -2368,8 +2733,9 @@ int com_call(CPU *c, uint32_t magic){
                     if (!found) fprintf(stderr,"    (no pointer to it found)\n");
                 }
             }
-            /* PARAMNAME: scan the pointers on the stack and find the NAME of the D3DX effect
-             * parameter.  To learn which parameter is never set. */
+            /* PARAMNAME: scan the pointers on the stack to find the NAME of
+             * the D3DX effect parameter.  To learn which parameter is never
+             * set. */
             if (ENVC("PARAMNAME") && sr==0 && n==5 && pd){
                 static int pn=0, pseen=0;
                 pseen++;
@@ -2396,7 +2762,7 @@ int com_call(CPU *c, uint32_t magic){
                     }
                 }
             }
-            /* VSKBT: the guest caller chain that uploads the matrix */
+            /* VSKBT: the guest call chain that uploads the matrix */
             if (ENVC("VSKBT") && sr==0 && n==5 && pd){
                 static int bt=0, bseen=0;
                 bseen++;
@@ -2413,7 +2779,7 @@ int com_call(CPU *c, uint32_t magic){
                 static int vd=0, vseen=0;
                 vseen++;
                 if (vseen>500 && vd<3){ vd++;
-                    fprintf(stderr,"  [vsk] pd=%08x n=%u surroundings:\n", pd, n);
+                    fprintf(stderr,"  [vsk] around pd=%08x n=%u:\n", pd, n);
                     for (int q=-4; q<8; q++){
                         uint32_t o2 = pd + (uint32_t)(16*q);
                         if (!mem_is_committed(o2+15)) { fprintf(stderr,"      %+3d: (none)\n", q); continue; }
@@ -2432,7 +2798,7 @@ int com_call(CPU *c, uint32_t magic){
                                     "  -> pd offset=%d\n",
                                     pd, bp2+16u, MR32(bp2), (int)(pd-(bp2+16u)));
                             break; } }
-                    fprintf(stderr,"  [constants] pd=%08x n=%u  (including 2 vec4 before the block)\n", pd, n);
+                    fprintf(stderr,"  [consts] pd=%08x n=%u  (including the 2 vec4 before the block)\n", pd, n);
                     for (int rw=-2; rw<(int)n && rw<11; rw++){
                         uint32_t a2 = pd + (uint32_t)(rw*16);
                         if (!mem_is_committed(a2+15)) continue;
@@ -2441,18 +2807,20 @@ int com_call(CPU *c, uint32_t magic){
                     }
                 }
             }
-            /* is the matrix healthy? for c0..c3: a last row like (0,0,0,1) or at least one
-             * element of reasonable magnitude */
-            if (sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
-                static uint64_t mat_good=0, mat_bad=0, mat_zero=0; static int mat_shown=0;
-                int nz=0, n_big=0;
+            /* MATCHECK: is the matrix sane? for c0..c3: last row like (0,0,0,1)
+             * or at least one element of reasonable magnitude (a count every
+             * 20,000 uploads, ~5 lines a second in a race: players' logs were
+             * mostly these) */
+            if (ENVC("MATCHECK") && sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
+                static uint64_t good=0, bad=0, zero=0; static int shown=0;
+                int nz=0, big=0;
                 for (int q=0;q<16;q++){
                     float fv = MRF32(pd+4u*q);
                     if (fv != 0.f) nz++;
-                    if (fabsf(fv) > 1e6f) n_big++;
+                    if (fabsf(fv) > 1e6f) big++;
                 }
-                if (nz==0) mat_zero++;
-                else if (n_big){ mat_bad++;
+                if (nz==0) zero++;
+                else if (big){ bad++;
                     if (ENVC("WATCHALLOC") && !g_wc_armed){
                         g_wc_armed = 1;
                         void watch_dump(const char*, int);
@@ -2465,20 +2833,20 @@ int com_call(CPU *c, uint32_t magic){
                             void watch_dump(const char*, int);
                             void watch_arm(uint32_t);
                             watch_dump("constant block writer", 24);
-                            watch_arm(0);              /* turn the watch off */
+                            watch_arm(0);              /* stop watching */
                             g_wc_armed = 0;
                         }
                     }
-                    /* c->eip = right after the guest instruction that called SetVertexShaderConstantF
-                     * (POP32'd at com_call entry) */
+                    /* c->eip = just past the guest instruction that called
+                     * SetVertexShaderConstantF (POP32'd on entry to com_call) */
                     static uint32_t caller[8]; static int ncall=0;
                     int seen=0;
                     for (int q=0;q<ncall;q++) if (caller[q]==c->eip) seen=1;
                     if (!seen && ncall<8){ caller[ncall++]=c->eip;
-                        fprintf(stderr,"  [matrix-BROKEN] pd=%08x  caller return=0x%08x  n=%u\n",
+                        fprintf(stderr,"  [matrix-BAD] pd=%08x  caller return=0x%08x  n=%u\n",
                                 pd, c->eip, n);
                         /* The caller uses an ebp-based frame and ebp is live:
-                         * [ebp-8] = the parameter descriptor (see 0x00669d87). */
+                         * [ebp-8] = parameter descriptor (see 0x00669d77). */
                         /* which heap block is pd in? (header: +0 size, +4 0xA110C8ED) */
                         for (uint32_t bp = (pd & ~15u); bp >= 0x10000000u; bp -= 16u){
                             if (!mem_is_committed(bp+4)) break;
@@ -2496,17 +2864,18 @@ int com_call(CPU *c, uint32_t magic){
                                 break;
                             }
                         }
-                        /* Set a watchpoint to catch the next write: the block is refilled every frame,
-                         * so setting it now is enough. */
+                        /* Set a watchpoint to catch the next write:
+                         * the block is refilled every frame, so setting
+                         * it now is enough. */
                         if (ENVC("WATCHCONST")){
                             void watch_arm(uint32_t);
                             watch_arm(pd + 16u);
                             g_wc_armed = 1;
                         }
-                        /* Search memory for the semantic hash (h=h*33+c): do the game side and the
-                         * effect side hold the same value? */
-                        /* Find the "WorldViewProj" string and the structures pointing to it: to see the
-                         * type field of the parameter descriptor directly. */
+                        /* Search memory for the semantic hash (h=h*33+c): do the game
+                         * side and the effect side hold the same value? */
+                        /* Find the "WorldViewProj" string and the structures pointing at it:
+                         * to see the parameter descriptor's type field directly. */
                         if (ENVC("FINDPARAM")){
                             static const char *needle = "WorldViewProj";
                             size_t nl = strlen(needle);
@@ -2519,7 +2888,7 @@ int com_call(CPU *c, uint32_t magic){
                             fprintf(stderr,"      'WorldViewProj' found: in %d places\n", nf);
                             for (int k = 0; k < nf; k++){
                                 fprintf(stderr,"        @%08x\n", found[k]);
-                                /* search for dwords pointing to this address */
+                                /* look for dwords pointing at this address */
                                 int np = 0;
                                 for (uint32_t a = 0x10000000u; a < 0x10400000u && np < 6; a += 4){
                                     if (!mem_is_committed(a + 4)) { a += 0x3FFCu; continue; }
@@ -2548,12 +2917,12 @@ int com_call(CPU *c, uint32_t magic){
                                     fputc((ch>=32&&ch<127)?ch:'.', stderr); }
                                 fprintf(stderr,"\n");
                             }
-                            fprintf(stderr,"        reg=%u say=%u bayrak30=%02x\n",
+                            fprintf(stderr,"        reg=%u count=%u flag30=%02x\n",
                                     MR16(desc+0x54), MR16(desc+0x56), MR8(desc+0x30));
                             for (int f=0; f<0x60; f+=4){
                                 uint32_t v = MR32(desc+f);
                                 if (v > 0x10000000u && v < 0x30000000u && mem_is_committed(v+15)){
-                                    fprintf(stderr,"        [+%02x]->%08x (pd diff %+d):", f, v, (int)(v - pd));
+                                    fprintf(stderr,"        [+%02x]->%08x (pd delta %+d):", f, v, (int)(v - pd));
                                     for (int q=0;q<16;q++) fprintf(stderr," %02x", MR8(v+q));
                                     fprintf(stderr,"  ");
                                     for (int q=0;q<16;q++){ uint8_t ch=MR8(v+q);
@@ -2568,8 +2937,8 @@ int com_call(CPU *c, uint32_t magic){
                                 MRF32(pd+rw*16), MRF32(pd+rw*16+4),
                                 MRF32(pd+rw*16+8), MRF32(pd+rw*16+12));
                         }
-                        /* BEFORE the buffer: the game sometimes gives a pointer shifted backwards; the
-                         * real data may be there */
+                        /* BEFORE the buffer: the game sometimes passes a pointer
+                         * shifted backwards; the real data may be there */
                         if (pd >= 64 && mem_is_committed(pd-64)){
                             fprintf(stderr,"      --- 4 vec4 before pd ---\n");
                             for (int rw=-4; rw<0; rw++)
@@ -2580,19 +2949,19 @@ int com_call(CPU *c, uint32_t magic){
                     }
                     static int bt=0;
                     if (ENVC("MATBT") && bt<2){ bt++;
-                        fprintf(stderr,"  [matrix-BROKEN] pd=%08x, call stack:\n", pd);
+                        fprintf(stderr,"  [matrix-BAD] pd=%08x, call stack:\n", pd);
                         guest_backtrace(c, 14); } }
-                else { mat_good++;
-                       if (mat_shown<3){ mat_shown++;
+                else { good++;
+                       if (shown<3){ shown++;
                          fprintf(stderr,"  [matrix-GOOD] pd=%08x\n", pd);
                          for (int rw=0;rw<4;rw++)
                            fprintf(stderr,"      %9.4f %9.4f %9.4f %9.4f\n",
                              MRF32(pd+rw*16),MRF32(pd+rw*16+4),
                              MRF32(pd+rw*16+8),MRF32(pd+rw*16+12)); } }
-                if (((mat_good+mat_bad+mat_zero) % 20000)==0)
-                    fprintf(stderr,"  [matrix] good=%llu broken=%llu zero=%llu\n",
-                            (unsigned long long)mat_good,(unsigned long long)mat_bad,
-                            (unsigned long long)mat_zero);
+                if (((good+bad+zero) % 20000)==0)
+                    fprintf(stderr,"  [matrix] good=%llu bad=%llu zero=%llu\n",
+                            (unsigned long long)good,(unsigned long long)bad,
+                            (unsigned long long)zero);
             }
             if (ENVC("VSCDUMP") && sh<6 && sr==0 && n>=4 && pd && mem_is_committed(pd+63)){
                 sh++;
@@ -2616,8 +2985,9 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetStreamSource)){
             /* (this, StreamNumber, pStreamData, OffsetInBytes, Stride) */
             if (A(c,1)==0u){ g_ss_vb=A(c,2); g_ss_off=A(c,3); g_ss_stride=A(c,4); }
+            if (A(c,1) < 4u) bind_set(&g_bind_vb[A(c,1)], A(c,2));
             r=0; }
-        else if (MID(SetIndices)){ g_ib_obj=A(c,1); r=0; }
+        else if (MID(SetIndices)){ g_ib_obj=A(c,1); bind_set(&g_bind_ib, A(c,1)); r=0; }
         else if (MID(SetPixelShaderConstantF)){
             /* (this, StartRegister, pConstantData, Vector4fCount) */
             uint32_t sr2=A(c,1), pd2=A(c,2), n2=A(c,3);
@@ -2629,22 +2999,22 @@ int com_call(CPU *c, uint32_t magic){
                 for (int c4=0;c4<4;c4++) g_psc[sr2+q4][c4] = MRF32(off+4u*(uint32_t)c4);
             }
             r=0; }
-        
+
         else if      (MID(TestCooperativeLevel)){
             g_tcl_n++;
-            /* Device loss (fullscreen transition): as in D3D9 the game releases its
-             * D3DPOOL_DEFAULT resources and calls Reset. */
+            /* Device loss (fullscreen switch): as on D3D9 the game releases
+             * its D3DPOOL_DEFAULT resources and calls Reset. */
             r = atomic_load(&g_lost) ? 0x88760869u /* D3DERR_DEVICENOTRESET */ : 0u;
             if (r && g_tcl_lost_n++ < 4) fprintf(stderr,"com: TestCooperativeLevel -> DEVICENOTRESET\n"); }
         else if (MID(GetAvailableTextureMem)) r=256u*1024u*1024u;
         else if (MID(GetDeviceCaps)){ uint32_t pc=A(c,1); if(pc) fill_caps(pc); r=0; }
-        else if (MID(GetDirect3D)){ uint32_t p=A(c,1); if(p) MR32(p)=g_d3d9; r=0; }
+        else if (MID(GetDirect3D)){ uint32_t p=A(c,1); if(p) MR32(p)=g_d3d9; com_addref(g_d3d9); r=0; }
         else if (MID(GetDisplayMode)){
-            /* Must be a VALID size; when a fixed 1280x720 was returned the game's settings
-             * screen couldn't find the selected row in the list.  For the same reason,
-             * if the device is larger than the game thinks (Retina scale, NFSRES) we
-             * report the size the game ITSELF chose, not the real size (e.g.
-             * 2448x1836): the real size isn't in that table. */
+            /* Must be the CURRENT size; with a fixed 1280x720 the game's
+             * settings screen could not find the selected row in the list.
+             * For the same reason, when the device is larger than the game
+             * thinks (Retina scale, NFSRES) we report the size the game ITSELF
+             * picked, not the real one (e.g. 2448x1836): that is not in its table. */
             uint32_t pm=A(c,2);
             uint32_t dmw = g_req_w ? g_req_w : g_bb_w;
             uint32_t dmh = g_req_h ? g_req_h : g_bb_h;
@@ -2662,47 +3032,38 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(BeginScene)){ if (metal_available()) metal_begin_frame(); r=0; }
         else if (MID(EndScene)) r=0;
         else if (MID(Present)){ g_present_no++;
-            /* STALL=<present>:<ms> (test): freeze the game thread once, as a slow disk or a
-             * long frame would -- e.g. to check the sound stale-data guard (audio.m). */
-            { static long sa = -2; static unsigned sms = 0;
-              if (sa == -2){ const char *e = ENVC("STALL"); sa = -1;
-                  if (e && *e){ sa = atol(e); const char *q = strchr(e, ':'); sms = q ? (unsigned)atoi(q + 1) : 1000u; } }
-              if (sa >= 0 && (long)g_present_no == sa){ fprintf(stderr, "STALL: present %ld, %u ms\n", sa, sms); usleep(sms * 1000u); } }
+            { extern void autotest_on_present(CPU*); autotest_on_present(c); }
+            { void watchdog_on_present(void); watchdog_on_present(); }
+            { extern void discord_on_present(void); discord_on_present(); }   /* Discord presence: samples, never blocks */
+            texrep_frame();
             { extern void guest_cpu_mark(void); guest_cpu_mark(); }
-            /* FETICK: the front-end tick [0x8651a8] should increase at 60 Hz, but the game's
-             * frame-delta measurement always gives 1/1800 s, so the tick never
-             * increases -> animations and timed screen transitions freeze.
-             * Since our virtual clock advances exactly 1/60 s per frame, +1 tick per
-             * frame gives the right speed. */
-            if (ENVC("FETICK") && mem_is_committed(GA(0x008651a8u)))
-                MR32(GA(0x008651a8u)) = MR32(GA(0x008651a8u)) + 1u;
-            /* FIXFRAMETIME: the game's TARGET FRAME TIME [0x865558] is never set (its
-             * setters sub_00576cc0/ce0 aren't called) -> the frame delta dt stays at
-             * 1/1800, the front-end tick [0x8651a8] never increases, animations and
-             * timed screen transitions freeze.
+            /* FETICK: the front-end tick [0x8651a8] should advance at 60 Hz, but
+             * the game's frame-delta measurement always yields 1/1800 s, so the
+             * tick never advances -> animations and timed screen transitions freeze.
+             * Our virtual clock advances exactly 1/60 s per frame, so +1 tick
+             * per frame gives the right rate. */
+            if (ENVC("FETICK") && mem_is_committed(0x008651a8u))
+                MR32(0x008651a8u) = MR32(0x008651a8u) + 1u;
+            /* FIXFRAMETIME: the game's TARGET FRAME TIME [0x865558] is never
+             * set (its setter sub_00576cb0/cd0 is never called) -> the frame
+             * delta dt stays at 1/1800, the front-end tick [0x8651a8] never
+             * advances, animations and timed screen transitions freeze.
              * The game's own default [0x7fb710] = 1/120. */
-            /* LIMFREE=<frame> (MEASUREMENT only, with VCLOCK=8333 + NOVSYNC=1): after that
-             * frame the target frame time ~0 -> the game's 120 fps limiter doesn't
-             * wait, fps = GPU/CPU capacity; game time is fixed per frame by the
-             * virtual clock.  DON'T USE in menus: front-end timing breaks, AUTOSEQ drifts. */
-            { const char *lf = ENVC("LIMFREE");
-              if (lf && g_present_no >= (unsigned)atoi(lf) && g_present_no >= 2u && mem_is_committed(GA(0x00865558u)))
-                  MRF32(GA(0x00865558u)) = 0.0002f; }
             { const char *ff = ENVC("FIXFRAMETIME");
               static int done_ft = 0;
               if (ff && *ff && ff[0] != '0' && !done_ft && g_present_no >= 2u){
                   done_ft = 1;
                   float v = (float)atof(ff);
-                  if (!(v > 0.f)) v = mem_is_committed(GA(0x007fb710u))
-                                      ? MRF32(GA(0x007fb710u)) : (1.f/120.f);
-                  if (mem_is_committed(GA(0x00865558u))){
-                      MRF32(GA(0x00865558u)) = v;
+                  if (!(v > 0.f)) v = mem_is_committed(0x007fb710u)
+                                      ? MRF32(0x007fb710u) : (1.f/120.f);
+                  if (mem_is_committed(0x00865558u)){
+                      MRF32(0x00865558u) = v;
                       fprintf(stderr,"  [frame-time] [0x865558] set to %g\n",
                               (double)v);
                   }
               } }
-            /* DATADIFF: which global variables change between two frames?  A frozen
-             * counter/clock shows up directly. */
+            /* DATADIFF: which global variables change between two
+             * frames?  A frozen counter/clock shows up directly. */
             { const char *dd2 = ENVC("DATADIFF");
               static uint8_t *snap = 0; static int taken = 0;
               const uint32_t DLO = 0x007E0000u, DHI = 0x008A0000u;
@@ -2725,60 +3086,62 @@ int com_call(CPU *c, uint32_t magic){
                           fprintf(stderr,"     0x%08x: %10u -> %-10u  (%g -> %g)\n",
                                   DLO + o, oldv, newv, (double)fo, (double)fn2);
                       }
-                      fprintf(stderr,"  [diff] total changed dwords (first 40 shown)\n");
+                      fprintf(stderr,"  [diff] changed dwords in total (first 40 shown)\n");
                   }
               } }
-            /* FORCESWITCH: we got stuck on the splash.  We trigger the transition by hand and
-             * measure whether the next screen (profile / main menu) loads.
-             * DIAGNOSTIC purpose. */
+            /* FORCESWITCH: we were stuck at the splash.  Trigger the
+             * transition by hand and measure whether the next screen
+             * (profile / main menu) loads.  DIAGNOSTIC only. */
             { const char *fs2 = ENVC("FORCESWITCH");
               static int fired = 0;
               extern uint32_t g_fe_mgr;
               if (fs2 && *fs2 && !fired && g_present_no >= 2500u && g_fe_mgr){
                   fired = 1;
-                  uint32_t from = GA(0x0078ea60u);              /* UG_LS_Splash.fng */
-                  uint32_t to   = (atoi(fs2) == 2) ? GA(0x0078f530u)   /* UI_Main.fng */
-                                                   : GA(0x0078ea4cu);  /* MC_Background.fng */
+                  uint32_t from = 0x0078ea60u;              /* UG_LS_Splash.fng */
+                  uint32_t to   = (atoi(fs2) == 2) ? 0x0078f530u   /* UI_Main.fng */
+                                                   : 0x0078ea4cu;  /* MC_Background.fng */
                   fprintf(stderr,"  [force] SwitchFEngPackages(manager=%08x, \"%s\" -> \"%s\")\n",
                           g_fe_mgr, (const char*)(g_mem+from), (const char*)(g_mem+to));
                   { CPU save = *c;
                     if (atoi(fs2) == 3){
-                        /* sub_004c4f50(current_package_name, 0): advances the boot flow; finds the target
-                         * in its own list and transitions by LOADING it. */
+                        /* sub_004c4f50(current_package_name, 0): advances the
+                         * boot flow; finds the target in its own list
+                         * and switches BY LOADING it. */
                         PUSH32(0u); PUSH32(from);
                         PUSH32(0xDEADBEEFu);
-                        dispatch_indirect(c, GA(0x004c4f50u));
+                        dispatch_indirect(c, 0x004c4f50u);
                     } else {
                         PUSH32(to); PUSH32(from);
                         PUSH32(0xDEADBEEFu);
                         c->ecx = g_fe_mgr;
-                        dispatch_indirect(c, GA(0x0051cbb0u));
+                        dispatch_indirect(c, 0x0051cba0u);
                     }
                     *c = save; }
                   fprintf(stderr,"  [force] call returned\n");
               } }
-            /* BOOTFLOW: walk the boot flow list (0x836488).
-             * Shows directly what is being waited for on the splash. */
+            /* BOOTFLOW: walk the preload flow list (0x836488).
+             * Shows directly what the splash screen is waiting for. */
             if (ENVC("BOOTFLOW") && (g_present_no % 900u) == 5u){
-                uint32_t head = mem_is_committed(GA(0x00836488u)) ? MR32(GA(0x00836488u)) : 0;
+                uint32_t head = mem_is_committed(0x00836488u) ? MR32(0x00836488u) : 0;
                 { /* Front-end clock chain:
                    *   [0x865194] = frame delta (dt, seconds)
                    *   [0x865140] = accumulator remainder
-                   *   [0x8651a8] = front-end tick (rounded from dt to 60 Hz)
-                   * Animations and timed screen transitions depend on this tick. */
-                  fprintf(stderr,"  [fe-clock] frame %u: dt(865194)=%g  remainder(865140)=%g"
+                   *   [0x8651a8] = front-end tick (dt rounded to 60 Hz)
+                   * Animations and timed screen transitions hang off this tick. */
+                  fprintf(stderr,"  [fe-clock] frame %u: dt(865194)=%g  left(865140)=%g"
                           "  TICK(8651a8)=%d  frame(865148)=%d  target(865558)=%g\n", g_present_no,
-                          mem_is_committed(GA(0x00865194u))?(double)MRF32(GA(0x00865194u)):-1.0,
-                          mem_is_committed(GA(0x00865140u))?(double)MRF32(GA(0x00865140u)):-1.0,
-                          mem_is_committed(GA(0x008651a8u))?(int)MR32(GA(0x008651a8u)):-1,
-                          mem_is_committed(GA(0x00865148u))?(int)MR32(GA(0x00865148u)):-1,
-                          mem_is_committed(GA(0x00865558u))?(double)MRF32(GA(0x00865558u)):-1.0);
+                          mem_is_committed(0x00865194u)?(double)MRF32(0x00865194u):-1.0,
+                          mem_is_committed(0x00865140u)?(double)MRF32(0x00865140u):-1.0,
+                          mem_is_committed(0x008651a8u)?(int)MR32(0x008651a8u):-1,
+                          mem_is_committed(0x00865148u)?(int)MR32(0x00865148u):-1,
+                          mem_is_committed(0x00865558u)?(double)MRF32(0x00865558u):-1.0);
                   { uint64_t host_us(void);
                     uint64_t t1 = host_us(); volatile int sp=0;
                     for (int q=0;q<200000;q++) sp+=q;
                     uint64_t t2 = host_us();
-                    { /* __ftol (sub_0075bed4) correctness: call it with ST(0)=value and compare the
-                       * result.  The only suspect primitive in the frame-delta chain. */
+                    { /* __ftol (sub_0075bed4) accuracy: call it with
+                       * ST(0)=value and compare the result.  The only suspect
+                       * primitive in the frame-delta chain. */
                       static int ft_done = 0;
                       if (!ft_done){ ft_done = 1;
                         const double tv[5] = { 90.5, 15.5, 1.5, 0.5, 30000.5 };
@@ -2786,55 +3149,55 @@ int com_call(CPU *c, uint32_t magic){
                             CPU sv = *c;
                             c->top = (c->top - 1) & 7; c->st[c->top] = tv[q];
                             PUSH32(0xDEADBEEFu);
-                            dispatch_indirect(c, GA(0x0075bed4u));
+                            dispatch_indirect(c, 0x0075bed4u);
                             fprintf(stderr,"           __ftol(%g) = %d %s\n",
                                     tv[q], (int)c->eax,
                                     ((int)c->eax == (int)tv[q]) ? "" : "  <-- WRONG");
                             *c = sv;
                         } } }
-                    fprintf(stderr,"           MID esi(86513c)=%d  remainder after int2(865144)=%g\n",
-                            mem_is_committed(GA(0x0086513cu))?(int)MR32(GA(0x0086513cu)):-1,
-                            mem_is_committed(GA(0x00865144u))?(double)MRF32(GA(0x00865144u)):-1.0);
-                    { /* sub_0057eae0 writes the measured frame time every frame to
-                       * 0x8647a8 + (frame%100)*16 + 4. */
-                      uint32_t fr = mem_is_committed(GA(0x00865148u))?MR32(GA(0x00865148u)):0;
+                    fprintf(stderr,"           STEP esi(86513c)=%d  left after int2(865144)=%g\n",
+                            mem_is_committed(0x0086513cu)?(int)MR32(0x0086513cu):-1,
+                            mem_is_committed(0x00865144u)?(double)MRF32(0x00865144u):-1.0);
+                    { /* sub_0057ead0 writes the measured frame time every
+                       * frame to 0x8647a8 + (frame%100)*16 + 4. */
+                      uint32_t fr = mem_is_committed(0x00865148u)?MR32(0x00865148u):0;
                       fprintf(stderr,"           MEASURED frame time (last 4 frames):");
                       for (int q=0;q<4;q++){
                           uint32_t idx = (fr - (uint32_t)q) % 100u;
-                          uint32_t a4 = GA(0x008647a8u) + idx*16u + 4u;
+                          uint32_t a4 = 0x008647a8u + idx*16u + 4u;
                           fprintf(stderr,"  %g", mem_is_committed(a4)?(double)MRF32(a4):-1.0);
                       }
                       fprintf(stderr,"\n"); }
-                    fprintf(stderr,"           ms/tik(828028)=%g  kaydirma(8284e4)=%u\n",
-                            mem_is_committed(GA(0x00828028u))?(double)MRF32(GA(0x00828028u)):-1.0,
-                            mem_is_committed(GA(0x008284e4u))?MR32(GA(0x008284e4u)):0);
-                    fprintf(stderr,"           QPC bolen(8284e4)=%u  olcek(78435c)=%g"
-                            "  host_us within frame: %llu -> %llu (diff %llu us)\n",
-                            mem_is_committed(GA(0x008284e4u))?MR32(GA(0x008284e4u)):0,
-                            mem_is_committed(GA(0x0078435cu))?(double)MRF32(GA(0x0078435cu)):0.0,
+                    fprintf(stderr,"           ms/tick(828028)=%g  shift(8284e4)=%u\n",
+                            mem_is_committed(0x00828028u)?(double)MRF32(0x00828028u):-1.0,
+                            mem_is_committed(0x008284e4u)?MR32(0x008284e4u):0);
+                    fprintf(stderr,"           QPC divisor(8284e4)=%u  scale(78435c)=%g"
+                            "  host_us within the frame: %llu -> %llu (delta %llu us)\n",
+                            mem_is_committed(0x008284e4u)?MR32(0x008284e4u):0,
+                            mem_is_committed(0x0078435cu)?(double)MRF32(0x0078435cu):0.0,
                             (unsigned long long)t1,(unsigned long long)t2,
                             (unsigned long long)(t2-t1)); }
-                  fprintf(stderr,"           girdi(7fb714)=%g  mod(7fb700)=%u  kalan2(865144)=%g\n",
-                          mem_is_committed(GA(0x007fb714u))?(double)MRF32(GA(0x007fb714u)):-1.0,
-                          mem_is_committed(GA(0x007fb700u))?MR32(GA(0x007fb700u)):0,
-                          mem_is_committed(GA(0x00865144u))?(double)MRF32(GA(0x00865144u)):-1.0); }
-                { /* Game clock: sub_0057a1b0 => [0x865134] * constant.
-                   * If this counter doesn't increase, front-end animations stay frozen. */
-                  fprintf(stderr,"  [gameclock] tick(865134)=%d  (865138)=%08x  sec(7fb700)=%u"
+                  fprintf(stderr,"           input(7fb714)=%g  mode(7fb700)=%u  left2(865144)=%g\n",
+                          mem_is_committed(0x007fb714u)?(double)MRF32(0x007fb714u):-1.0,
+                          mem_is_committed(0x007fb700u)?MR32(0x007fb700u):0,
+                          mem_is_committed(0x00865144u)?(double)MRF32(0x00865144u):-1.0); }
+                { /* Game clock: sub_0057a1a0 => [0x865134] * constant.
+                   * If this counter does not advance, front-end animations freeze. */
+                  fprintf(stderr,"  [gameclock] tick(865134)=%d  (865138)=%08x  sel(7fb700)=%u"
                           "  scale=%g/%g  fe_t(864720)=%g\n",
-                          mem_is_committed(GA(0x00865134u))?(int)MR32(GA(0x00865134u)):-1,
-                          mem_is_committed(GA(0x00865138u))?MR32(GA(0x00865138u)):0,
-                          mem_is_committed(GA(0x007fb700u))?MR32(GA(0x007fb700u)):0,
-                          mem_is_committed(GA(0x007851c0u))?(double)MRF32(GA(0x007851c0u)):0.0,
-                          mem_is_committed(GA(0x007875bcu))?(double)MRF32(GA(0x007875bcu)):0.0,
-                          mem_is_committed(GA(0x00864720u))?(double)MRF32(GA(0x00864720u)):0.0); }
+                          mem_is_committed(0x00865134u)?(int)MR32(0x00865134u):-1,
+                          mem_is_committed(0x00865138u)?MR32(0x00865138u):0,
+                          mem_is_committed(0x007fb700u)?MR32(0x007fb700u):0,
+                          mem_is_committed(0x007851c0u)?(double)MRF32(0x007851c0u):0.0,
+                          mem_is_committed(0x007875bcu)?(double)MRF32(0x007875bcu):0.0,
+                          mem_is_committed(0x00864720u)?(double)MRF32(0x00864720u):0.0); }
                 { uint64_t host_us(void); uint32_t host_ms(void);
                   fprintf(stderr,"  [clock] frame %u: host_us=%llu  host_ms=%u\n",
                           g_present_no, (unsigned long long)host_us(), host_ms()); }
-                fprintf(stderr,"  [boot] frame %u  list=%08x  flag(83648c)=%u  (836498)=%08x\n",
+                fprintf(stderr,"  [preload] frame %u  list=%08x  flag(83648c)=%u  (836498)=%08x\n",
                         g_present_no, head,
-                        mem_is_committed(GA(0x0083648cu)) ? MR8(GA(0x0083648cu)) : 999u,
-                        mem_is_committed(GA(0x00836498u)) ? MR32(GA(0x00836498u)) : 0);
+                        mem_is_committed(0x0083648cu) ? MR8(0x0083648cu) : 999u,
+                        mem_is_committed(0x00836498u) ? MR32(0x00836498u) : 0);
                 if (head && mem_is_committed(head+0x40u)){
                     for (uint32_t q = 0; q < 0x40u; q += 4u){
                         uint32_t V = MR32(head+q);
@@ -2852,11 +3215,11 @@ int com_call(CPU *c, uint32_t magic){
                 }
             }
             /* FLOWLOG: read the game's own flow tracker.
-             * 0x86549c and 0x864f88 hold the NAME of the step currently running. */
+             * 0x86549c and 0x864f88 hold the NAME of the step running now. */
             if (ENVC("FLOWLOG") && (g_present_no % 500u) == 1u){
                 static char last[160] = {0};
                 char cur[160]; cur[0] = 0;
-                uint32_t gl[2] = { GA(0x0086549cu), GA(0x00864f88u) };
+                uint32_t gl[2] = { 0x0086549cu, 0x00864f88u };
                 for (int q = 0; q < 2; q++){
                     const char *t = "(?)";
                     if (mem_is_committed(gl[q]+3)){
@@ -2870,19 +3233,19 @@ int com_call(CPU *c, uint32_t magic){
                     snprintf(last, sizeof last, "%s", cur);
                     fprintf(stderr,"  [flow] frame %u: %s  flag(865498)=%u (8654a4)=%u\n",
                             g_present_no, cur,
-                            mem_is_committed(GA(0x00865498u))?MR8(GA(0x00865498u)):999u,
-                            mem_is_committed(GA(0x008654a4u))?MR32(GA(0x008654a4u)):999u);
+                            mem_is_committed(0x00865498u)?MR8(0x00865498u):999u,
+                            mem_is_committed(0x008654a4u)?MR32(0x008654a4u):999u);
                 }
             }
-            /* PRESENTBT: extract the structure of the main loop. */
+            /* PRESENTBT: work out the structure of the main loop. */
             { const char *pb = ENVC("PRESENTBT");
               static int nb = 0;
               if (pb && nb < 2 && g_present_no >= (uint32_t)atoi(pb)){ nb++;
                   fprintf(stderr,"  [main-loop] Present #%u:\n", g_present_no);
                   guest_backtrace(c, 26); } }
-            /* To measure the steady state: at the given frame reset coverage and start the
-             * sampler.  This way you see "what is spinning now", not "everything since
-             * startup". */
+            /* To measure the steady state: at the given frame, reset
+             * coverage and start the sampler.  That shows "what is running
+             * now" rather than "everything since startup". */
             { static int done = 0; const char *ra2 = ENVC("COVRESET_AT");
               uint32_t at = ra2 ? (uint32_t)atoi(ra2) : 0;
               if (!done && at && g_present_no >= at){ done = 1;
@@ -2892,11 +3255,11 @@ int com_call(CPU *c, uint32_t magic){
               }
             g_present++;
             { void vclock_tick(void); vclock_tick(); }
-            /* Since game speed = real fps / 60, throttle the frame to 60 Hz
-             * (DEFAULT: NO limiter; locked to 60 Hz with PACE60=1). */
+            /* Game speed = real fps / 60, so throttle the frame to 60 Hz
+             * (DEFAULT: NO throttle; PACE60=1 locks it to 60 Hz). */
             { void frame_pace(void); frame_pace(); }
-            /* COVRESET=<Present#>: reset coverage from that frame on so the report shows ONLY
-             * the code running in the steady state. */
+            /* COVRESET=<Present#>: reset coverage from that frame on so the
+             * report shows ONLY the code that runs in the steady state. */
             { const char *cr = ENVC("COVRESET");
               if (cr && g_present_no == (uint32_t)atoi(cr)){
                   void cov_reset(void); cov_reset();
@@ -2906,13 +3269,13 @@ int com_call(CPU *c, uint32_t magic){
             { extern int g_perflog; void perflog_guest_frame(void);
               if (g_perflog) perflog_guest_frame(); }
             { void mprot_rearm(void); mprot_rearm(); }
-            /* The game's own slot pools: if one runs out a red name is printed on screen.
-             * List 0x828538 (tail) -> +4 (previous) ... 0x828534. */
+            /* The game's own slot pools: an exhausted one prints its name in
+             * red on screen.  List 0x828538 (tail) -> +4 (previous) ... 0x828534. */
             if (ENVC("POOLS") && (g_present_no % 150) == 20){
                 fprintf(stderr,"  --- slot pools (list head 0x828530=%u) ---\n",
-                        mem_is_committed(GA(0x828530u)) ? MR32(GA(0x828530u)) : 0xFFFFFFFFu);
-                /* directly known pools: EventHandler (0x883e38), Event (0x883e34?) */
-                { uint32_t known[] = {GA(0x883e38u), GA(0x883e34u)};
+                        mem_is_committed(0x828530u) ? MR32(0x828530u) : 0xFFFFFFFFu);
+                /* pools known directly: EventHandler (0x883e38), Event (0x883e34?) */
+                { uint32_t known[] = {0x883e38u, 0x883e34u};
                   for (int q=0;q<2;q++){
                     if (!mem_is_committed(known[q]+4)) continue;
                     uint32_t po = MR32(known[q]);
@@ -2927,9 +3290,9 @@ int com_call(CPU *c, uint32_t magic){
                             known[q], nm3, MR32(po+0x24), MR32(po+0x2c), MR32(po+0x28),
                             MR32(po+8), MR32(po+0x10), MR32(po+0x18), MR32(po+0x1c));
                   } }
-                uint32_t n2 = mem_is_committed(GA(0x828538u)) ? MR32(GA(0x828538u)) : 0;
+                uint32_t n2 = mem_is_committed(0x828538u) ? MR32(0x828538u) : 0;
                 int guard2 = 0;
-                while (n2 && n2 != GA(0x828534u) && guard2++ < 400){
+                while (n2 && n2 != 0x828534u && guard2++ < 400){
                     if (!mem_is_committed(n2+0x2f)) break;
                     uint32_t nameptr = MR32(n2+0x0c);
                     uint32_t cap = MR32(n2+0x24), esz = MR32(n2+0x28), fr = MR32(n2+0x2c);
@@ -2939,7 +3302,7 @@ int com_call(CPU *c, uint32_t magic){
                             if (ch<32||ch>126){ nm2[q]=0; break; } nm2[q]=(char)ch; nm2[q+1]=0; }
                     if (cap && cap < 100000u)
                         fprintf(stderr,"    %-28s capacity=%-6u free=%-6u element=%u%s\n",
-                                nm2, cap, fr, esz, (fr==0)?"   <<< TUKENDI":"");
+                                nm2, cap, fr, esz, (fr==0)?"   <<< EXHAUSTED":"");
                     n2 = MR32(n2+4);
                 }
             }
@@ -2960,13 +3323,13 @@ int com_call(CPU *c, uint32_t magic){
                     }
                 }
             }
-            /* RESETAT=<frame>: produce a device loss at that frame (test) */
-            { const char *ra = ENVC("RESETAT");   /* several frames separated by commas */
+            /* RESETAT=<frame>: cause a device loss at that frame (test) */
+            { const char *ra = ENVC("RESETAT");   /* several frames, comma-separated */
               int hitr = 0;
               for (const char *q = ra; q && *q; ){ if ((uint32_t)atoi(q) == g_present_no) hitr = 1;
                   while (*q && *q != ',') q++; if (*q) q++; }
               if (hitr){
-                  fprintf(stderr,"com: RESETAT: device loss at frame %u\n", g_present_no);
+                  fprintf(stderr,"com: RESETAT: device lost at frame %u\n", g_present_no);
                   com_request_reset(); } }
             r=0;
             if (atomic_load(&g_lost)){ r = 0x88760868u;   /* D3DERR_DEVICELOST */
@@ -2974,11 +3337,12 @@ int com_call(CPU *c, uint32_t magic){
             }
         else if (MID(StretchRect)){
             /* (this, pSrcSurface, pSrcRect, pDstSurface, pDstRect, Filter)
-             * HAD NEVER BEEN IMPLEMENTED (measured: 2261 calls in a session).  The game
-             * copies the scene from the back buffer into a texture with this; the
-             * post-process (bleach bypass / motion blur / DOF) reads from that texture.
-             * Without the copy the source stayed empty and the composite produced
-             * BLACK -- this was why the main menu went completely dark at high detail.
+             * had NEVER been implemented (measured: 2261 calls in a session).
+             * The game uses it to copy the scene from the back buffer into a
+             * texture; post-processing (bleach bypass / motion blur / DOF)
+             * reads from that texture.  Without the copy the source stayed
+             * empty and the composite came out BLACK -- that was why the main
+             * menu went completely dark at high detail.
              * Surface layout: +28 = Metal texture id, +40 = origin
              * (1 = back buffer, 2 = texture surface, 4 = active target). */
             uint32_t ss=A(c,1), ds=A(c,3);
@@ -2989,13 +3353,32 @@ int com_call(CPU *c, uint32_t magic){
                 if (nb2 < 8){ nb2++;
                     uint32_t so=(ss&&mem_is_committed(ss+43))?MR32(ss+40):0;
                     uint32_t doo=(ds&&mem_is_committed(ds+43))?MR32(ds+40):0;
-                    fprintf(stderr,"  [blit] source tex=%u origin=%u (%ux%u) -> dest tex=%u origin=%u (%ux%u)\n",
+                    fprintf(stderr,"  [blit] source tex=%u origin=%u (%ux%u) -> target tex=%u origin=%u (%ux%u)\n",
                             stex, so, ss?MR32(ss+4):0, ss?MR32(ss+8):0,
                             dtex, doo, ds?MR32(ds+4):0, ds?MR32(ds+8):0); }
             }
+            /* A source rectangle (the cover shoot's picture, 0x5C3120: the
+             * middle of the screen) is in the screen the game believes it has
+             * (g_req_w x g_req_h), whose 640x480 menus res_pick shows in the
+             * middle of the back buffer, ws_ui_x/y of its size: one from the
+             * back buffer is mapped the same way.  The destination is whole. */
+            uint32_t srp = A(c,2);
+            int sr[4], *srq = NULL;
+            if (srp && mem_is_committed(srp+15)){
+                for (int k = 0; k < 4; k++) sr[k] = (int)MR32(srp + 4u*(uint32_t)k);
+                uint32_t so = (ss && mem_is_committed(ss+43)) ? MR32(ss+40) : 0;
+                if (so == 1u && g_req_w && g_req_h){
+                    float ux = ws_ui_x(), uy = ws_ui_y();
+                    for (int k = 0; k < 4; k += 2){
+                        sr[k]   = (int)lroundf((float)g_bb_w * (0.5f + ((float)sr[k]   / (float)g_req_w - 0.5f) * ux));
+                        sr[k+1] = (int)lroundf((float)g_bb_h * (0.5f + ((float)sr[k+1] / (float)g_req_h - 0.5f) * uy));
+                    }
+                }
+                srq = sr;
+            }
             if (metal_available() && (stex || dtex) && stex != dtex){
-                void metal_blit(unsigned,unsigned);
-                metal_blit(stex, dtex);
+                void metal_blit_rect(unsigned,unsigned,const int*);
+                metal_blit_rect(stex, dtex, srq);
             }
             r=0; }
         else if (MID(SetRenderTarget)){
@@ -3009,13 +3392,14 @@ int com_call(CPU *c, uint32_t magic){
             }
             /* (this, RenderTargetIndex, pRenderTarget) */
             uint32_t idx=A(c,1), surf=A(c,2);
+            if (idx < 4u) bind_set(&g_bind_rt[idx], surf);
             if (idx==0 && metal_available()){
                 uint32_t tid = (surf && mem_is_committed(surf+35)) ? MR32(surf+28) : 0;
                 { static uint64_t org[8]; static int shown=0;
                   uint32_t o5 = (surf && mem_is_committed(surf+43)) ? MR32(surf+40) : 7;
                   if (o5 < 8) org[o5]++;
                   if (ENVC("RTLOG") && !shown && (org[0]+org[1]+org[2]+org[3]+org[4]+org[7]) % 400 == 0){
-                    fprintf(stderr,"  [RT] origin counter: none=%llu backbuf=%llu surfaceLvl=%llu"
+                    fprintf(stderr,"  [RT] origin counts: none=%llu backbuf=%llu surfaceLvl=%llu"
                             " created=%llu getRT=%llu unknown=%llu\n",
                             (unsigned long long)org[0],(unsigned long long)org[1],
                             (unsigned long long)org[2],(unsigned long long)org[3],
@@ -3029,7 +3413,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetTransform)){
             static int nt=0;
             uint32_t ty=A(c,1), mp=A(c,2);
-            /* XFORMAT=<frame>: ALL SetTransform calls in that frame only. */
+            /* XFORMAT=<frame>: ALL SetTransform calls of that frame only. */
             { static long xa = -2; if (xa == -2){ const char *e = ENVC("XFORMAT"); xa = e ? atol(e) : -1; }
               if (xa >= 0 && (long)g_present_no == xa && mp && mem_is_committed(mp+63)){
                 const char *tn = ty==2?"VIEW":(ty==3?"PROJECTION":(ty==256?"WORLD":"?"));
@@ -3040,7 +3424,7 @@ int com_call(CPU *c, uint32_t magic){
                             MRF32(mp+rw*16+8), MRF32(mp+rw*16+12)); } }
             if (ENVC("XFORM") && nt<9 && mp && mem_is_committed(mp+63)){ nt++;
                 const char *tn = ty==2?"VIEW":(ty==3?"PROJECTION":(ty==256?"WORLD":"?"));
-                fprintf(stderr,"  [SetTransform] tip=%u(%s)\n", ty, tn);
+                fprintf(stderr,"  [SetTransform] type=%u(%s)\n", ty, tn);
                 for (int rw=0; rw<4; rw++)
                     fprintf(stderr,"      %10.4f %10.4f %10.4f %10.4f\n",
                             MRF32(mp+rw*16), MRF32(mp+rw*16+4),
@@ -3075,16 +3459,16 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetVertexDeclaration)){ g_cur_decl=A(c,1); g_raw_decl=g_cur_decl; r=0; }
         else if (MID(Reset)){
             /* (this, D3DPRESENT_PARAMETERS*)
-             * The game resets the device when it changes resolution/graphics detail.
-             * This method HAD NEVER been implemented; changing settings crashed. */
+             * The game resets the device when resolution/graphics detail changes.
+             * This method had NEVER been implemented; changing a setting crashed. */
             uint32_t pp3=A(c,1);
             if (pp3 && mem_is_committed(pp3+7)){
                 uint32_t w3=MR32(pp3), h3=MR32(pp3+4);
                 fprintf(stderr,"  [D3D] Reset: %ux%u\n", w3, h3);
                 if (w3 > 8192u || h3 > 8192u) w3 = h3 = 0;   /* garbage size */
-                /* The SAME rule as CreateDevice must be applied: Reset used to pass the raw value
-                 * through, so when the resolution was changed in-game the image got
-                 * blurry again. */
+                /* The SAME rule as CreateDevice must apply: Reset used to
+                 * pass the raw value through, so changing the resolution
+                 * in game made the picture blurry again. */
                 if (w3 && h3){ uint32_t d3w = w3, d3h = h3;
                     res_pick(w3, h3, &d3w, &d3h); w3 = d3w; h3 = d3h; }
                 if (w3 && h3){ g_bb_w = w3; g_bb_h = h3; }
@@ -3094,28 +3478,29 @@ int com_call(CPU *c, uint32_t magic){
                                             metal_resize(w3,h3); } }
             }
             g_resets++;
-            /* The game must have released all render targets before Reset (the D3D9 rule);
-             * release them on the Metal side too, otherwise every resolution change
-             * leaked all of them. */
+            /* The game must have released every render target before Reset
+             * (D3D9 rule); release them on the Metal side too, otherwise every
+             * resolution change leaked all of them. */
             if (metal_available()){ void metal_reset_rts(void); metal_reset_rts(); }
             if (atomic_exchange(&g_lost, 0))
                 fprintf(stderr,"com: device loss closed by Reset (TCL %lu calls)\n", g_tcl_n);
-            /* After Reset the state returns to defaults.  D3D9: target 0 returns to the back
-             * buffer, the Z surface to the IMPLICIT Z (EnableAutoDepthStencil), and the
-             * game relies on this and never sets them again.  Previously the last
-             * target/Z stayed as they were on the Metal side.  The fullscreen transition
-             * catches Reset MID-FRAME through the device-loss path: at that moment a draw
-             * to texture 7 without Z (NULL) was in progress (measured).  Afterwards the
-             * main scene was drawn without a Z test -> the car inside-out, the ground
-             * reflection black.  Old behavior: NORTRESET=1 (3/3 broken). */
+            /* After Reset the state returns to defaults.  D3D9: target 0 goes
+             * back to the back buffer, the Z surface to the IMPLICIT Z
+             * (EnableAutoDepthStencil), and the game relies on that and never
+             * sets either again.  On the Metal side the last target/Z used to
+             * stay as it was.  The fullscreen switch hits Reset MID-FRAME via
+             * the device-loss path: at that moment a draw into texture 7 with
+             * no Z (NULL) was in progress (measured).  Afterwards the main
+             * scene was drawn without a Z test -> car inside out, ground
+             * reflection black.  Old behaviour: NORTRESET=1 (3/3 broken). */
             if (g_cur_zid != 1u)
                 fprintf(stderr, "com: Reset: bound Z surface %u -> implicit Z\n", g_cur_zid);
-            /* D3D9 Reset returns ALL device state (render/sampler/stage states) to the
-             * defaults and the game relies on this: it pulls its own state shadow back
-             * to the defaults too and never rewrites the states it thinks are "already
-             * like that".  We kept the old values (if Reset hit mid-frame the state of
-             * the current pass leaked).  No visible difference in the measured runs; it
-             * is required by the D3D9 rule. */
+            /* D3D9 Reset returns ALL device state (render/sampler/stage
+             * states) to defaults and the game relies on it: it resets its
+             * own state shadow too and never writes again the states it
+             * thinks are "already set".  We kept the old values (a Reset
+             * landing mid-frame leaked the current pass's state).  No
+             * visible difference in the measured runs; done per the D3D9 rule. */
             if (!ENVC("NORSRESET")){
                 memset(g_rs, 0, sizeof g_rs); g_rs_init = 0; g_rs_dirty = 1;
                 memset(g_smp_raw, 0, sizeof g_smp_raw);
@@ -3124,36 +3509,46 @@ int com_call(CPU *c, uint32_t magic){
                 if (metal_available()){ rs_apply(); g_rs_dirty = 0; }
             }
             if (g_cur_rt)
-                fprintf(stderr, "com: Reset: bound render target texture %u -> back buffer\n", g_cur_rt);
+                fprintf(stderr, "com: Reset: bound render target tex %u -> back buffer\n", g_cur_rt);
             if (!ENVC("NORTRESET")){
             g_cur_zid = 1;
             if (metal_available()){ void metal_set_zsurf(unsigned); metal_set_zsurf(1);
                                     metal_set_render_target(0); } }
             g_cur_tex = 0; g_cur_rt = 0; g_cur_ps_id = 0;
             for (int q6=0;q6<4;q6++) g_tex_stage[q6]=0;
+            /* v12na: Reset also unbinds every texture, stream, index buffer,
+             * render target and Z surface (D3D9), so the device's references
+             * go and the game's releases can free them. */
+            if (com_frees()){
+                for (int q8 = 0; q8 < 8; q8++){ g_raw_tex[q8] = 0; bind_set(&g_bind_tex[q8], 0); }
+                for (int q8 = 0; q8 < 4; q8++){ bind_set(&g_bind_vb[q8], 0); bind_set(&g_bind_rt[q8], 0); }
+                bind_set(&g_bind_ib, 0); bind_set(&g_bind_ds, 0);
+                g_ss_vb = 0; g_ib_obj = 0;
+            }
             r=0; }
         else if (MID(SetFVF)){ g_cur_fvf=A(c,1); g_raw_fvf=g_cur_fvf; r=0; }
         else if (MID(CreateTexture)){
             /* (this,W,H,Levels,Usage,Format,Pool,ppTex,pShared) */
             uint32_t w=A(c,1), h=A(c,2), lev=A(c,3), usage=A(c,4), fmt=A(c,5), pool=A(c,6);
-            /* With NFSRES active the game creates its post-process targets at the resolution
-             * it THINKS it has (1280x1024).  The scene is drawn at 1920x1080, then copied
-             * into that small target and scaled back up: both a resolution loss and a
-             * scaled blit.  Pulling the fullscreen targets to the device size makes the
-             * chain 1:1 from start to end. */
+            /* With NFSRES active the game creates its post-processing
+             * targets at the resolution IT believes in (1280x1024).  The
+             * scene is drawn at 1920x1080, then copied into that smaller
+             * target and scaled back up: both a resolution loss and a scaled
+             * blit.  Pulling full-screen targets to the device size makes
+             * the chain 1:1 from start to end. */
             if ((usage & 1u) && g_req_w && w == g_req_w && h == g_req_h){
                 static int sr4 = 0;
                 if (sr4 < 3){ sr4++;
                     fprintf(stderr,"  [RT-tex] %ux%u -> %ux%u (NFSRES)\n", w,h,g_bb_w,g_bb_h); }
                 w = g_bb_w; h = g_bb_h;
             }
-            uint32_t pp=A(c,7); uint32_t t=com_new(IF_TEX,64);
+            uint32_t pp=A(c,7); uint32_t t=com_new(IF_TEX,160);   /* +64..+103: child surfaces */
             MR32(t+4)=w; MR32(t+8)=h; MR32(t+20)=fmt; MR32(t+24)=lev?lev:1u;
-            /* HD build: reflection targets grow in Metal, the game keeps seeing the old size
-             * (not compiled into the original build). */
+            /* HD build: reflection targets grow in Metal while the game keeps
+             * seeing the old size (not compiled in the original build). */
             uint32_t mw = w, mh = h, mlev = lev ? lev : 1u;
             int ekind = (usage & 1u) ? enh_rt_size(c->eip, g_bb_w, g_bb_h, &mw, &mh) : ENH_NONE;
-            /* Road reflection: a full mip chain for the blur pass (see enhance.c). */
+            /* Road reflection: full mip chain for the blur pass (see enhance.c). */
             if (ekind == ENH_ROAD){ mlev = 1u; for (uint32_t q = mw > mh ? mw : mh; q > 1u; q >>= 1) mlev++; }
             if (metal_available()){
                 /* D3DUSAGE_RENDERTARGET = 1 */
@@ -3169,6 +3564,7 @@ int com_call(CPU *c, uint32_t magic){
                     if (sr3<6){ sr3++;
                         fprintf(stderr,"  [RT-tex] %ux%u fmt=%u levels=%u -> id=%u\n",
                                 w,h,fmt,lev?lev:1u,tid); } }
+                if (tid && !(usage & 1u)) texrep_created(tid, w, h, mlev, fmt, usage, pool);
                 if (!tid){ g_tex_fail++;
                     static uint32_t bad[16]; static int nb=0; int seen=0;
                     for (int q=0;q<nb;q++) if (bad[q]==fmt) seen=1;
@@ -3193,10 +3589,10 @@ int com_call(CPU *c, uint32_t magic){
             if(pp) MR32(pp)=t; r=0; }
         else if (MID(CreateCubeTexture)){
             /* (this, EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pShared)
-             * An empty COM object used to be returned: no size/format, no Metal texture
-             * -> garbage values were read in the reflection path. */
+             * Used to return an empty COM object: no size/format, no Metal
+             * texture -> the reflection path read garbage values. */
             uint32_t edge=A(c,1), lev=A(c,2), usage=A(c,3), fmt=A(c,4), pp=A(c,6);
-            uint32_t t2=com_new(IF_TEX,160);        /* wide enough for face buffers */
+            uint32_t t2=com_new(IF_TEX,160);        /* wide enough for the face buffers */
             if (!edge || edge > 4096u) edge = 256u;
             MR32(t2+4)=edge; MR32(t2+8)=edge; MR32(t2+20)=fmt?fmt:22u;
             MR32(t2+24)=lev?lev:1u;
@@ -3204,37 +3600,40 @@ int com_call(CPU *c, uint32_t magic){
             if (usage & 1u) enh_rt_size(c->eip, g_bb_w, g_bb_h, &medge, &medge2);
             if (metal_available()){
                 unsigned metal_create_texture_cube(unsigned,unsigned,unsigned,unsigned);
-                /* A cube texture is ALWAYS a render target: the game draws the environment map to
-                 * the six faces and then samples it. */
+                /* A cube texture is ALWAYS a render target: the game draws the
+                 * environment map into the six faces and then samples it. */
                 MR32(t2+28)= getenv("NOCUBE")
                     ? metal_create_texture_ex(medge,medge,lev?lev:1u,fmt?fmt:22u,1u)
                     : metal_create_texture_cube(medge,lev?lev:1u,fmt?fmt:22u,1u);
             }
-            if (ENVC("CUBELOG")) fprintf(stderr,"  [cube] CreateCubeTexture edge=%u levels=%u usage=0x%x format=%u pool=%u -> metal %u\n",
-                                          edge, lev, usage, fmt, A(c,5), MR32(t2+28));
-            cube_mark(t2);                          /* CUBE TEXTURE registry */
+            cube_mark(t2);                          /* CUBE TEXTURE record */
             if(pp) MR32(pp)=t2; r=0; }
         else if (MID(GetCubeMapSurface)){
             /* (this, FaceType, Level, ppCubeMapSurface) */
-            uint32_t self2=A(c,0), pp=A(c,3); uint32_t sf=com_new(IF_SURF,64);
+            uint32_t self2=A(c,0), pp=A(c,3); uint32_t sf=tex_child(self2, A(c,1) < 6u ? A(c,1) : 0u, A(c,2), 1);
+            if (!sf){ if(pp) MR32(pp)=0; r=0x8007000Eu; goto cube_done; }
+            com_addref(self2);
             MR32(sf+40)=2;
-            /* +44: FACE index + 1 (0 = not a cube face).  SetRenderTarget packs it into the
-             * target field; otherwise the six faces are drawn on top of each other into
-             * the same texture. */
+            /* +44: FACE index + 1 (0 = not a cube surface).  SetRenderTarget
+             * packs this into the target field; otherwise all six faces are
+             * drawn on top of each other into the same texture. */
             { uint32_t face = A(c,1); MR32(sf+44) = (face < 6u) ? face + 1u : 1u; }
             if (self2 && mem_is_committed(self2+31)){
                 MR32(sf+4)=MR32(self2+4); MR32(sf+8)=MR32(self2+8);
                 MR32(sf+20)=MR32(self2+20); MR32(sf+28)=MR32(self2+28);
             }
-            if(pp) MR32(pp)=sf; r=0; }
-        else if (MID(CreateVolumeTexture)){ uint32_t pp=A(c,8); if(pp) MR32(pp)=com_new(IF_TEX,64); r=0; }
+            if(pp) MR32(pp)=sf; r=0;
+          cube_done:; }
+        else if (MID(CreateVolumeTexture)){ uint32_t pp=A(c,8); if(pp) MR32(pp)=com_new(IF_TEX,160); r=0; }   /* same layout as 2D (child slots) */
         else if (MID(CreateVertexBuffer)){
             uint32_t pp=A(c,5); uint32_t b=com_new(IF_VB,64);
             MR32(b+4)=A(c,1); MR32(b+8)=gbuf_alloc(A(c,1)?A(c,1):64);
+            MR32(b+48)=buf_serial();        /* mirror generation: unique even if the address is reused */
             if(pp) MR32(pp)=b; r=0; }
         else if (MID(CreateIndexBuffer)){
             uint32_t pp=A(c,5); uint32_t b=com_new(IF_IB,64);
             MR32(b+4)=A(c,1); MR32(b+8)=gbuf_alloc(A(c,1)?A(c,1):64);
+            MR32(b+48)=buf_serial();
             MR32(b+12)=A(c,3);              /* Format: 101=16bit, 102=32bit */
             if(pp) MR32(pp)=b; r=0; }
         else if (MID(CreateRenderTarget)){
@@ -3247,37 +3646,39 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(CreateDepthStencilSurface)){
             uint32_t pp=A(c,7); uint32_t sf=com_new(IF_SURF,64);
             MR32(sf+4)=A(c,1); MR32(sf+8)=A(c,2); MR32(sf+20)=A(c,3); MR32(sf+40)=5;
-            /* Z surface id (metal.m g_ztex): 1 implicit, >=2 created. */
-            /* On Reset the game recreates its surfaces; when the table fills up wrap around
-             * (the old ones have been released by then), have the texture reset. */
-            static uint32_t next_zid = 2;
-            if (next_zid >= 64u) next_zid = 2;
-            uint32_t zid = next_zid++;
+            /* Z surface id (metal.m g_ztex): 1 implicit, >=2 created.
+             * Never a live surface's id, and a released one only three
+             * presents later (zid_take); the texture is reset below. */
+            uint32_t zid = zid_take();
             MR32(sf+52) = zid; MR32(sf+56) = ZSURF_MAGIC;
             if (metal_available()){ void metal_z_forget(unsigned); metal_z_forget(zid); }
             if(pp) MR32(pp)=sf; r=0; }
         else if (MID(CreateOffscreenPlainSurface)){ uint32_t pp=A(c,5); if(pp) MR32(pp)=com_new(IF_SURF,64); r=0; }
-        else if (MID(GetBackBuffer)){ uint32_t pp=A(c,4); uint32_t sf=com_new(IF_SURF,64);
-            MR32(sf+4)=g_bb_w; MR32(sf+8)=g_bb_h; MR32(sf+20)=22u;
-            MR32(sf+40)=1; if(pp) MR32(pp)=sf; r=0; }
-        else if (MID(GetRenderTarget)||MID(GetDepthStencilSurface)){
-            /* These surfaces must also carry the real back buffer size; otherwise GetDesc
-             * returns 0. */
-            uint32_t pp=A(c, nargs-1); uint32_t sf=com_new(IF_SURF,64);
-            MR32(sf+40)=4; MR32(sf+28)=g_cur_rt;   /* return the active target */
-            MR32(sf+4)=g_bb_w; MR32(sf+8)=g_bb_h; MR32(sf+20)=22u;
-            if (MID(GetDepthStencilSurface)){
-                /* return the active Z surface (the game binds it back later with
-                 * SetDepthStencilSurface) */
-                MR32(sf+28)=0; MR32(sf+20)=80u;
-                MR32(sf+52)=g_cur_zid; MR32(sf+56)=ZSURF_MAGIC;
-            }
+        else if (MID(GetBackBuffer)){ uint32_t pp=A(c,4); uint32_t sf=bb_surface();
+            if (sf) com_addref(sf);
+            if(pp) MR32(pp)=sf; r=0; }
+        else if (MID(GetRenderTarget)){
+            /* v12na: the surface that is bound (D3D9), with a reference; the
+             * back buffer for target 0 when nothing else is.  Each call used
+             * to create a new surface object. */
+            uint32_t idx=A(c,1), pp=A(c,2), sf = idx < 4u ? g_bind_rt[idx] : 0u;
+            if (!sf && idx == 0u) sf = bb_surface();
+            if (sf){ com_addref(sf); r=0; } else r=0x88760866u;   /* D3DERR_NOTFOUND */
+            if(pp) MR32(pp)=sf; }
+        else if (MID(GetDepthStencilSurface)){
+            /* The bound Z surface; before any SetDepthStencilSurface the
+             * implicit one, after SetDepthStencilSurface(NULL) a "no depth"
+             * surface the game can bind back (it does). */
+            uint32_t pp=A(c,1), sf=g_bind_ds;
+            if (!sf) sf = z_surface(g_cur_zid ? 1u : 0u);
+            if (sf) com_addref(sf);
             if(pp) MR32(pp)=sf; r=0; }
         else if (MID(SetDepthStencilSurface)){
             /* (this, pNewZStencil).  NULL -> Z test/write disabled. */
             uint32_t sf=A(c,1), zid=0;
+            bind_set(&g_bind_ds, sf);
             if (sf){
-                zid = 1;   /* unrecognized surface: implicit */
+                zid = 1;   /* unrecognised surface: implicit */
                 if (mem_is_committed(sf+59) && MR32(sf+56)==ZSURF_MAGIC) zid = MR32(sf+52);
             }
             g_cur_zid = zid;
@@ -3305,6 +3706,11 @@ int com_call(CPU *c, uint32_t magic){
                 }
               } }
             uint32_t h=com_new(IF_VDECL,32);
+            /* Declarations and shaders are kept for the session: the GPU
+             * vertex-shader cache (gpuvs_id) and the compiled programs are
+             * keyed by them, and a reused address would hit a stale entry.
+             * The game creates them once (79 + 68 objects). */
+            CH_FLAGS(h) |= CF_DEVICE;
             uint32_t n=0;
             if (el){
                 for(; n<64; n++){
@@ -3317,10 +3723,14 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t copy = bytes ? gbuf_alloc(bytes) : 0;
             if (copy && el) memcpy(g_mem+copy, g_mem+el, bytes);
             MR32(h+4)=copy; MR32(h+8)=bytes;
+#ifdef __wasm__
+            if (wgsl_dump_on() && copy) wgsl_dump_decl(h, g_mem+copy, bytes);
+#endif
             if(pp) MR32(pp)=h; r=0; }
         else if (MID(CreateVertexShader)||MID(CreatePixelShader)){
             uint32_t fn=A(c,1), pp=A(c,2);
             uint32_t h=com_new(IF_VSHADER,32);
+            CH_FLAGS(h) |= CF_DEVICE;                   /* kept: see CreateVertexDeclaration */
             /* scan the shader token stream: up to the 0x0000FFFF END token */
             uint32_t sz=0;
             if (fn){ uint32_t k=0;
@@ -3332,8 +3742,8 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t copy = sz ? gbuf_alloc(sz) : 0;
             if (copy && fn) memcpy(g_mem+copy, g_mem+fn, sz);
             MR32(h+4)=copy; MR32(h+8)=sz; MR32(h+12)=0;
-            /* PSDUMP: pixel shaders use the same token format too; compile and disassemble
-             * them to see WHAT they do. */
+            /* PSDUMP: pixel shaders use the same token format; compile and
+             * disassemble them to see WHAT they do. */
             if (MID(CreatePixelShader) && copy && sz >= 8 && ENVC("PSDUMP")){
                 static int pn = 0;
                 if (pn < atoi(ENVC("PSDUMP"))){
@@ -3345,70 +3755,85 @@ int com_call(CPU *c, uint32_t magic){
                         vs_disasm(pp2, stderr);
                         { static char msl[16384];
                           int len = ps_to_msl(pp2, pn, msl, sizeof msl);
-                          if (len > 0) fprintf(stderr, "--- URETILEN MSL ---\n%s\n", msl);
-                          else fprintf(stderr, "--- MSL could not be generated ---\n"); }
+                          if (len > 0) fprintf(stderr, "--- GENERATED MSL ---\n%s\n", msl);
+                          else fprintf(stderr, "--- MSL not generated ---\n"); }
                     }
                 }
             }
             /* Translate the pixel shader to MSL and register it with Metal:
-             * the game's own shader runs EXACTLY on the GPU. */
+             * the game's own shader runs on the GPU UNCHANGED. */
             if (MID(CreatePixelShader) && copy && sz >= 8){
                 VSProg *pp3 = vs_compile((const uint32_t *)(g_mem+copy), sz/4u);
                 if (pp3){
-                    static char msl[16384];
+                    static char msl[SHADER_TEXT_CAP];
                     int id = ++g_psn;
                     void metal_register_ps(int, const char *);
-                    if (ps_to_msl(pp3, id, msl, sizeof msl) > 0){
-                        { const char *pm = ENVC("PSMSL");   /* PSMSL=<id>[,<id>...] */
-                          for (const char *q = pm; q && *q; ){ while (*q == ',') q++;
-                              if (atoi(q) == id){ fprintf(stderr, "--- MSL ps %d ---\n", id); vs_disasm(pp3, stderr);
-                                                  fprintf(stderr, "%s\n", msl); break; }
-                              while (*q && *q != ',') q++; } }
+#ifdef __wasm__
+                    if (wgsl_dump_on()) wgsl_dump_obj("ps", id, g_mem+copy, sz, pp3);
+                    int pl = ps_to_wgsl(pp3, id, msl, sizeof msl);
+                    if (wgsl_dump_on()) wgsl_dump_ps(id, id, msl, pl);
+#else
+                    int pl = ps_to_msl(pp3, id, msl, sizeof msl);
+#endif
+                    if (pl > 0){
                         metal_register_ps(id, msl);
                         MR32(h+12) = (uint32_t)id;
                     }
-                    /* CUBE VARIANT (id + PSCUBE): in D3D9 ps_1_x doesn't declare the texture TYPE, the
-                     * type comes from the binding.  The car environment map binds a cube
-                     * texture to stage 0; if a shader expecting texture2d is bound to the
-                     * same slot, Metal rejects the draw (validateCommonDrawErrors).
-                     * The variant is selected at draw time based on the bound texture. */
-                    if (id < PSCUBE &&
-                        ps_to_msl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u) > 0){
-                        /* PSMSL=<id>: write the MSL of that id (including the cube variant) */
-                        if (ENVC("PSMSL") && atoi(ENVC("PSMSL")) == id + PSCUBE)
-                            fprintf(stderr, "--- MSL ps %d ---\n%s\n", id + PSCUBE, msl);
-                        metal_register_ps(id + PSCUBE, msl);
+                    /* CUBE VARIANT (id + PSCUBE): in D3D9, ps_1_x does not
+                     * declare the texture TYPE; the type comes from the
+                     * binding.  The car environment map binds a cube texture
+                     * to stage 0; if a shader expecting texture2d is bound
+                     * to that slot, Metal rejects the draw
+                     * (validateCommonDrawErrors).  The variant is chosen at
+                     * draw time from the bound texture. */
+#ifdef __wasm__
+                    if (id < PSCUBE){
+                        int cl = ps_to_wgsl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u);
+                        if (wgsl_dump_on()) wgsl_dump_ps(id + PSCUBE, id, msl, cl);
+                        if (cl > 0) metal_register_ps(id + PSCUBE, msl);
                     }
-                    /* the program is kept: the HD reflection separation and post-process chain variants
-                     * are generated at draw time, when needed */
+#else
+                    if (id < PSCUBE &&
+                        ps_to_msl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u) > 0)
+                        metal_register_ps(id + PSCUBE, msl);
+#endif
+#if NFS_ENHANCED
+                    /* HD: the reflection-split variant is generated at draw
+                     * time when needed (com_ps_refl_variant); the program is kept. */
                     if (id < PSCUBE && !g_psprog[id]) g_psprog[id] = pp3;
-                    else vs_free(pp3);
+                    else
+#endif
+                    vs_free(pp3);
                 }
             }
             if (MID(CreateVertexShader) && copy && sz >= 8 && g_vsprogn < MAXVS){
                 VSProg *vp2 = vs_compile((const uint32_t *)(g_mem+copy), sz/4u);
                 if (vp2){ g_vsprog[g_vsprogn] = vp2; MR32(h+12) = g_vsprogn++;
+#ifdef __wasm__
+                    if (wgsl_dump_on()) wgsl_dump_obj("vs", (int)g_vsprogn - 1, g_mem+copy, sz, vp2);
+#endif
                     if (ENVC("VSDUMP")){
                         static int vd2 = 0;
                         if (vd2 < atoi(ENVC("VSDUMP")) && vs_ninstr(vp2) >= 10u){ vd2++;
                             static int dcl[16][2];
                             for (int q7=0;q7<16;q7++){ dcl[q7][0]=-1; dcl[q7][1]=0; }
                             dcl[0][0]=0;  dcl[0][1]=2;    /* pos  FLOAT3 @0  */
-                            dcl[1][0]=12; dcl[1][1]=4;    /* color D3DCOLOR  */
+                            dcl[1][0]=12; dcl[1][1]=4;    /* col  D3DCOLOR   */
                             dcl[2][0]=16; dcl[2][1]=1;    /* uv   FLOAT2     */
                             static char msl2[24576];
                             int L2 = vs_to_msl(vp2, (int)g_vsprogn, dcl, msl2, sizeof msl2);
                             fprintf(stderr,"--- VERTEX SHADER #%u (%u instructions) MSL ---\n%s\n",
-                                    g_vsprogn, vs_ninstr(vp2), L2>0?msl2:"(could not be generated)");
+                                    g_vsprogn, vs_ninstr(vp2), L2>0?msl2:"(not generated)");
                         }
                     }
                 }
             }
             if(pp) MR32(pp)=h; r=0; }
         else if (MID(BeginStateBlock)){
-            /* D3D9: a nested Begin IS INVALID (the second returns D3DERR_INVALIDCALL).  The game
-             * does this (845 and 846 back to back in the trace); counting the second as a
-             * new block made the outer block get lost. */
+            /* D3D9: a nested Begin is INVALID (the second returns
+             * D3DERR_INVALIDCALL).  The game does it (845 and 846 back to
+             * back in the trace); counting the second as a new block lost
+             * the outer one. */
             if (g_sb_rec) r=0x8876086Cu;          /* D3DERR_INVALIDCALL */
             else {
                 int slot = 0;
@@ -3419,8 +3844,8 @@ int com_call(CPU *c, uint32_t magic){
                 r=0;
             } }
         else if (MID(CreateStateBlock)){
-            /* Captures a predefined set (D3DSBT_ALL etc.).  Never used in the trace; we leave
-             * an empty block. */
+            /* Captures a predefined set (D3DSBT_ALL etc.).  Never used in
+             * the trace; we leave an empty block. */
             uint32_t pp=A(c,2);
             if(pp){ uint32_t o=com_new(IF_STATEBLOCK,32); MR32(o+8)=0; MR32(pp)=o; }
             r=0; }
@@ -3433,7 +3858,9 @@ int com_call(CPU *c, uint32_t magic){
             if(pp) MR32(pp)=o;
             r=0; }
         else if (MID(CreateAdditionalSwapChain)){ uint32_t pp=A(c,2); if(pp) MR32(pp)=com_new(IF_SWAPCHAIN,32); r=0; }
-        else if (MID(GetSwapChain)){ uint32_t pp=A(c,2); if(pp) MR32(pp)=com_new(IF_SWAPCHAIN,32); r=0; }
+        else if (MID(GetSwapChain)){ uint32_t pp=A(c,2), sc = dev_surface_kind(&g_swap0, IF_SWAPCHAIN);
+            if (sc) com_addref(sc);
+            if(pp) MR32(pp)=sc; r=0; }
         else if (MID(GetNumberOfSwapChains)) r=1;
         else if (!strncmp(nm,"Get",3) && nargs>=2){
             /* fill the output parameter with a safe default */
@@ -3453,28 +3880,29 @@ int com_call(CPU *c, uint32_t magic){
             if (p && p < 0xE0000000u){ mem_commit(p,sz); memset(g_mem+p,0,sz); }
             if (MID(GetViewport) && p){ MR32(p+8)=1280; MR32(p+12)=720; MRF32(p+20)=1.0f; }
             r=0; }
-        else r=0;                        /* the remaining Set* -> D3D_OK */
+        else r=0;                        /* remaining Set* -> D3D_OK */
     }
     /* --- resources --- */
     else if (iface==IF_TEX || iface==IF_VB || iface==IF_IB || iface==IF_SURF){
         uint32_t self=A(c,0);
-        if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; r=0; }
+        if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; com_addref(g_dev); r=0; }   /* D3D9: a reference */
         else if (MID(Lock)){
             uint32_t off=A(c,1), sz=A(c,2), pp=A(c,3);
-            /* PERSISTENT POOL: the content may change -> let the mirror generation advance and
-             * the buffer count as "volatile" for a few frames (see dip_indexed). */
+            /* PERSISTENT POOL: the contents may change -> advance the mirror
+             * generation and treat the buffer as "volatile" for a few frames
+             * (see dip_indexed). */
             if (self && (iface==IF_VB || iface==IF_IB)){
                 MR32(self+48) = MR32(self+48) + 1u; MR32(self+52) = (uint32_t)g_present; }
             uint32_t base = self?MR32(self+8):0;
             if(!base){ base=gbuf_alloc(sz?sz:65536); if(self) MR32(self+8)=base; }
             if(pp) MR32(pp)=base+off; r=0; }
         else if (MID(LockRect)){
-            /* 2D texture : (Level, pLockedRect, pRect, Flags)
-             * CUBE texture : (FaceType, Level, pLockedRect, pRect, Flags)
-             * Surface    : (pLockedRect, pRect, Flags)
-             * If the cube signature is treated like 2D, Level is read as pLockedRect;
-             * the game's real structure is NOT FILLED and it crashes with a garbage
-             * pointer (measured: guest address 0x400). */
+            /* 2D texture  : (Level, pLockedRect, pRect, Flags)
+             * CUBE texture: (FaceType, Level, pLockedRect, pRect, Flags)
+             * Surface     : (pLockedRect, pRect, Flags)
+             * If the cube signature is treated like 2D, Level is read as
+             * pLockedRect; the game's real struct is NOT filled and it
+             * crashes on a garbage pointer (measured: guest address 0x400). */
             int is_cube = (iface==IF_TEX && is_cube_tex(self));
             uint32_t face  = is_cube ? A(c,1) : 0u;
             uint32_t level = is_cube ? A(c,2) : ((iface==IF_TEX) ? A(c,1) : 0u);
@@ -3492,6 +3920,12 @@ int com_call(CPU *c, uint32_t magic){
                                             : (self + 32u + 4u*level)) : 0;
             uint32_t buf = slot ? MR32(slot) : 0;
             if(!buf){ buf = gbuf_alloc(pitch*rows + 64u); if(slot) MR32(slot)=buf; }
+            /* a render target the game made lockable (CreateRenderTarget):
+             * what the GPU drew there, the cover shoot's picture (gpu_web.c) */
+            if (iface==IF_SURF && self && MR32(self+40)==3u && MR32(self+28) && metal_available()){
+                int metal_read_texture(unsigned, void *, unsigned, unsigned);
+                metal_read_texture(MR32(self+28), g_mem+buf, pitch, rows);
+            }
             if(plr){ mem_commit(plr,8); MR32(plr)=pitch; MR32(plr+4)=buf; }
             r=0; }
         else if (MID(UnlockRect)){
@@ -3504,20 +3938,13 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t fmt = self?MR32(self+20):21u, mid = self?MR32(self+28):0;
             uint32_t buf = self ? (is_cube2 ? MR32(self + 104u + 4u*(face2 & 7u))
                                             : MR32(self + 32u + 4u*level)) : 0;
-            /* Upload to the FACE on a cube texture.  The face info used to be read and thrown
-             * away: all six faces were written to slice 0, face 0 carried the last uploaded
-             * face, and 1-5 stayed black.  Measured (menu, frame 1650, reflection cube
-             * texture 11): face brightnesses 43.8/0/0/0/0/0; in the Windows reference the
-             * car roof reflects the ceiling light on the +Y face. */
-            if (metal_available() && mid && buf && w && h){
-                void metal_upload_texture_face(unsigned,unsigned,unsigned,const void*,unsigned,unsigned,unsigned,unsigned);
-                if (is_cube2)
-                    metal_upload_texture_face(mid, level, (face2 < 6u) ? face2 : 0u, g_mem+buf,
-                                              metal_level_pitch(w,level,fmt), w, h, fmt);
-                else
-                    metal_upload_texture(mid, level, g_mem+buf,
-                                         metal_level_pitch(w,level,fmt), w, h, fmt);
-            }
+            gheap_check_block(c, buf, "LOCK BUFFER OVERRUN (UnlockRect)");   /* NFSU2_HEAPCHECK only */
+            if (metal_available() && mid && buf && w && h)
+                metal_upload_texture(mid, level, g_mem+buf,
+                                     metal_level_pitch(w,level,fmt), w, h, fmt);
+            if (metal_available() && mid && buf && w && h && iface==IF_TEX && !is_cube2)
+                texrep_uploaded(mid, level, g_mem+buf, metal_level_pitch(w,level,fmt), metal_level_rows(h,level,fmt));
+            else if (iface==IF_SURF && mid) texrep_surface_written(mid);   /* the car skin composite */
             if (ENVC("LOCKLOG") && w==640 && h==480){
                 static int nl=0;
                 if (nl<3){ nl++;
@@ -3531,39 +3958,43 @@ int com_call(CPU *c, uint32_t magic){
                 }
             }
             r=0; }
+        else if (MID(Unlock) && (iface==IF_VB || iface==IF_IB)){
+            gheap_check_block(c, self ? MR32(self+8) : 0u, "LOCK BUFFER OVERRUN (Unlock)");
+            r=0; }
         else if (MID(GetLevelCount)) r=(self&&MR32(self+24))?MR32(self+24):1u;
         else if (MID(GetType)) r=(iface==IF_TEX)?3u:(iface==IF_SURF?1u:(iface==IF_VB?4u:5u));
         else if (MID(GetSurfaceLevel)||MID(GetCubeMapSurface)){
-            /* The surface must carry the Metal id of the texture it belongs to; otherwise
-             * SetRenderTarget can't know which texture to draw into.
-             * A CUBE texture uses the same vtable slot but its signature differs:
-             *   2D  : GetSurfaceLevel(Level, ppSurface)
-             *   CUBE: GetCubeMapSurface(FaceType, Level, ppSurface)
-             * If treated like 2D the pointer is written to the WRONG argument. */
+            /* The surface must carry the Metal id of the texture it belongs
+             * to; otherwise SetRenderTarget cannot know which texture to draw to.
+             * A CUBE texture uses the same vtable slot but a different signature:
+             *   2D   : GetSurfaceLevel(Level, ppSurface)
+             *   CUBE : GetCubeMapSurface(FaceType, Level, ppSurface)
+             * Treated like 2D, the pointer is written to the WRONG argument. */
             uint32_t self0=A(c,0);
             int cube3 = is_cube_tex(self0);
             uint32_t pp = cube3 ? A(c,3) : A(c,2);
-            uint32_t sf=com_new(IF_SURF,64);
+            /* v12na: the texture's own (cached) surface; it shares the texture's
+             * reference count, as in D3D9 */
+            uint32_t face3 = cube3 ? (A(c,1) < 6u ? A(c,1) : 0u) : 0u, lvl3 = cube3 ? A(c,2) : A(c,1);
+            uint32_t sf = tex_child(self0, face3, lvl3, cube3);
+            if (!sf){ if(pp) MR32(pp)=0; r=0x8007000Eu; goto surf_done; }
+            com_addref(self0);
             MR32(sf+40)=2;
-            /* +44: CUBE FACE index + 1.  Since a cube texture shares the same vtable as 2D,
-             * GetCubeMapSurface can fall into this branch (under the name
-             * GetSurfaceLevel); if the face isn't written, SetRenderTarget draws all six
-             * faces into slice 0 (same meaning as BRANCH1). */
-            if (cube3){ uint32_t face = A(c,1); MR32(sf+44) = (face < 6u) ? face + 1u : 1u; }
             uint32_t self=A(c,0);
             if (self && mem_is_committed(self+31)){
                 MR32(sf+4)=MR32(self+4); MR32(sf+8)=MR32(self+8);
                 MR32(sf+20)=MR32(self+20); MR32(sf+28)=MR32(self+28);
             }
-            if(pp) MR32(pp)=sf; r=0; }
+            if(pp) MR32(pp)=sf; r=0;
+          surf_done:; }
         else if (MID(GetDesc)||MID(GetLevelDesc)){
             /* D3DSURFACE_DESC layout:
              *   0 Format, 4 Type, 8 Usage, 12 Pool,
              *  16 MultiSampleType, 20 MultiSampleQuality,
              *  24 Width, 28 Height
-             * Width/height used to be written at 16/20 (i.e. into the MultiSample
-             * fields) -> the game read the size as 0, computed a garbage pointer at
-             * high detail and crashed. */
+             * Width/height USED TO be written to 16/20 (i.e. the
+             * MultiSample fields) -> the game read a size of 0, computed a
+             * garbage pointer at high detail and crashed. */
             uint32_t p=A(c,nargs-1);
             if(p){ mem_commit(p,32); memset(g_mem+p,0,32);
                 uint32_t fw = self?MR32(self+4):256, fh = self?MR32(self+8):256;
@@ -3589,18 +4020,18 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t b=com_new(IF_DSBUF,64);
             /* DSBUFFERDESC: dwSize@0 dwFlags@4 dwBufferBytes@8 dwReserved@12
              *               lpwfxFormat@16 guid3DAlgorithm@20
-             * CAUTION: the size was read from +12 (dwReserved) -> it always came as 0
-             * and fell back to 65536.  The game feeds the stream buffer based on the size
-             * IT asked for; when our cursor lapped much faster the game pushed the song
-             * fast and wrote silence where it couldn't keep up -- "the music runs fast
-             * and cuts out now and then". */
+             * NOTE: the size used to be read from +12 (dwReserved) -> always
+             * 0, falling back to 65536.  The game feeds its stream buffer by
+             * the size IT asked for; with our cursor wrapping much faster the
+             * game streamed the song too fast and wrote silence where it
+             * could not keep up -- "music plays fast and cuts out". */
             uint32_t bytes = (desc && mem_is_committed(desc+11)) ? MR32(desc+8) : 0;
             if (ENVC("SNDBUF"))
                 fprintf(stderr, "  [sound] CreateSoundBuffer requested=%u bytes "
                         "(flags=%08x, old-wrong-field=%u)\n",
                         bytes, desc?MR32(desc+4):0, desc?MR32(desc+12):0);
-            /* DSLOG=1: which guest subsystem created this buffer?  Since the SFX buffers
-             * (#1-#4) were never played, finding their owner is a must. */
+            /* DSLOG=1: which guest subsystem created this buffer?  The SFX
+             * buffers (#1-#4) never play, so finding their owner is essential. */
             if (ENVC("DSLOG")){
                 fprintf(stderr, "  [sound] --- CreateSoundBuffer #%d call chain ---\n",
                         (int)g_snd_play);
@@ -3608,9 +4039,10 @@ int com_call(CPU *c, uint32_t magic){
             }
             if(!bytes || bytes>0x400000u) bytes=65536u;
             MR32(b+4)=bytes; MR32(b+8)=gbuf_alloc(bytes); MR32(b+12)=0;
-            /* Bytes/second from WAVEFORMATEX: the play cursor must advance REALISTICALLY.
-             * The video player drives its frames from the audio clock; if the cursor is
-             * fake, playback never ends. */
+            ds_share(MR32(b+8), +1);
+            /* Bytes/second from WAVEFORMATEX: the play cursor must advance
+             * REALISTICALLY.  The video player drives frames by the audio
+             * clock; with a fake cursor playback never ends. */
             { uint32_t bps = 176400u;                /* default 44.1k 16-bit stereo */
               uint32_t pfmt = (desc && mem_is_committed(desc+19)) ? MR32(desc+16) : 0;
               if (pfmt && mem_is_committed(pfmt+15)){
@@ -3619,7 +4051,7 @@ int com_call(CPU *c, uint32_t magic){
               }
               MR32(b+20)=bps; MR32(b+24)=0;
               /* Register with the CoreAudio mixer.  The primary buffer
-               * (DSBCAPS_PRIMARYBUFFER = 0x1) isn't played. */
+               * (DSBCAPS_PRIMARYBUFFER = 0x1) is not played. */
               uint32_t flags = (desc && mem_is_committed(desc+7)) ? MR32(desc+4) : 0;
               uint32_t rate = 44100u, chans = 2u, bits = 16u;
               if (pfmt && mem_is_committed(pfmt+15)){
@@ -3638,8 +4070,9 @@ int com_call(CPU *c, uint32_t magic){
             /* DSCAPS: dwSize@0 dwFlags@4 dwMinSecondarySampleRate@8
              *         dwMaxSecondarySampleRate@12 dwPrimaryBuffers@16
              *         dwMaxHwMixingAllBuffers@20 ...
-             * The flags used to be only 0x200 (SECONDARYSTEREO) and 100000 was written
-             * to dwPrimaryBuffers.  The game learns the sound capabilities from here. */
+             * The flags used to be only 0x200 (SECONDARYSTEREO) and
+             * dwPrimaryBuffers got 100000.  The game learns the sound
+             * capabilities from here. */
             uint32_t p=A(c,1);
             if(p){ uint32_t sz=MR32(p); if(!sz||sz>256u) sz=0x64u; mem_commit(p,sz);
                    memset(g_mem+p,0,sz); MR32(p)=sz;
@@ -3658,15 +4091,16 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(SetCooperativeLevel)) r=0;
         else if (MID(GetSpeakerConfig)){ uint32_t p=A(c,1); if(p){mem_commit(p,4);MR32(p)=0x00000006u;} r=0; }
         else if (MID(DuplicateSoundBuffer)){
-            /* (this, pOriginal, ppDuplicate) - the duplicate shares the same PCM data.  It
-             * used to return an EMPTY COM object: no size, no data, no sound in the mixer.
-             * Since the game plays simultaneous effects (engine, menu clicks) this way,
-             * ALL of them were silent. */
+            /* (this, pOriginal, ppDuplicate) - the copy shares the same PCM
+             * data.  It used to return an EMPTY COM object: no size, no
+             * data, no voice in the mixer.  The game plays its concurrent
+             * effects (engine, menu clicks) this way, so ALL of them were silent. */
             uint32_t src=A(c,1), pp=A(c,2);
             uint32_t b=com_new(IF_DSBUF,64);
             if (src && mem_is_committed(src+31)){
                 MR32(b+4)=MR32(src+4);          /* size    */
-                MR32(b+8)=MR32(src+8);          /* veri    */
+                MR32(b+8)=MR32(src+8);          /* data    */
+                ds_share(MR32(b+8), +1);
                 MR32(b+20)=MR32(src+20);        /* bytes/s */
                 MR32(b+12)=0; MR32(b+16)=0; MR32(b+24)=0;
                 int audio_duplicate(int);
@@ -3679,12 +4113,13 @@ int com_call(CPU *c, uint32_t magic){
         uint32_t self=A(c,0);
         uint32_t sz = self?MR32(self+4):65536u, buf = self?MR32(self+8):0;
         if      (MID(Lock)){
-            /* Which buffer object is being locked?  SFX events lock buffers but aren't
-             * heard; they may be writing to an unregistered (primary or unreported)
-             * buffer. */
-            /* Which THREAD is locking?  The stream (music) is on a separate thread; SFX
-             * events come from the MAIN thread.  Telling the two apart is the most direct
-             * way to show whether SFX data is really written. */
+            /* Which buffer object is being locked?  SFX events lock a
+             * buffer but are not heard; they may be writing to an
+             * unregistered buffer (the primary, or one not in the report). */
+            /* Which THREAD is locking?  The stream (music) is on a separate
+             * thread; SFX events come from the MAIN thread.  Telling the two
+             * apart is the most direct way to show whether SFX data is
+             * really being written. */
             { uint32_t tid = (c->fs_base && mem_is_committed(c->fs_base+0x24u))
                              ? MR32(c->fs_base+0x24u) : 0u;
               static uint32_t tl[8]; static unsigned tc[8]; static uint64_t tb[8];
@@ -3706,10 +4141,11 @@ int com_call(CPU *c, uint32_t magic){
                     guest_backtrace(c, 12); } }
             /* (this, dwOffset, dwBytes, ppv1, pcb1, ppv2, pcb2, dwFlags)
              *
-             * A DirectSound buffer is CIRCULAR: if the requested range goes past the end,
-             * TWO regions are returned (up to the end + the continuation from the start).
-             * A single flat region used to be given; the part to be written at the start
-             * of the buffer was never written and every wrap made a silent gap. */
+             * A DirectSound buffer is CIRCULAR: if the requested range runs
+             * past the end, TWO regions are returned (up to the end + the rest
+             * from the start).  It used to hand out one flat region; the part
+             * that belonged at the start of the buffer was never written, and
+             * every wrap left a silent gap. */
             uint32_t off=A(c,1), want=A(c,2), pp1=A(c,3), pn1=A(c,4),
                      pp2=A(c,5), pn2=A(c,6), fl=A(c,7);
             if(!buf){ buf=gbuf_alloc(sz?sz:65536u); if(self) MR32(self+8)=buf; }
@@ -3739,14 +4175,15 @@ int com_call(CPU *c, uint32_t magic){
             r=0; }
         else if (MID(Unlock)){
             /* VOICELOG=1: the game's OWN sound channel table.
-             * sub_00725378 walks the table at address [0x8b466c], stride 0x90, count
-             * [0x8b460c] (int16); it tests byte +0x26 as "in use".  The only way to
-             * measure directly whether SFX events open channels. */
+             * sub_00725378 walks the table with address [0x8b466c], stride
+             * 0x90, count [0x8b460c] (int16); it tests byte +0x26 as "in use".
+             * The only way to measure directly whether SFX events open a
+             * channel. */
             if (ENVC("VOICELOG")){
                 static unsigned nu=0; static int peak=0;
                 if ((nu++ % 120u) == 0u){
-                    uint32_t tb = mem_is_committed(GA(0x8b466cu)) ? MR32(GA(0x8b466cu)) : 0u;
-                    int cnt = mem_is_committed(GA(0x8b460cu)) ? (int)(int16_t)MR16(GA(0x8b460cu)) : 0;
+                    uint32_t tb = mem_is_committed(0x8b466cu) ? MR32(0x8b466cu) : 0u;
+                    int cnt = mem_is_committed(0x8b460cu) ? (int)(int16_t)MR16(0x8b460cu) : 0;
                     int act = 0;
                     if (tb && cnt > 0 && cnt < 256)
                         for (int q=0;q<cnt;q++){
@@ -3754,8 +4191,8 @@ int com_call(CPU *c, uint32_t magic){
                             if (mem_is_committed(e+0x26u) && MR8(e+0x26u)) act++;
                         }
                     if (act > peak) peak = act;
-                    /* Changes ACROSS the table: even if my interpretation (+0x26) is wrong, this
-                     * shows whether any field gets written. */
+                    /* Change ACROSS the table: even if my reading (+0x26) is
+                     * wrong, this shows whether any field is being written. */
                     unsigned nz = 0, ent_nz = 0;
                     if (tb && cnt > 0 && cnt < 256)
                         for (int q=0;q<cnt;q++){
@@ -3766,20 +4203,20 @@ int com_call(CPU *c, uint32_t magic){
                         }
                     /* Volume globals: sub_0072d3ec scales the sound as
                      * ((uint16)[0x8b44c6] << 8) * param. */
-                    fprintf(stderr,"  [volume] [0x8b44c6]=%u  [0x8b44c4]=%u  [0x8b44c8]=%u"
+                    fprintf(stderr,"  [level] [0x8b44c6]=%u  [0x8b44c4]=%u  [0x8b44c8]=%u"
                             "  [0x8b44ca]=%u  [0x8b44cc]=%u\n",
-                            mem_is_committed(GA(0x8b44c6u))?MR16(GA(0x8b44c6u)):0xFFFFu,
-                            mem_is_committed(GA(0x8b44c4u))?MR16(GA(0x8b44c4u)):0xFFFFu,
-                            mem_is_committed(GA(0x8b44c8u))?MR16(GA(0x8b44c8u)):0xFFFFu,
-                            mem_is_committed(GA(0x8b44cau))?MR16(GA(0x8b44cau)):0xFFFFu,
-                            mem_is_committed(GA(0x8b44ccu))?MR16(GA(0x8b44ccu)):0xFFFFu);
+                            mem_is_committed(0x8b44c6u)?MR16(0x8b44c6u):0xFFFFu,
+                            mem_is_committed(0x8b44c4u)?MR16(0x8b44c4u):0xFFFFu,
+                            mem_is_committed(0x8b44c8u)?MR16(0x8b44c8u):0xFFFFu,
+                            mem_is_committed(0x8b44cau)?MR16(0x8b44cau):0xFFFFu,
+                            mem_is_committed(0x8b44ccu)?MR16(0x8b44ccu):0xFFFFu);
                     fprintf(stderr,"  [channel] table=0x%08x count=%d active=%d (peak=%d)"
                             "  non-zero entries=%u bytes=%u\n",
                             tb, cnt, act, peak, ent_nz, nz);
                 }
             }
-            /* Is the game writing real PCM to this buffer?  If so the sound engine (and so
-             * the front-end logic) IS RUNNING. */
+            /* Is the game writing real PCM into this buffer?  If so, the sound
+             * engine (and so the front-end logic) IS running. */
             uint32_t p1=A(c,1), n1=A(c,2);
             if (p1 && n1 && n1 < 1u<<22 && mem_is_committed(p1+ (n1>16?15:0))){
                 uint32_t nz=0, lim = n1 < 4096u ? n1 : 4096u;
@@ -3789,16 +4226,16 @@ int com_call(CPU *c, uint32_t magic){
                 { uint32_t sid4 = (self && mem_is_committed(self+31)) ? MR32(self+28) : 0;
                   if (sid4){ void audio_note_write_stat(int, uint32_t, int);
                              audio_note_write_stat((int)sid4, n1, nz ? 1 : 0); } }
-                /* SNDZERO: report regions written ENTIRELY AS ZERO, together with the calling
-                 * guest address.  Measured: the game WRITES ~50-95 ms of silence exactly
-                 * every 30 s (the buffer isn't starved, the data is empty). */
+                /* SNDZERO: report regions written as ENTIRELY ZERO, with the
+                 * calling guest address.  Measured: every 30 s exactly the game
+                 * WRITES ~50-95 ms of silence (not a starved buffer: empty data). */
                 if (ENVC("SNDZERO")){
                     double audio_time(void);
                     double _t = audio_time();
-                    /* The buffer clears at startup aren't interesting; the real event happens AFTER
-                     * the first 20 s, while the 30 s stream block is refreshed.  We look at
-                     * the whole region (not the first 4 KB): the second half of the write
-                     * may be empty. */
+                    /* The buffer clears at startup are not of interest; the
+                     * real event happens AFTER the first 20 s, while the 30 s
+                     * stream block is refreshed.  Look at the whole region (not
+                     * the first 4 KB): the second half of the write may be empty. */
                     if (_t > 20.0 && n1 >= 1024u){
                         uint32_t nz2 = 0, lim2 = n1 < 65536u ? n1 : 65536u;
                         for (uint32_t q = 0; q < lim2; q++) if (MR8(p1+q)) nz2++;
@@ -3806,7 +4243,7 @@ int com_call(CPU *c, uint32_t magic){
                             static int nzl = 0;
                             if (nzl < 120){ nzl++;
                                 fprintf(stderr, "  [zero-write] t=%.3f s  ofs=%u size=%u "
-                                        "filled=%.1f%%  caller=guest:%08x\n",
+                                        "full=%.1f%%  caller=guest:%08x\n",
                                         _t, p1 - (self?MR32(self+8):0), n1,
                                         100.0*nz2/lim2, c->eip);
                             }
@@ -3814,20 +4251,17 @@ int com_call(CPU *c, uint32_t magic){
                     }
                 }
                 /* Tell the mixer the write position (for the servo).
-                 * CAUTION: the lock may have WRAPPED -- the second region (pv2,cb2)
-                 * continues from the START of the buffer.  Looking only at the first
-                 * region made us think the write cursor was at the end of the buffer on a
-                 * wrap and fed the servo wrongly. */
+                 * NOTE: the lock may have WRAPPED -- the second region (pv2,cb2)
+                 * continues from the START of the buffer.  Looking only at the
+                 * first region made a wrap look like the write cursor was at
+                 * the end of the buffer and fed the servo wrong values. */
                 { uint32_t sid3 = (self && mem_is_committed(self+31)) ? MR32(self+28) : 0;
                   uint32_t base3 = self ? MR32(self+8) : 0;
                   uint32_t n2u   = A(c,4);
                   if (sid3 && base3 && p1 >= base3){
                       void audio_note_write(int, uint32_t);
-                      void audio_note_region(int, uint32_t, uint32_t);   /* see audio.m STALE DATA GUARD */
-                      audio_note_region((int)sid3, p1 - base3, n1);
-                      if (n2u && n2u < 1u<<22) audio_note_region((int)sid3, 0u, n2u);
                       if (n2u && n2u < 1u<<22)
-                          audio_note_write((int)sid3, n2u);          /* continue from the start */
+                          audio_note_write((int)sid3, n2u);          /* continues from the start */
                       else
                           audio_note_write((int)sid3, (p1 - base3) + n1);
                   } }
@@ -3860,8 +4294,8 @@ int com_call(CPU *c, uint32_t magic){
             uint32_t p=A(c,1); if(p){mem_commit(p,4); MR32(p)= (self&&MR32(self+12))?1u:0u;} r=0; }
         else if (MID(GetCurrentPosition)){
             int break_gcp = 0;
-            /* The play cursor advances with ELAPSED TIME (not a fake fixed step): the video
-             * player drives its frames from this clock. */
+            /* The play cursor advances by ELAPSED TIME (not a fake fixed
+             * step): the video player drives its frames by this clock. */
             uint32_t p1=A(c,1), p2=A(c,2);
             uint64_t host_us(void);
             uint32_t bps = (self && mem_is_committed(self+27)) ? MR32(self+20) : 176400u;
@@ -3871,9 +4305,9 @@ int com_call(CPU *c, uint32_t magic){
             uint64_t now = host_us();
             if (playing && !t0){ t0 = (uint32_t)(now/1000ull); if(self) MR32(self+24)=t0; }
             uint32_t pos = 0;
-            /* If registered with the mixer use the REAL play cursor: the game's streaming
-             * logic chooses where it writes based on it; if the estimated clock and the
-             * real playback diverge, the sound breaks. */
+            /* If registered with the mixer, use the REAL play cursor: the
+             * game's streaming logic picks where to write from it; if an
+             * estimated clock drifts from real playback, the sound breaks up. */
             { uint32_t sid = (self && mem_is_committed(self+31)) ? MR32(self+28) : 0;
               if (sid && playing){
                   uint32_t rp=0, rw=0;
@@ -3923,21 +4357,26 @@ int com_call(CPU *c, uint32_t magic){
                 uint32_t d1 = MR32(g);
                 if (d1 == 0x6F1D2B61u) kind = 1;        /* GUID_SysKeyboard */
                 else if (d1 == 0x6F1D2B60u) kind = 2;   /* GUID_SysMouse    */
+                else if (dipad_guid(g)) kind = 3;       /* the game pad     */
                 fprintf(stderr,"  [DI] CreateDevice GUID %08x-%04x-%04x -> %s\n",
                         d1, MR16(g+4), MR16(g+6),
-                        kind==1?"KEYBOARD":(kind==2?"MOUSE":"unknown"));
+                        kind==1?"KEYBOARD":(kind==2?"MOUSE":(kind==3?"GAMEPAD":"unknown")));
             }
             MR32(d+8) = kind;
+            if (kind == 1) dikbd_created(d);
+            if (kind == 3) dipad_created(d, g);
             if(pp) MR32(pp)=d; r=0; }
         else if (MID(EnumDevices)){
             /* (dwDevType, lpCallback, pvRef, dwFlags)
              * REALLY call the callback: report a keyboard and a mouse. */
             uint32_t devtype=A(c,1), cb=A(c,2), ref=A(c,3);
+            /* game controllers: the virtual pad (runtime/dinput_pad.c) */
+            if (cb && dipad_enum(c, devtype, cb, ref, A(c,4))) cb = 0;
             if (cb && ENVC("DI_ENUM")){
                 for (int k=0;k<2;k++){
                     int is_kb = (k==0);
                     uint32_t t = is_kb ? 0x13u : 0x12u;
-                    /* 0 = DI8DEVCLASS_ALL -> all */
+                    /* 0 = DI8DEVCLASS_ALL -> all of them */
                     if (devtype && (devtype & 0xFFu) != t && devtype > 4u) continue;
                     uint32_t args[2] = { make_devinst(is_kb), ref };
                     if (call_guest(c, cb, 2, args) == 0) break;   /* DIENUM_STOP */
@@ -3953,7 +4392,8 @@ int com_call(CPU *c, uint32_t magic){
                 for (int k=0;k<2;k++){
                     int is_kb = (k==0);
                     uint32_t dev = com_new(IF_DIDEV,128);
-                    MR32(dev+8) = is_kb ? 1u : 2u;     /* device type marker */
+                    MR32(dev+8) = is_kb ? 1u : 2u;     /* device kind marker */
+                    if (is_kb) dikbd_created(dev);
                     uint32_t args[5] = { make_devinst(is_kb), dev,
                                          0x00000001u,          /* DIEDBS_MAPPEDPRI1 */
                                          (uint32_t)(1-k), ref };
@@ -3967,52 +4407,29 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(FindDevice))      r=0x80070002u;
         else r=0;
     }
+    else if (iface==IF_DIEFF){
+        uint32_t av[8] = {0};
+        for (int i = 0; i < nargs && i < 8; i++) av[i] = A(c,i);
+        r = dipad_effect_call(c, A(c,0), nm, nargs, av);
+    }
     else if (iface==IF_DIDEV){
         uint32_t self=A(c,0);
         uint32_t dkind = (self && mem_is_committed(self+11)) ? MR32(self+8) : 0;
-        /* DITRACE=1: the call chain per device.  The game sets up the keyboard device but
-         * never reads it; let's see where the chain breaks. */
+        /* DITRACE=1: per-device call chain.  The game sets up the keyboard
+         * device but never reads it; see where the chain breaks off. */
         int di_tr = 0;
         { static int n2 = 0;
           if (ENVC("DITRACE") && n2 < 140){ n2++; di_tr = 1;
               fprintf(stderr,"  [DI%u/%08x] %-24s", dkind, self, nm); } }
-        if (MID(EnumObjects)){
-            /* (lpCallback, pvRef, dwFlags) -- callback:
-             * BOOL(LPCDIDEVICEOBJECTINSTANCE, LPVOID)
-             * If it isn't called the game sees the device as "objectless" and abandons it. */
-            uint32_t cb=A(c,1), ref=A(c,2), flags=A(c,3);
-            if (cb && dkind == 1u){                 /* keyboard */
-                uint32_t oi = gbuf_alloc(340);
-                for (uint32_t dik = 1; dik < 0xEEu; dik++){
-                    if (!(flags & 0x0Cu) && flags != 0u) break;   /* DIDFT_BUTTON/ALL */
-                    memset(g_mem+oi, 0, 340);
-                    MR32(oi) = 316u;                              /* dwSize */
-                    put_guid(oi+4, 0x55728220u, 0xD33C, 0x11CF,
-                             (const uint8_t[8]){0xBF,0xC7,0x44,0x45,0x53,0x54,0,0});
-                    MR32(oi+20) = dik;                            /* dwOfs */
-                    MR32(oi+24) = 0x04u | (dik << 8);             /* PSHBUTTON|inst */
-                    MR32(oi+28) = 0;
-                    snprintf((char*)(g_mem+oi+32), 260, "Key %u", dik);
-                    uint32_t args[2] = { oi, ref };
-                    if (call_guest(c, cb, 2, args) == 0) break;
-                }
-                g_di_objs++;
-            }
-            r=0; }
-        else if (MID(GetObjectInfo)){
-            /* (pdidoi, dwObj, dwHow) */
-            uint32_t oi=A(c,1), obj=A(c,2);
-            if (oi && mem_is_committed(oi+3)){
-                uint32_t sz = MR32(oi); if (!sz || sz > 400u) sz = 316u;
-                mem_commit(oi, sz); memset(g_mem+oi, 0, sz); MR32(oi)=sz;
-                put_guid(oi+4, 0x55728220u, 0xD33C, 0x11CF,
-                         (const uint8_t[8]){0xBF,0xC7,0x44,0x45,0x53,0x54,0,0});
-                uint32_t dik = (obj >> 8) & 0xFFu; if (!dik) dik = obj & 0xFFu;
-                MR32(oi+20) = dik;
-                MR32(oi+24) = 0x04u | (dik << 8);
-                snprintf((char*)(g_mem+oi+32), 260, "Key %u", dik);
-            }
-            r=0; }
+        if ((dkind == 1u || dkind == 3u) && !MID(AddRef) && !MID(Release) && !MID(QueryInterface)){
+            uint32_t av[8] = {0};
+            for (int i = 0; i < nargs && i < 8; i++) av[i] = A(c,i);
+            r = dkind == 1u ? dikbd_call(c, self, nm, nargs, av)      /* keyboard */
+                            : dipad_call(c, self, nm, nargs, av);     /* game pad */
+            if (dkind == 1u && MID(EnumObjects)) g_di_objs++;
+        }
+        /* the mouse (kind 2) and anything else */
+        else if (MID(EnumObjects)) r=0;
         else if (MID(GetDeviceInfo)){
             uint32_t p=A(c,1);
             if (p && mem_is_committed(p+3)){
@@ -4037,7 +4454,6 @@ int com_call(CPU *c, uint32_t magic){
                         (self && mem_is_committed(self+11)) ? MR32(self+8) : 0); } }
             if(p && cb && cb<4096u){
                 mem_commit(p,cb); memset(g_mem+p,0,cb);
-                /* a 256-byte request = the DirectInput keyboard table */
                 if (cb == 20u && metal_available()){        /* DIMOUSESTATE2 */
                     metal_fill_mouse(g_mem+p, cb);
                     g_dikey_calls++;
@@ -4050,107 +4466,19 @@ int com_call(CPU *c, uint32_t magic){
                     memcpy(g_mem+p, tmpm, 16);
                     g_dikey_calls++;
                 }
-                else if (cb == 256u && metal_available()){
-                    metal_fill_keyboard(g_mem+p, 256u);
-                    g_dikey_calls++;
-                    for (uint32_t q=0;q<256;q++)
-                        if (MR8(p+q)){ g_dikey_hits++;
-                            if (g_dikey_hits <= 3)
-                                fprintf(stderr,"  [input] key 0x%02x pressed (call %llu)\n",
-                                        q, (unsigned long long)g_dikey_calls);
-                            break; }
-                }
             }
             r=0; }
-        else if (MID(BuildActionMap)||MID(SetActionMap)){
-            /* DIACTIONFORMATA: +4 dwActionSize +12 dwNumActions +16 rgoAction
-             * DIACTIONA (40): +0 uAppData +4 dwSemantic +32 dwObjID +36 dwHow */
-            uint32_t af=A(c,1);
-            int is_build = MID(BuildActionMap);
-            if (!is_build){
-                memset(g_act_of_key, 0, sizeof g_act_of_key);
-                memset(g_act_ofs, 0, sizeof g_act_ofs);
-                g_act_count = 0;
-                if (ENVC("DIMAP")) fprintf(stderr,"  [map] --- new active map ---\n");
-            }
-            if (af && mem_is_committed(af+71)){
-                uint32_t nact=MR32(af+12), rg=MR32(af+16), asz=MR32(af+4);
-                if (!asz) asz=40u;
-                { static int sl=0; if (sl<4){ sl++;
-                    fprintf(stderr,"  [DI] %s: %u actions, dataSize=%u actionSize=%u buffer=%u device=%u\n",
-                            nm, nact, MR32(af+8), asz, MR32(af+40),
-                            (self && mem_is_committed(self+11)) ? MR32(self+8) : 0); } }
-                if (nact && nact < 1024u && rg){
-                    for (uint32_t k=0;k<nact;k++){
-                        uint32_t a2=rg+k*asz;
-                        if (!mem_is_committed(a2+39)) break;
-                        uint32_t sem=MR32(a2+4), app=MR32(a2);
-                        if ((sem & 0xFFFFFF00u) != DI_KB_SEM_BASE) continue;
-                        uint32_t dik = sem & 0xFFu;
-                        if (!dik) continue;
-                        if (is_build){
-                            /* DirectInput fills these fields:
-                             * dwObjID = DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE(dik) */
-                            MR32(a2+32) = 0x04u | (dik << 8);
-                            MR32(a2+36) = 0x20u;             /* DIAH_DEFAULT */
-                            /* guidInstance = keyboard */
-                            put_guid(a2+16, 0x6F1D2B61u, 0xD5A0, 0x11CF,
-                                     (const uint8_t[8]){0xBF,0xC7,0x44,0x45,0x53,0x54,0,0});
-                        } else {
-                            g_act_of_key[dik] = app;
-                            g_act_ofs[dik]    = k * 4u;      /* data offset */
-                            g_act_count++;
-                            if (ENVC("DIMAP"))
-                                fprintf(stderr,"  [map] dik=0x%02x -> action 0x%x (ofs %u)\n",
-                                        dik, app, k*4u);
-                        }
-                    }
-                }
-            }
+        else if (MID(GetDeviceData)){                     /* the game polls the mouse state */
+            uint32_t pcnt=A(c,3);
+            if (pcnt && mem_is_committed(pcnt+3)) MR32(pcnt)=0;
             r=0; }
-        else if (MID(GetDeviceData)){
-            /* (cbObjectData, rgdod, pdwInOut, dwFlags)
-             * DIDEVICEOBJECTDATA: +0 dwOfs +4 dwData +8 dwTimeStamp
-             *                     +12 dwSequence +16 uAppData          */
-            uint32_t cb=A(c,1), rg=A(c,2), pcnt=A(c,3), flags=A(c,4);
-            uint32_t want = (pcnt && mem_is_committed(pcnt+3)) ? MR32(pcnt) : 0;
-            uint32_t n = 0;
-            { static int sg=0;
-              if (ENVC("DIDATA") && sg<4){ sg++;
-                fprintf(stderr,"  [DIdata] cb=%u requested=%u flags=0x%x action=%d\n",
-                        cb, want, flags, g_act_count); } }
-            if (g_act_count && metal_available() && cb >= 16u && cb <= 32u){
-                unsigned char cur[256];
-                metal_fill_keyboard(cur, 256);
-                for (uint32_t k = 1; k < 256u && n < want; k++){
-                    if (!g_act_of_key[k]) continue;
-                    unsigned char now = cur[k] ? 1 : 0, was = g_kb_prev[k];
-                    if (now == was) continue;
-                    if (rg && !(flags & 1u)){          /* consume unless DIGDD_PEEK */
-                        uint32_t e = rg + n*cb;
-                        mem_commit(e, cb); memset(g_mem+e, 0, cb);
-                        MR32(e)    = g_act_ofs[k];
-                        MR32(e+4)  = now ? 0x80u : 0u;
-                        MR32(e+8)  = (uint32_t)(host_us_ms());
-                        MR32(e+12) = g_di_seq++;
-                        if (cb >= 20u) MR32(e+16) = g_act_of_key[k];
-                        { static int se=0;
-                          if (ENVC("DIDATA") && se<6){ se++;
-                            fprintf(stderr,"  [DIdata] event: dik=%u ofs=%u data=0x%x app=0x%x\n",
-                                    k, g_act_ofs[k], now?0x80u:0u, g_act_of_key[k]); } }
-                    }
-                    if (!(flags & 1u)) g_kb_prev[k] = now;
-                    n++; g_di_events++;
-                }
-            }
-            if(pcnt) MR32(pcnt)=n; r=0; }
         else if (MID(GetCapabilities)){
             uint32_t p=A(c,1);
             if(p){ uint32_t sz=MR32(p); if(!sz||sz>256u) sz=44u; mem_commit(p,sz);
                    memset(g_mem+p,0,sz); MR32(p)=sz;
-                   MR32(p+4)=0x00000010u;   /* DIDC_ATTACHED */
-                   MR32(p+8)=0x00000013u;   /* DI8DEVTYPE_KEYBOARD */
-                   MR32(p+12)=256; }        /* dwAxes/dwButtons approximate */
+                   MR32(p+4)=0x00000001u;   /* DIDC_ATTACHED */
+                   MR32(p+8)=0x00000212u;   /* DI8DEVTYPE_MOUSE */
+                   MR32(p+12)=3; MR32(p+16)=8; }   /* dwAxes, dwButtons */
             r=0; }
         else if (MID(GetProperty)){
             uint32_t p=A(c,2);
@@ -4158,8 +4486,7 @@ int com_call(CPU *c, uint32_t magic){
                    memset(g_mem+p+16,0,sz-16>0?sz-16:0); } }
             r=0; }
         else if (MID(SetProperty)) r=0;
-        else if (MID(EnumObjects)) r=0;
-        else if (MID(GetObjectInfo)||MID(GetDeviceInfo)){
+        else if (MID(GetObjectInfo)){
             uint32_t p=A(c,nargs-1);
             if(p){ uint32_t sz=MR32(p); if(!sz||sz>512u) sz=32u; mem_commit(p,sz);
                    memset(g_mem+p,0,sz); MR32(p)=sz; }
@@ -4173,14 +4500,16 @@ int com_call(CPU *c, uint32_t magic){
         if (di_tr) fprintf(stderr, " -> 0x%08x\n", r);
     }
     else if (iface==IF_QUERY){
-        if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; r=0; }
+        if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; com_addref(g_dev); r=0; }   /* D3D9: a reference */
         else if (MID(GetDataSize)) r=4;
         else if (MID(GetData)){ uint32_t p=A(c,1); if(p){mem_commit(p,4);MR32(p)=0;} r=0; }
         else r=0;
     }
     else if (iface==IF_SWAPCHAIN){
-        if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; r=0; }
-        else if (MID(GetBackBuffer)){ uint32_t pp=A(c,3); if(pp) MR32(pp)=com_new(IF_SURF,64); r=0; }
+        if      (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; com_addref(g_dev); r=0; }   /* D3D9: a reference */
+        else if (MID(GetBackBuffer)){ uint32_t pp=A(c,3), sf=bb_surface();      /* swap chain */
+            if (sf) com_addref(sf);
+            if(pp) MR32(pp)=sf; r=0; }
         else if (MID(Present)){ g_present++; r=0; }
         else if (!strncmp(nm,"Get",3) && nargs>=2){ uint32_t p=A(c,nargs-1);
             if(p && p<0xE0000000u){ mem_commit(p,64); memset(g_mem+p,0,64);} r=0; }
@@ -4204,9 +4533,9 @@ int com_call(CPU *c, uint32_t magic){
             }
             r=0; }
         else if (iface==IF_STATEBLOCK && MID(Capture)){
-            /* Rewrite the CURRENT value of every state in the block.  This is how the game
-             * builds its save/restore idiom: record once, Capture before changing, then
-             * Apply. */
+            /* Rewrite every state in the block with its CURRENT value.  This
+             * is how the game builds its save/restore idiom: record once,
+             * Capture before changing, then Apply. */
             uint32_t self6=A(c,0);
             int bi = (self6 && mem_is_committed(self6+11)) ? (int)MR32(self6+8) : 0;
             if (bi > 0 && bi < MAXSB && g_sb[bi].used){
@@ -4216,8 +4545,8 @@ int com_call(CPU *c, uint32_t magic){
                     uint32_t mm = R->magic & 0xFFFFu;
                     uint32_t ifc = (R->magic>>16) & 0x1FFFu;
                     if (ifc >= NEL(g_if) || mm >= g_if[ifc].n) continue;
-                    /* a cached numeric id instead of the method name: D3DX Begin captures 5 blocks per
-                     * effect, the name comparison was a hot spot */
+                    /* a cached numeric id instead of the method name: D3DX Begin
+                     * captures 5 blocks per effect, the name compare was a hot spot */
                     int md;
                     if (ifc < MIDIF && mm < MIDM){
                         md = g_midc[ifc][mm];
@@ -4230,7 +4559,11 @@ int com_call(CPU *c, uint32_t magic){
                     else if (md == MID_SetSamplerState){
                         if (R->a[1] < 16u && R->a[2] < 20u) R->a[3] = g_smp_raw[R->a[1]][R->a[2]]; }
                     else if (md == MID_SetTexture){
-                        if (R->a[1] < 8u) R->a[2] = g_raw_tex[R->a[1]]; }
+                        if (R->a[1] < 8u && R->a[2] != g_raw_tex[R->a[1]]){
+                            uint32_t old = R->a[2];
+                            R->a[2] = g_raw_tex[R->a[1]];
+                            if (R->a[2]) com_addref(R->a[2]);
+                            if (old) com_release(old); } }
                     else if (md == MID_SetVertexShader)      R->a[1] = g_raw_vs;
                     else if (md == MID_SetPixelShader)       R->a[1] = g_raw_ps;
                     else if (md == MID_SetVertexDeclaration) R->a[1] = g_raw_decl;
@@ -4239,7 +4572,7 @@ int com_call(CPU *c, uint32_t magic){
                 g_sb_captured++;
             }
             r=0; }
-        else if (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; r=0; }
+        else if (MID(GetDevice)){ uint32_t p=A(c,1); if(p) MR32(p)=g_dev; com_addref(g_dev); r=0; }   /* D3D9: a reference */
         else if (MID(GetFunction)||MID(GetDeclaration)){
             uint32_t self2=A(c,0), pdata=A(c,1), psize=A(c,2);
             uint32_t src = self2?MR32(self2+4):0, sz = self2?MR32(self2+8):0;
@@ -4263,8 +4596,9 @@ int com_call(CPU *c, uint32_t magic){
 static uint32_t g_ds = 0;
 /* DirectSoundCreate(lpGuid, ppDS, pUnkOuter) */
 uint32_t com_directsoundcreate(uint32_t ppDS){
-    if (!g_ds){ g_ds = com_new(IF_DS, 64);
+    if (!g_ds){ g_ds = com_new(IF_DS, 64); CH_FLAGS(g_ds) |= CF_DEVICE;
         fprintf(stderr,"com: IDirectSound object 0x%08x\n", g_ds); }
+    else com_addref(g_ds);                  /* every create hands out a reference */
     if (ppDS) MR32(ppDS) = g_ds;
     return 0;
 }
@@ -4272,36 +4606,65 @@ uint32_t com_directsoundcreate(uint32_t ppDS){
 static uint32_t g_di8 = 0;
 /* DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter) */
 uint32_t com_directinput8create(uint32_t ppvOut){
-    if (!g_di8){ g_di8 = com_new(IF_DI8, 64);
+    if (!g_di8){ g_di8 = com_new(IF_DI8, 64); CH_FLAGS(g_di8) |= CF_DEVICE;
         fprintf(stderr,"com: IDirectInput8 object 0x%08x\n", g_di8); }
+    else com_addref(g_di8);
     if (ppvOut) MR32(ppvOut) = g_di8;
     return 0;                       /* DI_OK */
 }
 
 uint32_t com_direct3dcreate9(void){
-    if(!g_d3d9){ g_d3d9=com_new(IF_D3D9,64);
+    if(!g_d3d9){ g_d3d9=com_new(IF_D3D9,64); CH_FLAGS(g_d3d9) |= CF_DEVICE;
         fprintf(stderr,"com: IDirect3D9 object 0x%08x\n", g_d3d9); }
+    else com_addref(g_d3d9);
     return g_d3d9;
 }
-void com_init(void){ mem_commit(COM_BASE,0x10000);
+/* NFSU2_COMLIVE=1 (test-only): live objects per interface on every [status]. */
+int com_live_line(char *buf, size_t n){
+    static const char *const ab[] = { "?", "d3d", "dev", "tex", "vb", "ib", "surf", "simple", "vs", "decl",
+                                      "sb", "swap", "query", "di", "didev", "ds", "dsbuf" };
+    int k = 0;
+    for (unsigned i = 1; i < NEL(g_if) && k < (int)n - 24; i++){
+        uint64_t live = g_com_new_n[i] - g_com_del_n[i];
+        if (live) k += snprintf(buf + k, n - (size_t)k, " %s=%llu", i < NEL(ab) ? ab[i] : "?", (unsigned long long)live);
+    }
+    return k;
+}
+/* [status] com=/gbuf=: COM object and Lock-buffer arenas (heap.c). */
+void com_mem_stats(uint64_t *com_bytes, uint64_t *buf_bytes, uint64_t *objs){
+    if (gheap_bump()){ *com_bytes = com_ptr - COM_BASE; *buf_bytes = gbuf_ptr - GBUF_BASE; }
+    else { *com_bytes = g_com_bytes; *buf_bytes = g_gbuf_bytes; }
+    *objs = g_com_live;
+}
+void com_init(void){
+#ifndef __wasm__
+    mem_commit(COM_BASE,0x10000);
+#endif
+
     { extern char **environ; (void)environ; }
 }
 static uint64_t *g_ptype = 0, *g_stride = 0;
 void draw_stats_save(uint64_t *a, uint64_t *b){ g_ptype=a; g_stride=b; }
 
 void com_report(void){
-    fprintf(stderr,"\n=== COM / D3D9 KATMANI ===\n");
+    fprintf(stderr,"\n=== COM / D3D9 LAYER ===\n");
+    ws_report();
+#ifdef __wasm__
+    { void headlights_report(void); headlights_report(); }
+#endif
     if (g_aspfix != 1.f)
         { fprintf(stderr,"  widescreen       : aspfix %.4f, %lu perspective / %lu orthographic draws\n",
                   g_aspfix, g_asp_persp, g_asp_ortho);
+          fprintf(stderr,"  renderer Hor+ into render targets: %lu cube face draws, %lu other\n",
+                  g_asp_cube, g_asp_rt);
           for (unsigned v2 = 0; v2 < MAXVS; v2++)
               if (g_asp_np[v2] || g_asp_no[v2])
-                  fprintf(stderr,"     vs=%-3u cx=%-3d cw=%-3d  persp %8lu / orto %8lu  c[cw].w=%.3f\n",
+                  fprintf(stderr,"     vs=%-3u cx=%-3d cw=%-3d  persp %8lu / ortho %8lu  c[cw].w=%.3f\n",
                           v2, g_pos_cx[v2], g_pos_cw[v2], g_asp_np[v2], g_asp_no[v2], g_asp_cw3[v2]); }
     if (ENVC("RSLOG")){
-        /* the states rs_apply() really uses */
+        /* the states rs_apply() actually uses */
         static const unsigned handled[] = {7,14,15,19,20,22,23,24,25,27,168,171,193};
-        fprintf(stderr,"  --- SetRenderState usage (UNHANDLED ones starred) ---\n");
+        fprintf(stderr,"  --- SetRenderState use (UNHANDLED ones starred) ---\n");
         for (unsigned i=0;i<256;i++){
             if (!g_rs_hits[i]) continue;
             int h=0; for (unsigned k=0;k<sizeof handled/sizeof*handled;k++) if(handled[k]==i) h=1;
@@ -4313,56 +4676,68 @@ void com_report(void){
             fprintf(stderr,"%s\n", g_rs_nval[i]>=4?" ...":"");
         }
     }
-    fprintf(stderr,"  SetRenderState    : %llu applied, %llu SKIPPED (%%%.1f were redundant)\n",
+    fprintf(stderr,"  SetRenderState    : %llu applied, %llu SKIPPED (%.1f%% were redundant)\n",
             (unsigned long long)g_rs_run, (unsigned long long)g_rs_skip,
             100.0*(double)g_rs_skip/(double)((g_rs_skip+g_rs_run) ? (g_rs_skip+g_rs_run) : 1));
-    fprintf(stderr,"  total COM calls    : %llu\n",(unsigned long long)g_com_calls);
+    fprintf(stderr,"  COM calls in total : %llu\n",(unsigned long long)g_com_calls);
     fprintf(stderr,"  Present (frames)   : %llu\n",(unsigned long long)g_present);
     if (metal_available())
-        fprintf(stderr,"  Metal presentation : %ld frames, %ld triangles\n"
+        fprintf(stderr,"  Metal presents     : %ld frames, %ld triangles\n"
                        "  Metal textures     : %ld created, %ld uploads\n",
                 metal_frames(), metal_tris(),
                 metal_tex_created(), metal_tex_uploaded());
     fprintf(stderr,"  Draw* calls        : %llu\n",(unsigned long long)g_draw);
-    fprintf(stderr,"  ps constant file   : highest used c%u, %u writes above 32\n",
+    fprintf(stderr,"  ps constant file   : highest used c%u, %u writes at 32 and above\n",
             g_psc_max ? g_psc_max-1u : 0u, g_psc_drop);
-    fprintf(stderr,"  guest COM heap     : %u KB\n",(com_ptr-COM_BASE)/1024u);
-    fprintf(stderr,"  guest buffer heap  : %u KB\n",(gbuf_ptr-GBUF_BASE)/1024u);
+    fprintf(stderr,"  COM objects by interface (created / destroyed / AddRef calls / Release calls):%s\n",
+            com_frees() ? "" : "  [NFSU2_COMFREE=0: never destroyed]");
+    for (unsigned i = 1; i < NEL(g_if) && i < MSTAT_IF; i++)
+        if (g_com_new_n[i] || g_mstat[i][1] || g_mstat[i][2])
+            fprintf(stderr,"    %-28s %9llu / %9llu / %10llu / %10llu\n", g_if[i].name, (unsigned long long)g_com_new_n[i],
+                    (unsigned long long)g_com_del_n[i], (unsigned long long)g_mstat[i][1], (unsigned long long)g_mstat[i][2]);
+    { unsigned long metal_tex_released(void);
+      fprintf(stderr,"  COM lifetime      : %llu live objects, %llu over-released (kept), %llu calls on non-objects,"
+                     " %llu uncached child surfaces; Metal textures released %lu\n",
+              (unsigned long long)g_com_live, (unsigned long long)g_com_overrel, (unsigned long long)g_com_bad,
+              (unsigned long long)g_child_uncached, metal_available() ? metal_tex_released() : 0ul); }
+    { uint64_t cb, bb, ob; com_mem_stats(&cb, &bb, &ob);
+      fprintf(stderr,"  guest COM heap     : %llu KB\n", (unsigned long long)(cb / 1024u));
+      fprintf(stderr,"  guest buffer heap  : %llu KB\n", (unsigned long long)(bb / 1024u)); }
     if (g_ptype){
         static const char *PT[] = {"?","POINTLIST","LINELIST","LINESTRIP",
                                    "TRIANGLELIST","TRIANGLESTRIP","TRIANGLEFAN","?"};
         fprintf(stderr,"  --- DrawPrimitiveUP: primitive types ---\n");
         for (int i=0;i<8;i++) if (g_ptype[i])
             fprintf(stderr,"    %-16s %llu\n", PT[i], (unsigned long long)g_ptype[i]);
-        fprintf(stderr,"  --- vertex stride sizes ---\n");
+        fprintf(stderr,"  --- vertex strides ---\n");
         for (int i=0;i<64;i++) if (g_stride[i])
-            fprintf(stderr,"    %3d bytes  %llu\n", i*4, (unsigned long long)g_stride[i]);
+            fprintf(stderr,"    %3d bytes %llu\n", i*4, (unsigned long long)g_stride[i]);
     }
     fprintf(stderr,"  --- DirectInput / DirectSound calls ---\n");
     { int any=0;
       for (unsigned i=1;i<NEL(g_if) && i<MSTAT_IF;i++){
-        if (i!=IF_DI8 && i!=IF_DIDEV && i!=IF_DS && i!=IF_DSBUF && i!=IF_QUERY) continue;
+        if (i!=IF_DI8 && i!=IF_DIDEV && i!=IF_DIEFF && i!=IF_DS && i!=IF_DSBUF && i!=IF_QUERY) continue;
         for (unsigned j=0;j<g_if[i].n && j<MSTAT_M;j++)
             if (g_mstat[i][j]){ any=1;
                 fprintf(stderr,"    %-26s %-26s %llu\n",
                         g_if[i].name, g_if[i].m[j].name,
                         (unsigned long long)g_mstat[i][j]); }
       }
-      if(!any) fprintf(stderr,"    (no calls at all)\n");
+      if(!any) fprintf(stderr,"    (no calls)\n");
     }
-    fprintf(stderr,"  vertex shader     : %llu draws with shader, %llu without, %u compiled\n",
+    fprintf(stderr,"  vertex shaders    : %llu draws with a shader, %llu without, %u compiled\n",
             (unsigned long long)g_vs_draws, (unsigned long long)g_ff_draws, g_vsprogn-1);
     fprintf(stderr,"  state blocks      : %d slots, %llu Apply, %llu Capture, "
-            "%llu record overflows, %llu slots not found\n",
+            "%llu records overflowed, %llu found no slot\n",
             g_sbn-1, (unsigned long long)g_sb_applied,
             (unsigned long long)g_sb_captured, (unsigned long long)g_sb_dropped,
             (unsigned long long)g_sb_full);
-    fprintf(stderr,"  GPU vertex shader: %llu draws on the GPU, %llu translations rejected,"
+    fprintf(stderr,"  GPU vertex shaders: %llu draws on the GPU, %llu translations rejected,"
             " %d/%d (shader,decl) pairs registered\n",
             (unsigned long long)g_gpuvs_draws, (unsigned long long)g_gpuvs_fail,
             g_gvs_next-1, g_gvsn);
     fprintf(stderr,"  indexed draws      : %llu from the pool, old path: strip/fan %llu, object %llu, new lock %llu, "
-            "alignment/bound %llu, mirror %llu, out of index %llu\n",
+            "align/bounds %llu, mirror %llu, index out of range %llu\n",
             (unsigned long long)g_dip_ix, (unsigned long long)g_dip_ixfb[0], (unsigned long long)g_dip_ixfb[1],
             (unsigned long long)g_dip_ixfb[2], (unsigned long long)g_dip_ixfb[3], (unsigned long long)g_dip_ixfb[4],
             (unsigned long long)g_dip_ixfb[5]);
@@ -4372,7 +4747,7 @@ void com_report(void){
           fprintf(stderr,"  GPU vertex arena overflow : %u verts, %u constants, %llu draws went back to the CPU\n",
                   ovrv, ovkb, (unsigned long long)g_gpuvs_drop); }
     if (metal_available())
-        fprintf(stderr,"  skipped frames    : %ld\n", metal_frames_dropped());
+        fprintf(stderr,"  dropped frames    : %ld\n", metal_frames_dropped());
     { extern uint64_t g_icall_hits;
       if (ENVC("ICALL"))
           fprintf(stderr,"  ICALL hits        : %llu\n", (unsigned long long)g_icall_hits); }
@@ -4380,10 +4755,10 @@ void com_report(void){
       if (cp){ void cov_report(const char*); cov_report(cp); } }
     { extern uint64_t g_timer_ticks;
       fprintf(stderr,"  timer ticks       : %llu\n", (unsigned long long)g_timer_ticks); }
-    fprintf(stderr,"  draw matrix       : %llu valid, %llu broken\n",
+    fprintf(stderr,"  draw matrices     : %llu valid, %llu bad\n",
             (unsigned long long)g_mat_ok,(unsigned long long)g_mat_bad);
-    fprintf(stderr,"  DI action map     : %d keys bound, %llu events produced\n",
-            g_act_count, (unsigned long long)g_di_events);
+    fprintf(stderr,"  FIXMAT pattern    : %llu times (bad front-end WVP matrix)\n", (unsigned long long)g_fixmat_hits);
+    dikbd_report();
     fprintf(stderr,"  DI device enum    : %llu enumerations, %llu object enumerations\n",
             (unsigned long long)g_di_enum, (unsigned long long)g_di_objs);
     for (int q2 = 0; g_lk_tid && q2 < 8; q2++){
@@ -4401,17 +4776,18 @@ void com_report(void){
             (unsigned long long)g_snd_nonzero,(unsigned long long)g_snd_zero,
             g_snd_bytes/1024.0,(unsigned long long)g_snd_play);
     audio_report();
-    fprintf(stderr,"  keyboard reads    : %llu calls, a key pressed in %llu of them\n",
+    fprintf(stderr,"  keyboard reads    : %llu calls, %llu with a key down\n",
             (unsigned long long)g_dikey_calls,(unsigned long long)g_dikey_hits);
     fprintf(stderr,"  RT textures created: %llu\n",(unsigned long long)g_rt_tex);
     { void metal_miplevel_report(void); if (metal_available()) metal_miplevel_report(); }
+    texrep_report();
     fprintf(stderr,"  render target     : to a texture %llu, to the screen %llu\n",
             (unsigned long long)g_rt_set,(unsigned long long)g_rt_screen);
     fprintf(stderr,"  SetTexture        : valid %llu, NULL %llu, id=0 %llu, stage!=0 %llu\n",
             (unsigned long long)g_st_ok,(unsigned long long)g_st_null,
             (unsigned long long)g_st_zero,(unsigned long long)g_st_other);
     fprintf(stderr,"  texture creation  : %llu failed\n", (unsigned long long)g_tex_fail);
-    fprintf(stderr,"  of which in vs_run: %.2f s\n", g_t_vs_ns/1e9);
+    fprintf(stderr,"  of which vs_run   : %.2f s\n", g_t_vs_ns/1e9);
     fprintf(stderr,"  --- VERTICES PER SHADER ---\n");
     for (int q=0;q<8;q++){
         uint64_t best=0; int bi=-1;
@@ -4423,10 +4799,10 @@ void com_report(void){
                 (bi>0 && (unsigned)bi<g_vsprogn && g_vsprog[bi]) ? vs_ninstr(g_vsprog[bi]) : 0u);
         g_v_per_vs[bi]=0;
     }
-    fprintf(stderr,"  draw path time    : %.2f s (with DRAWTIME=1), %llu vertices transformed (%.1f M verts/s)\n",
+    fprintf(stderr,"  draw path time    : %.2f s (with DRAWTIME=1), %llu verts transformed (%.1f M verts/s)\n",
             g_t_draw_ns/1e9, (unsigned long long)g_v_xform,
             g_t_draw_ns ? (double)g_v_xform/(g_t_draw_ns/1000.0) : 0.0);
-    fprintf(stderr,"  bound texture stages: 1: %llu, 2: %llu, 3: %llu, 4: %llu draws\n",
+    fprintf(stderr,"  bound tex stages  : 1: %llu, 2: %llu, 3: %llu, 4: %llu draws\n",
             (unsigned long long)g_stage_hist[0],(unsigned long long)g_stage_hist[1],
             (unsigned long long)g_stage_hist[2],(unsigned long long)g_stage_hist[3]);
     fprintf(stderr,"  indexed draws    : %llu draws, %llu triangles, %llu skipped\n",
@@ -4434,7 +4810,7 @@ void com_report(void){
             (unsigned long long)g_dip_skip);
     fprintf(stderr,"  raw position range: x[%.4g..%.4g] y[%.4g..%.4g] z[%.4g..%.4g]\n",
             g_rmin[0],g_rmax[0],g_rmin[1],g_rmax[1],g_rmin[2],g_rmax[2]);
-    fprintf(stderr,"  vertex position   : on screen %llu, off %llu, w<=0 %llu\n",
+    fprintf(stderr,"  vertex positions  : on screen %llu, off %llu, w<=0 %llu\n",
             (unsigned long long)g_v_in, (unsigned long long)g_v_out,
             (unsigned long long)g_v_badw);
     for (unsigned q=1; q<g_vsprogn && q<6; q++)
@@ -4472,7 +4848,7 @@ static void fill_caps(uint32_t p){
     MR32(p+0xA0)=8; MR32(p+0xA4)=6; MR32(p+0xA8)=4; MR32(p+0xAC)=8;
     MRF32(p+0xB0)=256.0f; MR32(p+0xB4)=1048575; MR32(p+0xB8)=1048575;
     MR32(p+0xBC)=16; MR32(p+0xC0)=508;
-    { /* The shader version can be set with an environment variable (SM=0 -> fixed function) */
+    { /* Shader version settable from the environment (SM=0 -> fixed function) */
       const char *sm = ENVC("D3D_SM");
       uint32_t vs=0xFFFE0200u, ps=0xFFFF0200u;
       if (sm){ int v=atoi(sm);

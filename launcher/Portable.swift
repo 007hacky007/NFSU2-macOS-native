@@ -21,8 +21,8 @@ final class PortableBuilder {
     private let lock = NSLock()
     private var cancelFlag = false
 
-    // The engine never reads these: no video decoder (MOVIES, ~250 MB) and Windows-only plugins.
-    static let skippedGameItems: Set<String> = ["MOVIES", "SCRIPTS", "dinput8.dll", "server.dll",
+    // Windows-only plugins and launch scripts. Movies and server.dll are used by the native engine.
+    static let skippedGameItems: Set<String> = ["SCRIPTS", "dinput8.dll",
                                                 "server.cfg", "SafeMode.bat"]
 
     init(sourceApp: URL, gameFolder: URL, destination: URL) {

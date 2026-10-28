@@ -1,32 +1,34 @@
 /* Run x86 code the guest GENERATES AT RUN TIME.
  *
- * The real blind spot of static recompilation: the game writes plain x86 to
- * its stack and calls it from there; we have no generated C counterpart for
- * those addresses.  NFSU2's material/render state pipeline uses this heavily --
- * measured: more than 17,000 calls in one session, all through
- * `call [eax+8]` in sub_00725520.  A generated block typically looks like:
+ * The real blind spot of static recompilation: the game writes plain x86
+ * to the heap and calls it there; we have no generated C counterpart for
+ * those addresses.  NFSU2's material/render state pipeline uses this
+ * heavily -- measured: more than 17,000 calls in one session, all through
+ * `call [eax+8]` in sub_00725520.  A typical generated block:
  *
- *     push esi                       ; a stack address like 0x105fdbe4
+ *     push esi                       ; a heap address such as 0x105fdbe4
  *     mov  esi,[esp+8]               ; arg1 = material object
  *     push esi
- *     call sub_0071feef              ; a small REGISTERED accessor in .text
+ *     call sub_0071feef              ; a small, REGISTERED accessor in .text
  *     add  esi,0x14
  *     ...
  *     mov  [esi+0xa0],eax  ...  mov [esi+0x150],eax
  *
- * The call targets are real lifted functions, so we can hand them straight to
- * dispatch_indirect.  Swallowing these calls led to crashes at high detail
- * settings.
+ * The call targets are real lifted functions, so we can hand them straight
+ * to dispatch_indirect.  Swallowing these calls led to crashes at high
+ * detail settings.
  *
- * DESIGN PRINCIPLE: if we see an unknown byte we DO NOT CONTINUE SILENTLY.
+ * DESIGN PRINCIPLE: when we see an unknown byte we do NOT SILENTLY GO ON.
  * We stop, restore esp and report -- better visible than running wrong.
- * Likewise every memory operation goes through a commit check; instead of
- * crashing the host with a broken pointer we bail.                       */
+ * Likewise every memory access goes through the commit check; instead of
+ * crashing the host on a bad pointer we bail.                           */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifndef __wasm__
 extern uint8_t *g_mem;
+#endif
 void dispatch_indirect(CPU *c, uint32_t addr);
 int  mem_is_committed(uint32_t a);
 
@@ -45,7 +47,7 @@ static uint32_t g_gen_bail_ops[16]; static int g_gen_bail_n = 0;
 
 typedef struct { int is_reg; int reg; uint32_t ea; int len; } Opnd;
 
-/* Decode ModRM (+SIB +disp).  len = bytes consumed starting at modrm.     */
+/* Decode ModRM (+SIB +disp).  len = bytes consumed from the modrm on.    */
 static Opnd modrm(CPU *c, uint32_t p, int *rf){
     Opnd o = {0,0,0,0};
     uint8_t m = MR8(p);
@@ -151,7 +153,7 @@ int run_generated(CPU *c, uint32_t entry){
         case 0x21: case 0x29: case 0x31: case 0x39:
         case 0x03: case 0x0B: case 0x13: case 0x1B:
         case 0x23: case 0x2B: case 0x33: case 0x3B: {
-            int dir = (op & 2) != 0;                 /* 1: register destination  */
+            int dir = (op & 2) != 0;                 /* 1: dest register */
             int fn  = (op >> 3) & 7;
             o = modrm(c,pc+1,&rf);
             uint32_t rm = o.is_reg ? c->r[o.reg] : ({ CHK(o.ea,4); MR32(o.ea); });
@@ -344,8 +346,8 @@ int run_generated(CPU *c, uint32_t entry){
             uint32_t next = pc + 5, t = next + MR32(pc+1);
             PUSH32(next);
             dispatch_indirect(c, t);
-            /* return point = the pushed address (NOT c->eip): a lifted ret with
-             * RETEIP=0 doesn't write c->eip; the model already ignores modified
+            /* return point = the pushed address (NOT c->eip): with RETEIP=0 a
+             * lifted ret does not write c->eip; the model already ignores modified
              * return addresses, and a lifted caller always continues at 'next'. */
             pc = next; continue; }
         case 0xC3: POP32(c->eip); return 1;

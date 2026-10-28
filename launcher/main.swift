@@ -46,8 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if let s = env["NFSU2_LAUNCHER_STATE"] { fakeState(s) }
         buildMenu()
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 624),
-                         styleMask: [.titled, .closable, .miniaturizable],
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 800),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(calibratedRed: 0.067, green: 0.071, blue: 0.082, alpha: 1)
         w.contentView = NSHostingView(rootView: LauncherView(model: model))
+        w.contentMinSize = NSSize(width: 560, height: 600)
         w.center()
         w.delegate = self
         window = w

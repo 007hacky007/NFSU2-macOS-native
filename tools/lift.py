@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """x86-32 -> C lifter.  Translates a function into C that runs on the CPU state."""
 import sys, struct, collections
-import os as _os
 import pefile
 from capstone import *
 from capstone.x86 import *
@@ -20,17 +19,17 @@ CC  = {'o':'CC_O','no':'CC_NO','b':'CC_B','ae':'CC_AE','e':'CC_E','ne':'CC_NE',
        'ng':'CC_LE','nle':'CC_G'}
 
 
-# ---- flag liveness ---------------------------------------------------
-# Every arithmetic instruction computed all six flags up front; the next branch
-# usually reads only one of them.  We solve liveness BACKWARDS over the function's
-# flow graph and give every instruction the mask "which flags are read after
-# this"; since the mask is a compile-time constant the unused branches are
-# removed entirely.
+# ---- flag liveness ------------------------------------------------------
+# Every arithmetic instruction used to compute all six flags up front; the next
+# branch usually reads only one.  We solve liveness BACKWARDS over the function's
+# control-flow graph and give every instruction the mask "which flags are read
+# after this one"; since the mask is a compile-time constant, the unused
+# branches are removed entirely.
 F_CF,F_PF,F_AF,F_ZF,F_SF,F_OF = 0x01,0x02,0x04,0x08,0x10,0x20
 F_ALL = 0x3F
-# CAREFUL: UNDEFINED_* don't count as "definitions".  If they did, we would treat
-# the flag as dead and skip the earlier computation; but our lift may not write
-# that flag -> a stale value.
+# CAUTION: UNDEFINED_* do not count as "definitions".  If they did, we would take
+# the flag as dead and skip the earlier computation; yet our lift may not write
+# that flag -> stale value.
 _EFTAB = [
     (F_CF, X86_EFLAGS_MODIFY_CF|X86_EFLAGS_RESET_CF|X86_EFLAGS_SET_CF,
            X86_EFLAGS_TEST_CF|X86_EFLAGS_PRIOR_CF),
@@ -45,11 +44,11 @@ _EFTAB = [
     (F_OF, X86_EFLAGS_MODIFY_OF|X86_EFLAGS_RESET_OF|X86_EFLAGS_SET_OF,
            X86_EFLAGS_TEST_OF|X86_EFLAGS_PRIOR_OF),
 ]
-# Call: the callee takes the CPU, it MAY READ and CORRUPT every flag.  Indirect
-# branch/ret/int are equally conservative.
-# capstone gives NO "reads flags" information for these instructions.  If we
-# leave it out we treat the flag as dead and skip the computation -> the
-# instruction reads a garbage value.
+# Call: the callee gets the CPU, it CAN READ and CLOBBER every flag.
+# Indirect branch/ret/int are just as conservative.
+# capstone NEVER reports "reads flags" for these instructions.  Left out, we
+# would take the flag as dead and skip its computation -> the instruction
+# reads garbage.
 _EXTRA_USE = {
     'pushf': F_ALL, 'pushfd': F_ALL, 'pushfw': F_ALL,
     'lahf':  F_CF|F_PF|F_AF|F_ZF|F_SF,
@@ -60,42 +59,46 @@ _EXTRA_USE = {
     'aaa': F_CF|F_AF, 'aas': F_CF|F_AF,
     'into':  F_OF,
 }
-# Instructions whose flags OUR lifter REALLY writes are fewer than capstone
-# claims.  Saying "writes" too much means: we kill the flag above but don't
-# write it here either -> a stale value.  imul/mul only write CF+OF.
+# Instructions where our lifter REALLY writes fewer flags than capstone
+# claims.  A spurious "writes" means: we kill the flag above but do not write
+# it here either -> stale value.  imul/mul write only CF+OF.
 _DEF_CLAMP = {'mul': F_CF|F_OF, 'imul': F_CF|F_OF}
 
-# x86: shifts/rotates DON'T TOUCH the flags when the COUNT is 0 (in the lift the
-# body is also guarded by "if(_s){...}").  capstone still says "writes"; if we
-# follow it and kill the flag above, a garbage value remains when the count is 0.
+# x86: shifts/rotates do NOT TOUCH the flags when the COUNT is 0 (the lifted
+# body is guarded by "if(_s){...}" too).  capstone still says "writes"; if we
+# followed it and killed the flag above, a count of 0 would leave garbage.
 _SHIFT = ('shl','sal','shr','sar')
 _ROT   = ('rol','ror','rcl','rcr')
 _DSH   = ('shld','shrd')
 
 def _shift_count(i, base):
-    """Constant shift count (0-31); None if variable (cl)."""
+    """Constant shift count (0-31); None if it is variable (cl)."""
     o = i.operands
     if base in _DSH:
         return (o[2].imm & 31) if len(o) > 2 and o[2].type == X86_OP_IMM else None
     if len(o) > 1:
         return (o[1].imm & 31) if o[1].type == X86_OP_IMM else None
-    return 1                      # single-operand form: the count is the constant 1
+    return 1                      # one-operand form: the count is a constant 1
 
 _OPAQUE = ('call','ret','retf','int','int3','iret','iretd',
            'sysenter','syscall','ud2','hlt','arpl')
 
-# x87: capstone REUSES the `eflags` field for the FPU status bits (C0-C3) --
-# the same numeric values (fld -> 0xd002, fcom -> 0x2d).  Taken as is, every fld
-# would count as "wrote CF", every fcom as "wrote ZF/SF/AF/OF"; we would treat
-# those flags as dead above and skip the real computation -> a stale value.
-# Only the fcomi/fucomi family really writes EFLAGS (the FCOMI macro all 6).
+# x87: capstone REUSES the `eflags` field for the FPU status bits (C0-C3)
+# -- the same numeric values (fld -> 0xd002, fcom -> 0x2d).  Taken as they
+# are, every fld counts as "wrote CF", every fcom as "wrote ZF/SF/AF/OF"; we
+# would take those flags as dead above and skip the real computation -> stale value.
+# Only the fcomi/fucomi family really writes EFLAGS (the FCOMI macro writes all 6).
 _FCOMI = ('fcomi','fcomip','fucomi','fucomip')
+# fcmovcc READS EFLAGS (v12na); it got lost in the 'f' branch.
+_FCMOV_USE = {'fcmovb': F_CF, 'fcmovnb': F_CF, 'fcmove': F_ZF, 'fcmovne': F_ZF,
+              'fcmovbe': F_CF|F_ZF, 'fcmovnbe': F_CF|F_ZF, 'fcmovu': F_PF, 'fcmovnu': F_PF}
 
 def _flag_defuse(i):
     if i.mnemonic in _OPAQUE:
         return 0, F_ALL
     base = i.mnemonic.split()[-1]          # "repe cmpsb" -> "cmpsb"
     if base[:1] == 'f' or X86_GRP_FPU in i.groups:
+        if base in _FCMOV_USE: return 0, _FCMOV_USE[base]
         return (F_ALL, 0) if base in _FCOMI else (0, 0)
     ef = getattr(i, 'eflags', 0) or 0
     d = u = 0
@@ -106,7 +109,7 @@ def _flag_defuse(i):
     if base in _DEF_CLAMP: d &= _DEF_CLAMP[base]
     if base in _SHIFT or base in _ROT or base in _DSH:
         n = _shift_count(i, base)
-        if not n:                 # count 0 or unknown at compile time
+        if not n:                 # count 0, or not known at compile time
             d = 0                 # -> may write no flag at all
         elif base in _ROT:
             # rol/ror with a constant count: CF always, OF only when count==1.
@@ -116,12 +119,12 @@ def _flag_defuse(i):
         d = 0                     # if ECX==0 the body never runs, the flags are kept
     return d, u
 
-# ---- FLAGABI: inter-function flag liveness (see tools/flagabi.py) ----
-# On x86 reading a flag left "undefined" has no meaningful result: in ABI mode
-# undefined flags also count as DEFINED.  Otherwise and/test/xor would never kill
-# AF; AF would propagate backwards from the indirect call / outside edge source
-# and look "live" at nearly every call site (measured: 3171 fake "flag
-# returning" functions, all AF only).
+# ---- FLAGABI: inter-procedural flag liveness (see tools/flagabi.py) ----
+# On x86, reading a flag left "undefined" has no meaningful result: in ABI mode
+# undefined flags count as DEFINED as well.  Otherwise and/test/xor never kill
+# AF; AF spreads backwards from an indirect call / outer edge source and looks
+# "live" at almost every call site (measured: 3171 bogus "flag-returning"
+# functions, all of them AF only).
 _EFUNDEF = [(F_CF, X86_EFLAGS_UNDEFINED_CF), (F_PF, X86_EFLAGS_UNDEFINED_PF), (F_AF, X86_EFLAGS_UNDEFINED_AF),
             (F_ZF, X86_EFLAGS_UNDEFINED_ZF), (F_SF, X86_EFLAGS_UNDEFINED_SF), (F_OF, X86_EFLAGS_UNDEFINED_OF)]
 def _flag_defuse_abi(i):
@@ -130,7 +133,7 @@ def _flag_defuse_abi(i):
     base = i.mnemonic.split()[-1]
     if base[:1] == 'f' or X86_GRP_FPU in i.groups: return d, u
     if base in _SHIFT or base in _ROT or base in _DSH:
-        return d, u                  # the count may be 0: don't kill the undefined
+        return d, u                  # the count may be 0: do not kill the undefined ones
     if i.mnemonic.split()[0] in ('rep','repe','repz','repne','repnz'):
         return d, u
     ef = getattr(i, 'eflags', 0) or 0
@@ -138,11 +141,11 @@ def _flag_defuse_abi(i):
         if ef & um: d |= bit
     return d, u
 
-def abi_cfg(blocks, in_text):
-    """Compact flow graph for FLAGABI: block -> (successors, exit_kind, instructions)
-    exit_kind: 0 none, 1 unknown outside edge (all flags live), 2 indirect jmp
-    (virtual tail call / switch table: dead in the ABI).
-    instruction: (address, def, use, kind, target)  kind: 0 normal, 1 direct call,
+def abi_cfg(blocks, in_text, jtab=None):
+    """Compact control-flow graph for FLAGABI: block -> (successors, ext_kind, insns)
+    ext_kind: 0 none, 1 unknown outer edge (all flags live), 2 indirect jmp
+    (virtual tail call / switch table: dead under the ABI).
+    insn: (address, def, use, kind, target)  kind: 0 normal, 1 direct call,
     2 indirect call, 3 ret."""
     g = {}
     for ba in blocks:
@@ -155,7 +158,9 @@ def abi_cfg(blocks, in_text):
         if m == 'jmp' or cond:
             o = last.operands[0] if last.operands else None
             if o is not None and o.type == X86_OP_IMM and o.imm in blocks: s.append(o.imm)
-            elif m == 'jmp' and (o is None or o.type != X86_OP_IMM): ext = 2
+            elif m == 'jmp' and (o is None or o.type != X86_OP_IMM):
+                ext = 2
+                if jtab and last.address in jtab: s += [t for t in dict.fromkeys(jtab[last.address][2]) if t in blocks]
             else: ext = 1
             if cond:
                 nxt = last.address + last.size
@@ -175,7 +180,7 @@ def abi_cfg(blocks, in_text):
                 if o is not None and o.type == X86_OP_IMM and in_text(o.imm):
                     kl.append((i.address, F_ALL, 0, 1, o.imm))
                 else:
-                    kl.append((i.address, F_ALL, 0, 2, 0))   # ABI: the callee doesn't read the caller's flags
+                    kl.append((i.address, F_ALL, 0, 2, 0))   # ABI: the callee does not read the caller's flags
             elif mm in ('ret','retn'):
                 kl.append((i.address, 0, 0, 3, 0))
             else:
@@ -184,9 +189,9 @@ def abi_cfg(blocks, in_text):
         g[ba] = (s, ext, kl)
     return g
 
-def abi_liveness(g, ent, entry_live, is_returning):
-    """-> (entry live, {instruction: live after}, {call: (live after, kind, target)})
-    call T: def F_ALL, use entry[T]; ret: F_ALL if returning else 0."""
+def abi_liveness(g, ent, callee_in, returns_flags):
+    """-> (live at entry, {insn: live after}, {call: (live after, kind, target)})
+    call T: defines F_ALL, uses callee_in[T]; ret: F_ALL if returns_flags, else 0."""
     live_in = {ba: 0 for ba in g}
     after = {}; call_after = {}
     order = sorted(g, reverse=True)
@@ -196,30 +201,46 @@ def abi_liveness(g, ent, entry_live, is_returning):
             s, ext, kl = g[ba]
             cur = F_ALL if ext == 1 else 0
             for t in s: cur |= live_in.get(t, F_ALL)
-            for (adr, d, u, kind, target) in reversed(kl):
+            for (addr, d, u, kind, target) in reversed(kl):
                 if kind == 3:
-                    cur = F_ALL if is_returning else 0
-                after[adr] = cur
+                    cur = F_ALL if returns_flags else 0
+                after[addr] = cur
                 if kind == 3: continue
                 if kind in (1, 2):
-                    call_after[adr] = (cur, kind, target)
-                    if kind == 1: u = entry_live.get(target, 0)
+                    call_after[addr] = (cur, kind, target)
+                    if kind == 1: u = callee_in.get(target, 0)
                 cur = (cur & ~d) | u
             if cur != live_in[ba]:
                 live_in[ba] = cur; changed = True
         if not changed: break
     return live_in.get(ent, F_ALL), after, call_after
 
+_FTOL2INL = __import__('os').environ.get('FTOL2INL', '') == '1'
+def _retpast():
+    """tools/retpast.txt, next to this file: callees that can return past their caller"""
+    import os as _os
+    p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'retpast.txt')
+    return {int(x, 16) for ln in open(p) for x in ln.split('#')[0].replace(',', ' ').split()}
+_LREGS = None
+def _lregs():
+    """tools/lregs.py (LREGS=1), next to this file"""
+    global _LREGS
+    if _LREGS is None:
+        import importlib.util as _iu, os as _os
+        sp = _iu.spec_from_file_location('lregs', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'lregs.py'))
+        _LREGS = _iu.module_from_spec(sp); sp.loader.exec_module(_LREGS)
+    return _LREGS
+
 _ABI = None
 def abi_table():
-    """FLAGABI=<json> (tools/flagabi.py output) -> (entry, returning) or None"""
+    """FLAGABI=<json> (output of tools/flagabi.py) -> (live_in, flags_out) or None"""
     global _ABI
     if _ABI is None:
         import os as _os, json as _json
         p = _os.environ.get('FLAGABI', '')
         if p:
             j = _json.load(open(p))
-            _ABI = ({int(k, 16): v for k, v in j.get('entry', j.get('giris', {})).items()}, {int(a, 16) for a in j.get('returning', j.get('donen', []))})
+            _ABI = ({int(k, 16): v for k, v in j['live_in'].items()}, {int(a, 16) for a in j['flags_out']})
         else:
             _ABI = False
     return _ABI or None
@@ -246,7 +267,7 @@ def flag_liveness(blocks, addrs, in_text):
             # ret is in the _OPAQUE list: all flags count as live on return
             # (hand-written asm may use CF as a return channel).
             # Measured: even with this CONSERVATIVE setting flag writes drop by 53%,
-            # so there's no need to loosen safety.
+            # so there is no need to loosen the safety.
             ext = True
         else:
             nxt = last.address + last.size
@@ -274,15 +295,18 @@ def flag_liveness(blocks, addrs, in_text):
 
 class Unsupported(Exception): pass
 
-# ---- X87OPT: in-block x87 register allocation ---------------------------------
+import os as _os_pc
+_X87PC = _os_pc.environ.get('X87PC', '') == '1'   # see "x87 FPU" in lift_insn
+
+# ---- X87OPT: x87 register allocation within a block ----------------------
 # ST(n) = c->st[(c->top+n)&7] is indexed at run time: clang can never keep these
 # values in registers, every x87 operation is a top read + address + load/store.
 # Within a basic block the stack depth is known at compile time: at the start of
-# the region _T = c->top, ST(n) -> _x[off+n+8] (constant index -> an ARM FP
-# register), FPUSH/FPOP only change the static off.  A slot read before being
-# written is loaded once inside the region; at the end of the region (branch,
-# call, ret, an instruction touching c->st/c->top, end of block) only the modified
-# slots still on the stack are written back and c->top is updated once.
+# a region _T = c->top, ST(n) -> _x[off+n+8] (constant index -> ARM FP register),
+# FPUSH/FPOP only change the static off.  A slot read before it is written is
+# loaded once within the region; at the end of the region (branch, call, ret,
+# an instruction touching c->st/c->top, end of block) only the modified slots
+# still on the stack are written back and c->top is updated once.
 import re as _re
 _ST_RE = _re.compile(r'ST\((\d+)\)')
 _STA_RE = _re.compile(r'ST\((\d+)\)\s*=(?!=)')
@@ -295,8 +319,8 @@ class X87Region:
     def _slot(self, k):
         if not -8 <= k <= 7: raise ValueError('x87 depth')
         return k + 8
-    def convert(self, lines):
-        """lines of an x87 instruction -> region lines or None (leave raw)"""
+    def translate(self, lines):
+        """lines of an x87 instruction -> region lines, or None (leave them raw)"""
         text = '\n'.join(lines)
         if 'c->st' in text or 'c->top' in text:
             return None
@@ -325,12 +349,12 @@ class X87Region:
             self.active, self.off, self.wr, self.ld = saved
             return None
     def _st(self, line, pre):
-        top = {}; assigned = {}
-        for m in _ST_RE.finditer(line): top[int(m.group(1))] = top.get(int(m.group(1)), 0) + 1
+        uses = {}; assigned = {}
+        for m in _ST_RE.finditer(line): uses[int(m.group(1))] = uses.get(int(m.group(1)), 0) + 1
         for m in _STA_RE.finditer(line): assigned[int(m.group(1))] = assigned.get(int(m.group(1)), 0) + 1
-        for n, count in top.items():
+        for n, cnt in uses.items():
             k = self.off + n; self._slot(k)
-            if count > assigned.get(n, 0) and k not in self.wr and k not in self.ld:
+            if cnt > assigned.get(n, 0) and k not in self.wr and k not in self.ld:
                 pre.append(f'_x[{k + 8}] = c->st[(_T + ({k})) & 7];'); self.ld.add(k)
         for n in assigned: self.wr.add(self.off + n)
         off = self.off
@@ -343,11 +367,11 @@ class X87Region:
         return out
 
 class RawLifter:
-    """Lift over a raw byte buffer: for instruction semantics tests."""
+    """Lift over a raw byte buffer: for the instruction semantics tests."""
     def __init__(self, data, base=0x00401000, comments=True):
         self.comments=comments; self.trap=False; self.traps=0
         self.trap_kinds=collections.Counter(); self.hooks=set(); self.watch=False
-        self.cov=False
+        self.cov=False; self.retpast=set()
         self.secs=[('.text', base, len(data), bytes(data))]
         self.TVA=base; self.TSZ=len(data); self.TDATA=bytes(data)
         self.md=Cs(CS_ARCH_X86,CS_MODE_32); self.md.detail=True
@@ -365,14 +389,16 @@ class Lifter:
             self.secs.append((nm,self.IB+s.VirtualAddress,s.Misc_VirtualSize,s.get_data()))
         self.TVA,self.TSZ,self.TDATA = next((va,vs,d) for nm,va,vs,d in self.secs if nm=='.text')
         self.md=Cs(CS_ARCH_X86,CS_MODE_32); self.md.detail=True
+        # this module's callees from tools/retpast.txt (a call to one may not come back to the next instruction)
+        self.retpast={a for a in _retpast() if self.in_text(a)}
     def in_text(self,a): return self.TVA<=a<self.TVA+self.TSZ
 
     # ---------- operand -> C expression ----------
     def ea(self, m, extra=0):
-        """Effective address.  `extra`: constant extra offset (upper half in 128-bit operations)."""
+        """Effective address.  `extra`: a constant extra offset (the upper half in 128-bit operations)."""
         parts=[]
-        # Win32 flat memory model: es/ds/ss/cs base 0 -> ignored.
-        # fs points to the TEB (SEH chain fs:[0], TLS fs:[0x2c]) -> the base is added.
+        # Win32 flat memory model: es/ds/ss/cs have base 0 -> ignored.
+        # fs, however, points at the TEB (SEH chain fs:[0], TLS fs:[0x2c]) -> its base is added.
         if m.segment:
             sname = self.md.reg_name(m.segment) or ''
             if sname == 'fs':
@@ -402,7 +428,7 @@ class Lifter:
             raise Unsupported(f"register {r}")
         if op.type==X86_OP_MEM:
             return {1:'MR8',2:'MR16',4:'MR32',8:'MR64'}[op.size] + self.ea(op.mem)
-        raise Unsupported("operand tipi")
+        raise Unsupported("operand type")
 
     def wr(self, op, val):
         if op.type==X86_OP_REG:
@@ -416,54 +442,129 @@ class Lifter:
             raise Unsupported(f"register write {r}")
         if op.type==X86_OP_MEM:
             return {1:'MR8',2:'MR16',4:'MR32',8:'MR64'}[op.size] + self.ea(op.mem) + f" = ({val});"
-        raise Unsupported("destination operand")
+        raise Unsupported("target operand")
+
+    # ---------- jump tables (JTSWITCH=1) ----------
+    # MSVC's switch: "cmp r32, n; ja default" (or "jbe table_block") ends one
+    # block, the next is "jmp dword [r32*4 + table]" with n+1 entries in .text.
+    # Without JTSWITCH the jmp is a tail call through the dispatcher, so every
+    # table target is entered as a function of its own: a copy of the rest of
+    # the body (sub_00620ae0 has 20 such copies of ~660 KB of wasm each).  With
+    # it the targets are blocks of this function and the jmp becomes a C
+    # switch (see lift): each case checks the table entry at run time, and
+    # anything else still takes the dispatcher, so the semantics do not change.
+    # instructions that may sit between the cmp and the ja, and before the jmp:
+    # they write no flags, and the check below makes sure not the index either
+    _JT_PASS = frozenset(('mov', 'movzx', 'movsx', 'push', 'pop', 'lea', 'nop'))
+    def _jt_writes(self, i, fam):
+        """does i write any part of the register family fam ('eax', ...)?"""
+        try: return any((R32.get(r) or R16.get(r) or R8L.get(r) or R8H.get(r)) == fam for r in i.regs_access()[1])
+        except Exception: return True
+
+    def _jt_bound(self, ins):
+        """(reg, n, the block the bound holds in) for a block ending in 'cmp r32, n; [...]; ja/jbe'"""
+        j = ins[-1]
+        if j.mnemonic not in ('ja', 'jbe') or j.operands[0].type != X86_OP_IMM: return None
+        between = []
+        for k in reversed(ins[:-1]):
+            if k.mnemonic == 'cmp':
+                o = k.operands
+                if len(o) != 2 or o[0].type != X86_OP_REG or o[0].reg not in R32 or o[1].type != X86_OP_IMM: return None
+                if any(self._jt_writes(x, R32[o[0].reg]) for x in between): return None
+                held = j.address + j.size if j.mnemonic == 'ja' else j.operands[0].imm
+                return o[0].reg, o[1].imm & 0xffffffff, held
+            if k.mnemonic not in self._JT_PASS: return None
+            between.append(k)
+        return None
+
+    def _jt_table(self, ins, bound):
+        """(index reg, table, [targets]) for a block 'jmp dword [r*4 + table]' under bound
+        (r32, n), maybe after 'movzx r2, byte [r32 + bytes]' (MSVC's two-level switch:
+        the index is r2, up to the largest byte) and instructions that leave the index
+        alone; else None"""
+        reg, n = bound
+        if not ins or n > 1023: return None
+        for k in ins[:-1]:
+            if k.mnemonic == 'movzx' and len(k.operands) == 2 and k.operands[1].type == X86_OP_MEM and k.operands[1].size == 1 \
+               and k.operands[0].type == X86_OP_REG and k.operands[0].reg in R32:
+                m = k.operands[1].mem
+                if not m.segment and ((m.base == reg and not m.index) or (not m.base and m.index == reg and m.scale == 1)):
+                    bd = m.disp & 0xffffffff
+                    if not (self.in_text(bd) and self.in_text(bd + n)): return None
+                    n = max(self.TDATA[bd - self.TVA:bd - self.TVA + n + 1]); reg = k.operands[0].reg
+                    continue
+            if k.mnemonic not in self._JT_PASS or self._jt_writes(k, R32[reg]): return None
+        i = ins[-1]
+        if i.mnemonic != 'jmp' or not i.operands or i.operands[0].type != X86_OP_MEM or i.operands[0].size != 4: return None
+        m = i.operands[0].mem
+        if m.segment or m.base or m.index != reg or m.scale != 4: return None
+        d = m.disp & 0xffffffff
+        if not (self.in_text(d) and self.in_text(d + 4 * n + 3)): return None
+        ents = list(struct.unpack_from(f'<{n + 1}I', self.TDATA, d - self.TVA))
+        return (reg, d, ents) if all(self.in_text(t) for t in ents) else None
 
     # ---------- function discovery (CFG) ----------
     def discover(self, entry, maxins=4000):
         blocks={}; q=collections.deque([entry]); seen=set([entry]); calls=set()
-        while q:
-            va=q.popleft(); ins=[]
-            while True:
-                if not self.in_text(va): break
-                off=va-self.TVA
-                try: i=next(self.md.disasm(self.TDATA[off:off+16],va))
-                except StopIteration: break
-                ins.append(i); m=i.mnemonic
-                if m in ('ret','retf'): break
-                if m=='jmp':
-                    o=i.operands[0]
-                    if o.type==X86_OP_IMM and self.in_text(o.imm):
-                        t=o.imm
-                        if t not in seen: seen.add(t); q.append(t)
-                    break
-                if (m.startswith('j') and m[1:] in CC) or \
-                   m in ('jecxz','jcxz','loop','loope','loopz','loopne','loopnz'):
-                    o=i.operands[0]
-                    if o.type==X86_OP_IMM:
-                        for t in (o.imm, i.address+i.size):
-                            if self.in_text(t) and t not in seen: seen.add(t); q.append(t)
-                    break
-                if m=='call':
-                    o=i.operands[0]
-                    if o.type==X86_OP_IMM: calls.add(o.imm)
-                if m == 'int3':
-                    # A single int3 = assertion/debug break -> treat as no-op, CONTINUE.
-                    # A run of 0xCC = padding between functions -> stop.
-                    off2 = va + i.size - self.TVA
-                    pad = self.TDATA[off2:off2+3]
-                    if pad == b'\xcc\xcc\xcc': break
-                    va = i.address + i.size
-                    continue
-                if m in ('hlt','ud2'): break
-                va=i.address+i.size
-                if len(ins)>maxins: break
-            blocks[ins[0].address if ins else va]=ins
+        jt = _os_pc.environ.get('JTSWITCH', '') == '1'
+        bounds = {}; self.jtab = {}
+        while True:
+            while q:
+                va=q.popleft(); ins=[]
+                while True:
+                    if not self.in_text(va): break
+                    off=va-self.TVA
+                    try: i=next(self.md.disasm(self.TDATA[off:off+16],va))
+                    except StopIteration: break
+                    ins.append(i); m=i.mnemonic
+                    if m in ('ret','retf'): break
+                    if m=='jmp':
+                        o=i.operands[0]
+                        if o.type==X86_OP_IMM and self.in_text(o.imm):
+                            t=o.imm
+                            if t not in seen: seen.add(t); q.append(t)
+                        break
+                    if (m.startswith('j') and m[1:] in CC) or \
+                       m in ('jecxz','jcxz','loop','loope','loopz','loopne','loopnz'):
+                        o=i.operands[0]
+                        if o.type==X86_OP_IMM:
+                            for t in (o.imm, i.address+i.size):
+                                if self.in_text(t) and t not in seen: seen.add(t); q.append(t)
+                        break
+                    if m=='call':
+                        o=i.operands[0]
+                        if o.type==X86_OP_IMM: calls.add(o.imm)
+                    if m == 'int3':
+                        # A single int3 = assertion/debug break -> treat it as a no-op, GO ON.
+                        # A run of 0xCC = padding between functions -> stop.
+                        off2 = va + i.size - self.TVA
+                        pad = self.TDATA[off2:off2+3]
+                        if pad == b'\xcc\xcc\xcc': break
+                        va = i.address + i.size
+                        continue
+                    if m in ('hlt','ud2'): break
+                    va=i.address+i.size
+                    if len(ins)>maxins: break
+                blocks[ins[0].address if ins else va]=ins
+                if jt and ins:
+                    b = self._jt_bound(ins)
+                    if b: bounds[b[2]] = b[:2]
+            # table jumps whose block's bound is known by now: their targets join
+            new = False
+            for ba, ins in list(blocks.items()):
+                if not (jt and ins and ba in bounds and ins[-1].address not in self.jtab): continue
+                tab = self._jt_table(ins, bounds[ba])
+                if tab is None: continue
+                self.jtab[ins[-1].address] = tab
+                for t in tab[2]:
+                    if t not in seen: seen.add(t); q.append(t); new = True
+            if not new: break
         return blocks, calls
 
     # ---------- single instruction -> C ----------
     def _fm(self):
-        """Mask of the flags LIVE after this instruction.  If not set
-        (RawLifter / tests) conservatively all of them."""
+        """Mask of the flags LIVE after this instruction.  When it is not set
+        (RawLifter / tests), conservatively all of them."""
         return "0x%02xu" % getattr(self, 'cur_fmask', F_ALL)
 
     def insn(self, i, targets):
@@ -554,7 +655,7 @@ class Lifter:
             return [f"{{ int64_t _n=(int64_t)(((uint64_t)c->edx<<32)|c->eax); int32_t _d=(int32_t)({E(0)}); if(_d){{ c->eax=(uint32_t)(_n/_d); c->edx=(uint32_t)(_n%_d); }} }}"]
         if m in ('shl','sal','shr','sar'):
             cnt = E(1) if len(o)>1 else "1u"
-            # x86: CF = the last bit shifted out; SAR sign-extends (at operand size)
+            # x86: CF = the last bit shifted out; SAR sign-extends (at the operand size)
             if m in ('shl','sal'):
                 expr = "_v << _s"
                 cf   = f"((_v >> ({bits}u - _s)) & 1u)"
@@ -585,19 +686,40 @@ class Lifter:
                     self.oob_calls = getattr(self,'oob_calls',0)+1
                     return [f"PUSH32(0x{i.address+i.size:x}u); dispatch_indirect(c, 0x{t & 0xffffffff:x}u);"]
                 targets.add(t)
+                if t == 0x0075bed4 and _FTOL2INL:
+                    # FTOL2INL=1: the CRT's _ftol2 in place (cpu.h FTOL2_INL), not a call
+                    return [f"PUSH32(0x{i.address+i.size:x}u); FTOL2_INL(c);"]
+                if t in self.retpast:
+                    # a callee that may return past this function (tools/retpast.txt):
+                    # when the address it returned to is not this call's, this
+                    # function's own return address is gone too; return as well
+                    return [f"PUSH32(0x{i.address+i.size:x}u); sub_{t:08x}(c);",
+                            f"if (c->eip != 0x{i.address+i.size:x}u) return;"]
                 return [f"PUSH32(0x{i.address+i.size:x}u); sub_{t:08x}(c);"]
-            # x86: the call target is read BEFORE the return address is PUSHED (call [esp+N]!)
-            return [f"{{ uint32_t _ct = {E(0)}; PUSH32(0x{i.address+i.size:x}u); dispatch_indirect(c, _ct); }}"]
+            # x86: the call target is read BEFORE the return address is pushed (call [esp+N]!)
+            return [f"{{ uint32_t _ct = {E(0)}; PUSH32(0x{i.address+i.size:x}u); DISPATCH_CALL(c, _ct); }}"]
         if m in ('ret','retf'):
             n = o[0].imm if o else 0
-            # RETEIP=0: the return address isn't written to c->eip (only pushed on the stack).
+            # RETEIP=0: the return address is not written to c->eip (only popped off the stack).
             # A lifted caller always continues right after the call; the only place
-            # reading c->eip (genexec) now uses the address it pushed.
-            if _os.environ.get('RETEIP','1') == '0':
+            # that reads c->eip (genexec) now uses the address it pushed.  The
+            # callees of tools/retpast.txt always write it: their callers compare it.
+            import os as _os
+            if _os.environ.get('RETEIP','1') == '0' and self.entry not in self.retpast:
                 return [f"c->esp += {4 + n}u; return;"]
             return [f"POP32(c->eip);" + (f" c->esp += {n}u;" if n else "") + " return;"]
 
         # ---------------- x87 FPU ----------------
+        # X87PC=1 (lift time): results of FADD/FSUB/FMUL/FDIV(+P/R/I forms)
+        # and FSQRT go through X87R(), which rounds them to a 24-bit
+        # significand when the guest thread's control word selects single
+        # precision (PC=00), like the hardware.  PC=53/64 stay plain double.
+        # X87R(x87_r2(a, b, r)) is emitted as X87R2(a, b, r): one test on the
+        # fast path instead of two (cpu.h).
+        def PCR(e):
+            if not _X87PC: return e
+            if e.startswith('x87_r2(') and e.endswith(')'): return 'X87R2(' + e[len('x87_r2('):]
+            return f"X87R({e})"
         ST_REGS = {X86_REG_ST0:0,X86_REG_ST1:1,X86_REG_ST2:2,X86_REG_ST3:3,
                    X86_REG_ST4:4,X86_REG_ST5:5,X86_REG_ST6:6,X86_REG_ST7:7}
         def is_st(k): return o[k].type==X86_OP_REG and o[k].reg in ST_REGS
@@ -651,13 +773,13 @@ class Lifter:
                 src = f"ST({sti(0)})" if is_st(0) else fmem(0)
                 lhs, rhs = ("_s","_d") if rev else ("_d","_s")
                 return [f"{{ double _d=ST(0), _s=({src});"
-                        f" ST(0)=x87_r2(_d,_s,{lhs} {op_c} {rhs}); }}"]
+                        f" ST(0)={PCR(f'x87_r2(_d,_s,{lhs} {op_c} {rhs})')}; }}"]
             d = sti(0) if is_st(0) else None
             s2 = f"ST({sti(1)})" if is_st(1) else fmem(1)
             if d is None: raise Unsupported(m)
             lhs, rhs = ("_s","_d") if rev else ("_d","_s")
             return [f"{{ double _d=ST({d}), _s=({s2});"
-                    f" ST({d})=x87_r2(_d,_s,{lhs} {op_c} {rhs}); }}"]
+                    f" ST({d})={PCR(f'x87_r2(_d,_s,{lhs} {op_c} {rhs})')}; }}"]
         if m in ('faddp','fsubp','fmulp','fdivp','fsubrp','fdivrp'):
             rev = m in ('fsubrp','fdivrp')
             base = {'faddp':'fadd','fsubp':'fsub','fmulp':'fmul','fdivp':'fdiv',
@@ -666,23 +788,39 @@ class Lifter:
             d = sti(0) if (len(o)>0 and is_st(0)) else 1
             lhs, rhs = ("_s","_d") if rev else ("_d","_s")
             return [f"{{ double _d=ST({d}), _s=ST(0);"
-                    f" ST({d})=x87_r2(_d,_s,{lhs} {op_c} {rhs}); }}", "FPOP();"]
+                    f" ST({d})={PCR(f'x87_r2(_d,_s,{lhs} {op_c} {rhs})')}; }}", "FPOP();"]
         if m in ('fcom','fcomp','fcompp','fucom','fucomp','fucompp'):
             npop = 2 if m.endswith('pp') else (1 if m.endswith('p') else 0)
             if len(o)==0: src="ST(1)"
             elif is_st(0): src=f"ST({sti(0)})"
             else: src=fmem(0)
-            fc = 'fcompare_bl' if _os.environ.get('FCMPBL','') == '1' else 'fcompare'
-            return [f"{fc}(c, ST(0), {src});"] + ["FPOP();"]*npop
+            return [f"fcompare(c, ST(0), {src});"] + ["FPOP();"]*npop
         if m in ('fcomi','fcomip','fcompi','fucomi','fucomip','fucompi'):
             src=f"ST({sti(1)})" if len(o)>1 and is_st(1) else (f"ST({sti(0)})" if is_st(0) else fmem(0))
             pops = m.endswith('ip') or m.endswith('pi')
             return [f"FCOMI(ST(0), {src});"] + (["FPOP();"] if pops else [])
-        if m=='ftst':   return [("fcompare_bl" if _os.environ.get('FCMPBL','')=='1' else "fcompare") + "(c, ST(0), 0.0);"]
+        if m=='ftst':   return ["fcompare(c, ST(0), 0.0);"]
         if m=='fchs':   return ["ST(0) = -ST(0);"]
         if m=='fabs':   return ["ST(0) = fabs(ST(0));"]
-        if m=='fsqrt':  return ["{ double _a=ST(0); ST(0)=x87_r1(_a, sqrt(_a)); }"]
+        if m=='fsqrt':  return ["{ double _a=ST(0); ST(0)=" + PCR("x87_r1(_a, sqrt(_a))") + "; }"]
         if m=='fsin':   return ["ST(0) = sin(ST(0));"]
+        # v12na: D3DX math (0x63d907.. rotation helpers) uses fsincos.
+        # Result: ST(0)=cos(x), ST(1)=sin(x).
+        if m=='fsincos': return ["FPUSH(cos(ST(0)));", "ST(1) = sin(ST(1));"]
+        if m=='fxam':
+            return ["{ double _a=ST(0); c->fsw &= (uint16_t)~(FSW_C0|FSW_C1|FSW_C2|FSW_C3);"
+                    " if (signbit(_a)) c->fsw |= FSW_C1;"
+                    " if (isnan(_a)) c->fsw |= FSW_C0;"
+                    " else if (isinf(_a)) c->fsw |= FSW_C2|FSW_C0;"
+                    " else if (_a == 0.0) c->fsw |= FSW_C3;"
+                    " else if (fpclassify(_a) == FP_SUBNORMAL) c->fsw |= FSW_C3|FSW_C2;"
+                    " else c->fsw |= FSW_C2; }"]
+        if m in _FCMOV_USE:
+            cond = {'fcmovb':'c->cf','fcmovnb':'!c->cf','fcmove':'c->zf','fcmovne':'!c->zf',
+                    'fcmovbe':'(c->cf||c->zf)','fcmovnbe':'!(c->cf||c->zf)',
+                    'fcmovu':'c->pf','fcmovnu':'!c->pf'}[m]
+            j = sti(len(o)-1) if len(o) >= 1 and is_st(len(o)-1) else 1
+            return [f"if ({cond}) ST(0) = ST({j});"]
         if m=='fcos':   return ["ST(0) = cos(ST(0));"]
         if m=='fptan':  return ["ST(0) = tan(ST(0));","FPUSH(1.0);"]
         if m=='fpatan': return ["ST(1) = atan2(ST(1), ST(0));","FPOP();"]
@@ -690,9 +828,9 @@ class Lifter:
         if m=='f2xm1':  return ["ST(0) = exp2(ST(0)) - 1.0;"]
         if m=='fscale': return ["ST(0) = ldexp(ST(0), (int)trunc(ST(1)));"]
         if m=='frndint':return ["ST(0) = x87_round(c->fcw, ST(0));"]
-        # FPREM/FPREM1: the hardware does a PARTIAL reduction for a large exponent
-        # difference and leaves C2=1; we always give the full result and set C2=0 --
-        # the game's "repeat until C2 clears" loop exits on the first round, same result.
+        # FPREM/FPREM1: with a large exponent difference the hardware does a PARTIAL
+        # reduction and leaves C2=1; we always give the full result and set C2=0 --
+        # the game's "repeat until C2 is clear" loop exits on the first round, same result.
         # C0/C3/C1 carry the low 3 bits of the quotient (fsin/fcos argument reduction).
         if m in ('fprem','fprem1'):
             fn = 'fmod(_a,_b)' if m=='fprem' else 'remainder(_a,_b)'
@@ -705,7 +843,7 @@ class Lifter:
                     " if (_qi & 4u) c->fsw |= FSW_C0;"
                     " ST(0)=_r; }"]
         if m=='fxch':
-            # capstone gives (st(0), st(i)) for fxch: the destination is the LAST operand
+            # capstone gives (st(0), st(i)) for fxch: the target is the LAST operand
             j = 1
             if len(o) >= 2 and is_st(len(o)-1): j = sti(len(o)-1)
             elif len(o) == 1 and is_st(0):      j = sti(0)
@@ -733,7 +871,7 @@ class Lifter:
             n,acc = SW[base[-1]]; kind = base[:-1]
             areg = {1:'(uint8_t)c->eax',2:'(uint16_t)c->eax',4:'c->eax'}[n]
             # the repe/repne body reads the ZF it wrote ITSELF with 'if(!c->zf) break;';
-            # it must be computed even if ZF looks dead.
+            # ZF must be computed even when it looks dead.
             _zf = "|F_ZF" if pfx in ('repe','repz','repne','repnz') else ""
             body={
              'movs': f"{acc}(c->edi) = {acc}(c->esi); c->esi += _s; c->edi += _s;",
@@ -759,7 +897,7 @@ class Lifter:
                 fn = f"(((_v>>_s)|(_v<<({bits}u-_s))) & {mask})"
                 cfx = f"((_r >> ({bits-1}u)) & 1u)"
             else:
-                # rcl/rcr: rotate through CF (a bits+1 bit rotation)
+                # rcl/rcr: rotate through CF (a bits+1-bit rotation)
                 nb = bits + 1
                 if m=='rcl':
                     step = "{ uint32_t _hi=(_v>>({b}u))&1u; _v=((_v<<1)&{mask})|(_cf&1u); _cf=_hi; }"
@@ -779,18 +917,18 @@ class Lifter:
             return [f"{{ uint32_t _d={E(0)}, _s={E(1)}, _r=_d+_s;"
                     f" FLAGS_ADD_M(_d,_s,_r,{bits},{self._fm()}); {W(1,'_d')} {W(0,'_r')} }}"]
         if m == 'cmpxchg':
-            # compare with acc; if equal write the source to the destination, otherwise the destination to acc
+            # compare with acc; if equal write the source to the destination, else the destination to acc
             acc = {8:"(uint8_t)c->eax",16:"(uint16_t)c->eax",32:"c->eax"}[bits]
             wacc = {8:"c->eax=(c->eax & 0xffffff00u)|((_d)&0xffu);",
                     16:"c->eax=(c->eax & 0xffff0000u)|((_d)&0xffffu);",
                     32:"c->eax=(_d);"}[bits]
-            # The flags come from an implicit "DEST - ACC" comparison on the real CPU
-            # (measured with Rosetta); ZF is the same in both directions.
+            # On the real CPU the flags come from an implicit "DEST - ACC" compare
+            # (measured with Rosetta); ZF is the same either way round.
             return [f"{{ uint32_t _a={acc}, _d={E(0)}, _r=_d-_a;"
                     f" FLAGS_SUB_M(_d,_a,_r,{bits},{self._fm()});"
                     f" if(c->zf){{ {W(0,E(1))} }} else {{ {wacc} }} }}"]
         if m in ('bsf','bsr'):
-            # if the source is 0, ZF=1 and the destination DOESN'T CHANGE
+            # if the source is 0, ZF=1 and the destination does NOT CHANGE
             fn = "_i=0; while(!((_v>>_i)&1u)) _i++;" if m=='bsf' else \
                  f"_i={bits-1}; while(!((_v>>_i)&1u)) _i--;"
             return [f"{{ uint32_t _v=({E(1)}) & {{8:0xffu,16:0xffffu,32:0xffffffffu}}[{bits}];"
@@ -818,6 +956,8 @@ class Lifter:
         if m=='bswap': return [W(0,f"__builtin_bswap32({E(0)})")]
         if m=='sahf':  return ["{ uint32_t _f=(c->eax>>8)&0xffu; c->cf=_f&1; c->pf=(_f>>2)&1; c->af=(_f>>4)&1; c->zf=(_f>>6)&1; c->sf=(_f>>7)&1; }"]
         if m=='lahf':  return ["c->eax = (c->eax & 0xffff00ffu) | ((c->sf<<7|c->zf<<6|c->af<<4|c->pf<<2|2u|c->cf)<<8);"]
+        if m in ('xlatb','xlat'):  # v12na: AL = [EBX + AL]
+            return ["c->eax = (c->eax & 0xffffff00u) | (uint32_t)MR8(c->ebx + (c->eax & 0xffu));"]
         if m=='cpuid': return ["cpuid_shim(c);"]
         if m=='rdtsc': return ["{ uint64_t _t=rdtsc_shim(); c->eax=(uint32_t)_t; c->edx=(uint32_t)(_t>>32); }"]
         if m in ('clc',): return ["c->cf=0;"]
@@ -840,7 +980,7 @@ class Lifter:
                 expr = "(_d >> _s) | (_v << (32u-_s))"
             else:
                 expr = "(_d << _s) | (_v >> (32u-_s))"
-            # CAREFUL: FLAGS_LOG clears CF; CF must be written AFTER it.
+            # CAUTION: FLAGS_LOG clears CF; CF must be written AFTER it.
             return [f"{{ uint32_t _d={E(0)}, _v={E(1)}, _s=({cnt})&31u; if(_s){{ uint32_t _r={expr}; "
                     f"FLAGS_LOG_M(_r,32,{self._fm()}); c->cf=(({'_d >> (_s-1u)' if m=='shrd' else '_d >> (32u-_s)'})&1u); {W(0,'_r')} }} }}"]
 
@@ -849,15 +989,15 @@ class Lifter:
             sz=o[0].size; ea2=self.ea(o[0].mem)
             src = {2:f"(double)(int16_t)MR16{ea2}",4:f"(double)(int32_t)MR32{ea2}"}.get(sz)
             if src is None: raise Unsupported(f"{m} size {sz}")
-            if m=='fiadd':  return [f"ST(0) = ST(0) + ({src});"]
-            if m=='fimul':  return [f"ST(0) = ST(0) * ({src});"]
-            if m=='fisub':  return [f"ST(0) = ST(0) - ({src});"]
-            if m=='fisubr': return [f"ST(0) = ({src}) - ST(0);"]
-            if m=='fidiv':  return [f"ST(0) = ST(0) / ({src});"]
-            if m=='fidivr': return [f"ST(0) = ({src}) / ST(0);"]
-            fc = 'fcompare_bl' if _os.environ.get('FCMPBL','') == '1' else 'fcompare'
-            if m=='ficom':  return [f"{fc}(c, ST(0), {src});"]
-            return [f"{fc}(c, ST(0), {src});", "FPOP();"]
+            PCR = (lambda e: f"X87R({e})") if _X87PC else (lambda e: e)
+            if m=='fiadd':  return [f"ST(0) = {PCR(f'ST(0) + ({src})')};"]
+            if m=='fimul':  return [f"ST(0) = {PCR(f'ST(0) * ({src})')};"]
+            if m=='fisub':  return [f"ST(0) = {PCR(f'ST(0) - ({src})')};"]
+            if m=='fisubr': return [f"ST(0) = {PCR(f'({src}) - ST(0)')};"]
+            if m=='fidiv':  return [f"ST(0) = {PCR(f'ST(0) / ({src})')};"]
+            if m=='fidivr': return [f"ST(0) = {PCR(f'({src}) / ST(0)')};"]
+            if m=='ficom':  return [f"fcompare(c, ST(0), {src});"]
+            return [f"fcompare(c, ST(0), {src});", "FPOP();"]
 
         # ---------------- MMX / SSE ----------------
         MM = {X86_REG_MM0:0,X86_REG_MM1:1,X86_REG_MM2:2,X86_REG_MM3:3,
@@ -870,6 +1010,9 @@ class Lifter:
         def is_mem(k): return o[k].type==X86_OP_MEM
 
         if m=='emms': return ["/* emms */"]
+        # v12na: MXCSR is not modelled -> default 0x1F80 (all exceptions masked, round to nearest)
+        if m=='stmxcsr': return [f"MR32{self.ea(o[0].mem)} = 0x1F80u;"]
+        if m=='ldmxcsr': return [f"(void)MR32{self.ea(o[0].mem)};   /* MXCSR is not modelled */"]
         if m in ('movq','movd'):
             w = 8 if m=='movq' else 4
             T = 'uint64_t' if w==8 else 'uint32_t'
@@ -964,7 +1107,7 @@ class Lifter:
             raise Unsupported(m)
 
         def qwords(k, half):
-            """The 64-bit half number `half` of operand k (0/1 for XMM)."""
+            """64-bit half number `half` of operand k (0/1 for XMM)."""
             if is_mm(k):  return f"c->mm[{MM[o[k].reg]}]"
             if is_xm(k):  return f"c->xmm[{XM[o[k].reg]}].u64[{half}]"
             if is_mem(k): return "MR64" + self.ea(o[k].mem, extra=8*half)
@@ -972,7 +1115,7 @@ class Lifter:
 
         if m in MMOPS and (is_mm(0) or is_xm(0)):
             esz, op_c = MMOPS[m]
-            # With an XMM destination the operation is 128-bit: process both 64-bit halves.
+            # with an XMM destination the operation is 128-bit: process both 64-bit halves.
             halves = [0,1] if is_xm(0) else [0]
             out = []
             for h in halves:
@@ -1025,21 +1168,26 @@ class Lifter:
             lo  = -(1 << (dsz*8-1)) if signed else 0
             hi  = (1 << (dsz*8-1)) - 1 if signed else (1 << (dsz*8)) - 1
             dty = {1:'uint8_t',2:'uint16_t'}[dsz]
-            halves = [0,1] if is_xm(0) else [0]
-            out=[]
-            for h in halves:
-                dst = qwords(0,h); src = qwords(1,h)
-                out.append(f"{{ uint64_t _a={dst}, _b=({src}), _r=0;"
-                           f" for(int _k=0;_k<{n};_k++){{"
-                           f" {sty} _x=({sty})(_a>>(_k*{esz*8}));"
-                           f" if(_x<{lo}) _x={lo}; if(_x>{hi}) _x={hi};"
-                           f" _r |= (uint64_t)({dty})_x << (_k*{dsz*8}); }}"
-                           f" for(int _k=0;_k<{n};_k++){{"
-                           f" {sty} _y=({sty})(_b>>(_k*{esz*8}));"
-                           f" if(_y<{lo}) _y={lo}; if(_y>{hi}) _y={hi};"
-                           f" _r |= (uint64_t)({dty})_y << (({n}+_k)*{dsz*8}); }}"
-                           f" {dst}=_r; }}")
-            return out
+            if is_xm(0):
+                # 128-bit: the destination's 2n elements pack into the low
+                # qword, the source's into the high one (not each half alone)
+                return [f"{{ uint64_t _a[4]={{{qwords(0,0)},{qwords(0,1)},({qwords(1,0)}),({qwords(1,1)})}}, _r[2]={{0,0}};"
+                        f" for(int _k=0;_k<{4*n};_k++){{"
+                        f" {sty} _x=({sty})(_a[_k/{n}]>>((_k%{n})*{esz*8}));"
+                        f" if(_x<{lo}) _x={lo}; if(_x>{hi}) _x={hi};"
+                        f" _r[_k/{2*n}] |= (uint64_t)({dty})_x << ((_k%{2*n})*{dsz*8}); }}"
+                        f" {qwords(0,0)}=_r[0]; {qwords(0,1)}=_r[1]; }}"]
+            dst = qwords(0,0); src = qwords(1,0)
+            return [f"{{ uint64_t _a={dst}, _b=({src}), _r=0;"
+                    f" for(int _k=0;_k<{n};_k++){{"
+                    f" {sty} _x=({sty})(_a>>(_k*{esz*8}));"
+                    f" if(_x<{lo}) _x={lo}; if(_x>{hi}) _x={hi};"
+                    f" _r |= (uint64_t)({dty})_x << (_k*{dsz*8}); }}"
+                    f" for(int _k=0;_k<{n};_k++){{"
+                    f" {sty} _y=({sty})(_b>>(_k*{esz*8}));"
+                    f" if(_y<{lo}) _y={lo}; if(_y>{hi}) _y={hi};"
+                    f" _r |= (uint64_t)({dty})_y << (({n}+_k)*{dsz*8}); }}"
+                    f" {dst}=_r; }}"]
         if m == 'pextrw' and o[0].type==X86_OP_REG and (is_mm(1) or is_xm(1)):
             sel = o[2].imm & (7 if is_xm(1) else 3)
             if is_mm(1):
@@ -1163,6 +1311,10 @@ class Lifter:
                 body = (f"int32_t _v = (int32_t)({ut})(_a>>(_k*{bits2})) {opx} (int32_t)({ut})(_b>>(_k*{bits2}));"
                         f" if(_v<0) _v=0; if(_v>{hi}) _v={hi};"
                         f" _r |= ((uint64_t)(uint{bits2}_t)_v) << (_k*{bits2});")
+            if kind == 'xmm':
+                # 128-bit: both 64-bit halves (the elements stay in their half)
+                return [f"{{ uint64_t _a={qwords(0,h)}, _b=({qwords(1,h)}), _r=0;"
+                        f" for(int _k=0;_k<{n};_k++){{ {body} }} {qwords(0,h)}=_r; }}" for h in (0, 1)]
             return [f"{{ uint64_t _a={dst}, _b=({src}), _r=0;"
                     f" for(int _k=0;_k<{n};_k++){{ {body} }} {dst}=_r; }}"]
 
@@ -1175,9 +1327,16 @@ class Lifter:
             kind, di = mm_dst_idx()
             dst = f"c->mm[{di}]" if kind=='mm' else f"c->xmm[{di}].u64[0]"
             cnt2 = (f"{o[1].imm & 0xff}u" if o[1].type==X86_OP_IMM else mm_src(1, False))
+            # a register or memory count: all 64 bits of it (2^32+4 empties the
+            # destination, not a shift by 4), read once (it may be the destination's
+            # own low qword); an XMM destination: both 64-bit halves by that count
+            xcnt = f"uint64_t _c=(uint64_t)({cnt2}); uint32_t _s=_c>63?64u:(uint32_t)_c;"
+            mcnt = f"uint32_t _s=(uint32_t)({cnt2});" if o[1].type==X86_OP_IMM else xcnt
+            halves = (f"c->xmm[{di}].u64[0]", f"c->xmm[{di}].u64[1]") if kind=='xmm' else ()
             if esz==8:
-                if kindop=='<<': return [f"{{ uint32_t _s=(uint32_t)({cnt2}); {dst} = _s>63?0:({dst} << _s); }}"]
-                return [f"{{ uint32_t _s=(uint32_t)({cnt2}); {dst} = _s>63?0:({dst} >> _s); }}"]
+                if halves:
+                    return [f"{{ {xcnt}" + "".join(f" {d} = _s>63?0:({d} {kindop} _s);" for d in halves) + " }"]
+                return [f"{{ {mcnt} {dst} = _s>63?0:({dst} {kindop} _s); }}"]
             n = 8 // esz; bits2 = esz*8
             ut = {2:'uint16_t',4:'uint32_t'}[esz]
             st = {2:'int16_t',4:'int32_t'}[esz]
@@ -1190,23 +1349,26 @@ class Lifter:
             else:
                 body=(f"{ut} _x=({ut})(_a>>(_k*{bits2})); {ut} _z = _s>={bits2} ? 0 : ({ut})(_x >> _s);"
                       f" _r |= ((uint64_t)_z) << (_k*{bits2});")
-            return [f"{{ uint64_t _a={dst}, _r=0; uint32_t _s=(uint32_t)({cnt2});"
+            if halves:
+                return [f"{{ {xcnt}" + "".join(f" {{ uint64_t _a={d}, _r=0; for(int _k=0;_k<{n};_k++){{ {body} }} {d}=_r; }}"
+                                               for d in halves) + " }"]
+            return [f"{{ uint64_t _a={dst}, _r=0; {mcnt}"
                     f" for(int _k=0;_k<{n};_k++){{ {body} }} {dst}=_r; }}"]
 
         # punpck / packuswb
         UNP = {'punpcklbw':(1,0),'punpcklwd':(2,0),'punpckldq':(4,0),
                'punpckhbw':(1,1),'punpckhwd':(2,1),'punpckhdq':(4,1)}
         if m in UNP and is_xm(0):
+            # 128-bit: the low (punpckl*) or high (punpckh*) qwords of both
+            # operands interleave into the whole register
             esz, hi = UNP[m]
             di = XM[o[0].reg]
-            src = (f"c->xmm[{XM[o[1].reg]}].u64[0]" if is_xm(1) else "MR64"+self.ea(o[1].mem))
-            n = 4 // esz; bits2 = esz*8
-            return [f"{{ uint64_t _a=c->xmm[{di}].u64[0], _b=({src}), _r=0; int _o={4//esz} * {1 if hi else 0};"
-                    f" for(int _k=0;_k<{n};_k++){{"
-                    f" uint64_t _x=(_a>>((_o+_k)*{bits2})) & ((1ull<<{bits2})-1);"
-                    f" uint64_t _y=(_b>>((_o+_k)*{bits2})) & ((1ull<<{bits2})-1);"
-                    f" _r |= _x << ((2*_k)*{bits2}); _r |= _y << ((2*_k+1)*{bits2}); }}"
-                    f" c->xmm[{di}].u64[0]=_r; }}"]
+            n = 8 // esz; bits2 = esz*8; mask = (1 << bits2) - 1
+            return [f"{{ uint64_t _a=c->xmm[{di}].u64[{hi}], _b=({qwords(1, hi)}), _r[2]={{0,0}};"
+                    f" for(int _k=0;_k<{n};_k++){{ int _p=2*_k*{bits2};"
+                    f" _r[_p>>6] |= ((_a>>(_k*{bits2})) & 0x{mask:x}ull) << (_p&63);"
+                    f" _r[(_p+{bits2})>>6] |= ((_b>>(_k*{bits2})) & 0x{mask:x}ull) << ((_p+{bits2})&63); }}"
+                    f" c->xmm[{di}].u64[0]=_r[0]; c->xmm[{di}].u64[1]=_r[1]; }}"]
         if m in UNP and is_mm(0):
             esz, hi = UNP[m]
             di = MM[o[0].reg]; src = mm_src(1, False)
@@ -1234,7 +1396,7 @@ class Lifter:
                     f" _s += (int32_t)(int16_t)(_a>>(_i*16)) * (int32_t)(int16_t)(_b>>(_i*16)); }}"
                     f" _r |= (uint64_t)(uint32_t)_s << (_k*32); }} c->mm[{di}]=_r; }}"]
 
-        # ---------------- SSE single-precision packed ----------------
+        # ---------------- SSE packed single precision ----------------
         # ---------------- SSE2 packed/scalar double ----------------
         PD = {'addpd':'+','subpd':'-','mulpd':'*','divpd':'/'}
         if m in PD and is_xm(0):
@@ -1274,8 +1436,8 @@ class Lifter:
             return [f"{{ double _a=c->xmm[{di}].d[0], _b={src};"
                     f" c->xmm[{di}].d[0] = (_a {cop} _b) ? _a : _b; }}"]
 
-        # ---------------- SSE comparisons (cmpps/cmpss/cmppd/cmpsd) ----
-        # capstone merges the predicate into the mnemonic: cmpeqps, cmpnltss, ...
+        # ---------------- SSE compares (cmpps/cmpss/cmppd/cmpsd) -------------
+        # capstone folds the predicate into the mnemonic: cmpeqps, cmpnltss, ...
         CMPPRED = {'eq':'(_a==_b)', 'lt':'(_a<_b)', 'le':'(_a<=_b)',
                    'unord':'(_a!=_a||_b!=_b)', 'neq':'!(_a==_b)',
                    'nlt':'!(_a<_b)', 'nle':'!(_a<=_b)',
@@ -1299,6 +1461,32 @@ class Lifter:
                         for k in range(_lanes)]
 
         # ---------------- SSE conversions ----------------
+        # MMX <-> SSE (v12na port): 0x73392f 'cvtpi2ps xmm6,[0x8191c0]' runs in
+        # the race with performance level 4 and used to trap (no-op).
+        if m == 'cvtpi2ps' and is_xm(0):          # 2 x int32 -> low 2 floats, high kept
+            di = XM[o[0].reg]; q = mm_src(1, False)
+            return [f"{{ uint64_t _q=({q}); c->xmm[{di}].f[0]=(float)(int32_t)(uint32_t)_q;"
+                    f" c->xmm[{di}].f[1]=(float)(int32_t)(uint32_t)(_q>>32); }}"]
+        if m == 'cvtpi2pd' and is_xm(0):          # 2 x int32 -> 2 doubles
+            di = XM[o[0].reg]; q = mm_src(1, False)
+            return [f"{{ uint64_t _q=({q}); c->xmm[{di}].d[0]=(double)(int32_t)(uint32_t)_q;"
+                    f" c->xmm[{di}].d[1]=(double)(int32_t)(uint32_t)(_q>>32); }}"]
+        if m in ('cvtps2pi','cvttps2pi') and is_mm(0):
+            dm = MM[o[0].reg]
+            src = (lambda k: f"c->xmm[{XM[o[1].reg]}].f[{k}]") if is_xm(1) else \
+                  (lambda k: f"MRF32({self.ea(o[1].mem, extra=4*k)})")
+            rnd = 'trunc' if m == 'cvttps2pi' else 'nearbyint'
+            return [f"{{ double _a=(double)({src(0)}), _b=(double)({src(1)});"
+                    f" c->mm[{dm}] = (uint64_t)x86_cvt_i32({rnd}(_a))"
+                    f" | ((uint64_t)x86_cvt_i32({rnd}(_b)) << 32); }}"]
+        if m in ('cvtpd2pi','cvttpd2pi') and is_mm(0):
+            dm = MM[o[0].reg]
+            src = (lambda k: f"c->xmm[{XM[o[1].reg]}].d[{k}]") if is_xm(1) else \
+                  (lambda k: f"MRF64({self.ea(o[1].mem, extra=8*k)})")
+            rnd = 'trunc' if m == 'cvttpd2pi' else 'nearbyint'
+            return [f"{{ double _a=({src(0)}), _b=({src(1)});"
+                    f" c->mm[{dm}] = (uint64_t)x86_cvt_i32({rnd}(_a))"
+                    f" | ((uint64_t)x86_cvt_i32({rnd}(_b)) << 32); }}"]
         if m in ('cvtps2dq','cvttps2dq') and is_xm(0):
             di = XM[o[0].reg]
             src = (lambda k: f"c->xmm[{XM[o[1].reg]}].f[{k}]") if is_xm(1) else \
@@ -1360,21 +1548,14 @@ class Lifter:
         if m=='shufps' and is_xm(0) and o[2].type==X86_OP_IMM:
             di=XM[o[0].reg]; imm=o[2].imm & 0xff
             sel=[(imm>>0)&3,(imm>>2)&3,(imm>>4)&3,(imm>>6)&3]
-            if is_xm(1): src = f"c->xmm[{XM[o[1].reg]}].f"; pre = ""
-            elif is_mem(1):   # 16-byte memory source: read it before the destination changes
-                src = "_s"; pre = f" float _s[4]; memcpy(_s, g_mem + (uint32_t){self.ea(o[1].mem)}, 16);"
-            else: raise Unsupported(m)
+            if is_xm(1):
+                src = f"c->xmm[{XM[o[1].reg]}].f"
+                pre = ""
+            else:                       # v12na: shufps xmm, m128, imm (0x68998d)
+                src = "_m"; pre = f" float _m[4]; memcpy(_m, g_mem + (uint32_t){self.ea(o[1].mem)}, 16);"
             return [f"{{{pre} float _t[4]; _t[0]=c->xmm[{di}].f[{sel[0]}]; _t[1]=c->xmm[{di}].f[{sel[1]}];"
                     f" _t[2]={src}[{sel[2]}]; _t[3]={src}[{sel[3]}];"
                     f" for(int _k=0;_k<4;_k++) c->xmm[{di}].f[_k]=_t[_k]; }}"]
-        if m=='cvtpi2ps' and is_xm(0):
-            # two int32 (MMX register or m64) -> the low two floats; the high two are kept
-            di=XM[o[0].reg]
-            if is_mm(1): src = f"c->mm[{MM[o[1].reg]}]"
-            elif is_mem(1): src = "MR64" + self.ea(o[1].mem)
-            else: raise Unsupported(m)
-            return [f"{{ uint64_t _q={src}; c->xmm[{di}].f[0]=(float)(int32_t)(uint32_t)_q;"
-                    f" c->xmm[{di}].f[1]=(float)(int32_t)(uint32_t)(_q>>32); }}"]
         if m in ('sqrtps','rcpps','rsqrtps','maxps','minps') and is_xm(0):
             di=XM[o[0].reg]
             if m in ('sqrtps','rcpps','rsqrtps'):
@@ -1395,7 +1576,7 @@ class Lifter:
             return [f"c->xmm[{di}].f[0] = (float)(int32_t)({E(1)});"]
         if m in ('cvttss2si','cvtss2si'):
             src = (f"c->xmm[{XM[o[1].reg]}].f[0]" if is_xm(1) else f"MRF32{self.ea(o[1].mem)}")
-            # without 't' MXCSR rounding (default: to nearest); with it, truncate
+            # without 't' MXCSR rounding (default: nearest); with it, truncation
             expr = f"trunc((double)({src}))" if m=='cvttss2si' else f"nearbyint((double)({src}))"
             return [W(0, f"x86_cvt_i32({expr})")]
         if m in ('ucomiss','comiss'):
@@ -1479,7 +1660,7 @@ class Lifter:
         if m in ('in','out','insb','insw','insd','outsb','outsw','outsd',
                  'cli','sti','hlt','clts','invd','wbinvd','lgdt','lidt','lldt','ltr',
                  'arpl','bound','into','sysenter','sysexit','rdmsr','wrmsr','rdpmc'):
-            # Never runs in user mode; these are misdecoded data.
+            # These never run in user mode; they are misdecoded data.
             return [f"/* {m}: privileged/data - no effect */"]
         SD = {'addsd':'+','subsd':'-','mulsd':'*','divsd':'/'}
         if m in SD and is_xm(0):
@@ -1571,8 +1752,8 @@ class Lifter:
                 return [f"MR32({ea2})=c->xmm[{si}].u32[{off2}]; MR32(({ea2})+4u)=c->xmm[{si}].u32[{off2+1}];"]
             raise Unsupported(m)
         if m in ('pfrcpit1','pfrcpit2','pfrsqit1'):
-            # 3DNow Newton-Raphson refinement steps: dst is already accurate enough
-            return [f"/* {m}: iyilestirme adimi atlandi */"]
+            # 3DNow Newton-Raphson refinement steps: dst is accurate enough already
+            return [f"/* {m}: refinement step skipped */"]
         if m in ('pfnacc','pfpnacc') and is_mm(0):
             return [f"/* {m} */"]
         if m in ('prefetch','prefetchw','prefetchnta','prefetcht0','prefetcht1','prefetcht2',
@@ -1584,9 +1765,12 @@ class Lifter:
     # ---------- function -> C ----------
     def lift(self, entry):
         blocks, calls = self.discover(entry)
+        self.last_blocks = blocks; self.entry = entry
         addrs = sorted(blocks)
-        # Flag liveness: the mask "which flags are read after this" for every
-        # instruction.  Can be turned off with FLAGOPT=0 (for A/B comparison).
+        # Flag liveness: for every instruction the mask "which flags are read
+        # after this one".  FLAGOPT=0 turns it off (for A/B comparisons).
+        # A callee of tools/retpast.txt counts as returning flags: when it
+        # returns past its caller, the caller's early return hands them on.
         import os as _os
         if _os.environ.get('FLAGOPT','1') == '0':
             self.fafter = {}
@@ -1594,11 +1778,12 @@ class Lifter:
             abi = abi_table()
             try:
                 if abi:
-                    _, self.fafter, _ = abi_liveness(abi_cfg(blocks, self.in_text), entry, abi[0], entry in abi[1])
+                    _, self.fafter, _ = abi_liveness(abi_cfg(blocks, self.in_text, self.jtab), entry, abi[0],
+                                                     entry in abi[1] or entry in self.retpast)
                 else:
                     self.fafter = flag_liveness(blocks, addrs, self.in_text)
             except Exception: self.fafter = {}
-        # collect branch targets
+        # collect the branch targets
         lbl=set(addrs)
         out=[]; targets=set()
         body=[]
@@ -1618,6 +1803,11 @@ class Lifter:
                 if self.comments:
                     body.append(f"    /* {i.address:08x}  {i.mnemonic} {i.op_str} */")
                 if i.address in self.hooks:
+                    # a hook reads and may change ST(0) (widescreen FOV) or
+                    # other x87 state: the open X87OPT region is written back
+                    # first, and the next x87 instruction reloads from c->st
+                    if x87opt and xb.active:
+                        body += ["    "+l for l in xb.close()]
                     body.append(f"    guest_hook(c, 0x{i.address:x}u);")
                 if m=='jmp':
                     o0=i.operands[0]
@@ -1625,21 +1815,28 @@ class Lifter:
                         body.append(f"    goto L_{o0.imm:08x};"); continue
                     if o0.type==X86_OP_IMM:
                         self.oob_branch = getattr(self,'oob_branch',0)+1
-                        body.append(f"    dispatch_indirect(c, 0x{o0.imm & 0xffffffff:x}u); return;")
+                        body.append(f"    DISPATCH_TAIL(c, 0x{o0.imm & 0xffffffff:x}u);")
                         continue
                     if o0.type!=X86_OP_IMM:
-                        body.append(f"    dispatch_indirect(c, {self.rd(o0)}); return;   /* indirect tail-call */")
+                        tab = self.jtab.get(i.address)
+                        if tab:
+                            reg, d, ents = tab
+                            body.append(f"    switch (c->{R32[reg]}) {{   /* jump table 0x{d:x} */")
+                            for k, t in enumerate(ents):
+                                body.append(f"    case {k}u: if (MR32(0x{d + 4 * k:x}u) == 0x{t:x}u) goto L_{t:08x}; break;")
+                            body.append("    }")
+                        body.append(f"    DISPATCH_TAIL(c, {self.rd(o0)});   /* indirect tail call */")
                         continue
-                # jecxz/jcxz and the loop family: the condition isn't in the CC table.
-                # CRITICAL: if these aren't lifted, early exit branches are lost in
-                # CRT routines like strncmp/strlen.
+                # jecxz/jcxz and the loop family: the condition is not in the CC table.
+                # CRITICAL: if these are not lifted, the early-exit branches of CRT
+                # routines such as strncmp/strlen are lost.
                 LOOPC = {'jecxz':'(c->ecx == 0u)', 'jcxz':'((c->ecx & 0xffffu) == 0u)'}
                 if m in LOOPC and i.operands[0].type==X86_OP_IMM:
                     _t=i.operands[0].imm
                     if self.in_text(_t):
                         body.append(f"    if({LOOPC[m]}) goto L_{_t:08x};")
                     else:
-                        body.append(f"    if({LOOPC[m]}) {{ dispatch_indirect(c, 0x{_t & 0xffffffff:x}u); return; }}")
+                        body.append(f"    if({LOOPC[m]}) DISPATCH_TAIL(c, 0x{_t & 0xffffffff:x}u)")
                     nxt=i.address+i.size
                     if k==len(ins)-1 and nxt in lbl: body.append(f"    goto L_{nxt:08x};")
                     continue
@@ -1651,7 +1848,7 @@ class Lifter:
                     if self.in_text(_t):
                         body.append(f"    if(c->ecx != 0u{extra}) goto L_{_t:08x};")
                     else:
-                        body.append(f"    if(c->ecx != 0u{extra}) {{ dispatch_indirect(c, 0x{_t & 0xffffffff:x}u); return; }}")
+                        body.append(f"    if(c->ecx != 0u{extra}) DISPATCH_TAIL(c, 0x{_t & 0xffffffff:x}u)")
                     nxt=i.address+i.size
                     if k==len(ins)-1 and nxt in lbl: body.append(f"    goto L_{nxt:08x};")
                     continue
@@ -1661,7 +1858,7 @@ class Lifter:
                         body.append(f"    if({CC[m[1:]]}) goto L_{_t:08x};")
                     else:
                         self.oob_branch = getattr(self,'oob_branch',0)+1
-                        body.append(f"    if({CC[m[1:]]}) {{ unsupported_insn(c, 0x{i.address:x}u, \"dal-disari\"); POP32(c->eip); return; }}")
+                        body.append(f"    if({CC[m[1:]]}) {{ unsupported_insn(c, 0x{i.address:x}u, \"branch-out\"); POP32(c->eip); return; }}")
                     nxt=i.address+i.size
                     if k==len(ins)-1 and nxt in lbl: body.append(f"    goto L_{nxt:08x};")
                     continue
@@ -1670,7 +1867,7 @@ class Lifter:
                     lines = self.insn(i, targets)
                     if x87opt:
                         if m[:1]=='f' or X86_GRP_FPU in i.groups:
-                            new_lines = xb.convert(lines)
+                            new_lines = xb.translate(lines)
                             if new_lines is None:
                                 body += ["    "+l for l in xb.close()]
                             else:
@@ -1694,7 +1891,7 @@ class Lifter:
             if last is not None and last.mnemonic not in ('ret','retf','jmp') and not (last.mnemonic.startswith('j') and last.mnemonic[1:] in CC):
                 nxt=last.address+last.size
                 if nxt in lbl: body.append(f"    goto L_{nxt:08x};")
-        # stub label for branch targets not generated because of truncation
+        # stub labels for the branch targets not generated because of truncation
         refs=set()
         for ba in addrs:
             for i in blocks[ba]:
@@ -1705,31 +1902,40 @@ class Lifter:
                     if self.in_text(i.operands[0].imm): refs.add(i.operands[0].imm)
         missing = sorted(refs - set(addrs))
         for t in missing:
-            body.append(f"L_{t:08x}: unsupported_insn(c, 0x{t:x}u, \"kesildi\"); POP32(c->eip); return;")
+            body.append(f"L_{t:08x}: unsupported_insn(c, 0x{t:x}u, \"truncated\"); POP32(c->eip); return;")
         self.truncated = len(missing)
-        out.append(f"/* ===== sub_{entry:08x}  ({sum(len(b) for b in blocks.values())} instructions, {len(blocks)} blocks) ===== */")
-        # restrict: guest registers are in the CPU struct, and MR32() writes to g_mem
-        # with the SAME type (uint32_t) -- so the compiler had to reload fields like
-        # c->eax after every guest memory write.  Since the CPU struct is NOT INSIDE
-        # g_mem, restrict is correct and safe (measured: race frame -1.7%).
+        out.append(f"/* ===== sub_{entry:08x}  ({sum(len(b) for b in blocks.values())} insns, {len(blocks)} blocks) ===== */")
+        # restrict: the guest registers live in the CPU struct, and MR32() writes
+        # the SAME type (uint32_t) into g_mem -- so the compiler had to reload
+        # fields such as c->eax after every guest memory write.  The CPU
+        # struct is not INSIDE g_mem, so restrict is correct and safe
+        # (measured: race frame -1.7%).
         out.append(f"void sub_{entry:08x}(CPU *restrict c) {{")
         if self.cov:
             # COVERAGE: to see which functions NEVER run.
             # A single increment; the run-time cost is negligible.
             out.append(f"    cov_hit(0x{entry:08x}u);")
-        # CRITICAL: blocks are printed sorted by address; the entry block doesn't have to
-        # have the lowest address.  Since C execution starts at the top of the body
-        # the entry block must be targeted explicitly.
+        # CRITICAL: the blocks are printed in address order; the entry block need
+        # not have the lowest address.  C execution starts at the top of the body,
+        # so the entry block must be jumped to explicitly.
         if xb.used:
             out.append("    uint32_t _T = 0; double _x[16];")
         out.append(f"    goto L_{entry:08x};")
         out += body
         out.append("}")
-        return "\n".join(out), targets|calls
+        code = "\n".join(out)
+        if _os.environ.get('LREGS', '') == '1':
+            # registers and flags as locals, stored only where others look (tools/lregs.py)
+            # (the early 'if (c->eip != ...) return;' after a call to a callee of
+            # tools/retpast.txt is a return site like any other: the call has just
+            # brought the locals in step, so it stores nothing)
+            abi = abi_table()
+            code = _lregs().transform(code, abi[0] if abi else None, (abi[1] | self.retpast) if abi else None)
+        return code, targets|calls
 
 if __name__=='__main__':
     exe=sys.argv[1]; L=Lifter(exe)
-    hdr=['#include "cpu.h"','#include <math.h>','void dispatch_indirect(CPU*,uint32_t);','void cpuid_shim(CPU*);','uint64_t rdtsc_shim(void);','']
+    hdr=['#include "cpu.h"','#include <math.h>','void dispatch_indirect(CPU*,uint32_t);','void dispatch_tail(CPU*);','void cpuid_shim(CPU*);','uint64_t rdtsc_shim(void);','']
     decls=[]; bodies=[]
     for a in sys.argv[2:]:
         ea=int(a,16)
@@ -1740,10 +1946,10 @@ if __name__=='__main__':
                 if L.in_text(t): decls.append(f"void sub_{t:08x}(CPU *c);")
             bodies.append(code)
         except Unsupported as e:
-            print(f"// 0x{ea:08x} LIFT EDILEMEDI: desteklenmeyen '{e}'", file=sys.stderr)
+            print(f"// 0x{ea:08x} COULD NOT BE LIFTED: unsupported '{e}'", file=sys.stderr)
     print("\n".join(hdr + sorted(set(decls)) + [''] + bodies))
 
 
-# RawLifter shares the Lifter's analysis/generation methods
-for _m in ('ea','rd','wr','discover','insn','lift','_fm'):
+# RawLifter shares Lifter's decoding/generation methods
+for _m in ('ea','rd','wr','discover','insn','lift','_fm','_jt_bound','_jt_table','_jt_writes','_JT_PASS'):
     setattr(RawLifter, _m, getattr(Lifter, _m))

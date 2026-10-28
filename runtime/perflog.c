@@ -1,25 +1,25 @@
-/* PERFLOG=<dir>: recording a REAL game session (while the user plays).
+/* PERFLOG=<dir>: recording of a REAL game session (while the user plays).
  *
- * Automated test runs (the AUTOSEQ race) are for exact comparisons; this
- * recording is for seeing WHERE and WHEN load builds up in a session the user
- * plays themselves (fast driving, effects, crashes, menus).  Low overhead:
+ * The automated test runs (AUTOSEQ race) are for exact comparisons; this
+ * recording is for seeing WHERE and WHEN the load arises in a session the
+ * user plays (fast driving, effects, crashes, menus).  Low overhead:
  *
- *   guest.csv    per guest frame: wall/CPU time, frame limiter sleep
- *                (idle margin), Present wait, COM/Win32 calls, compile and
- *                texture events
- *   render.csv   per main thread frame: frame interval, nextDrawable wait,
- *                encoding time, draw/vertex counts
- *   gpu.csv      GPU time per frame (from the completion handler)
- *   seconds.csv  once a second: process energy (CPU, P cores),
- *                instructions/cycles, GPU utilization, thermal state
- *   thread.csv   once a second: per-thread user/system time (cumulative)
- *   samples.bin  guest thread every 1 ms, main thread every 4 ms: PC + frame
- *                chain (thread_suspend -> state -> resume; no locks taken)
- *   symbols.txt  dladdr names of PCs outside the main binary (system libraries)
- *   screens/     a small screenshot every 2 s (metal.m, written in the background)
- *   meta.txt     binary path, slide, clock mapping (for powermetrics)
+ *   guest.csv   per guest frame: wall/CPU time, frame limiter sleep
+ *               (idle headroom), Present wait, COM/Win32 calls, compile and
+ *               texture events
+ *   render.csv  per main-thread frame: frame interval, nextDrawable wait,
+ *               encode time, draw/vertex counts
+ *   gpu.csv     GPU time per frame (from the completion handler)
+ *   persec.csv  once a second: process energy (CPU, P cores), instructions/cycles,
+ *               GPU utilization, thermal state
+ *   thread.csv  once a second: user/system time per thread (cumulative)
+ *   samples.bin the guest thread every 1 ms, the main thread every 4 ms: PC + frame
+ *               chain (thread_suspend -> state -> resume; no lock taken)
+ *   symbols.txt dladdr names of PCs outside the main binary (system libraries)
+ *   thumbs/     a small screenshot every 2 s (metal.m, written in the background)
+ *   meta.txt    binary path, slide, clock mapping (for powermetrics)
  *
- * Analysis: tools/session_report.py <dir>.  Recording script: tools/session.sh. */
+ * Analysis: tools/session_report.py <dir>. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,7 +79,7 @@ static void thr_register(PlThr *t){
 #define PL_DEPTH 28
 typedef struct { uint64_t t_us; uint32_t gframe; uint8_t role, n; uint16_t pad; } PlRec;
 
-/* a small table for PCs outside the main binary (system libraries) */
+/* small table for PCs outside the main binary (system libraries) */
 #define PL_SYS 4096
 static uint64_t pl_sys[PL_SYS]; static int pl_sysn;
 static uint64_t img_lo, img_hi;
@@ -102,7 +102,7 @@ static void pl_sample(PlThr *t, int role){
         uint64_t lr = (uint64_t)arm_thread_state64_get_lr(s);
         uint64_t fp = (uint64_t)arm_thread_state64_get_fp(s);
         st[n++] = pc; st[n++] = lr;
-        /* while suspended only raw memory reads: NO locks/malloc */
+        /* only raw memory reads while suspended: NO locks/malloc */
         while (n < PL_DEPTH && fp >= t->lo && fp + 16 <= t->hi && !(fp & 7)){
             uint64_t nfp = ((uint64_t *)(uintptr_t)fp)[0], ret = ((uint64_t *)(uintptr_t)fp)[1];
             if (!ret) break;
@@ -120,8 +120,8 @@ static void pl_sample(PlThr *t, int role){
 }
 
 /* All other threads (Metal/system/audio/guest side threads) every 10 ms:
- * role 2, the thread id instead of the gframe field (matches thread.csv).  Since
- * the stack bounds are unknown, only PC + LR (which call/wait it is in). */
+ * role 2, the thread id in place of the gframe field (matches thread.csv).
+ * The stack bounds are unknown, so only PC + LR (which call/wait it is in). */
 static void pl_sample_others(void){
     thread_act_array_t list; mach_msg_type_number_t nl = 0;
     if (task_threads(mach_task_self(), &list, &nl) != KERN_SUCCESS) return;
@@ -167,7 +167,7 @@ static void write_syms(void){
     fclose(f);
 }
 
-/* ---- per second ---- */
+/* ---- once a second ---- */
 int metal_thermal_state(void);
 static void pl_second(void){
     uint64_t t = perflog_now_us();
@@ -191,10 +191,10 @@ static void pl_second(void){
             struct thread_identifier_info ii; mach_msg_type_number_t c2 = THREAD_IDENTIFIER_INFO_COUNT;
             if (thread_info(list[i], THREAD_EXTENDED_INFO, (thread_info_t)&xi, &c1) == KERN_SUCCESS &&
                 thread_info(list[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&ii, &c2) == KERN_SUCCESS){
-                const char *thr_role = list[i] == th_guest.port ? "GUEST" : list[i] == th_render.port ? "MAIN" : "";
+                const char *role = list[i] == th_guest.port ? "GUEST" : list[i] == th_render.port ? "MAIN" : "";
                 for (char *q = xi.pth_name; *q; q++) if (*q == ',') *q = ';';
                 fprintf(f_thr, "%.3f,%llu,%s,%s,%llu,%llu\n", t / 1e3, (unsigned long long)ii.thread_id,
-                        thr_role, xi.pth_name, (unsigned long long)xi.pth_user_time,
+                        role, xi.pth_name, (unsigned long long)xi.pth_user_time,
                         (unsigned long long)xi.pth_system_time);
             }
             mach_port_deallocate(mach_task_self(), list[i]);
@@ -251,14 +251,14 @@ __attribute__((constructor)) static void perflog_init(void){
     if (!e || !*e) return;
     snprintf(g_pl_dir, sizeof g_pl_dir, "%s", e);
     mkdir(g_pl_dir, 0755);
-    char ek[1024]; snprintf(ek, sizeof ek, "%s/screens", g_pl_dir); mkdir(ek, 0755);
+    char thumbs[1024]; snprintf(thumbs, sizeof thumbs, "%s/thumbs", g_pl_dir); mkdir(thumbs, 0755);
     t0_us = mono_us();
     f_guest  = pl_open("guest.csv", "t_ms,gframe,wall_us,cpu_us,sleep_us,present_wait_us,com,win32,"
                                     "vs_n,ps_n,pso_n,compile_us,tex_n,tex_kb,tex_us");
     f_render = pl_open("render.csv", "t_ms,frame,interval_us,drawable_wait_us,encode_us,draws,verts,dropped,tex_distinct");
     f_gpu    = pl_open("gpu.csv", "frame,t_ms,gpu_us");
-    f_sec    = pl_open("seconds.csv", "t_ms,energy_nj,penergy_nj,instr,cycles,pinstr,pcycles,"
-                                     "user_t,sys_t,puser_t,psys_t,gpu_util,thermal,memory");
+    f_sec    = pl_open("persec.csv", "t_ms,energy_nj,penergy_nj,instr,cycles,pinstr,pcycles,"
+                                     "user_t,sys_t,puser_t,psys_t,gpu_util,thermal,footprint");
     f_thr    = pl_open("thread.csv", "t_ms,tid,role,name,user_ns,sys_ns");
     f_samp   = pl_open("samples.bin", NULL);
     if (!f_guest || !f_render || !f_gpu || !f_sec || !f_thr || !f_samp){
@@ -286,10 +286,6 @@ __attribute__((constructor)) static void perflog_init(void){
                 (long long)slide, (unsigned long long)img_lo, (unsigned long long)img_hi);
         fprintf(m, "start_epoch_us %llu\n", (unsigned long long)tv.tv_sec * 1000000ull + (unsigned long long)tv.tv_usec);
         fprintf(m, "timebase %u %u\n", tb.numer, tb.denom);
-#ifndef NFS_VERSION
-#define NFS_VERSION 0
-#endif
-        fprintf(m, "version %d\n", NFS_VERSION);
 #if NFS_ENHANCED
         fprintf(m, "build HD\n");
 #else
@@ -318,18 +314,19 @@ void perflog_guest_frame(void){
     if (first){ first = 0; thr_register(&th_guest); }
     struct timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     uint64_t cpu = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
-    uint64_t w = perflog_now_us(), sl = spin_slept_us(), pw = metal_wait_present_ns() / 1000ull;
+    uint64_t hfr_paced_sleep_us(void);   /* framerate.c: host pacer's sleep */
+    uint64_t w = perflog_now_us(), sl = spin_slept_us() + hfr_paced_sleep_us(), pw = metal_wait_present_ns() / 1000ull;
     uint64_t e[PL_NEV][3];
     for (int k = 0; k < PL_NEV; k++){ e[k][0] = atomic_load(&ev_n[k]); e[k][1] = atomic_load(&ev_ns[k]); e[k][2] = atomic_load(&ev_b[k]); }
     uint32_t gf = atomic_fetch_add(&g_gframe, 1u) + 1u;
     if (lw){
-        uint64_t der_ns = (e[PL_VS][1] - le[PL_VS][1]) + (e[PL_PS][1] - le[PL_PS][1]) + (e[PL_PSO][1] - le[PL_PSO][1]);
+        uint64_t compile_ns = (e[PL_VS][1] - le[PL_VS][1]) + (e[PL_PS][1] - le[PL_PS][1]) + (e[PL_PSO][1] - le[PL_PSO][1]);
         fprintf(f_guest, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
                 w / 1e3, gf, (unsigned long long)(w - lw), (unsigned long long)(cpu - lc),
                 (unsigned long long)(sl - ls), (unsigned long long)(pw - lp),
                 (unsigned long long)(g_com_calls - lcom), (unsigned long long)(g_win32_calls - lw32),
                 (unsigned long long)(e[PL_VS][0] - le[PL_VS][0]), (unsigned long long)(e[PL_PS][0] - le[PL_PS][0]),
-                (unsigned long long)(e[PL_PSO][0] - le[PL_PSO][0]), (unsigned long long)(der_ns / 1000ull),
+                (unsigned long long)(e[PL_PSO][0] - le[PL_PSO][0]), (unsigned long long)(compile_ns / 1000ull),
                 (unsigned long long)(e[PL_TEX][0] - le[PL_TEX][0]),
                 (unsigned long long)((e[PL_TEXUP][2] - le[PL_TEXUP][2]) / 1024ull),
                 (unsigned long long)((e[PL_TEXUP][1] - le[PL_TEXUP][1]) / 1000ull));
@@ -338,7 +335,7 @@ void perflog_guest_frame(void){
     memcpy(le, e, sizeof le);
 }
 
-/* ---- main thread frame (after commit) ---- */
+/* ---- main-thread frame (after commit) ---- */
 void perflog_render_frame(long fno, unsigned ntex, uint64_t drawable_ns, uint64_t encode_ns, unsigned draws, unsigned verts){
     static uint64_t lw; static int first = 1;
     if (first){ first = 0; thr_register(&th_render); }
