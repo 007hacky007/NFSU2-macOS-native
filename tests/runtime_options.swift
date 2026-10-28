@@ -45,10 +45,13 @@ struct RuntimeOptionsTests {
             let invalid = try JSONDecoder().decode(RuntimeOptions.self, from: JSONSerialization.data(withJSONObject: json))
             do { _ = try invalid.environment(); assertionFailure("accepted invalid \(key)") } catch {}
         }
-        for room in [String(repeating: "a", count: 64), "røøm"] {
+        for room in [String(repeating: "a", count: 64), String(repeating: "ø", count: 32)] {
             var invalid = options; invalid.roamRoom = room
             do { _ = try invalid.environment(); assertionFailure("invalid room") } catch {}
         }
+        var unicodeRoom = options; unicodeRoom.roamRoom = "røøm"
+        let unicodeEnvironment = try unicodeRoom.environment()
+        assert(unicodeEnvironment["NFSU2_ROAM_ROOM"] == "røøm")
         var bad = options; bad.frameRate = "999"
         do { _ = try bad.environment(); assertionFailure("unsupported frame rate") } catch {}
         bad = options; bad.language = "unknown"

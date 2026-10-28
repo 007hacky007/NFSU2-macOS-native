@@ -100,8 +100,8 @@ struct RuntimeOptions: Codable, Equatable {
               ["players", "all", "off"].contains(headlights), ["pause", "run"].contains(background) else {
             throw SettingsError("Choose a supported resolution scale, HUD, movie, headlight and background setting.")
         }
-        guard roamRoom.utf8.count <= 63, roamRoom.utf8.allSatisfy({ (32...126).contains($0) }) else {
-            throw SettingsError("Use a room name of up to 63 printable ASCII characters, or leave it empty for everyone.")
+        guard roamRoom.utf8.count <= 63, roamRoom.utf8.allSatisfy({ $0 >= 32 && $0 != 127 }) else {
+            throw SettingsError("Use a shorter room name without control characters (63 UTF-8 bytes maximum), or leave it empty for everyone.")
         }
         var env = ["NFSU2_LANGUAGE": language, "NFSU2_FPS": frameRate, "NFSU2_PAD": controller,
                    "NFSU2_PAD_DEADZONE": String(stickDeadzone), "NFSU2_PAD_TRIGGER_DEADZONE": String(triggerDeadzone),
