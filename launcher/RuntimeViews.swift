@@ -37,6 +37,42 @@ struct RuntimeSettingsCard: View {
                 Text("Raise a dead zone if a centred stick or released trigger sends input. Bind buttons in the game's Controls menu.")
                     .font(.system(size: 11)).foregroundColor(Theme.dim)
             }
+            DisclosureGroup("Display and gameplay") {
+                Picker("Resolution scale", selection: $model.runtimeOptions.resolutionScale) {
+                    Text("50%").tag("scale:0.5")
+                    Text("75%").tag("scale:0.75")
+                    Text("100%").tag("backing")
+                    Text("150%").tag("scale:1.5")
+                    Text("200%").tag("scale:2")
+                }
+                Text("Scales the game's screen-size resolution. Lower values render fewer pixels.")
+                    .font(.system(size: 11)).foregroundColor(Theme.dim)
+                Picker("Race HUD", selection: $model.runtimeOptions.hud) {
+                    Text("Screen edges").tag("wide")
+                    Text("Original 4:3").tag("43")
+                }
+                Toggle("Movie subtitles", isOn: $model.runtimeOptions.subtitles)
+                Picker("Movie framing", selection: $model.runtimeOptions.movieFraming) {
+                    Text("Fit").tag("fit")
+                    Text("Fill").tag("fill")
+                    Text("Stretch").tag("stretch")
+                }
+                Picker("Cutscene bars", selection: $model.runtimeOptions.cutsceneBorders) {
+                    Text("Full width").tag("full")
+                    Text("Off").tag("off")
+                }
+                Picker("Other cars' headlights", selection: $model.runtimeOptions.headlights) {
+                    Text("Players").tag("players")
+                    Text("All cars").tag("all")
+                    Text("Off").tag("off")
+                }
+                Picker("While another app is active", selection: $model.runtimeOptions.background) {
+                    Text("Pause").tag("pause")
+                    Text("Keep running").tag("run")
+                }
+                Text("Online races keep running to stay connected.")
+                    .font(.system(size: 11)).foregroundColor(Theme.dim)
+            }
             if let error = model.runtimeError {
                 Text(error).font(.system(size: 11)).foregroundColor(Theme.bad)
             }
