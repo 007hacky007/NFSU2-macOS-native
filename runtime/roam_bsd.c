@@ -3,6 +3,15 @@
  * Winsock HLE. */
 #include "roam_plat.h"
 #include "net_native.h"
+#include "native_controls.h"
+/* Socket-only tools retain their original behavior without linking AppKit. */
+__attribute__((weak)) int native_controls_available(void){ return 0; }
+__attribute__((weak)) void native_controls_notice(const char *name, const char *what){ (void)name; (void)what; }
+__attribute__((weak)) int native_controls_lobby(const char *json){ (void)json; return 0; }
+__attribute__((weak)) int native_controls_solid(void){ return -1; }
+__attribute__((weak)) int native_controls_say_pick(void){ return -1; }
+__attribute__((weak)) int native_controls_said(const char *json){ (void)json; return 1; }
+__attribute__((weak)) uint32_t native_controls_crews(uint32_t h[4], uint32_t rgb[4]){ (void)h; (void)rgb; return 0; }
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,14 +46,17 @@ int64_t roam_plat_now_us(void){
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 uint32_t roam_plat_random(void){ uint32_t r; do r = arc4random(); while (!r); return r; }
-void roam_plat_notice(const char *name, const char *what){ fprintf(stderr, "[roam] notice: %s%s\n", name ? name : "", what); }
-int roam_plat_lobby(const char *json){ (void)json; return 0; }      /* no panel: the game's top line */
-int roam_plat_solid(void){ return -1; }                              /* no menu: the setting */
-int roam_plat_quickchat(void){ return 0; }                           /* no page: no picker and no lines */
-int roam_plat_say_pick(void){ return -1; }
-int roam_plat_said(const char *json){ (void)json; return 1; }
+void roam_plat_notice(const char *name, const char *what){
+    fprintf(stderr, "[roam] notice: %s%s\n", name ? name : "", what);
+    native_controls_notice(name, what);
+}
+int roam_plat_lobby(const char *json){ return native_controls_lobby(json); }
+int roam_plat_solid(void){ return native_controls_solid(); }
+int roam_plat_quickchat(void){ return native_controls_available(); }
+int roam_plat_say_pick(void){ return native_controls_say_pick(); }
+int roam_plat_said(const char *json){ return native_controls_said(json); }
 void roam_plat_say_marks(const uint32_t *ids, const float *xys, int n){ (void)ids; (void)xys; (void)n; }
-uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]){ (void)crews; (void)rgb; return 0; }   /* the settings */
+uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]){ return native_controls_crews(crews, rgb); }
 const char *roam_ip_str(uint32_t ip, char *b){
     snprintf(b, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255u, (ip >> 8) & 255u, ip & 255u); return b; }
 void roam_plat_get_stats(roam_plat_stats *o){ roam_plat_lock(); *o = g_st; roam_plat_unlock(); }

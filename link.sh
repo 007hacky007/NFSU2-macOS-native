@@ -23,7 +23,7 @@ WHICH="${1:-both}"
 case "$WHICH" in both|orig|hd) ;; *) echo "usage: ./link.sh [orig|hd]"; exit 1 ;; esac
 
 CSRC="mem dispatch genexec heap watchdog win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog autotest lifecycle widescreen framerate dinput_pad dikeys keyboard dinput_kbd career intro oracle drifttest discord roam roam_core roam_bsd roam_game mprace horn hornmenu radio powerunits drift carsfx racehorn racenet winsock online netrace net_vlan net_relay module modheap headlights language sms sponsors lobbyclick olfilter tunegraph menusize regional garage sndlead carshadow movie photo texpack"
-MSRC="metal audio bundle gamepad keyboard_mac fpscounter texrep net_native"
+MSRC="metal audio bundle gamepad keyboard_mac fpscounter texrep net_native native_controls radio_native"
 # Unicorn 2.1.4 (native arm64, x86 target only) for the two test builds,
 # ORACLE=1 and ASIPEER=1: by default the project's work/deps/unicorn-2.1.4
 # (its README.txt says where it came from and how it was built), found from
@@ -40,7 +40,7 @@ if [ "${ORACLE:-0}" = 1 ]; then
   [ -f "$UNICORN_LIB" ] && [ -d "$UNICORN_INC" ] || { echo "ORACLE=1 needs Unicorn: work/deps/unicorn-2.1.4, or UNICORN_INC and UNICORN_LIB"; exit 1; }
   ORACLE_CFLAGS="-DNFSU2_ORACLE -I$UNICORN_INC"; ORACLE_LIBS="$UNICORN_LIB -lpthread"
 fi
-FW="-lm -lz -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework CoreAudio -framework GameController -framework Carbon"
+FW="-lm -lz -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework CoreAudio -framework GameController -framework Carbon -framework AVFoundation"
 SHARDS="$(ls gen/all/shard_*.c | sed -E "s|gen/all/(.*)\.c|out/obj/\1.o|" | tr "\n" " ") out/obj/fntab.o $([ -f gen/all/stubs.c ] && echo out/obj/stubs.o || true)"
 # server.dll (gen.sh -> gen/server, build.sh -> out/obj/srv); a stub module
 # when the game folder had no server.dll at gen time
@@ -56,7 +56,7 @@ build_rt(){
     # roam_core, roam_game: no fused multiply-add, so their floats are
     # bit-identical to the x86 build of the same files (the Windows companion,
     # win/roam_asi)
-    local fx=""; case "$f" in roam_core|roam_game) fx="-ffp-contract=off" ;; esac
+    local fx=""; case "$f" in roam_core|roam_game) fx="-ffp-contract=off" ;; radio) fx="-DNFSU2_NATIVE_RADIO" ;; esac
     clang $OPT $fx -DNFS_ENHANCED=$enh $ORACLE_CFLAGS -Iruntime -Igen/all -c -o "$od/$f.o" "runtime/$f.c" & pids="$pids $!"
   done
   for f in $MSRC; do

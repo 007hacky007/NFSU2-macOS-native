@@ -590,6 +590,13 @@ TEST(mixer_at_22050__track_lasts_half_as_many_steps){
     expect_folder_song(2);
 }
 
+TEST(one_channel_ahead__writer_retains_the_other_channels_unread_audio){
+    folder_song_plays_in_main_menu();
+    uint32_t before = g_page.rings.read;
+    call(sub_0072d18d, g_music.reader[0], STEP_FRAMES, 0, OUT);
+    expect(g_page.rings.read == before, "the writer waits for both stereo readers before reusing ring slots");
+}
+
 int main(void){
     g_mem = calloc(1, 0x28000000u);
     if (!g_mem) return 1;

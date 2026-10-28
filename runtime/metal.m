@@ -20,6 +20,7 @@
 #include "perflog.h"
 #include "fpscounter.h"
 #include "texrep.h"
+#include "native_controls.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -4746,6 +4747,8 @@ void metal_run_main_loop(void){
                              queue:[NSOperationQueue mainQueue]
                         usingBlock:^(NSNotification *nt){ (void)nt; power_state_changed(); }];
         [g_win setAcceptsMouseMovedEvents:YES];
+        native_controls_attach(g_win);
+        native_controls_add_menu([[[NSApp mainMenu] itemAtIndex:0] submenu]);
         /* NOFOCUS=1: open in the background and do NOT take focus from the
          * app the user is working in (for automated test/measurement runs). */
         if (ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0'){
@@ -4968,6 +4971,7 @@ void metal_run_main_loop(void){
                   [g_win toggleFullScreen:nil]; } }
             @autoreleasepool {
                 kbdmac_tick();                   /* synthesised keys (autotest ns*) into the queue */
+                native_controls_pump();
                 NSEvent *ev;
                 while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
                                                 untilDate:nil

@@ -3706,6 +3706,11 @@ static void mp_close(int64_t host, uint8_t why, const char *note){
     if (note) mp_note(host, note);
     mp_to(MP_IDLE, host);
 }
+/* Native tools consume their pending action on the guest thread only. */
+void roam_game_native_leave(void){
+    if (!g_inited || !O.on || g_mp.st == MP_IDLE || g_mp.st == MP_TRIP) return;
+    mp_close(roam_plat_now_us(), RC_LL_LEFT, "You left the race lobby");
+}
 /* a lobby heard of from its host */
 static MpLobby *mp_seen(uint32_t host_id, int make){
     for (int i = 0; i < g_mp.nseen; i++) if (g_mp.seen[i].host == host_id) return &g_mp.seen[i];

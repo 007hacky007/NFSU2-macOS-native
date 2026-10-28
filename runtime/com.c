@@ -3032,6 +3032,8 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(BeginScene)){ if (metal_available()) metal_begin_frame(); r=0; }
         else if (MID(EndScene)) r=0;
         else if (MID(Present)){ g_present_no++;
+            { extern void native_controls_guest_frame(void); native_controls_guest_frame(); }
+            { extern void radio_native_frame(void); radio_native_frame(); }
             { extern void autotest_on_present(CPU*); autotest_on_present(c); }
             { void watchdog_on_present(void); watchdog_on_present(); }
             { extern void discord_on_present(void); discord_on_present(); }   /* Discord presence: samples, never blocks */

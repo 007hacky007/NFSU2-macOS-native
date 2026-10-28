@@ -1,4 +1,4 @@
-/* radio.c -- the radio: the game's own EA Trax plays the music files of a folder on the player's device (wasm only).
+/* radio.c -- the radio: the game's own EA Trax plays a chosen local music folder.
  *
  * The game keeps its table of 27 songs, the EA Trax screen, the order, the plaque, both music volume sliders, the
  * pause, the end of a song and the next one.  With the radio on, for the EA Trax songs only:
@@ -15,7 +15,7 @@
  * and their inputs (read every step); the game stopping a song ends the track, a song going on to its next part does not.
  * Every address read from the game's memory is checked with in_guest before it is followed; what the page writes is
  * only used through the sequence locks, the ring mask, the `have` bound and the sample limit.
- * Outside the browser (the Mac port and its tests) the wrappers at the end call the game's own code. */
+ * Native uses the same protocol and mixer with a local system decoder (radio_native.m). */
 #include "cpu.h"
 
 /* ---- the game's functions (sub_ names are the lifter's; tools/genstamp.sh reads the _orig ones from here) ---- */
@@ -25,12 +25,29 @@ void sub_004ac9f0_orig(CPU *c);   /* the game draws the plaque of the song: for 
 void sub_0072d18d_orig(CPU *c);   /* the stream reader, the mixer asks for frames: a song's reader gets the track's sound from the page */
 void sub_00739320_orig(CPU *c);   /* stops a song (24 places in the game): the track ends with it; we call it from the mixer step to end a song */
 
-#if defined(__wasm__) || defined(NFSU2_RADIO_TEST)
+#if defined(__wasm__) || defined(NFSU2_RADIO_TEST) || defined(NFSU2_NATIVE_RADIO)
 #include "web/status_proto.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef NFSU2_NATIVE_RADIO
+#include "radio_native.h"
+static void native_unlock(int *unused){ (void)unused; radio_native_unlock(); }
+#define RADIO_GUARD radio_native_lock(); int guard __attribute__((cleanup(native_unlock))) = 0
+#else
+#define RADIO_GUARD
+#endif
+/* A guest call may yield its session lock. Never retain the producer mutex across it. */
+static void radio_original(void (*fn)(CPU *), CPU *c){
+#ifdef NFSU2_NATIVE_RADIO
+    radio_native_unlock();
+    fn(c);
+    radio_native_lock();
+#else
+    fn(c);
+#endif
+}
 uint32_t gheap_alloc(int heap, uint32_t n, int zero);
 void guest_noyield(int d);        /* win32_ext.c: no fair yield, a free mutex taken without handing the GIL over */
 
@@ -53,7 +70,11 @@ void guest_noyield(int d);        /* win32_ext.c: no fair yield, a free mutex ta
 #define MIXER_MAX_INPUTS   64u
 #define MIXER_MAX_FRAMES   4096u         /* the mixer asks a reader for 256 */
 #define GUEST_START        0x10000u
-#define GUEST_END          0x28000000u   /* the guest's memory ends here (web/build.sh) */
+#ifdef NFSU2_RADIO_TEST
+#define RADIO_GUEST_END    0x28000000ull /* the unit fixture's allocation */
+#else
+#define RADIO_GUEST_END    GSZ          /* 4 GiB native; wasm's reserved guest span */
+#endif
 #define MIXER_RATE         0x008b44c6u   /* word: the rate the game mixes at (44100, or 22050 on a machine its performance level rates low) */
 #define MIXER_RATE_MIN     11025u        /* the game keeps its mixer rate between these (0x8b44a0, 0x8b44a2) */
 #define MIXER_RATE_MAX     48000u
@@ -100,12 +121,12 @@ static Music g_music;
 static Song g_song;
 static Radio g_radio = { .lent = NO_TAGS_LENT };
 
-_Static_assert(TRAX_TABLE + TRAX_ENTRY_SIZE * RADIO_TRACKS < GUEST_END, "the table is in the guest");
+_Static_assert(TRAX_TABLE + TRAX_ENTRY_SIZE * RADIO_TRACKS < RADIO_GUEST_END, "the table is in the guest");
 _Static_assert(RADIO_TRACKS == 27, "the game's EA Trax table has 27 songs");
 
 static uint32_t trax_word(unsigned index, unsigned word){ return TRAX_TABLE + TRAX_ENTRY_SIZE * index + 4u * word; }
 static int radio_on(const HostStatusRadio *r){ return __atomic_load_n(&r->on, __ATOMIC_ACQUIRE) & 1u; }
-static int in_guest(uint32_t at, uint32_t len){ return at >= GUEST_START && len < GUEST_END && at <= GUEST_END - len; }
+static int in_guest(uint32_t at, uint32_t len){ return at >= GUEST_START && (uint64_t)at + len <= RADIO_GUEST_END; }
 static int page_has_track_for(const HostStatusRadio *r, unsigned place){
     return place < RADIO_PLACES && (__atomic_load_n(&r->offer.places, __ATOMIC_ACQUIRE) >> place) & 1u;
 }
@@ -231,7 +252,7 @@ static void stop_game_song(CPU *c){
     PUSH32(MR32(owner + OWNER_SONG_GROUPS));
     PUSH32(0x007292bcu);
     guest_noyield(+1);
-    sub_00739320_orig(c);
+    radio_original(sub_00739320_orig, c);
     guest_noyield(-1);
     *c = save;
     g_radio.stopping = 0;
@@ -249,7 +270,12 @@ static int switch_on(HostStatusRadio *r, int stop){
     song_start(SONG_GAME, 0);
     g_music.paused = 0;
     __atomic_store_n(&r->rings.ring_frames, RING_FRAMES, __ATOMIC_RELAXED);
+#ifdef NFSU2_NATIVE_RADIO
+    radio_native_bind_ring(g_radio.ring, RING_FRAMES);
+    __atomic_store_n(&r->rings.ring, 1u, __ATOMIC_RELEASE);
+#else
     __atomic_store_n(&r->rings.ring, (uint32_t)(uintptr_t)g_radio.ring, __ATOMIC_RELEASE);
+#endif
     g_radio.stop = stop ? "radio on" : NULL;
     return 1;
 }
@@ -295,6 +321,9 @@ static void follow_page(const HostStatusRadio *r){
         g_song.who = SONG_SILENT;
         fprintf(stderr, "[radio] silence: the page did not answer in 20 s\n");
     } else if (__atomic_load_n(&r->reply.ready_seq, __ATOMIC_ACQUIRE) == g_song.seq){
+#ifdef NFSU2_NATIVE_RADIO
+        if (g_radio.text) radio_native_track_tags(g_song.seq, (char (*)[RADIO_TAG])(g_mem + g_radio.text));
+#endif
         g_song.who = SONG_FOLDER;
     }
 }
@@ -354,7 +383,7 @@ static int read_folder_track(HostStatusRadio *r, unsigned ch, uint32_t out, uint
     uint64_t moved = g_song.phase[ch] + (uint64_t)made * step;
     g_song.phase[ch] = (uint32_t)(moved & 0xffffu);
     g_song.read[ch] += (uint32_t)(moved >> 16);
-    if (ch == 0) __atomic_store_n(&r->rings.read, g_song.read[0], __ATOMIC_RELEASE);
+    __atomic_store_n(&r->rings.read, g_song.read[0] < g_song.read[1] ? g_song.read[0] : g_song.read[1], __ATOMIC_RELEASE);
     if (made) g_song.starved = 0;
     else g_song.starved += n;
     g_song.over = made == 0 && (g_song.read[ch] >= total || written >= total || g_song.starved > WAIT_FRAMES);
@@ -367,10 +396,11 @@ static unsigned ring_of_reader(uint32_t reader){ return g_music.side[g_music.rea
 /* ---- the wrappers: the radio in the browser, the game's own code elsewhere ---- */
 
 void sub_007292bc(CPU *c){
+    RADIO_GUARD;
     HostStatusRadio *r = host_status_radio();
     int on = radio_on(r);
     if (!on && !g_radio.was_on && !g_radio.stop && g_radio.lent == NO_TAGS_LENT){
-        sub_007292bc_orig(c);
+        radio_original(sub_007292bc_orig, c);
         return;
     }
     if (on && __atomic_load_n(&r->on, __ATOMIC_ACQUIRE) != g_radio.on_seen) on = switch_on(r, 1);
@@ -380,18 +410,20 @@ void sub_007292bc(CPU *c){
     if (on && !g_radio.stop && g_song.who == SONG_FOLDER && g_song.over && !g_song.ended) g_radio.stop = "track over";
     if (g_radio.stop) stop_game_song(c);
     if (on) follow_music_inputs(r);
-    sub_007292bc_orig(c);
+    radio_original(sub_007292bc_orig, c);
 }
 
 void sub_00739320(CPU *c){
+    RADIO_GUARD;
     if (radio_on(host_status_radio()) && g_song.who != SONG_GAME){
         fprintf(stderr, "[radio] the game stops its song: the track ends\n");
         song_start(SONG_GAME, 0);
     }
-    sub_00739320_orig(c);
+    radio_original(sub_00739320_orig, c);
 }
 
 void sub_004580e0(CPU *c){
+    RADIO_GUARD;
     HostStatusRadio *r = host_status_radio();
     unsigned index = MR32(c->esp + TRAX_START_INDEX) & 0xffffu;
     return_tags();
@@ -402,34 +434,40 @@ void sub_004580e0(CPU *c){
     else if (radio_on(r) && index < RADIO_TRACKS) start_radio_song(r, index);
     else g_song.who = SONG_GAME;
     g_radio.stop = NULL;
-    sub_004580e0_orig(c);
+    radio_original(sub_004580e0_orig, c);
 }
 
 /* a plain cdecl return: the caller takes the argument off the stack */
 void sub_004ac9f0(CPU *c){
+    RADIO_GUARD;
     if ((g_song.who == SONG_SILENT || g_song.again) && radio_on(host_status_radio())){
         POP32(c->eip);
         return;
     }
-    sub_004ac9f0_orig(c);
+    radio_original(sub_004ac9f0_orig, c);
 }
 
 void sub_0072d18d(CPU *c){
+    RADIO_GUARD;
     uint32_t reader = MR32(c->esp + 4u), n = MR32(c->esp + 8u), out = MR32(c->esp + 16u);
     HostStatusRadio *r = host_status_radio();
     if (!radio_on(r) || g_song.who == SONG_GAME || !list_has(g_music.reader, g_music.count, reader)
         || n > MIXER_MAX_FRAMES || !in_guest(out, 4u * n)){
-        sub_0072d18d_orig(c);
+        radio_original(sub_0072d18d_orig, c);
         return;
     }
     follow_page(r);
-    sub_0072d18d_orig(c);
+    radio_original(sub_0072d18d_orig, c);
     int over = 0;
-    if (g_song.who == SONG_FOLDER && !g_music.paused){
+    int paused = g_music.paused;
+#ifdef NFSU2_NATIVE_RADIO
+    paused |= radio_native_paused();
+#endif
+    if (g_song.who == SONG_FOLDER && !paused){
         over = read_folder_track(r, ring_of_reader(reader), out, n);
     } else {
         memset(g_mem + out, 0, 4u * n);
-        if (g_song.who != SONG_SILENT) g_song.waited += n;
+        if (!paused && g_song.who != SONG_SILENT) g_song.waited += n;
     }
     if (g_song.who != SONG_SILENT) c->eax = over ? END_OF_STREAM : n;
 }

@@ -3,11 +3,12 @@ import SwiftUI
 struct RuntimeSettingsCard: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
+        let installed = model.installedLanguages
         Card("Game settings") {
             Picker("Language", selection: $model.runtimeOptions.language) {
                 ForEach(RuntimeOptions.languages) { language in
-                    Text(language.name + (model.installedLanguages.contains(language.id) ? "" : " (not installed)"))
-                        .tag(language.id).disabled(!model.installedLanguages.contains(language.id))
+                    Text(language.name + (installed.contains(language.id) ? "" : " (not installed)"))
+                        .tag(language.id).disabled(!installed.contains(language.id))
                 }
             }
             Picker("Frame rate", selection: $model.runtimeOptions.frameRate) {
