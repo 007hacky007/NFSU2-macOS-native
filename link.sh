@@ -19,11 +19,12 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 MCPU="${MCPU:-apple-m1}"; MINOS="${MINOS:-11.0}"   # see build.sh
 OPT="${OPT:--O3 -mcpu=$MCPU -mmacosx-version-min=$MINOS}"
 LDOPT="${LDOPT} -mmacosx-version-min=$MINOS"
+NATIVE_FLAGS="-DNFSU2_NATIVE_HEADLIGHTS"
 WHICH="${1:-both}"
 case "$WHICH" in both|orig|hd) ;; *) echo "usage: ./link.sh [orig|hd]"; exit 1 ;; esac
 
 CSRC="mem dispatch genexec heap watchdog win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog autotest lifecycle widescreen framerate dinput_pad dikeys keyboard dinput_kbd career intro oracle drifttest discord roam roam_core roam_bsd roam_game mprace horn hornmenu radio powerunits drift carsfx racehorn racenet winsock online netrace net_vlan net_relay module modheap headlights language sms sponsors lobbyclick olfilter tunegraph menusize regional garage sndlead carshadow movie photo texpack"
-MSRC="metal audio bundle gamepad keyboard_mac fpscounter texrep net_native native_controls radio_native"
+MSRC="metal audio bundle gamepad keyboard_mac fpscounter texrep net_native native_controls radio_native native_scene"
 # Unicorn 2.1.4 (native arm64, x86 target only) for the two test builds,
 # ORACLE=1 and ASIPEER=1: by default the project's work/deps/unicorn-2.1.4
 # (its README.txt says where it came from and how it was built), found from
@@ -57,10 +58,10 @@ build_rt(){
     # bit-identical to the x86 build of the same files (the Windows companion,
     # win/roam_asi)
     local fx=""; case "$f" in roam_core|roam_game) fx="-ffp-contract=off" ;; radio) fx="-DNFSU2_NATIVE_RADIO" ;; esac
-    clang $OPT $fx -DNFS_ENHANCED=$enh $ORACLE_CFLAGS -Iruntime -Igen/all -c -o "$od/$f.o" "runtime/$f.c" & pids="$pids $!"
+    clang $OPT $NATIVE_FLAGS $fx -DNFS_ENHANCED=$enh $ORACLE_CFLAGS -Iruntime -Igen/all -c -o "$od/$f.o" "runtime/$f.c" & pids="$pids $!"
   done
   for f in $MSRC; do
-    clang $OPT -DNFS_ENHANCED=$enh -fobjc-arc -Iruntime -Igen/all -c -o "$od/$f.o" "runtime/$f.m" & pids="$pids $!"
+    clang $OPT $NATIVE_FLAGS -DNFS_ENHANCED=$enh -fobjc-arc -Iruntime -Igen/all -c -o "$od/$f.o" "runtime/$f.m" & pids="$pids $!"
   done
   clang $OPT -Iruntime -Igen/all -c -o "$od/impargs.o" gen/all/impargs.c & pids="$pids $!"
   clang $OPT -Iruntime -c -o "$od/srv_impargs.o" gen/server/impargs.c & pids="$pids $!"

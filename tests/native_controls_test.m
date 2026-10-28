@@ -5,6 +5,8 @@
 #include "roam_core.h"
 #include "radio_native.h"
 #include "roam_plat.h"
+uint8_t *g_mem;
+uint8_t g_cbits[1u<<15] __attribute__((aligned(16)));
 static int keys, posts, leaves;
 void roam_game_event(int ev,int peer,const char *text) { (void)ev; (void)peer; (void)text; }
 static int pauses, nextTracks;
@@ -35,7 +37,9 @@ int main(int argc,char **argv) { @autoreleasepool {
     assert(native_controls_lobby("{\"v\":\"unknown\"}") == -1);
     assert(native_controls_lobby("{\"v\":\"lobby\",\"st\":\"unknown\"}") == -1);
     assert(native_controls_lobby("{}") == 1);
-    assert(native_controls_said("{\"name\":\"Driver\",\"p\":0}") == 1);
+    assert(native_controls_said("{\"id\":42,\"name\":\"Driver\",\"p\":0}") == 1);
+    assert(native_controls_said("{\"id\":-1,\"name\":\"Driver\",\"p\":0}") == -1);
+    assert(native_controls_said("{\"id\":4294967296,\"name\":\"Driver\",\"p\":0}") == -1);
     assert(native_controls_said("{\"name\":\"Driver\",\"p\":999}") == -1);
     assert(native_controls_said("{\"name\":2,\"p\":0}") == -1);
     assert(native_controls_said("{\"name\":\"Driver\",\"p\":0.5}") == -1);

@@ -11,6 +11,9 @@ __attribute__((weak)) int native_controls_lobby(const char *json){ (void)json; r
 __attribute__((weak)) int native_controls_solid(void){ return -1; }
 __attribute__((weak)) int native_controls_say_pick(void){ return -1; }
 __attribute__((weak)) int native_controls_said(const char *json){ (void)json; return 1; }
+__attribute__((weak)) void native_controls_say_marks(const uint32_t *ids, const float *xys, int n){ (void)ids; (void)xys; (void)n; }
+__attribute__((weak)) void native_controls_set_network(int enabled){ (void)enabled; }
+__attribute__((weak)) void native_controls_forget(uint32_t id){ (void)id; }
 __attribute__((weak)) uint32_t native_controls_crews(uint32_t h[4], uint32_t rgb[4]){ (void)h; (void)rgb; return 0; }
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,7 +58,7 @@ int roam_plat_solid(void){ return native_controls_solid(); }
 int roam_plat_quickchat(void){ return native_controls_available(); }
 int roam_plat_say_pick(void){ return native_controls_say_pick(); }
 int roam_plat_said(const char *json){ return native_controls_said(json); }
-void roam_plat_say_marks(const uint32_t *ids, const float *xys, int n){ (void)ids; (void)xys; (void)n; }
+void roam_plat_say_marks(const uint32_t *ids, const float *xys, int n){ native_controls_say_marks(ids,xys,n); }
 uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]){ return native_controls_crews(crews, rgb); }
 const char *roam_ip_str(uint32_t ip, char *b){
     snprintf(b, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255u, (ip >> 8) & 255u, ip & 255u); return b; }
@@ -151,7 +154,11 @@ static void io_broadcast(void *u, uint16_t port, const uint8_t *buf, int len){
 }
 static void io_event(void *u, int ev, int peer, const char *text);   /* roam_game.c provides the log */
 void roam_game_event(int ev, int peer, const char *text);
-static void io_event(void *u, int ev, int peer, const char *text){ (void)u; roam_game_event(ev, peer, text); }
+static void io_event(void *u, int ev, int peer, const char *text){
+    (void)u;
+    if(ev==RC_EV_LEAVE && g_s && peer>=0 && peer<RC_MAX_PEERS) native_controls_forget(g_s->peer[peer].id);
+    roam_game_event(ev, peer, text);
+}
 
 /* ---- impairment (test aid) ------------------------------------------------------ */
 static struct { int on, loss, delay, jitter, dup; uint32_t rng; } IMP;
@@ -288,17 +295,18 @@ int roam_plat_start(const roam_plat_cfg *cfg, rc_session *s){
         else close(fd);
         g_relay = NULL; g_fd = -1; return -1;
     }
-    g_thr_on = 1;
+    g_thr_on = 1; native_controls_set_network(s->conf.say);
     if (g_relay){ fprintf(stderr, "[roam] native switch port %u open\n", g_cfg.port); return 0; }
     fprintf(stderr, "[roam] UDP %s:%u open%s\n", g_cfg.test_mode ? "127.0.0.1" : "0.0.0.0", g_cfg.port,
             g_cfg.test_mode ? " (test harness: loopback only)" : g_cfg.discovery ? ", LAN discovery on" : "");
     return 0;
 }
 void roam_plat_stop(uint8_t reason){
-    if (!g_thr_on) return;
+    if (!g_thr_on){ native_controls_set_network(0); return; }
     roam_plat_lock(); rc_shutdown(g_s, reason); roam_plat_unlock();
     atomic_store(&g_stop, 1);
     pthread_join(g_thr, 0); g_thr_on = 0;
+    native_controls_set_network(0);
     if (g_relay) __atomic_store_n(&g_relay->want, 0, __ATOMIC_SEQ_CST);
     else close(g_fd);
     g_relay = NULL; g_fd = -1;

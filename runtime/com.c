@@ -1218,7 +1218,7 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
     g_gvs_next++;
     g_gvs[slot].gid = gid; g_gvs[slot].state = 1;
     g_gvs_nk[gid] = vs_kmax(prog);
-#ifdef __wasm__
+#if defined(__wasm__) || defined(NFSU2_NATIVE_HEADLIGHTS)
     /* the falloff of a lit shader (oT2.x = s * w + o) for the other cars' headlights */
     { float rp[2]; void headlights_vs_ramp(float, float);
       if (vs_light_creg(prog, rp) >= 0) headlights_vs_ramp(rp[0], rp[1]); }
@@ -3032,6 +3032,7 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(BeginScene)){ if (metal_available()) metal_begin_frame(); r=0; }
         else if (MID(EndScene)) r=0;
         else if (MID(Present)){ g_present_no++;
+            { extern void native_scene_guest_frame(void); native_scene_guest_frame(); }
             { extern void native_controls_guest_frame(void); native_controls_guest_frame(); }
             { extern void radio_native_frame(void); radio_native_frame(); }
             { extern void autotest_on_present(CPU*); autotest_on_present(c); }

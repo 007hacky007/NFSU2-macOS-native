@@ -1,4 +1,4 @@
-/* headlights.c -- other cars' headlights light the road too (web renderer).
+/* headlights.c -- other cars' headlights light the road too.
  *
  * The game lights the road with one projector, view 9: a camera on the
  * player's car (its drawn position +0x50 and 0.76 m up, the car's heading
@@ -28,9 +28,9 @@
  *  - the solids of the view being drawn that their frusta (Rel_k * VP9)
  *    touch are marked lit too, so they are drawn with the lit effects.
  * The light goes through walls and cars as the player's own does (it has no
- * shadow); from the driver's seat that was never seen.  Only the web
- * renderer draws the extra light (the Mac's translator has no such term):
- * elsewhere the override is the game's function.
+ * shadow); from the driver's seat that was never seen. The web and native
+ * Metal translators add the same bounded light term; headless builds keep
+ * the game's original function.
  *   NFSU2_HEADLIGHTS=players (default) | all (every other car: AI racers and
  *   traffic too) | off | self (the player's own light once more: a test of
  *   the term), optionally :GAIN (0.6); the script command "headlights MODE"
@@ -42,8 +42,16 @@
 
 void sub_005d6d20_orig(CPU *c);
 
+#if defined(__wasm__) || defined(NFSU2_NATIVE_HEADLIGHTS)
 #ifdef __wasm__
 #include "web/gpu_proto.h"
+#else
+#include "headlights.h"
+#define GW_HL_MAX HEADLIGHTS_MAX
+typedef Headlight GwHLight;
+typedef HeadlightsBlock GwHL;
+#define gw_headlights metal_headlights
+#endif
 
 #define VIEW9        0x008331d0u   /* eView 9 (0x48B1E0(9): 0x832DE0 + 9 * 0x70): the player's headlight */
 #define CUR_VIEW     0x00870848u   /* the viewport (eView +0x58) being rendered (0x5CAAD0); view 9 shares view 1's */
@@ -314,6 +322,7 @@ int headlights_set(const char *mode){
     int m = mode_of(mode);
     if (m < 0) return 0;
     g_mode = m;
+    memset(&g_blk, 0, sizeof g_blk); gw_headlights(&g_blk);
     return 1;
 }
 #else
@@ -323,10 +332,13 @@ int headlights_set(const char *mode){ (void)mode; return 0; }
 /* 0x5D6D20, thiscall (eView*, callback), ret 8: the callback over that
  * view's visible entries */
 void sub_005d6d20(CPU *c){
-#ifdef __wasm__
+#if defined(__wasm__) || defined(NFSU2_NATIVE_HEADLIGHTS)
     uint32_t list = c->ecx, view = MR32(c->esp + 4u), fn = MR32(c->esp + 8u);
     sub_005d6d20_orig(c);
-    if (view != VIEW9 || fn != LIT_CB || !hl_on() || !MR32(HL_ENABLE)) return;
+    if (view != VIEW9 || fn != LIT_CB) return;
+    if (!hl_on() || !MR32(HL_ENABLE)){
+        memset(&g_blk, 0, sizeof g_blk); gw_headlights(&g_blk); return;
+    }
     make_lights();
     if (g_n) mark(list);
 #else

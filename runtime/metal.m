@@ -21,6 +21,8 @@
 #include "fpscounter.h"
 #include "texrep.h"
 #include "native_controls.h"
+#include "native_scene.h"
+#include "headlights_snapshot.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -297,9 +299,14 @@ static void mouse_button(int b, int down, NSEventModifierFlags fl){
     static const uint32_t dn[3] = {0x0201u, 0x0204u, 0x0207u};     /* WM_L/R/MBUTTONDOWN */
     if (b < 3) kbd_post(down ? dn[b] : dn[b] + 1u, mouse_mk(fl), mouse_lp());
 }
+void metal_release_input(void);
 static void mouse_release_all(void){
     for (int b = 0; b < 8; b++) mouse_button(b, 0, 0);
     atomic_store(&g_mouse_btn, 0u);
+}
+void metal_release_input(void){
+    mouse_release_all();
+    atomic_store(&g_mouse_dx, 0); atomic_store(&g_mouse_dy, 0); atomic_store(&g_mouse_dz, 0);
 }
 /* Textures are created BEFORE the window opens.  So the "available"
  * criterion is the device, not the layer; otherwise early textures were
@@ -338,7 +345,7 @@ typedef struct { unsigned first, count, tex, target, clear_argb, is_clear;
                  unsigned tex1, tex2, tex3; int ps;
                  /* ps constants are in the frame's pool (g_pscb[b][psci]); c0 also
                   * here (the HD ray-tracing material reads only that) */
-                 unsigned psci; float c0[4];
+                 unsigned psci, hli; float c0[4];
                  int vsid; unsigned rawoff, koff; float proj[4];
                  unsigned smp[4];
                  unsigned is_blit, blit_src; unsigned bcol; unsigned cull;
@@ -357,6 +364,12 @@ typedef struct { unsigned first, count, tex, target, clear_argb, is_clear;
 static MVert  *g_vbuf[2];
 static MDraw  *g_dbuf[2];
 static unsigned g_vn[2], g_dn[2];
+static HeadlightsBlock g_headlights;             /* guest thread */
+static HeadlightSnapshots g_hlbuf[2];            /* follows the draw buffers */
+void metal_headlights(const HeadlightsBlock *block){
+    if(block && block->n<=HEADLIGHTS_MAX) g_headlights=*block;
+    else memset(&g_headlights,0,sizeof g_headlights);
+}
 static uint8_t *g_rvbuf[2];  static unsigned g_rvn[2];
 static uint8_t *g_kbuf[2];   static unsigned g_kn[2];
 static id<MTLBuffer> g_mtlrvb, g_mtlkb;
@@ -3244,6 +3257,7 @@ void metal_draw_tv(const TVert *src, unsigned nverts, unsigned prim, unsigned te
           g_dbuf[b][g_dn[b]].ps = hd_refl_ps(g_dbuf[b][g_dn[b]].ps, g_cur_target, tx4); }
 #endif
         g_dbuf[b][g_dn[b]].psci = psc_put(b);
+        g_dbuf[b][g_dn[b]].hli = headlights_snapshot_put(&g_hlbuf[b], &g_headlights);
         memcpy(g_dbuf[b][g_dn[b]].c0, g_cur_psc[0], sizeof g_cur_psc[0]);
         g_dbuf[b][g_dn[b]].alpha_ref = g_cur_aref;
         memcpy(g_dbuf[b][g_dn[b]].fogv, g_cur_fog, sizeof g_cur_fog);
@@ -3264,7 +3278,10 @@ void metal_set_clear_color(unsigned argb){
     atomic_store(&g_clear_g, ((argb >>  8) & 0xFF) / 255.0f);
     atomic_store(&g_clear_b, ((argb      ) & 0xFF) / 255.0f);
 }
-void metal_begin_frame(void){ }
+void metal_begin_frame(void){
+    memset(&g_headlights, 0, sizeof g_headlights);
+    headlights_snapshot_reset(&g_hlbuf[g_cur]);
+}
 
 /* Guest: blend state for the following draws. */
 void metal_set_blend(unsigned key, float alpha_ref){
@@ -3676,6 +3693,7 @@ static MDraw *raw_rec(int b, unsigned stride, unsigned tex, int vsid,
     MDraw *D = &g_dbuf[b][g_dn[b]];
     memset(D, 0, sizeof *D);          /* reused slot: see metal_draw_tv */
     D->tex = tex; D->target = g_cur_target;
+    D->hli = headlights_snapshot_put(&g_hlbuf[b], &g_headlights);
     memcpy(D->smp, g_cur_smp, sizeof D->smp);
     D->blend = g_cur_blend; D->depth = g_cur_depth; D->alpha_ref = g_cur_aref;
     D->bcol  = g_cur_bcol; D->cull = g_cur_cull;
@@ -3985,6 +4003,7 @@ void metal_present(void){
     g_ready = g_cur;                 /* the main thread draws this buffer */
     g_cur ^= 1;                      /* the guest keeps writing to the other one */
     g_vn[g_cur] = 0; g_dn[g_cur] = 0;
+    headlights_snapshot_reset(&g_hlbuf[g_cur]);
     g_rvn[g_cur] = 0; g_kn[g_cur] = 0; g_pscn[g_cur] = 0;
 #if NFS_ENHANCED
     g_hd_cam_ok[g_cur] = 0;
@@ -4747,6 +4766,7 @@ void metal_run_main_loop(void){
                              queue:[NSOperationQueue mainQueue]
                         usingBlock:^(NSNotification *nt){ (void)nt; power_state_changed(); }];
         [g_win setAcceptsMouseMovedEvents:YES];
+        native_scene_attach(g_win, [[[NSApp mainMenu] itemAtIndex:0] submenu]);
         native_controls_attach(g_win);
         native_controls_add_menu([[[NSApp mainMenu] itemAtIndex:0] submenu]);
         /* NOFOCUS=1: open in the background and do NOT take focus from the
@@ -4971,6 +4991,7 @@ void metal_run_main_loop(void){
                   [g_win toggleFullScreen:nil]; } }
             @autoreleasepool {
                 kbdmac_tick();                   /* synthesised keys (autotest ns*) into the queue */
+                native_scene_pump();
                 native_controls_pump();
                 NSEvent *ev;
                 while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
@@ -4978,6 +4999,7 @@ void metal_run_main_loop(void){
                                                    inMode:NSDefaultRunLoopMode
                                                   dequeue:YES])){
                     NSEventType et = [ev type];
+                    if (native_scene_handle_event(ev) || native_controls_handle_event(ev)) continue;
                     if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp || et == NSEventTypeFlagsChanged){
                         /* keys for another window of ours (About, a panel) */
                         if ([ev window] && [ev window] != g_win){ [NSApp sendEvent:ev]; continue; }
@@ -5203,7 +5225,7 @@ void metal_run_main_loop(void){
                         unsigned c_smp[4] = {~0u,~0u,~0u,~0u};
                         unsigned c_tex[4] = {~0u,~0u,~0u,~0u};
                         unsigned c_bcol = ~0u;
-                        unsigned c_cull = ~0u;
+                        unsigned c_cull = ~0u, c_hli = ~0u;
                         unsigned c_depth = ~0u;
                         int c_zon = 0;                  /* the pass has a real Z surface */
                         int c_ms = 0;                   /* (msaa) the pass is multisampled */
@@ -5933,7 +5955,7 @@ void metal_run_main_loop(void){
                                     [enc setFragmentSamplerState:g_samp atIndex:0];
                                     /* new encoder = all state reset */
                                     c_pso = nil; c_bcol = ~0u; c_depth = ~0u; c_fp_valid = 0;
-                                    c_cull = ~0u;
+                                    c_cull = ~0u; c_hli = ~0u;
                                     /* In D3D the front face is CLOCKWISE.  CULLWIND=1
                                      * flips it (needed if our vertex path flips
                                      * Y). */
@@ -5949,6 +5971,8 @@ void metal_run_main_loop(void){
                                     cur_t = dr->target;
                                 }
                                 if (dr->is_clear || !dr->count) continue;
+                                if (dr->hli != c_hli){ c_hli = dr->hli;
+                                    [enc setFragmentBytes:&g_hlbuf[rb].block[c_hli] length:sizeof(HeadlightsBlock) atIndex:1]; }
                                 /* PSINFO=<n>: print the target/texture/blend of the
                                  * first draws that use this ps. */
                                 { static int pi = -2; static int shown = 0;
@@ -6163,6 +6187,7 @@ void metal_run_main_loop(void){
                                 [bl endEncoding];
                             }
                         }
+                        if (native_scene_take_capture()) native_scene_encode_capture(cb, d.texture);
                         if (fc_px) fpscounter_draw(cb, d.texture, fc_ppp, fc_bw, fc_bh);
                         { struct timespec _e1; clock_gettime(CLOCK_MONOTONIC,&_e1);
                           unsigned long long dt =

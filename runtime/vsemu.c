@@ -786,6 +786,34 @@ static int hd_gpack(void){
     if (v < 0){ const char *e = getenv("HD_GPACK"); v = (e && *e == '0') ? 0 : 1; }
     return v;
 }
+#ifdef NFSU2_NATIVE_HEADLIGHTS
+#include "headlights.h"
+static int hl_plain(unsigned token, int type, int number){
+    return RT(token) == type && RN(token) == number && SWIZ(token) == 0xE4u && SMOD(token) == 0;
+}
+/* Only the donor's world-headlight texture/ramp -> colour/diffuse sequence. */
+static int hl_mad(const VSProg *p, unsigned cubemask){
+    if (p->version >= 0x0200 || (cubemask & 6u)) return -1;
+    int mul = -1; unsigned sampled = 0;
+    for (unsigned q = 0; q < p->n; q++){
+        const VSIns *x = &p->ins[q];
+        if (x->op == O_TEX && !x->nsrc) sampled |= 1u << (RN(x->dst) & 3);
+        if (!x->has_dst || RT(x->dst) != R_TEMP) continue;
+        int dn = RN(x->dst);
+        if ((WMASK(x->dst) & 7u) == 7u && !DSHIFT(x->dst) && !SATUR(x->dst)){
+            if (x->op == O_MUL && ((hl_plain(x->src[0], R_ADDR, 1) && hl_plain(x->src[1], R_ADDR, 2)) ||
+                                   (hl_plain(x->src[0], R_ADDR, 2) && hl_plain(x->src[1], R_ADDR, 1)))){
+                mul = dn; continue;
+            }
+            if (x->op == O_MAD && dn == mul && (sampled & 6u) == 6u &&
+                hl_plain(x->src[0], R_TEMP, dn) && hl_plain(x->src[1], R_CONST, 0) && hl_plain(x->src[2], R_INPUT, 0))
+                return (int)q;
+        }
+        if (dn == mul) mul = -1;
+    }
+    return -1;
+}
+#endif
 int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubemask, int reflk);
 int ps_to_msl_ex(const VSProg *p, int id, char *out, size_t cap, unsigned cubemask){
     return ps_to_msl_ex2(p, id, out, cap, cubemask, -1);
@@ -807,6 +835,13 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
                   id, p->smptype[0], p->smptype[1], p->smptype[2], p->smptype[3],
                   anycube ? "   <- HAS A CUBE" : "");
       } }
+#ifdef NFSU2_NATIVE_HEADLIGHTS
+    int headlight_mad = hl_mad(p, cubemask);
+    if (headlight_mad >= 0){
+        EMIT("struct NfsHeadlight { float4x4 t; float4 col; };\n");
+        EMIT("struct NfsHeadlights { uint n; float s, o, pad; NfsHeadlight l[%d]; };\n", HEADLIGHTS_MAX);
+    }
+#endif
     EMIT("fragment %s ps_%d(VOut i [[stage_in]],\n", NFS_ENHANCED ? "PSOut" : "float4", id);
     for (int k = 0; k < 4; k++)
         EMIT("    %s<float> s%d [[texture(%d)]],\n",
@@ -818,7 +853,11 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
      * WHOLE road and the ground glowed blown-out from end to end. */
     EMIT("    sampler sm0 [[sampler(0)]], sampler sm1 [[sampler(1)]],\n");
     EMIT("    sampler sm2 [[sampler(2)]], sampler sm3 [[sampler(3)]],\n");
-    EMIT("    constant PSPar &P [[buffer(0)]]) {\n");
+    EMIT("    constant PSPar &P [[buffer(0)]]");
+#ifdef NFSU2_NATIVE_HEADLIGHTS
+    if (headlight_mad >= 0) EMIT(", constant NfsHeadlights &H [[buffer(1)]]");
+#endif
+    EMIT(") {\n");
     EMIT("  float4 r[16]; for (int q=0;q<16;q++) r[q]=float4(0.0);\n");
     EMIT("  float4 t[4]; for (int q=0;q<4;q++) t[q]=float4(0.0);\n");
     /* ps_2_0 declares texture inputs without a texcoord instruction. */
@@ -1014,6 +1053,16 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
           else    snprintf(fit, sizeof fit, "(%s)%s", ex, mz); }
         if (sat) EMIT("  %s = saturate(%s);\n", d, fit);
         else     EMIT("  %s = %s;\n", d, fit);
+#ifdef NFSU2_NATIVE_HEADLIGHTS
+        if ((int)q == headlight_mad){
+            EMIT("  for (uint hk = 0; hk < min(H.n, %du); hk++) {\n", HEADLIGHTS_MAX);
+            EMIT("    float4 hp = i.uv1 * H.l[hk].t;\n");
+            EMIT("    float hd = abs(hp.w) > 1e-8 ? hp.w : 1.0;\n");
+            EMIT("    float3 h1 = s1.sample(sm1, hp.xy / hd).rgb;\n");
+            EMIT("    float3 h2 = s2.sample(sm2, float2(H.s * hp.w + H.o, tc2.y)).rgb;\n");
+            EMIT("    r[%d].rgb += hp.w > 0.0 ? h1 * h2 * H.l[hk].col.rgb : float3(0.0);\n  }\n", RN(x->dst));
+        }
+#endif
     }
     /* ps_1_x leaves its result in r0, ps_2_0 in oC0.  Return whichever was written. */
     EMIT("  float4 res = %s;\n", ps_uses_colorout(p) ? "oC" : "r[0]");

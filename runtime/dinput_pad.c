@@ -81,6 +81,9 @@
  *                       stops, and the motor levels when they change      */
 #include "cpu.h"
 #include "gamepad.h"
+/* Standalone pad harnesses do not link native overlays. */
+__attribute__((weak)) void native_controls_filter_pad(PadState *s) { (void)s; }
+__attribute__((weak)) void native_scene_filter_pad(PadState *s) { (void)s; }
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -961,6 +964,7 @@ void dipad_effect_free(uint32_t obj){
 uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint32_t *a){
     Dev *d = dev_of(self, 1);
     PadState s; gamepad_read(&s);
+    native_controls_filter_pad(&s); native_scene_filter_pad(&s);
     /* a controller of the other kind drives the pad (a wheel, and this is the
      * pad, or back): this device makes way for one of that kind */
     int other = s.connected && !!s.wheel != d->wheel;

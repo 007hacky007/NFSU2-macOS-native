@@ -534,7 +534,7 @@ void sub_005c7ec0(CPU *c){
     if (view && plat && mem_is_committed(view + 0x43u) && mem_is_committed(plat + 0xbfu)){
         enh_view_setup(MR32(view + 4u), (const float *)(g_mem + plat),
                        MR32(view + 0x40u));
-#ifdef __wasm__
+#if defined(__wasm__) || defined(NFSU2_NATIVE_HEADLIGHTS)
         void headlights_view(uint32_t id, const float *plat);
         headlights_view(MR32(view + 4u), (const float *)(g_mem + plat));
 #endif

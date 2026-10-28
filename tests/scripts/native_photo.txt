@@ -1,0 +1,26 @@
+# Native events enter/capture/exit the donor camera without touching user saves.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN
++0    tapuntil RETURN UI_QRModeSelect.fng 150 3000
++200  tapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  tapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  tapuntil RETURN UI_QRCarSelect.fng 150 1500
++200  tapuntil RETURN PC_Loading.fng 150 1500
++0    waitmem 0x8654a4 6 3000
++0    wzero
+7000wms autopilot on
+12000wms nstap F12
++40   expect i:0x890084 == 1
++0    expect i:[[0x8900ac]+0x238]+0xc == 2
++0    mark t0 i:0x86518c
++0    nsdown W
++25   nsup W
++0    nstap TAB
++10   expect i:0x86518c == @t0
++0    nstap F12
++60   dump native_photo_free
++0    nstap ESCAPE
++40   expect i:0x890084 == 0
++0    expect i:[[0x8900ac]+0x238]+0xc == 1
++60   expect i:0x86518c > @t0
++0    quit

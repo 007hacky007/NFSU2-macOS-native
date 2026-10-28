@@ -1,0 +1,33 @@
+# New synthetic career -> free roam -> native drift HUD -> normal handling.
+0     tapuntil RETURN MC_Background.fng 120 4000
++120  tap LEFT
++30   tap RETURN
++240  tap BACK
++8    tap BACK
++8    tap BACK
++8    tap BACK
++20   type DTEST
++60   tap RETURN
++240  tap RETURN
++0    waitfng GarageMain.fng 3000
++300  tap LEFT
++60   tap RETURN
++300  tap RETURN
++0    waitfng UI_EngageMessageDialog.fng 6000
++120  tap RETURN
++0    roam waitroam 3000
++0    roam smsauto on
++60   nstap X
++120  expect i:0x890104 == 1
++0    dump native_drift_on
++0    down UP
++420  down LEFT
++90   up LEFT
++0    down SPACE
++30   up SPACE
++180  dump native_drift_drive
++120  up UP
++60   nstap X
++120  expect i:0x890104 == 0
++0    dump native_drift_off
++30   quit
