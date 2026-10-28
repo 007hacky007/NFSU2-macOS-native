@@ -18,6 +18,7 @@ uint32_t win32_alloc(uint32_t n, int zero);
 uint32_t res_find(uint32_t,uint32_t,int);
 uint32_t res_data(uint32_t);
 uint32_t res_size(uint32_t);
+void win32_set_last_error(CPU *, uint32_t);
 
 /* ---- object table (HANDLE -> kind/state) ---- */
 #define H_BASE 0x00A00000u
@@ -33,7 +34,7 @@ typedef struct {
     int prim_ok;                      /* mtx/cv set up once (kept when the slot is reused) */
     /* OB_THREAD: how it ended (ExitThread argument or the entry's eax), and a
      * TerminateThread request it honours at its next import call */
-    uint32_t exit_code; int ended; volatile int term_req;
+    uint32_t exit_code; int ended; _Atomic int term_req;
     int closed;                       /* OB_THREAD: last handle closed while it still ran */
     uint32_t teb, stack_lo;           /* OB_THREAD: recycled when the thread ends */
     /* OB_THREAD: who started it (CreateThread's return address), its place in
@@ -1087,6 +1088,41 @@ void win32_signal_event(uint32_t h){
     pthread_mutex_unlock(&o->mtx);
 }
 
+/* Wait deadlines use the monotonic clock; condition-variable wakes may be spurious.
+ * Short slices also let an already-requested thread termination interrupt a wait. */
+static uint64_t wait_deadline(uint32_t ms){
+    return ms == 0xFFFFFFFFu ? UINT64_MAX : gil_now_us() + (uint64_t)ms * 1000u;
+}
+static uint64_t wait_remaining(uint64_t deadline, uint64_t slice){
+    uint64_t now = gil_now_us();
+    return deadline <= now ? 0 : deadline - now < slice ? deadline - now : slice;
+}
+static int wait_cancelled(void){
+    Obj *o = (Obj *)tl_obj;
+    return o && o->term_req;
+}
+/* Called with the object's mutex held. */
+static int wait_ready(Obj *o, uint32_t tid){
+    return o->signaled > 0 || (o->kind == OB_MUTEX && o->owner_tid == tid && o->rec > 0);
+}
+static void wait_take(Obj *o, uint32_t tid){
+    if (o->kind == OB_MUTEX){ o->signaled = 0; o->owner_tid = tid; o->rec++; }
+    else if (o->kind == OB_SEM) o->signaled--;
+    else if (!o->manual) o->signaled = 0;
+}
+static void wait_cond(Obj *o, uint64_t us){
+    struct timespec ts;
+#ifndef __wasm__
+    ts.tv_sec = (time_t)(us / 1000000u); ts.tv_nsec = (long)(us % 1000000u) * 1000L;
+    pthread_cond_timedwait_relative_np(&o->cv, &o->mtx, &ts);
+#else
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += (time_t)(us / 1000000u); ts.tv_nsec += (long)(us % 1000000u) * 1000L;
+    if (ts.tv_nsec >= 1000000000L){ ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    pthread_cond_timedwait(&o->cv, &o->mtx, &ts);
+#endif
+}
+
 /* ---- WINMM multimedia timer --------------------------------------------
  * NFSU2 drives its front-end update loop from the timeSetEvent callback;
  * with a stub the menu animations do not advance and input is not
@@ -1620,51 +1656,20 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
           } }
         if(!o){ r=0; }
         else if (o->kind == OB_MUTEX && (tl_noyield || gil_keep_for_mutex()) && mutex_take_now(o, cur_tid(c))) r=0;   /* WAIT_OBJECT_0 */
-        else if (o->kind == OB_MUTEX){
-            /* MUTEX: ownership + RECURSION.  The same thread must be able to
-             * take the same mutex again; otherwise the game's CRT wrapper,
-             * which takes nested locks, deadlocks itself (that is how the
-             * video player hung). */
-            uint32_t me = cur_tid(c);
-            ts_set(TS_WAIT, A(c,0));
-            guest_yield_begin();
-            pthread_mutex_lock(&o->mtx);
-            if (o->owner_tid == me && o->rec > 0){
-                o->rec++; r = 0;                       /* WAIT_OBJECT_0 */
-            } else {
-                struct timespec ts;
-                int timed_out = 0;
-                while (!o->signaled && !timed_out){
-                    if (!ms){ timed_out = 1; break; }
-                    clock_gettime(CLOCK_REALTIME,&ts);
-                    uint32_t wait = (ms==0xFFFFFFFFu)? 2000u : (ms>2000u?2000u:ms);
-                    ts.tv_sec += wait/1000; ts.tv_nsec += (long)(wait%1000)*1000000L;
-                    if(ts.tv_nsec>=1000000000L){ts.tv_sec++;ts.tv_nsec-=1000000000L;}
-                    if (pthread_cond_timedwait(&o->cv,&o->mtx,&ts) != 0 &&
-                        ms != 0xFFFFFFFFu) timed_out = 1;
-                    if (ms != 0xFFFFFFFFu) break;
-                }
-                if (o->signaled){ o->signaled = 0; o->owner_tid = me; o->rec = 1; r = 0; }
-                else r = 0x102u;                        /* WAIT_TIMEOUT */
-            }
-            pthread_mutex_unlock(&o->mtx);
-            guest_yield_end();
-        }
         else {
+            uint32_t tid = cur_tid(c);
+            uint64_t deadline = wait_deadline(ms);
             ts_set(TS_WAIT, A(c,0));
             guest_yield_begin();
             pthread_mutex_lock(&o->mtx);
-            if(!o->signaled && ms){
-                struct timespec ts; clock_gettime(CLOCK_REALTIME,&ts);
-                uint32_t wait = (ms==0xFFFFFFFFu)? 2000u : (ms>2000u?2000u:ms);
-                ts.tv_sec += wait/1000; ts.tv_nsec += (long)(wait%1000)*1000000L;
-                if(ts.tv_nsec>=1000000000L){ts.tv_sec++;ts.tv_nsec-=1000000000L;}
-                pthread_cond_timedwait(&o->cv,&o->mtx,&ts);
-            }
-            r = o->signaled ? 0u : 0x102u;              /* WAIT_OBJECT_0 / WAIT_TIMEOUT */
-            if(o->signaled && !o->manual) o->signaled=0;
+            uint64_t us;
+            while (!wait_ready(o, tid) && !wait_cancelled() && (us = wait_remaining(deadline, 50000u)))
+                wait_cond(o, us);
+            r = wait_ready(o, tid) ? 0u : 0x102u;
+            if (!r) wait_take(o, tid);
             pthread_mutex_unlock(&o->mtx);
             guest_yield_end();
+            win32_thread_term_check(c);
         } }
     /* --- thread --- */
     else if (!strcmp(n,"CreateThread")){
@@ -1776,25 +1781,53 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         r=0; }
     else if (!strcmp(n,"WaitForMultipleObjects")){
         uint32_t cnt=A(c,0), parr=A(c,1), waitall=A(c,2), ms=A(c,3);
-        (void)waitall;
-        ts_set(TS_WAITM, cnt && parr && mem_is_committed(parr+3) ? MR32(parr) : 0u);
-        for (uint32_t i=0;i<cnt && i<64;i++) obj_get(MR32(parr+4u*i));   /* looked up under the guest lock: obj_reclaim */
+        Obj *objects[64], *locks[64];
+        uint32_t nl = 0, tid = cur_tid(c);
+        uint32_t error = 87u;     /* ERROR_INVALID_PARAMETER */
+        r = 0xFFFFFFFFu;
+        if (!cnt || cnt > 64u || !parr || parr > UINT32_MAX - 4u * cnt) goto wait_multiple_done;
+        for (uint32_t i = 0; i < cnt; i++){
+            if (!mem_is_committed(parr + 4u*i) || !mem_is_committed(parr + 4u*i + 3u)) goto wait_multiple_done;
+            Obj *o = obj_get(MR32(parr + 4u*i));   /* mark waited threads before releasing the guest lock: obj_reclaim */
+            if (!o){ error = 6u; goto wait_multiple_done; }  /* ERROR_INVALID_HANDLE */
+            objects[i] = o;
+            uint32_t j = 0;
+            while (j < nl && locks[j] < o) j++;
+            if (j < nl && locks[j] == o) goto wait_multiple_done;
+            memmove(locks + j + 1u, locks + j, (nl - j) * sizeof *locks);
+            locks[j] = o; nl++;
+        }
+        uint64_t deadline = wait_deadline(ms);
+        ts_set(TS_WAITM, MR32(parr));
         guest_yield_begin();
-        uint32_t got=0x102u;
-        for (int spin=0; spin<200; spin++){
-            for (uint32_t i=0;i<cnt && i<64;i++){
-                Obj*o=obj_get(MR32(parr+4u*i));
-                if(o){ pthread_mutex_lock(&o->mtx);
-                       int sig=o->signaled;
-                       if(sig && !o->manual) o->signaled=0;
-                       pthread_mutex_unlock(&o->mtx);
-                       if(sig){ got=i; break; } }
+        for (;;){
+            /* Lock in slot order, then check AND consume together. No partial wait-all acquisition. */
+            if (waitall) for (uint32_t i = 0; i < nl; i++) pthread_mutex_lock(&locks[i]->mtx);
+            uint32_t ready = 0, first = cnt;
+            for (uint32_t i = 0; i < cnt; i++){
+                if (!waitall) pthread_mutex_lock(&objects[i]->mtx);
+                if (wait_ready(objects[i], tid)){
+                    ready++; if (first == cnt) first = i;
+                    if (!waitall) wait_take(objects[i], tid);
+                }
+                if (!waitall) pthread_mutex_unlock(&objects[i]->mtx);
+                if (!waitall && ready) break;
             }
-            if (got!=0x102u || ms==0) break;
-            struct timespec ts={0,1000000L}; nanosleep(&ts,0);
+            r = 0x102u;
+            if (waitall ? ready == cnt : ready > 0){
+                r = waitall ? 0u : first;
+                if (waitall) for (uint32_t i = 0; i < cnt; i++) wait_take(objects[i], tid);
+            }
+            if (waitall) for (uint32_t i = nl; i > 0; i--) pthread_mutex_unlock(&locks[i-1u]->mtx);
+            uint64_t us;
+            if (r != 0x102u || wait_cancelled() || !(us = wait_remaining(deadline, 1000u))) break;
+            struct timespec ts = { 0, (long)us * 1000L }; nanosleep(&ts, 0);
         }
         guest_yield_end();
-        r=got; }
+        win32_thread_term_check(c);
+wait_multiple_done:;
+        if (r == 0xFFFFFFFFu) win32_set_last_error(c, error);
+    }
     else if (!strcmp(n,"SwitchToThread")){ guest_yield_begin(); sched_yield(); guest_yield_end(); r=1; }
     else if (!strcmp(n,"CloseHandle")){ obj_close(A(c,0)); r=1; }
     else if (!strcmp(n,"DuplicateHandle")){ uint32_t p=A(c,3); if(p) MR32(p)=A(c,1);

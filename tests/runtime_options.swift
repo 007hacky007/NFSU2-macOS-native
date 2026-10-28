@@ -8,6 +8,7 @@ struct RuntimeOptionsTests {
             data: "/game", saves: "/saves", registry: "/registry")
         assert(env["NFSU2_LANGUAGE"] == "english")
         assert(env["NFSU2_FPS"] == "auto")
+        assert(env["NFSU2_CUTSCENES_60"] == "0")
         assert(env["NFSU2_RADIO"] == "0" && env["NFSU2_MUSIC_FOLDER"] == nil)
         assert(env["NFSU2_RENDER"] == "backing", "default render scale must override inherited settings")
         let legacy = Data(#"{"language":"french","frameRate":"60","controller":"hotplug","stickDeadzone":0.12,"triggerDeadzone":0.04,"customMusic":true,"musicFolder":"/fixture/music"}"#.utf8)
@@ -16,6 +17,8 @@ struct RuntimeOptionsTests {
         assert(migrated.resolutionScale == "backing" && migrated.hud == "wide" && migrated.subtitles)
         let missing = try JSONDecoder().decode(RuntimeOptions.self, from: Data("{}".utf8))
         assert(missing == RuntimeOptions())
+        let missingEnvironment = try missing.environment()
+        assert(missingEnvironment["NFSU2_CUTSCENES_60"] == "0")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -39,6 +42,16 @@ struct RuntimeOptionsTests {
         assert(advanced["NFSU2_BACKGROUND"] == "run" && advanced["NFSU2_ROAM_ROOM"] == "Test Crew")
         let advancedDecoded = try JSONDecoder().decode(RuntimeOptions.self, from: JSONEncoder().encode(options))
         assert(advancedDecoded == options)
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(options)) as! [String: Any]
+        json["cutscenes60"] = true
+        let withCutscenes = try JSONDecoder().decode(RuntimeOptions.self, from: JSONSerialization.data(withJSONObject: json))
+        let cutsceneEnvironment = try LaunchSettings.environment(inherited: ["NFSU2_CUTSCENES_60": "0"], online: false, server: "", name: "", textures: "original", pack: nil, data: "/game", saves: "/saves", registry: "/registry", runtime: withCutscenes)
+        assert(cutsceneEnvironment["NFSU2_CUTSCENES_60"] == "1")
+        let cutsceneRoundTrip = try JSONDecoder().decode(RuntimeOptions.self, from: JSONEncoder().encode(withCutscenes))
+        let roundTripEnvironment = try cutsceneRoundTrip.environment()
+        assert(roundTripEnvironment["NFSU2_CUTSCENES_60"] == "1")
+        let cleared = try LaunchSettings.environment(inherited: ["NFSU2_CUTSCENES_60": "1"], online: false, server: "", name: "", textures: "original", pack: nil, data: "/game", saves: "/saves", registry: "/registry")
+        assert(cleared["NFSU2_CUTSCENES_60"] == "0")
         for key in ["resolutionScale", "hud", "movieFraming", "cutsceneBorders", "headlights", "background", "roamRoom"] {
             var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(options)) as! [String: Any]
             json[key] = key == "roamRoom" ? "bad\nroom" : "unsupported"

@@ -61,6 +61,7 @@ uint32_t res_find(uint32_t a, uint32_t b, int k){ return 0; }
 uint32_t res_data(uint32_t a){ return 0; }
 uint32_t res_size(uint32_t a){ return 0; }
 int      win32_caller_module(void){ return 0; }       /* SPEED2.EXE's imports */
+void     win32_set_last_error(CPU *c, uint32_t e){ if (c->fs_base) MR32(c->fs_base + 0x34u) = e; }
 
 static int g_fail;
 #define CHECK(cond, ...) do{ if (cond) printf("PASS " __VA_ARGS__); else { printf("FAIL " __VA_ARGS__); g_fail = 1; } \
@@ -79,9 +80,17 @@ static uint32_t imp(CPU *c, const char *n, int na, ...){
 }
 
 /* the guest threads' entries */
-enum { E_RET = 0x00401000u, E_HOLD = 0x00402000u };
+enum { E_RET = 0x00401000u, E_HOLD = 0x00402000u, E_WAIT = 0x00403000u, E_WAITM = 0x00404000u };
 static int g_release[64];                       /* E_HOLD: its argument indexes this */
 void dispatch_indirect(CPU *c, uint32_t entry){
+    if (entry == E_WAIT || entry == E_WAITM){
+        uint32_t event = MR32(c->esp + 4u);
+        if (entry == E_WAIT) imp(c, "WaitForSingleObject", 2, event, 0xFFFFFFFFu);
+        else {
+            uint32_t array = c->esp - 128u; MR32(array) = event;
+            imp(c, "WaitForMultipleObjects", 4, 1u, array, 0u, 0xFFFFFFFFu);
+        }
+    }
     if (entry == E_HOLD){
         uint32_t k = MR32(c->esp + 4u) & 63u;    /* [esp] the return address, [esp+4] the argument */
         while (!__atomic_load_n(&g_release[k], __ATOMIC_ACQUIRE)) imp(c, "Sleep", 1, 1u);
@@ -262,14 +271,97 @@ static void case_waiting(void){
           " the wait sees it end (%u)", g_wnew, w);
 }
 
+typedef struct { uint32_t event, delay_ms; int spurious; } Signal;
+static void *delayed_signal(void *arg){
+    Signal *s = arg;
+    struct timespec delay = { s->delay_ms / 1000u, (long)(s->delay_ms % 1000u) * 1000000L };
+    nanosleep(&delay, 0);
+    if (s->spurious){
+        Obj *o = obj_get(s->event);
+        pthread_mutex_lock(&o->mtx); pthread_cond_broadcast(&o->cv); pthread_mutex_unlock(&o->mtx);
+    } else win32_signal_event(s->event);
+    return 0;
+}
+static void case_wait_timeouts(void){
+    uint32_t e = imp(M, "CreateEventA", 4, 0u, 1u, 0u, 0u);
+    for (int finite = 0; finite < 2; finite++){
+        Signal signal = { e, 2300, 0 }; pthread_t th;
+        pthread_create(&th, 0, delayed_signal, &signal);
+        uint64_t t = host_us();
+        uint32_t r = imp(M, "WaitForSingleObject", 2, e, finite ? 3000u : INFINITE);
+        uint64_t elapsed = host_us() - t;
+        pthread_join(th, 0);
+        CHECK(r == 0 && elapsed >= 2200000u, "waits: %s event wait survives two seconds (result 0x%x, %.1f ms)",
+              finite ? "finite" : "infinite", r, elapsed / 1000.0);
+        imp(M, "ResetEvent", 1, e);
+    }
+    Signal signal = { e, 20, 1 }; pthread_t th;
+    pthread_create(&th, 0, delayed_signal, &signal);
+    uint64_t t = host_us();
+    uint32_t r = imp(M, "WaitForSingleObject", 2, e, 80u);
+    uint64_t elapsed = host_us() - t; pthread_join(th, 0);
+    CHECK(r == WAIT_TIMEOUT && elapsed >= 70000u, "waits: spurious wake keeps the original deadline (%.1f ms)", elapsed / 1000.0);
+    MR32(SCRATCH) = e;
+    t = host_us(); r = imp(M, "WaitForMultipleObjects", 4, 1u, SCRATCH, 0u, 10u);
+    elapsed = host_us() - t;
+    CHECK(r == WAIT_TIMEOUT && elapsed >= 9000u && elapsed < 150000u,
+          "waits: multi-object ten millisecond timeout (%.1f ms)", elapsed / 1000.0);
+    signal.delay_ms = 350; signal.spurious = 0;
+    pthread_create(&th, 0, delayed_signal, &signal);
+    t = host_us(); r = imp(M, "WaitForMultipleObjects", 4, 1u, SCRATCH, 0u, INFINITE);
+    elapsed = host_us() - t; pthread_join(th, 0);
+    CHECK(r == 0 && elapsed >= 300000u, "waits: multi-object infinite wait survives 200 ms (%.1f ms)", elapsed / 1000.0);
+}
+static void case_wait_objects(void){
+    uint32_t a = imp(M, "CreateEventA", 4, 0u, 0u, 1u, 0u);
+    uint32_t b = imp(M, "CreateEventA", 4, 0u, 0u, 0u, 0u);
+    MR32(SCRATCH) = a; MR32(SCRATCH + 4u) = b;
+    CHECK(imp(M, "WaitForMultipleObjects", 4, 2u, SCRATCH, 1u, 0u) == WAIT_TIMEOUT,
+          "waits: wait-all requires every event");
+    imp(M, "SetEvent", 1, b);
+    CHECK(imp(M, "WaitForMultipleObjects", 4, 2u, SCRATCH, 1u, 0u) == 0,
+          "waits: failed wait-all leaves auto-reset events untouched");
+    CHECK(imp(M, "WaitForSingleObject", 2, a, 0u) == WAIT_TIMEOUT && imp(M, "WaitForSingleObject", 2, b, 0u) == WAIT_TIMEOUT,
+          "waits: successful wait-all consumes both auto-reset events");
+    imp(M, "SetEvent", 1, a); imp(M, "SetEvent", 1, b);
+    CHECK(imp(M, "WaitForMultipleObjects", 4, 2u, SCRATCH, 0u, 0u) == 0 && imp(M, "WaitForSingleObject", 2, b, 0u) == 0,
+          "waits: wait-any returns the first index and consumes only that event");
+    uint32_t sem = imp(M, "CreateSemaphoreA", 4, 0u, 2u, 2u, 0u);
+    MR32(SCRATCH) = sem;
+    CHECK(imp(M, "WaitForMultipleObjects", 4, 1u, SCRATCH, 1u, 0u) == 0 && imp(M, "WaitForSingleObject", 2, sem, 0u) == 0
+          && imp(M, "WaitForSingleObject", 2, sem, 0u) == WAIT_TIMEOUT, "waits: each semaphore acquisition consumes one count");
+    uint32_t mutex = imp(M, "CreateMutexA", 3, 0u, 1u, 0u);
+    MR32(SCRATCH) = mutex;
+    CHECK(imp(M, "WaitForMultipleObjects", 4, 1u, SCRATCH, 1u, 0u) == 0 && obj_get(mutex)->rec == 2,
+          "waits: wait-all can recursively acquire the caller's mutex");
+    imp(M, "ReleaseMutex", 1, mutex); imp(M, "ReleaseMutex", 1, mutex);
+    CHECK(obj_get(mutex)->signaled == 1, "waits: recursive mutex releases restore availability");
+}
+static void case_wait_cancel(void){
+    setenv("NFSU2_THREAD_EXIT", "windows", 1);
+    uint32_t e = imp(M, "CreateEventA", 4, 0u, 1u, 0u, 0u);
+    for (int multi = 0; multi < 2; multi++){
+        uint32_t h = start(multi ? E_WAITM : E_WAIT, e);
+        imp(M, "Sleep", 1, 20u);
+        uint64_t t = host_us(), target = win32_ext_threads_exited() + 1;
+        imp(M, "TerminateThread", 2, h, 7u);
+        while (win32_ext_threads_exited() < target && host_us() - t < 500000u) imp(M, "Sleep", 1, 1u);
+        CHECK(win32_ext_threads_exited() >= target, "waits: pending termination interrupts an infinite %s wait", multi ? "multi-object" : "event");
+        if (win32_ext_threads_exited() < target){ imp(M, "SetEvent", 1, e); ended(target); }
+        imp(M, "ResetEvent", 1, e);
+    }
+}
+
 static const struct { const char *name; void (*fn)(void); } CASES[] = {
     { "below", case_below }, { "reclaim", case_reclaim }, { "oldest", case_oldest }, { "stale", case_stale }, { "kept", case_kept },
-    { "waiting", case_waiting },
+    { "waiting", case_waiting }, { "wait_timeouts", case_wait_timeouts }, { "wait_objects", case_wait_objects },
+    { "wait_cancel", case_wait_cancel },
 };
 
 static int run_case(int k){
     g_mem = mmap(0, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
     if (g_mem == MAP_FAILED){ printf("FAIL %s: no guest memory\n", CASES[k].name); return 1; }
+    memset(g_cbits, 0xff, sizeof g_cbits);   /* the harness maps the whole guest space read-write */
     g_err = tmpfile();
     if (!g_err || dup2(fileno(g_err), 2) < 0){ printf("FAIL %s: no temporary file for stderr\n", CASES[k].name); return 1; }
     setvbuf(stderr, 0, _IONBF, 0);

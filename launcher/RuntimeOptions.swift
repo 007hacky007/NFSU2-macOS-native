@@ -9,6 +9,7 @@ struct GameLanguage: Identifiable, Equatable {
 struct RuntimeOptions: Codable, Equatable {
     var language = "english"
     var frameRate = "auto"
+    var cutscenes60 = false
     var controller = "on"
     var stickDeadzone = 0.08
     var triggerDeadzone = 0.02
@@ -25,13 +26,14 @@ struct RuntimeOptions: Codable, Equatable {
 
     init() {}
     private enum CodingKeys: String, CodingKey {
-        case language, frameRate, controller, stickDeadzone, triggerDeadzone, customMusic, musicFolder
+        case language, frameRate, cutscenes60, controller, stickDeadzone, triggerDeadzone, customMusic, musicFolder
         case resolutionScale, hud, subtitles, movieFraming, cutsceneBorders, headlights, background, roamRoom
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? language
         frameRate = try c.decodeIfPresent(String.self, forKey: .frameRate) ?? frameRate
+        cutscenes60 = try c.decodeIfPresent(Bool.self, forKey: .cutscenes60) ?? cutscenes60
         controller = try c.decodeIfPresent(String.self, forKey: .controller) ?? controller
         stickDeadzone = try c.decodeIfPresent(Double.self, forKey: .stickDeadzone) ?? stickDeadzone
         triggerDeadzone = try c.decodeIfPresent(Double.self, forKey: .triggerDeadzone) ?? triggerDeadzone
@@ -50,7 +52,7 @@ struct RuntimeOptions: Codable, Equatable {
     static let frameRates = ["auto", "30", "60", "120", "240"]
     static let controllers = ["on", "off", "hotplug"]
     static let resolutionScales = ["scale:0.5", "scale:0.75", "backing", "scale:1.5", "scale:2"]
-    static let environmentKeys = ["NFSU2_LANGUAGE", "NFSU2_FPS", "NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_PAD_TRIGGER_DEADZONE", "NFSU2_RADIO", "NFSU2_MUSIC_FOLDER", "NFSU2_RENDER", "NFSU2_HUD", "NFSU2_SUBTITLES", "NFSU2_MOVIE", "NFSU2_CUTSCENE_BORDERS", "NFSU2_HEADLIGHTS", "NFSU2_BACKGROUND", "NFSU2_ROAM_ROOM"]
+    static let environmentKeys = ["NFSU2_LANGUAGE", "NFSU2_FPS", "NFSU2_CUTSCENES_60", "NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_PAD_TRIGGER_DEADZONE", "NFSU2_RADIO", "NFSU2_MUSIC_FOLDER", "NFSU2_RENDER", "NFSU2_HUD", "NFSU2_SUBTITLES", "NFSU2_MOVIE", "NFSU2_CUTSCENE_BORDERS", "NFSU2_HEADLIGHTS", "NFSU2_BACKGROUND", "NFSU2_ROAM_ROOM"]
     static let languages: [GameLanguage] = [
         .init(id: "english", name: "English", file: "english.bin"),
         .init(id: "french", name: "French", file: "french.bin"),
@@ -106,7 +108,7 @@ struct RuntimeOptions: Codable, Equatable {
         guard roamRoom.withCString({ name_blocked($0) == 0 }) else {
             throw SettingsError("Choose another room name. The multiplayer name rules reject this one.")
         }
-        var env = ["NFSU2_LANGUAGE": language, "NFSU2_FPS": frameRate, "NFSU2_PAD": controller,
+        var env = ["NFSU2_LANGUAGE": language, "NFSU2_FPS": frameRate, "NFSU2_CUTSCENES_60": cutscenes60 ? "1" : "0", "NFSU2_PAD": controller,
                    "NFSU2_PAD_DEADZONE": String(stickDeadzone), "NFSU2_PAD_TRIGGER_DEADZONE": String(triggerDeadzone),
                    "NFSU2_RADIO": customMusic ? "1" : "0", "NFSU2_RENDER": resolutionScale,
                    "NFSU2_HUD": hud, "NFSU2_SUBTITLES": subtitles ? "1" : "0", "NFSU2_MOVIE": movieFraming,

@@ -17,7 +17,7 @@
  *       animation frames (Safari in Low Power Mode, or on a Mac nobody has
  *       touched for a minute; Chrome's Energy Saver): it shows only every
  *       other frame of 60, so the game makes the half it shows.  The game's
- *       own 30 fps requests in NIS cutscenes are kept (SetFrameRate
+ *       own 30 fps requests in NIS cutscenes are kept by default (SetFrameRate
  *       0x576CB0); its online/LAN cap 0x5FF67C is not
  *       (sub_005ff490 below).
  *       30: for a machine that cannot hold 60 (a phone): steady frames at
@@ -41,6 +41,8 @@
  *       same frame rate (fixes_follow_rate), and 240 plays at 120, the
  *       fastest such a PC runs (content_rate); exact: the fix set as above.
  *   NFSU2_NOS_TRAIL_LEN = x     NOS/streak trail length factor (default 1)
+ *   NFSU2_CUTSCENES_60 = 1     raise 30 fps NIS requests to 60 in paced modes;
+ *                               off by default, capped by the selected game rate
  *   NFSU2_HFR_LOG = 1 | 2       one [hfr] line per second of racing (2: of
  *                               every frame, menus too) and the exit report
  *   NFSU2_HFR_TRACE = <file>    per-frame CSV while racing (GameFlow 6),
@@ -135,6 +137,7 @@ static int    g_log = 0;
 static FILE  *g_trace = 0;
 static int    g_resolved = 0;
 static int    g_lan_pc = 1;         /* NFSU2_LAN_TIMING: 1 = pc, 0 = exact */
+static int    g_cutscenes60;
 static double g_rt_carry = 0, g_wt_carry = 0;   /* timer fix: RealTimer / WorldTimer fractions */
 
 /* mach_absolute_time in ns: the clock of CADisplayLink / presentedTime */
@@ -233,6 +236,7 @@ static void set_tick_base(int on){
 
 static void resolve_once(void){
     parse_mode();
+    { const char *e = getenv("NFSU2_CUTSCENES_60"); g_cutscenes60 = e && !strcmp(e, "1"); }
     g_fix_hi = g_mode == M_OFF ? 0 : parse_fix(FX_ALL, 1);
     g_fix_lo = g_mode == M_OFF ? 0 : parse_fix(0, 0);
     g_fix_30 = g_mode == M_OFF ? 0 : parse_fix(FX_30, 0);
@@ -254,6 +258,7 @@ static void resolve_once(void){
     char fs[96]; fix_str(g_fix, fs, sizeof fs);
     fprintf(stderr, "[hfr] mode %s, display %d Hz, content rate %d, fixes: %s\n",
             mode_name(), display_hz(), mode_rate(), fs);
+    fprintf(stderr, "[hfr] 60 FPS intros/cutscenes: %s\n", g_cutscenes60 ? "on" : "off");
     g_resolved = 1;
 }
 /* first use may come from the main thread (layer setup) or the guest */
@@ -284,6 +289,7 @@ static int content_rate(void){
     float cap = MRF32(A_CAP);
     if (cap > 0.f && cap != MRF32(A_CAP_DEF)){
         int req = (int)lround(1.0 / (double)cap);
+        if (req == 30 && g_cutscenes60) req = 60;
         if (req >= 10 && req < m) m = req;
     }
     return m;

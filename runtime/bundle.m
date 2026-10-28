@@ -201,6 +201,7 @@ static const struct { const char *key, *env; int kind; const char *vals; } g_key
     /* frame rate */
     { "fps",                      "NFSU2_FPS",                  K_ENUM,
       "auto|30|60|120|240|uncapped|off|native|vanilla|game|max" },
+    { "cutscenes_60",             "NFSU2_CUTSCENES_60",         K_BOOL     },
     { "hfr_fixes",                "NFSU2_HFR_FIX",              K_FIXES    },
     { "nos_trail_length",         "NFSU2_NOS_TRAIL_LEN",        K_NUM      },
     /* game controller */
@@ -327,6 +328,9 @@ static const char *const k_template =
 "# Cutscene letterbox bars: full = across the whole width; off = none.\n"
 "# [NFSU2_CUTSCENE_BORDERS]\n"
 "#cutscene_borders = full\n"
+"# Raise in-engine intros/cutscenes to 60 FPS, subject to the game FPS limit.\n"
+"# Off preserves their original 30 FPS. VP6 movies are unchanged. [NFSU2_CUTSCENES_60]\n"
+"#cutscenes_60 = off\n"
 "\n"
 "# ---- Graphics ----------------------------------------------------------\n"
 "\n"

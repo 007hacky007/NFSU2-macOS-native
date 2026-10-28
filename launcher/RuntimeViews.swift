@@ -16,7 +16,8 @@ struct RuntimeSettingsCard: View {
                     Text(value == "auto" ? "Match display" : "\(value) FPS").tag(value)
                 }
             }
-            Text("Cutscenes keep the game's own frame limit.")
+            Toggle("60 FPS intros and cutscenes", isOn: $model.runtimeOptions.cutscenes60)
+            Text("Off keeps the original 30 FPS limit. A selected 30 FPS game limit still applies.")
                 .font(.system(size: 11)).foregroundColor(Theme.dim)
             Picker("Controller", selection: $model.runtimeOptions.controller) {
                 Text("Enabled").tag("on")
