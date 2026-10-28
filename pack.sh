@@ -232,10 +232,16 @@ THE WINDOW
   Graphics        Original = the PC look, least power.
                   HD = smoother edges and real reflections; the Mac gets warmer.
                   "Start in full screen" (Cmd-F also switches while playing).
+  Game settings   Installed language, frame rate, controller mode and dead zones.
   HUD textures    Original or UHUD; reads TEXPACKS/uhud.pak from your game
                   folder, or an imported prepared pack.
   Multiplayer     Offline by default. Online uses an explicit player name
                   and a configurable server (default nfsu2.xyz).
+  Music           Use the game soundtrack or choose a folder of local music.
+                  Cmd-Shift-M opens Game Tools for playback, free-roam lobbies,
+                  preset chat, crews and solid/ghost cars.
+  Manage Saves    Back up, export or restore career ZIPs while the game is stopped.
+                  Optional encrypted cloud exchange is manual; keep your keyphrase.
   Portable copy   "Make Copy..." builds one app with the game inside it
                   (about 1.4 GB) that runs on its own, e.g. on another Mac.
                   It contains the game: keep it for yourself.
