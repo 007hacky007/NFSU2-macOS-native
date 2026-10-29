@@ -56,6 +56,11 @@ fi
 if [ "$EMBED" = 1 ] && { [ "$WITH_DATA" = 1 ] || [ "$MAKE_ZIP" = 1 ]; }; then
   echo "--embed is for personal use; it can't be combined with --with-data / --zip"; exit 1
 fi
+# Extract the original Windows icon from the user's game, never a repo asset.
+ICON_EXE="${NFSU2_DATA:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2}"
+[ ! -d "$ICON_EXE" ] || ICON_EXE="$ICON_EXE/SPEED2.EXE"
+[ -f "$ICON_EXE" ] || { echo "icon source not found: $ICON_EXE (set NFSU2_DATA to your game folder or SPEED2.EXE)"; exit 1; }
+PY="$ROOT/.venv/bin/python"; [ -x "$PY" ] || PY=python3
 OUTDIR="$ROOT/out"; [ "$EMBED" = 1 ] && OUTDIR="$ROOT/out/personal"
 mkdir -p "$OUTDIR"
 APP="$OUTDIR/$NAME.app"
@@ -92,11 +97,7 @@ cp "$ROOT/app/registry-defaults.txt" "$APP/Contents/Resources/"
 cp "$ROOT/third_party/nfsu2-web-LICENSE" "$APP/Contents/Resources/"
 
 # --- icon ---
-if [ -x "$ROOT/.venv/bin/python" ]; then
-  "$ROOT/.venv/bin/python" "$ROOT/tools/mkicon.py" "$APP/Contents/Resources/AppIcon.icns" >/dev/null
-else
-  echo "warning: no .venv, icon not generated"
-fi
+"$PY" "$ROOT/tools/exeicon.py" "$ICON_EXE" "$APP/Contents/Resources/AppIcon.icns"
 
 # --- embedded game data (--embed only) ---
 # cp -c: APFS clone.  Takes NO extra space on the same disk and finishes

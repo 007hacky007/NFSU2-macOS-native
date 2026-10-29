@@ -46,10 +46,12 @@ python3 -m venv .venv
 ./gen.sh "/path/to/game/SPEED2.EXE"
 ./build.sh
 ./link.sh
-./pack.sh
+NFSU2_DATA="/path/to/game" ./pack.sh
 ```
 
 Open `out/NFSU2.app`, choose the game folder and press Play. Both Original and HD engines are packaged. `tools/gen_v2.sh` remains an alias for the NA generator. Compilation caches objects by content; `FULL=1 ./build.sh` forces compilation.
+
+Packaging extracts the original Windows app icon from your supplied `SPEED2.EXE`. Set `NFSU2_DATA` to the game folder or executable; it defaults to the local Clean Edition game folder. The extracted icon is generated inside the ignored app bundle and is never stored in the repository.
 
 The compiler includes x87 precision control, corrected SSE2 instructions and return handling, and optional register-local optimization (`LREGS=1 X87OPT=1 ./gen.sh ...`). Generated C, compiled binaries and game files stay under ignored paths.
 

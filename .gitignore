@@ -6,6 +6,9 @@
 /gen/
 # Built binaries, .app bundles, distribution zip, embedded game data
 /out/
+# App icons are extracted from the supplied game files at packaging time.
+*.icns
+*.ico
 
 # --- Personal / session recordings ---
 /session.jsonl
