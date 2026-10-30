@@ -2,6 +2,7 @@
  * Reference-build addresses used by the runtime, mapped to this build. */
 #pragma once
 #define GA(x) GA_##x
+#define GA_0x00488b90u 0x00488b90u   /* operand pair */
 #define GA_0x004c4f50u 0x004c4f50u   /* function 004c4f50 + 0x0 */
 #define GA_0x004ec35cu 0x004ec35cu   /* function 004ebec0 + 0x49c */
 #define GA_0x0051cbb0u 0x0051cba0u   /* function 0051cbb0 + 0x0 */
@@ -57,13 +58,16 @@
 #define GA_0x007fb700u 0x007fb700u   /* operand pair */
 #define GA_0x007fb710u 0x007fb710u   /* operand pair */
 #define GA_0x007fb714u 0x007fb714u   /* operand pair */
+#define GA_0x0080052cu 0x0080052cu   /* operand pair */
 #define GA_0x008183e4u 0x008183e4u   /* operand pair */
 #define GA_0x0081a1d0u 0x0081a1d0u   /* operand pair */
 #define GA_0x00828028u 0x00828028u   /* operand pair */
 #define GA_0x008284e4u 0x008284e4u   /* operand pair */
+#define GA_0x008331d0u 0x008331d0u   /* between pairs 00832f00 and 00833780 (delta +0x0) */
 #define GA_0x00836488u 0x00836488u   /* operand pair */
 #define GA_0x0083648cu 0x0083648cu   /* operand pair */
 #define GA_0x00836498u 0x00836498u   /* operand pair */
+#define GA_0x00850078u 0x00850078u   /* operand pair */
 #define GA_0x00864720u 0x00864720u   /* operand pair */
 #define GA_0x008647a8u 0x008647a8u   /* operand pair */
 #define GA_0x00864f88u 0x00864f8cu   /* operand pair */
@@ -79,7 +83,10 @@
 #define GA_0x0086549cu 0x0086549cu   /* operand pair */
 #define GA_0x008654a4u 0x008654a4u   /* operand pair */
 #define GA_0x00865558u 0x00865558u   /* operand pair */
+#define GA_0x00870848u 0x00870848u   /* operand pair */
+#define GA_0x00870cc4u 0x00870cc4u   /* operand pair */
 #define GA_0x00890080u 0x00890080u   /* operand pair */
+#define GA_0x008900b4u 0x008900b4u   /* operand pair */
 #define GA_0x43bdfeu 0x0043bdfeu   /* function 0043bdf0 + 0xe */
 #define GA_0x57eb79u 0x0057eb69u   /* function 0057eae0 + 0x99 */
 #define GA_0x65cd10u 0x0065cd00u   /* function 0065ccd8 + 0x38 */
@@ -158,6 +165,10 @@
 #define sub_005c7ed0_orig sub_005c7ec0_orig
 #define sub_005c7ed0_m sub_005c7ec0_m
 #define sub_005c7ed0_orig_m sub_005c7ec0_orig_m
+#define sub_005d6d30 sub_005d6d20
+#define sub_005d6d30_orig sub_005d6d20_orig
+#define sub_005d6d30_m sub_005d6d20_m
+#define sub_005d6d30_orig_m sub_005d6d20_orig_m
 #define sub_0060fab0 sub_0060faa0
 #define sub_0060fab0_orig sub_0060faa0_orig
 #define sub_0060fab0_m sub_0060faa0_m

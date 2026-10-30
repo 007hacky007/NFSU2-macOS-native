@@ -1182,6 +1182,9 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
     g_gvs_next++;
     g_gvs[slot].gid = gid; g_gvs[slot].state = 1;
     g_gvs_nk[gid] = vs_kmax(prog);
+    /* the falloff of a lit shader (oT2.x = s * w + o) for the other cars' headlights */
+    { float rp[2]; void headlights_vs_ramp(float, float);
+      if (vs_light_creg(prog, rp) >= 0) headlights_vs_ramp(rp[0], rp[1]); }
 #if NFS_ENHANCED
     /* HD ray tracing attempt: the offset/type of the position element, the constant
      * register of the position matrix and whether it is skinned (BLENDINDICES = usage 2). */

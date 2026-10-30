@@ -18,6 +18,7 @@
 #import <Metal/Metal.h>
 #include "enhance.h"
 #include "perflog.h"
+#include "headlights.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -368,6 +369,8 @@ typedef struct { unsigned first, count, tex, target, clear_argb, is_clear;
                  /* the ps constants are in the frame's pool (g_pscb[b][psci]); c0 separately
                   * (the HD ray tracing material only reads that) */
                  unsigned psci; float c0[4];
+                 /* the other cars' headlights for this draw: g_hlbuf[b].block[hli] (0 none) */
+                 unsigned hli;
                  int vsid; unsigned rawoff, koff; float proj[4];
                  unsigned smp[4];
                  unsigned is_blit, blit_src; unsigned bcol; unsigned cull;
@@ -408,6 +411,29 @@ static MDraw  *g_dbuf[2];
 static unsigned g_vn[2], g_dn[2];
 static uint8_t *g_rvbuf[2];  static unsigned g_rvn[2];
 static uint8_t *g_kbuf[2];   static unsigned g_kn[2];
+/* ---- OTHER CARS' HEADLIGHTS (headlights.c) ---------------------------------
+ * The guest hands over the light set at each view render; every draw recorded
+ * after that keeps the set it saw, an index into its frame's pool (a set the
+ * frame already holds is reused; block 0 is no light).  The lit pixel shaders
+ * read it at fragment buffer 1 (vsemu.c). */
+#define HL_POOL 64
+typedef struct { HeadlightsBlock block[HL_POOL]; unsigned count; } HLPool;
+static HeadlightsBlock g_headlights;             /* the current set (guest thread) */
+static HLPool g_hlbuf[2];                        /* follows the draw buffers */
+static void hl_pool_reset(HLPool *pool){
+    memset(&pool->block[0], 0, sizeof pool->block[0]); pool->count = 1;
+}
+static unsigned hl_pool_put(HLPool *pool, const HeadlightsBlock *block){
+    if (!pool->count) hl_pool_reset(pool);
+    if (!block->n || block->n > HEADLIGHTS_MAX) return 0;
+    for (unsigned i = 1; i < pool->count; i++) if (!memcmp(&pool->block[i], block, sizeof *block)) return i;
+    if (pool->count == HL_POOL) return 0;
+    unsigned i = pool->count++; pool->block[i] = *block; return i;
+}
+void metal_headlights(const HeadlightsBlock *block){
+    if (block && block->n <= HEADLIGHTS_MAX) g_headlights = *block;
+    else memset(&g_headlights, 0, sizeof g_headlights);
+}
 static id<MTLBuffer> g_mtlrvb, g_mtlkb;
 /* ---- ORDERED TEXTURE UPLOADS ----------------------------------------------------
  * The game rewrites some textures every frame (measured: the post-process color
@@ -3980,6 +4006,7 @@ void metal_draw_tv(const TVert *src, unsigned nverts, unsigned prim, unsigned te
           g_dbuf[b][g_dn[b]].ps = hd_refl_ps(g_dbuf[b][g_dn[b]].ps, g_cur_target, tx4); }
 #endif
         g_dbuf[b][g_dn[b]].psci = psc_put(b);
+        g_dbuf[b][g_dn[b]].hli = hl_pool_put(&g_hlbuf[b], &g_headlights);
         memcpy(g_dbuf[b][g_dn[b]].c0, g_cur_psc[0], sizeof g_cur_psc[0]);
         g_dbuf[b][g_dn[b]].alpha_ref = g_cur_aref;
         memcpy(g_dbuf[b][g_dn[b]].fogv, g_cur_fog, sizeof g_cur_fog);
@@ -4000,7 +4027,7 @@ void metal_set_clear_color(unsigned argb){
     atomic_store(&g_clear_g, ((argb >>  8) & 0xFF) / 255.0f);
     atomic_store(&g_clear_b, ((argb      ) & 0xFF) / 255.0f);
 }
-void metal_begin_frame(void){ }
+void metal_begin_frame(void){ memset(&g_headlights, 0, sizeof g_headlights); }
 
 /* Guest: blend state of the following draws. */
 void metal_set_blend(unsigned key, float alpha_ref){
@@ -4645,6 +4672,7 @@ static MDraw *raw_rec(int b, unsigned stride, unsigned tex, int vsid,
       D->ps = hd_refl_ps(D->ps, g_cur_target, tx4); }
 #endif
     D->psci = psc_put(b); memcpy(D->c0, g_cur_psc[0], sizeof D->c0);
+    D->hli = hl_pool_put(&g_hlbuf[b], &g_headlights);
     memcpy(D->proj, g_cur_proj, sizeof D->proj);
     D->vsid = vsid; D->koff = koff; D->ksz = ksz;
     if (uvbm && uvb){ D->uvbm = uvbm; D->uvb[0] = uvb[0]; D->uvb[1] = uvb[1]; }
@@ -4970,6 +4998,7 @@ void metal_present(void){
     g_upn[g_cur] = 0;
     g_vn[g_cur] = 0; g_dn[g_cur] = 0;
     g_rvn[g_cur] = 0; g_kn[g_cur] = 0; g_pscn[g_cur] = 0;
+    hl_pool_reset(&g_hlbuf[g_cur]);
 #if NFS_ENHANCED
     g_hd_cam_ok[g_cur] = 0;
 #endif
@@ -6008,6 +6037,7 @@ static void hd_gpass(id<MTLCommandBuffer> cb, int rb, unsigned upto, unsigned zi
           memcpy(fp.fogv, dr->fogv, sizeof fp.fogv);
           memcpy(fp.c, g_pscb[rb][dr->psci], sizeof fp.c);
           [e setFragmentBytes:&fp length:sizeof fp atIndex:0]; }
+        [e setFragmentBytes:&g_hlbuf[rb].block[dr->hli < HL_POOL ? dr->hli : 0] length:sizeof(HeadlightsBlock) atIndex:1];
         { unsigned ts[4] = { dr->tex, dr->tex1, dr->tex2, dr->tex3 };
           for (int q4 = 0; q4 < 4; q4++){ unsigned tt = ts[q4];
               [e setFragmentTexture:(tt && tt < MAXTEX && g_tex[tt]) ? g_tex[tt] : g_white atIndex:(NSUInteger)q4]; } }
@@ -6477,7 +6507,7 @@ void metal_run_main_loop(void){
                         unsigned c_smp[4] = {~0u,~0u,~0u,~0u};
                         unsigned c_tex[4] = {~0u,~0u,~0u,~0u};
                         unsigned c_bcol = ~0u;
-                        unsigned c_cull = ~0u;
+                        unsigned c_cull = ~0u, c_hli = ~0u;
                         float c_uvb[3] = {0.f, 0.f, 0.f};    /* UV difference (.xy) + HUD shift (.z) bound in VS buffer 3 */
                         unsigned c_depth = ~0u;
                         int c_zon = 0;                  /* the pass has a real Z surface */
@@ -7395,7 +7425,7 @@ void metal_run_main_loop(void){
                                       c_uvb[0] = c_uvb[1] = c_uvb[2] = 0.f; }
                                     /* new encoder = all state reset */
                                     c_pso = nil; c_bcol = ~0u; c_depth = ~0u; c_fp_valid = 0;
-                                    c_cull = ~0u;
+                                    c_cull = ~0u; c_hli = ~0u;
                                     /* In D3D the front face is CLOCKWISE.  CULLWIND=1 can flip it
                                      * (needed if our vertex path flips Y). */
                                     { static int cw = -1;
@@ -7410,6 +7440,9 @@ void metal_run_main_loop(void){
                                     cur_t = dr->target;
                                 }
                                 if (dr->is_clear || !dr->count) continue;
+                                if (dr->hli != c_hli){ c_hli = dr->hli;      /* the other cars' headlights */
+                                    [enc setFragmentBytes:&g_hlbuf[rb].block[c_hli < HL_POOL ? c_hli : 0]
+                                                   length:sizeof(HeadlightsBlock) atIndex:1]; }
                                 /* PSINFO=<n>: print the target/texture/blend of the first draws
                                  * using this ps. */
                                 { static int pi = -2; static int shown = 0;

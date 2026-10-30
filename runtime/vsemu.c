@@ -1,5 +1,6 @@
 #include "vsemu.h"
 #include "enhance.h"
+#include "headlights.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -785,6 +786,39 @@ static int hd_gpack(void){
     return v;
 }
 int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubemask, int reflk);
+/* OTHER CARS' HEADLIGHTS (headlights.c): the world headlight pixel shaders
+ * (ps 4 and 6) take the light as
+ *     mul r0.xyz, t1, t2          (headlight texture x falloff ramp)
+ *     mad r0.xyz, r0, c0, v0      (x HEADLIGHTCOLOR + the vertex light)
+ * before the texture multiply.  At that mad the shader also adds the same
+ * term for each light of the block at buffer 1: the stage 1 coordinate (q =
+ * pos * HEADLIGHTWVP) moved by the light's 4x4, its texture at q.xy / q.w,
+ * the ramp at s * q.w + o, times the light's colour.  Returns the index of
+ * that mad, -1 for any other shader. */
+static int hl_plain(unsigned token, int type, int number){
+    return RT(token) == type && RN(token) == number && SWIZ(token) == 0xE4u && SMOD(token) == 0;
+}
+static int hl_mad(const VSProg *p, unsigned cubemask){
+    if (p->version >= 0x0200 || (cubemask & 6u)) return -1;
+    int mul = -1; unsigned sampled = 0;
+    for (unsigned q = 0; q < p->n; q++){
+        const VSIns *x = &p->ins[q];
+        if (x->op == O_TEX && !x->nsrc) sampled |= 1u << (RN(x->dst) & 3);
+        if (!x->has_dst || RT(x->dst) != R_TEMP) continue;
+        int dn = RN(x->dst);
+        if ((WMASK(x->dst) & 7u) == 7u && !DSHIFT(x->dst) && !SATUR(x->dst)){
+            if (x->op == O_MUL && ((hl_plain(x->src[0], R_ADDR, 1) && hl_plain(x->src[1], R_ADDR, 2)) ||
+                                   (hl_plain(x->src[0], R_ADDR, 2) && hl_plain(x->src[1], R_ADDR, 1)))){
+                mul = dn; continue;
+            }
+            if (x->op == O_MAD && dn == mul && (sampled & 6u) == 6u &&
+                hl_plain(x->src[0], R_TEMP, dn) && hl_plain(x->src[1], R_CONST, 0) && hl_plain(x->src[2], R_INPUT, 0))
+                return (int)q;
+        }
+        if (dn == mul) mul = -1;
+    }
+    return -1;
+}
 /* POST-PROCESS CHAIN (metal.m): the tile memory read variant.  While g_fb_in >= 0
  * the stage 0 sample comes from the [[color(g_fb_in)]] input (the same value for a
  * fullscreen quad sitting 1:1 on texel centers) and the result is written to
@@ -816,6 +850,10 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
                   id, p->smptype[0], p->smptype[1], p->smptype[2], p->smptype[3],
                   anycube ? "   <- HAS CUBE" : "");
       } }
+    int hlq = g_fb_in < 0 ? hl_mad(p, cubemask) : -1;
+    if (hlq >= 0)
+        EMIT("struct NfsHeadlight { float4x4 t; float4 col; };\n"
+             "struct NfsHeadlights { uint n; float s, o, pad; NfsHeadlight l[%d]; };\n", HEADLIGHTS_MAX);
     if (g_fb_in >= 0)
         EMIT("struct PSFB%d { float4 c [[color(%d)]]; };\n"
              "fragment PSFB%d ps_%d(VOut i [[stage_in]], float4 fbin [[color(%d)]],\n",
@@ -833,6 +871,7 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
     EMIT("    sampler sm0 [[sampler(0)]], sampler sm1 [[sampler(1)]],\n");
     EMIT("    sampler sm2 [[sampler(2)]], sampler sm3 [[sampler(3)]],\n");
     EMIT("    constant PSPar &P [[buffer(0)]],\n");
+    if (hlq >= 0) EMIT("    constant NfsHeadlights &H [[buffer(1)]],\n");
     /* alpha test diagnostic (kAT 2): counter of fragments to discard, only in that variant */
     EMIT("    device atomic_uint *atdbg [[buffer(6), function_constant(kATD)]]) {\n");
     EMIT("  float4 r[16]; for (int q=0;q<16;q++) r[q]=float4(0.0);\n");
@@ -1039,6 +1078,14 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
           else    snprintf(fit, sizeof fit, "(%s)%s", ex, mz); }
         if (sat) EMIT("  %s = saturate(%s);\n", d, fit);
         else     EMIT("  %s = %s;\n", d, fit);
+        if ((int)q == hlq){
+            EMIT("  for (uint hk = 0; hk < min(H.n, %du); hk++) {\n", HEADLIGHTS_MAX);
+            EMIT("    float4 hp = i.uv1 * H.l[hk].t;\n");
+            EMIT("    float hd = abs(hp.w) > 1e-8 ? hp.w : 1.0;\n");
+            EMIT("    float3 h1 = s1.sample(sm1, hp.xy / hd).rgb;\n");
+            EMIT("    float3 h2 = s2.sample(sm2, float2(H.s * hp.w + H.o, tc2.y)).rgb;\n");
+            EMIT("    r[%d].rgb += hp.w > 0.0 ? h1 * h2 * H.l[hk].col.rgb : float3(0.0);\n  }\n", RN(x->dst));
+        }
     }
     /* The ps_1_x result is in r0, ps_2_0's in oC0.  Return whichever was written. */
     EMIT("  float4 res = %s;\n", ps_uses_colorout(p) ? "oC" : "r[0]");
