@@ -131,6 +131,23 @@ static int copy_file(const char *a, const char *b){
     while ((k = fread(bufr, 1, sizeof bufr, fa)) > 0) fwrite(bufr, 1, k, fb);
     fclose(fb); fclose(fa); return 1;
 }
+/* A profile the game saves, "<root>/NFS Underground 2/<NAME>/<NAME>" (any
+ * case): garage.c keeps its slots 6-10 in a file beside it. */
+void garage_profile_written(const char *path);
+void garage_profile_deleted(const char *path);
+static int is_profile(const char *path){
+    static const char dir[] = "NFS Underground 2";
+    const char *b = strrchr(path, '/'), *d, *e;
+    if (!b || b == path) return 0;
+    for (d = b - 1; d > path && *d != '/'; d--) {}
+    if (*d != '/' || d == path) return 0;
+    size_t n = (size_t)(b - d - 1);
+    if (!n || strlen(b + 1) != n || strncasecmp(d + 1, b + 1, n)) return 0;
+    for (e = d - 1; e > path && *e != '/'; e--) {}
+    return *e == '/' && (size_t)(d - e - 1) == sizeof dir - 1 && !strncasecmp(e + 1, dir, sizeof dir - 1);
+}
+/* garage.c: the host path of a file the game could read */
+int fileio_resolve_save(const char *win, char *out, size_t outsz){ return resolve(win, out, outsz); }
 /* If a file to be written without truncation exists only in the game root,
  * copy it to the write root first; otherwise the game writes over an empty file. */
 static void copy_up(const char *win, const char *wpath){
@@ -145,7 +162,8 @@ static void copy_up(const char *win, const char *wpath){
 #define FH_BASE 0x00900000u
 #define FH_MAX  256
 typedef struct { int fd; int empty; int used; char path[512]; DIR *dir; char pat[128];
-                 DIR *dir2; char path1[512]; } FH;   /* dir2: the game root (while the save layer is active) */
+                 DIR *dir2; char path1[512];        /* dir2: the game root (while the save layer is active) */
+                 int wr; } FH;                      /* wr: opened for writing */
 static FH g_fh[FH_MAX];
 static uint32_t fh_new(void){
     for (int i=1;i<FH_MAX;i++) if(!g_fh[i].used){ memset(&g_fh[i],0,sizeof g_fh[i]);
@@ -304,6 +322,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
             uint32_t h=fh_new();
             if(!h){ close(fd); r=INVALID_HANDLE; }
             else { FH*f=fh_get(h); f->fd=fd; f->empty = g_empty_next; g_empty_next = 0;
+                   f->wr = flags != O_RDONLY;
                    snprintf(f->path,sizeof f->path,"%s",real);
                    g_file_open++; r=h; }
         }
@@ -401,6 +420,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
         if(!f) return 0;                       /* not ours - let the other layer look */
         if(f->fd>=0) close(f->fd);
         if(f->dir) closedir(f->dir);
+        if(f->wr && f->fd>=0 && is_profile(f->path)) garage_profile_written(f->path);
         f->used=0; r=1;
     }
     else if (!strcmp(n,"GetFileAttributesA")){
@@ -413,6 +433,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"DeleteFileA")){
         char real[1024]; resolve_w(GS(A(c,0)), real, sizeof real);
         r = (unlink(real)==0);
+        if (r && is_profile(real)) garage_profile_deleted(real);
     }
     else if (!strcmp(n,"SHGetFolderPathA")){
         /* (hwnd, csidl, hToken, dwFlags, pszPath) -> S_OK
@@ -437,6 +458,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
         /* If the source is in the game root (read-only), copy instead of moving. */
         if (g_wroot[0] && strncmp(a, g_wroot, strlen(g_wroot)) != 0) r = (uint32_t)copy_file(a, b);
         else r = (rename(a,b)==0);
+        if (r && is_profile(b)) garage_profile_written(b);
     }
     else if (!strcmp(n,"CopyFileA")){
         char a[1024],b[1024]; resolve(GS(A(c,0)),a,sizeof a); resolve_w(GS(A(c,1)),b,sizeof b);
