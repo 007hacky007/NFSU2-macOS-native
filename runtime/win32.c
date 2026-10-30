@@ -36,6 +36,16 @@ static void guest_exit_now(void){
 
 typedef struct { uint32_t iat; const char*dll; const char*name; int nargs; } ImpEnt;
 extern const ImpEnt g_imp[]; extern const uint32_t g_imp_count;
+/* One import index space for SPEED2.EXE and the lifted DLLs (module.c):
+ * the exe's g_imp first, then server.dll's g_srv_imp.  IAT slot values are
+ * IMP_MAGIC + index into this table. */
+extern const ImpEnt g_srv_imp[]; extern const uint32_t g_srv_imp_count;
+static ImpEnt *g_imps; static uint32_t g_nimps;
+#include "module.h"
+int modheap_owns(uint32_t h); uint32_t modheap_create(void); int modheap_destroy(uint32_t h);
+uint32_t modheap_alloc(uint32_t h, uint32_t n, uint32_t flags); int modheap_free(uint32_t h, uint32_t u);
+uint32_t modheap_realloc(uint32_t h, uint32_t u, uint32_t n, uint32_t flags); uint32_t modheap_size(uint32_t h, uint32_t u);
+void modheap_report(void);
 void mem_commit(uint32_t,uint32_t);
 void guest_backtrace(CPU*,int);
 int win32_ext_call(CPU*, const char*, uint32_t*);
@@ -297,9 +307,38 @@ static void qpc_who(CPU *c){
     }
 }
 
+/* The thread's last error, where Windows keeps it: TEB +0x34 (GetLastError,
+ * WSAGetLastError; winsock.c and module.c set it). */
+void win32_set_last_error(CPU *c, uint32_t e){
+    if (c && c->fs_base && mem_is_committed(c->fs_base + 0x34u)) MR32(c->fs_base + 0x34u) = e;
+}
+uint32_t win32_get_last_error(CPU *c){
+    return (c && c->fs_base && mem_is_committed(c->fs_base + 0x34u)) ? MR32(c->fs_base + 0x34u) : 0u;
+}
+int winsock_call(CPU*, const char*, const char*, uint32_t*);   /* ws2_32, netapi32 (winsock.c) */
+void winsock_report(void);
+
+/* GetModuleHandleA: our exe and the DLLs it or server.dll imports are
+ * "loaded" (they all map to the image; GetProcAddress resolves by import
+ * name); anything else (d3d9d.dll, mscoree.dll, ...) is not. */
+static int dll_known(uint32_t p){
+    if (!mem_is_committed(p)) return 0;
+    char nm[64]; snprintf(nm, sizeof nm, "%s", (const char *)(g_mem + p));
+    const char *b = nm;
+    for (const char *q = nm; *q; q++) if (*q == '\\' || *q == '/') b = q + 1;
+    size_t l = strlen(b);
+    if (!strcasecmp(b, "speed2.exe") || !strcasecmp(b, "speed2")) return 1;
+    for (uint32_t i = 0; i < g_nimps; i++){
+        const char *d = g_imps[i].dll; size_t dl = strlen(d);
+        if (!strcasecmp(b, d)) return 1;
+        if (!strchr(b, '.') && dl == l + 4 && !strncasecmp(b, d, l) && !strcasecmp(d + l, ".dll")) return 1;
+    }
+    return 0;
+}
+
 int win32_call(CPU *c, uint32_t idx){
-    if (idx >= g_imp_count) return 0;
-    const ImpEnt *e = &g_imp[idx];
+    if (idx >= g_nimps) return 0;
+    const ImpEnt *e = &g_imps[idx];
     stat_[idx].calls++; g_win32_calls++;
     guest_fair_yield();          /* give the other guest threads a turn */
     POP32(c->eip);                      /* take the return address */
@@ -316,8 +355,27 @@ int win32_call(CPU *c, uint32_t idx){
         if (c->eip == GA(0x43bdfeu)) qpc_spin_sleep(c);
         uint64_t v = host_qpc(); uint32_t p=ARG(c,0);
         if(p){ MR32(p)=(uint32_t)v; MR32(p+4)=(uint32_t)(v>>32); } r=1; }
+    /* A lifted DLL's own heaps (server.dll's CRT: HeapCreate from that DLL)
+     * are modheap.c's, in guest memory nothing else uses
+     * (0x01000000-0x0F000000); every other heap call is gheap.c's. */
+    else if (idx >= g_imp_count && !strcmp(n,"HeapCreate")) r = modheap_create();
+    else if (n[0] == 'H' && !strncmp(n,"Heap",4) && strcmp(n,"HeapCreate") && modheap_owns(ARG(c,0))){
+        uint32_t h = ARG(c,0);
+        if      (!strcmp(n,"HeapDestroy")) r = (uint32_t)modheap_destroy(h);
+        else if (!strcmp(n,"HeapAlloc"))   r = modheap_alloc(h, ARG(c,2), ARG(c,1));
+        else if (!strcmp(n,"HeapFree"))    r = (uint32_t)modheap_free(h, ARG(c,2));
+        else if (!strcmp(n,"HeapReAlloc")) r = modheap_realloc(h, ARG(c,2), ARG(c,3), ARG(c,1));
+        else if (!strcmp(n,"HeapSize"))    r = modheap_size(h, ARG(c,2));
+        else handled = 0; }
     else if (!strcmp(n,"GetVersion"))            r = 0x0A280105u;      /* 5.1.2600 */
-    else if (!strcmp(n,"GetModuleHandleA"))      r = 0x00400000u;
+    else if (!strcmp(n,"GetModuleHandleA")){
+        /* NULL and the DLLs the exe or server.dll import: the exe's base; a
+         * lifted module (server.dll): its base while loaded, NULL otherwise;
+         * anything else is not loaded */
+        uint32_t p = ARG(c,0);
+        const char *nm = p && mem_is_committed(p) ? (const char*)(g_mem + p) : 0;
+        if (nm && module_known_name(nm)) r = module_by_name(nm);
+        else r = (!p || dll_known(p)) ? 0x00400000u : 0u; }
     else if (!strcmp(n,"GetProcessHeap"))        r = 0x00000001u;
     else if (!strcmp(n,"HeapCreate"))            r = 0x00000002u;
     else if (!strcmp(n,"HeapDestroy"))           r = 1;
@@ -422,33 +480,41 @@ int win32_call(CPU *c, uint32_t idx){
         if (!r) r = 1u; }
     else if (!strcmp(n,"GetCurrentProcessId"))   r = 100;
     else if (!strcmp(n,"GetCurrentProcess"))     r = 0xffffffffu;
-    else if (!strcmp(n,"GetLastError"))          r = 0;
-    else if (!strcmp(n,"SetLastError"))          r = 0;
+    else if (!strcmp(n,"GetLastError"))          r = win32_get_last_error(c);
+    else if (!strcmp(n,"SetLastError")){         win32_set_last_error(c, ARG(c,0)); r = 0; }
     else if (!strcmp(n,"GetTickCount")) r = host_ms();
     else if (!strcmp(n,"QueryPerformanceFrequency")){ uint32_t p=ARG(c,0); if(p){MR32(p)=1000000;MR32(p+4)=0;} r=1; }
     else if (!strcmp(n,"SetUnhandledExceptionFilter")) r = 0;
     else if (!strcmp(n,"UnhandledExceptionFilter"))    r = 0;
     else if (!strcmp(n,"IsProcessorFeaturePresent"))   r = 1;
     else if (!strcmp(n,"GetModuleFileNameA")){ uint32_t p=ARG(c,1),sz=ARG(c,2);
-        const char*s="C:\\\\NFSU2\\\\SPEED2.EXE"; uint32_t l=(uint32_t)strlen(s);
+        const char*s="C:\\\\NFSU2\\\\SPEED2.EXE";
+        char ms[64]; if (module_file_name(ARG(c,0), ms, sizeof ms)) s = ms;   /* server.dll: C:\NFSU2\server.dll */
+        uint32_t l=(uint32_t)strlen(s);
         if(p&&sz){ if(l>=sz) l=sz-1; memcpy(g_mem+p,s,l); MR8(p+l)=0; } r=l; }
     else if (!strcmp(n,"ExitProcess")){ g_exit_code=(int)ARG(c,0);
         fprintf(stderr,"\n*** guest ExitProcess(%u) - terminating\n",ARG(c,0));
         guest_exit_now(); }
     else if (!strcmp(n,"LoadLibraryA")||!strcmp(n,"LoadLibraryW")){
         r = 0x20000000u;
+        /* a lifted module (server.dll, module.c): mapped, bound, DllMain run */
+        { uint32_t p = ARG(c,0);
+          if (!strcmp(n,"LoadLibraryA") && p && mem_is_committed(p) && module_known_name((const char *)(g_mem + p))){
+              uint32_t err = 0; r = module_load(c, (const char *)(g_mem + p), &err); } }
         { static int sh=0; uint32_t p2=ARG(c,0);
           if (ENVC("VERBOSE") && sh<12){ sh++; fprintf(stderr,"      [dll] LoadLibrary(ptr=0x%08x) \"%s\"\n", p2, p2?(char*)(g_mem+p2):"(NULL)"); } } }
     else if (!strcmp(n,"GetProcAddress")){
         uint32_t pname = ARG(c,1); r = 0;
-        if (pname > 0xffff){                       /* by name (not ordinal) */
+        if (module_handle(ARG(c,0))){              /* lifted module: its export table */
+            uint32_t err = 0; r = module_proc(ARG(c,0), pname, &err); }
+        else if (pname > 0xffff){                  /* by name (not ordinal) */
             const char *want = (const char*)(g_mem + pname);
-            for (uint32_t i=0;i<g_imp_count;i++)
-                if (!strcmp(g_imp[i].name, want)){ r = IMP_MAGIC + i; break; }
+            for (uint32_t i=0;i<g_nimps;i++)
+                if (!strcmp(g_imps[i].name, want)){ r = IMP_MAGIC + i; break; }
             { static int sh=0;
               if (ENVC("VERBOSE") && !r && sh<12){ sh++; fprintf(stderr,"      [dll] GetProcAddress(\"%s\") NOT FOUND\n", want); } }
         } }
-    else if (!strcmp(n,"FreeLibrary"))           r = 1;
+    else if (!strcmp(n,"FreeLibrary")){ module_free(c, ARG(c,0)); r = 1; }
     else if (!strcmp(n,"InterlockedIncrement")){ uint32_t p=ARG(c,0); r=++MR32(p); }
     else if (!strcmp(n,"InterlockedDecrement")){ uint32_t p=ARG(c,0); r=--MR32(p); }
     else if (!strcmp(n,"InterlockedExchange")){ uint32_t p=ARG(c,0); r=MR32(p); MR32(p)=ARG(c,1); }
@@ -543,6 +609,7 @@ int win32_call(CPU *c, uint32_t idx){
     else if (!strcmp(n,"TerminateProcess")){ g_exit_code=(int)ARG(c,1);
         fprintf(stderr,"\n*** guest TerminateProcess(%u) - terminating\n",ARG(c,1));
         guest_exit_now(); }
+    else if (winsock_call(c, e->dll, n, &r)) { /* ws2_32, netapi32: winsock.c */ }
     else if (fileio_call(c, n, &r)) { /* file I/O */ }
     else if (win32_ext_call(c, n, &r)) { /* second-round layer */ }
     else { handled = 0; g_win32_unimpl++; stat_[idx].unimpl++;
@@ -557,23 +624,32 @@ int win32_call(CPU *c, uint32_t idx){
                 ++trace_n, e->dll, n, e->nargs, handled?"":"[STUB] ", r);
     else trace_n++;
 
+    if (idx >= g_imp_count && !strncasecmp(e->dll, "ws2_32", 6)){
+        void module_note_socket_call(int, const char *, uint32_t, uint32_t);   /* module.c: unload report */
+        module_note_socket_call(1, n, ARG(c,0), r);
+    }
     c->eax = r;
     c->esp += 4u * (uint32_t)e->nargs;      /* stdcall: the callee cleans up the arguments */
     return 1;
 }
 
 void win32_init(void){
-    stat_ = calloc(g_imp_count, sizeof *stat_);
+    g_nimps = g_imp_count + g_srv_imp_count;
+    g_imps = calloc(g_nimps ? g_nimps : 1, sizeof *g_imps);
+    memcpy(g_imps, g_imp, g_imp_count * sizeof *g_imps);
+    if (g_srv_imp_count) memcpy(g_imps + g_imp_count, g_srv_imp, g_srv_imp_count * sizeof *g_imps);
+    stat_ = calloc(g_nimps ? g_nimps : 1, sizeof *stat_);
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
     tick0 = (uint64_t)ts.tv_sec*1000 + ts.tv_nsec/1000000;
     mem_commit(HEAP_BASE, 0x10000);
     g_cmdline = galloc(64,1);
     strcpy((char*)(g_mem+g_cmdline), "SPEED2.EXE");
-    /* fill the IAT with magic addresses */
+    /* fill the IAT with magic addresses (a lifted module's when it is loaded, module.c) */
     for (uint32_t i=0;i<g_imp_count;i++) MR32(g_imp[i].iat) = IMP_MAGIC + i;
     com_init();
     /* addresses to be read later for diagnosing the CRT heap mode */
     fprintf(stderr,"win32: %u imports bound to the IAT, heap 0x%08x\n", g_imp_count, HEAP_BASE);
+    if (g_srv_imp_count) fprintf(stderr,"win32: server.dll lifted into this build (%u imports, bound when it is loaded)\n", g_srv_imp_count);
 }
 
 void win32_report(void){
@@ -587,27 +663,29 @@ void win32_report(void){
     fprintf(stderr,"  guest threads : %llu started, %llu terminated\n",
             (unsigned long long)win32_ext_threads(),(unsigned long long)win32_ext_threads_exited());
     fileio_report();
+    module_report(); modheap_report();
+    winsock_report();
     { extern void res_report(void); res_report(); }
     { extern void overrides_report(void); overrides_report(); }
     enh_report();
     { extern void d3dx_hle_report(void); d3dx_hle_report(); }
     fprintf(stderr,"  --- NOT IMPLEMENTED (called, stub returned) ---\n");
-    for (uint32_t i=0;i<g_imp_count;i++)
+    for (uint32_t i=0;i<g_nimps;i++)
         if (stat_[i].unimpl)
-            fprintf(stderr,"    %-14s %-32s %u times\n", g_imp[i].dll, g_imp[i].name, stat_[i].unimpl);
+            fprintf(stderr,"    %-14s %-32s %u times\n", g_imps[i].dll, g_imps[i].name, stat_[i].unimpl);
     fprintf(stderr,"  --- 15 MOST CALLED ---\n");
     for (int k=0;k<15;k++){
         uint32_t best=0, bi=0;
-        for (uint32_t i=0;i<g_imp_count;i++) if (stat_[i].calls>best){ best=stat_[i].calls; bi=i; }
+        for (uint32_t i=0;i<g_nimps;i++) if (stat_[i].calls>best){ best=stat_[i].calls; bi=i; }
         if(!best) break;
-        fprintf(stderr,"    %-14s %-32s %u\n", g_imp[bi].dll, g_imp[bi].name, best);
+        fprintf(stderr,"    %-14s %-32s %u\n", g_imps[bi].dll, g_imps[bi].name, best);
         stat_[bi].calls = 0;
     }
     int shown=0;
-    for (uint32_t i=0;i<g_imp_count && shown<15;i++)
+    for (uint32_t i=0;i<g_nimps && shown<15;i++)
         if (stat_[i].calls){
             /* we don't know whether they were handled; just show the frequently called ones */
         }
-    for (uint32_t i=0;i<g_imp_count;i++)
-        if (stat_[i].calls>1 && shown<15){ fprintf(stderr,"    %-30s %u times\n", g_imp[i].name, stat_[i].calls); shown++; }
+    for (uint32_t i=0;i<g_nimps;i++)
+        if (stat_[i].calls>1 && shown<15){ fprintf(stderr,"    %-30s %u times\n", g_imps[i].name, stat_[i].calls); shown++; }
 }

@@ -36,6 +36,7 @@ The game boots, reaches the menus, and races are playable with sound.
 | Videos (intro and story movies, decoded by the game itself) | working |
 | Windowed, fullscreen, Retina-native and 1080p widescreen | working |
 | Career mode: profile creation (name entry), save and load | working |
+| LAN (hosting runs the game's own `server.dll`) and Online through a relay server | working, see [Multiplayer](#multiplayer) |
 | Double-clickable `.app` with a launcher window (`./pack.sh`) | working |
 | Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAPHICS_RESEARCH.md` |
 
@@ -45,7 +46,7 @@ The game boots, reaches the menus, and races are playable with sound.
   American v1.2 ones (see [Game versions](#game-versions)); each has its own
   engine. Other builds would need their own lifting pass and address map.
 - Keyboard, mouse and game controllers (Xbox / PlayStation / MFi); no wheel
-  support. No network play.
+  support.
 - Structured exception handling is not implemented (`RtlUnwind` /
   `RaiseException` are stubs).
 - x87 is modelled with 64-bit doubles, not 80-bit extended precision.
@@ -297,6 +298,29 @@ from scripts.
 
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
 draw list (to `~/Library/Logs/NFSU2/`), for reporting rendering problems.
+### Multiplayer
+
+The game's own LAN and Online modes run unchanged: `runtime/winsock.c` answers
+Winsock 2 the way Windows does, so the bytes on the wire are the original
+game's, and hosting a LAN game runs EA's `server.dll` from the game folder,
+lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
+`gen/server`, mapped and bound by `runtime/module.c`, its heaps in
+`runtime/modheap.c`).
+
+- **LAN** (the default): the Mac's own network, so Macs and Windows PCs on the
+  same network play together.  macOS asks once for the Local Network
+  permission.  The game lists only servers of its own region: a European and a
+  North American game see each other when both have the same region
+  (`NFSU2_REGION=eu` or `na` on one of them).
+- **Online**: with **Play online** in the launcher (off by default), LAN and the
+  game's Online menu go through a relay server, by default th0mk's
+  `wss://nfsu2.xyz/lan`, the only one known so far (its source: th0mk/nfsu2-web,
+  `web/server-rs`).  The server stands in for EA's long-gone Online servers and
+  carries the virtual LAN; the player name is the Online name.  Environment:
+  `NFSU2_NET=online`, `NFSU2_SERVER_URL`, `NFSU2_ROAM_NAME`.
+- `NFSU2_NET=off` turns networking off; `NFSU2_NET=loopback` confines it to
+  127.0.0.1 for two games on one Mac (see the top of `runtime/winsock.c`).
+
 `tools/session.sh [hd]` records a play session (frame times, CPU/GPU power,
 temperature, fan speed, screenshots) and `tools/session_report.py` turns it into
 a report.

@@ -91,6 +91,11 @@ int fileio_game_file_exists(const char *win){
     char p[1024]; struct stat st;
     return resolve_in(g_root, win, p, sizeof p) && stat(p, &st) == 0 && S_ISREG(st.st_mode);
 }
+/* The host path of a file in the game folder (module.c: server.dll). */
+int fileio_resolve_game(const char *win, char *out, size_t outsz){
+    struct stat st;
+    return resolve_in(g_root, win, out, outsz) && stat(out, &st) == 0 && S_ISREG(st.st_mode);
+}
 
 /* --- write root (save layer) ---------------------------------------------
  * The game writes its saves and profiles into its OWN folder ("C:\NFSU2\NFS

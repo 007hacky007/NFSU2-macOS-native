@@ -1,6 +1,7 @@
 /* Indirect call dispatch: guest address -> lifted native function.
  * O(1) direct index table (a uint32 array the size of .text).           */
 #include "cpu.h"
+#include "module.h"
 uint64_t g_icall_hits = 0;
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,6 +105,9 @@ void dispatch_indirect(CPU *c, uint32_t addr){
             }
             g_stat_indirect_ok++; g_fn_ptr[k-1](c); return; }
     }
+    /* a lifted second module (server.dll, module.c) */
+    { mod_fn mf = module_fn_at(addr);
+      if (mf){ g_stat_indirect_ok++; mf(c); return; } }
     /* No lifted counterpart.  The game may have generated code at this address
      * AT RUN TIME (NFSU2's material pipeline does this heavily).
      * Try it with a small x86 interpreter; on an unknown instruction it returns

@@ -9,6 +9,13 @@ from lift import Lifter, Unsupported
 
 EXE = sys.argv[1]
 NSHARD = int(sys.argv[2]) if len(sys.argv)>2 else 128
+# Second guest modules (server.dll, tools/prepare_module.py): RELOCS = the
+# module's fixup slots, SEEDS = extra entry points (exports), SYMPFX = prefix
+# of the generated tables (g_<pfx>fn_count/addr/ptr), so a module's fntab.c
+# links next to the exe's.  Defaults reproduce the exe's output unchanged.
+RELOCS = os.environ.get('RELOCS', 'out/relocs.txt')
+SEEDS = os.environ.get('SEEDS', '')
+SYMPFX = os.environ.get('SYMPFX', '')
 # GENOUT: output directory (default gen/all); COMMENTS=1: every x86 instruction is
 # written as a comment (same code; for instruction-level profiling, see tools/lift_profile.py)
 OUT = os.environ.get('GENOUT', 'gen/all')
@@ -22,7 +29,9 @@ def discover_all():
         for nm,va,vs,d in L.secs:
             if va<=a<va+len(d)-3: return struct.unpack_from('<I',d,a-va)[0]
     funcs={EP}
-    for a in (int(x,16) for x in open(os.environ.get('RELOCS','out/relocs.txt'))):
+    if SEEDS:
+        funcs |= {a for a in (int(x,16) for x in open(SEEDS) if x.strip()) if L.in_text(a)}
+    for a in (int(x,16) for x in open(RELOCS)):
         v=rd32(a)
         if v is not None and L.in_text(v): funcs.add(v)
     md=L.md; cov=bytearray(L.TSZ); q=collections.deque(funcs); seen=set(funcs)
@@ -215,10 +224,10 @@ if __name__=='__main__':
         f.write("#endif\n")
     with open(f"{OUT}/fntab.c",'w') as f:
         f.write('#include "cpu.h"\n#include "decls.h"\ntypedef void(*guest_fn)(CPU*);\n')
-        f.write(f"const uint32_t g_fn_count = {len(allf)};\n")
-        f.write("const uint32_t g_fn_addr[] = {\n")
+        f.write(f"const uint32_t g_{SYMPFX}fn_count = {len(allf)};\n")
+        f.write(f"const uint32_t g_{SYMPFX}fn_addr[] = {{\n")
         for i in range(0,len(allf),8): f.write("  "+",".join(f"0x{a:08x}u" for a in allf[i:i+8])+",\n")
-        f.write("};\nconst guest_fn g_fn_ptr[] = {\n")
+        f.write(f"}};\nconst guest_fn g_{SYMPFX}fn_ptr[] = {{\n")
         for i in range(0,len(allf),4): f.write("  "+",".join(f"sub_{a:08x}" for a in allf[i:i+4])+",\n")
         f.write("};\n")
     print(f"\n=== URETIM OZETI ({time.time()-t0:.0f}s) ===")

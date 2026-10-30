@@ -42,10 +42,14 @@ case "${BUILD:-eu}" in
   *)  echo "BUILD must be eu or na"; exit 1 ;;
 esac
 
-CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead"
-MSRC="metal audio bundle gamepad"
+CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick"
+MSRC="metal audio bundle gamepad net_native"
 FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework GameController"
 SHARDS="$SOBJ/shard_*.o $SOBJ/fntab.o $SOBJ/stubs.o"
+# server.dll (tools/gen_v2.sh -> gen/server, build.sh -> out/obj/srv); a stub
+# module when the game folder had no server.dll at gen time
+[ -f gen/server/fntab.c ] || { echo "gen/server is missing: run tools/gen_v2.sh"; exit 1; }
+SHARDS="$SHARDS $(ls gen/server/shard_*.c 2>/dev/null | sed -E "s|gen/server/(.*)\.c|out/obj/srv/\1.o|" | tr "\n" " ") out/obj/srv/fntab.o"
 
 # $1 = object directory, $2 = NFS_ENHANCED value.  Files are compiled in parallel.
 build_rt(){
@@ -59,11 +63,13 @@ build_rt(){
     clang $OPT $XDEF -DNFS_ENHANCED=$enh -DNFS_VERSION=$VERSION -fobjc-arc -Iruntime -I$GEN -c -o "$od/$f.o" "runtime/$f.m" & pids="$pids $!"
   done
   clang $OPT -Iruntime -I$GEN -c -o "$od/impargs.o" $GEN/impargs.c & pids="$pids $!"
+  clang $OPT -Iruntime -c -o "$od/srv_impargs.o" gen/server/impargs.c & pids="$pids $!"
+  clang $OPT -Iruntime -c -o "$od/srv_modinfo.o" gen/server/modinfo.c & pids="$pids $!"
   clang $OPT $XDEF -DNFS_ENHANCED=$enh -Iruntime -I$GEN -c -o "$od/boot.o" tests/boot.c & pids="$pids $!"
   for p in $pids; do wait "$p" || { echo "compile error ($od)"; return 1; }; done
 }
 rt_objs(){ local od="$1" f o=""
-  for f in $CSRC $MSRC impargs; do [ -f "$od/$f.o" ] && o="$o $od/$f.o"; done
+  for f in $CSRC $MSRC impargs srv_impargs srv_modinfo; do [ -f "$od/$f.o" ] && o="$o $od/$f.o"; done
   echo "$o"; }
 
 if [ "$WHICH" != hd ]; then

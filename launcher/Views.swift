@@ -154,6 +154,38 @@ struct GraphicsCard: View {
     }
 }
 
+struct MultiplayerCard: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        Card("Multiplayer") {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Play online").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("LAN and the Online menu go through the server. Off: LAN on this Mac's network.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.online).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    Text("Server").font(.system(size: 12.5)).foregroundColor(Theme.text).frame(width: 84, alignment: .leading)
+                    TextField(OnlineSettings.defaultServer, text: $model.server).textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+                HStack(spacing: 10) {
+                    Text("Player name").font(.system(size: 12.5)).foregroundColor(Theme.text).frame(width: 84, alignment: .leading)
+                    TextField("3-15 letters or numbers", text: $model.playerName).textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+                if let err = model.onlineError {
+                    Text(err).font(.system(size: 11)).foregroundColor(.orange)
+                }
+            }
+            .disabled(!model.online).opacity(model.online ? 1 : 0.5)
+        }
+    }
+}
+
 struct MoreCard: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
@@ -253,6 +285,7 @@ struct LauncherView: View {
 
                 GameCard(model: model)
                 GraphicsCard(model: model)
+                MultiplayerCard(model: model)
                 MoreCard(model: model)
 
                 Spacer(minLength: 0)
@@ -274,6 +307,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(width: 560, height: 724)
     }
 }

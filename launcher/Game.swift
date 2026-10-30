@@ -68,6 +68,42 @@ enum Prefs {
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
+    static let online = "LauncherOnline"           // LAN and Online through a server
+    static let server = "LauncherServer"
+    static let playerName = "LauncherPlayerName"
+}
+
+/* Online play goes through a relay server (th0mk's nfsu2-web server, the only
+ * one known so far); off, the game's LAN is the Mac's own network. */
+enum OnlineSettings {
+    static let defaultServer = "wss://nfsu2.xyz/lan"
+
+    static func isLoopback(_ host: String) -> Bool {
+        if ["localhost", "::1", "[::1]"].contains(host.lowercased()) { return true }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.first == "127" && parts.allSatisfy {
+            !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } && (UInt($0) ?? 256) <= 255
+        }
+    }
+    /* wss://, or ws:// to this Mac only (a local test server) */
+    static func validServer(_ text: String) -> Bool {
+        guard !text.isEmpty, !text.contains(where: { $0.isWhitespace }),
+              let c = URLComponents(string: text), let host = c.host, !host.isEmpty,
+              c.user == nil, c.password == nil, c.fragment == nil,
+              c.port == nil || (1...65535).contains(c.port!) else { return false }
+        return c.scheme == "wss" || (c.scheme == "ws" && isLoopback(host))
+    }
+    /* what the server accepts as a name: 3-15 letters, digits, _ or - */
+    static func validName(_ name: String) -> Bool {
+        (3...15).contains(name.utf8.count) && name.utf8.allSatisfy {
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || $0 == 45
+        }
+    }
+    static func error(server: String, name: String) -> String? {
+        if !validServer(server) { return "Use a wss:// server address (ws:// only for a server on this Mac)." }
+        if !validName(name) { return "Enter a player name: 3-15 letters, numbers, _ or -." }
+        return nil
+    }
 }
 
 enum Locator {

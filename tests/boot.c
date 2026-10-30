@@ -152,6 +152,8 @@ int main(int argc,char**argv){
     dispatch_init(); win32_init();
     { extern void overrides_install(void); overrides_install(); }
     { extern void gamepad_install(void); gamepad_install(); }   /* runtime/gamepad.m */
+    { extern void olfilter_install(void); olfilter_install(); }   /* the Online lobby's Filter, once set, narrows its list */
+    { extern void lobbyclick_install(void); lobbyclick_install(); }   /* the lobby's list ignores a click on a dialog over it */
     if (getenv("BT")) g_bt_on = 1;
     g_report_fn = all_reports;
     com_set_trace(getenv("COMTRACE")?1:0);

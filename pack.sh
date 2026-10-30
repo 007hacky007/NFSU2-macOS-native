@@ -153,6 +153,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>To read the game files (SPEED2.EXE).</string>
   <key>NSRemovableVolumesUsageDescription</key>
     <string>To read the game files (SPEED2.EXE).</string>
+  <key>NSLocalNetworkUsageDescription</key>
+    <string>To play LAN races with other players on this network.</string>
   <key>NSHumanReadableCopyright</key>
     <string>x86 -> ARM64 static recompilation port. The game itself is not included in this bundle.</string>
 </dict>
