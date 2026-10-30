@@ -90,12 +90,16 @@ _OPAQUE = ('call','ret','retf','int','int3','iret','iretd',
 # those flags as dead above and skip the real computation -> a stale value.
 # Only the fcomi/fucomi family really writes EFLAGS (the FCOMI macro all 6).
 _FCOMI = ('fcomi','fcomip','fucomi','fucomip')
+# fcmovcc READS EFLAGS: without this the flags it tests would count as dead.
+_FCMOV_USE = {'fcmovb': F_CF, 'fcmovnb': F_CF, 'fcmove': F_ZF, 'fcmovne': F_ZF,
+              'fcmovbe': F_CF|F_ZF, 'fcmovnbe': F_CF|F_ZF, 'fcmovu': F_PF, 'fcmovnu': F_PF}
 
 def _flag_defuse(i):
     if i.mnemonic in _OPAQUE:
         return 0, F_ALL
     base = i.mnemonic.split()[-1]          # "repe cmpsb" -> "cmpsb"
     if base[:1] == 'f' or X86_GRP_FPU in i.groups:
+        if base in _FCMOV_USE: return 0, _FCMOV_USE[base]
         return (F_ALL, 0) if base in _FCOMI else (0, 0)
     ef = getattr(i, 'eflags', 0) or 0
     d = u = 0
@@ -683,6 +687,22 @@ class Lifter:
         if m=='fabs':   return ["ST(0) = fabs(ST(0));"]
         if m=='fsqrt':  return ["{ double _a=ST(0); ST(0)=x87_r1(_a, sqrt(_a)); }"]
         if m=='fsin':   return ["ST(0) = sin(ST(0));"]
+        # D3DX rotation helpers (0x63d907..) use fsincos: ST(0)=cos(x), ST(1)=sin(x).
+        if m=='fsincos': return ["FPUSH(cos(ST(0)));", "ST(1) = sin(ST(1));"]
+        if m=='fxam':
+            return ["{ double _a=ST(0); c->fsw &= (uint16_t)~(FSW_C0|FSW_C1|FSW_C2|FSW_C3);"
+                    " if (signbit(_a)) c->fsw |= FSW_C1;"
+                    " if (isnan(_a)) c->fsw |= FSW_C0;"
+                    " else if (isinf(_a)) c->fsw |= FSW_C2|FSW_C0;"
+                    " else if (_a == 0.0) c->fsw |= FSW_C3;"
+                    " else if (fpclassify(_a) == FP_SUBNORMAL) c->fsw |= FSW_C3|FSW_C2;"
+                    " else c->fsw |= FSW_C2; }"]
+        if m in _FCMOV_USE:
+            cond = {'fcmovb':'c->cf','fcmovnb':'!c->cf','fcmove':'c->zf','fcmovne':'!c->zf',
+                    'fcmovbe':'(c->cf||c->zf)','fcmovnbe':'!(c->cf||c->zf)',
+                    'fcmovu':'c->pf','fcmovnu':'!c->pf'}[m]
+            j = sti(len(o)-1) if len(o) >= 1 and is_st(len(o)-1) else 1
+            return [f"if ({cond}) ST(0) = ST({j});"]
         if m=='fcos':   return ["ST(0) = cos(ST(0));"]
         if m=='fptan':  return ["ST(0) = tan(ST(0));","FPUSH(1.0);"]
         if m=='fpatan': return ["ST(1) = atan2(ST(1), ST(0));","FPOP();"]
@@ -818,6 +838,8 @@ class Lifter:
         if m=='bswap': return [W(0,f"__builtin_bswap32({E(0)})")]
         if m=='sahf':  return ["{ uint32_t _f=(c->eax>>8)&0xffu; c->cf=_f&1; c->pf=(_f>>2)&1; c->af=(_f>>4)&1; c->zf=(_f>>6)&1; c->sf=(_f>>7)&1; }"]
         if m=='lahf':  return ["c->eax = (c->eax & 0xffff00ffu) | ((c->sf<<7|c->zf<<6|c->af<<4|c->pf<<2|2u|c->cf)<<8);"]
+        if m in ('xlatb','xlat'):   # AL = [EBX + AL]
+            return ["c->eax = (c->eax & 0xffffff00u) | (uint32_t)MR8(c->ebx + (c->eax & 0xffu));"]
         if m=='cpuid': return ["cpuid_shim(c);"]
         if m=='rdtsc': return ["{ uint64_t _t=rdtsc_shim(); c->eax=(uint32_t)_t; c->edx=(uint32_t)(_t>>32); }"]
         if m in ('clc',): return ["c->cf=0;"]
@@ -870,6 +892,9 @@ class Lifter:
         def is_mem(k): return o[k].type==X86_OP_MEM
 
         if m=='emms': return ["/* emms */"]
+        # MXCSR is not modelled: it reads as the default 0x1F80 (all exceptions masked, round to nearest)
+        if m=='stmxcsr': return [f"MR32{self.ea(o[0].mem)} = 0x1F80u;"]
+        if m=='ldmxcsr': return [f"(void)MR32{self.ea(o[0].mem)};   /* MXCSR is not modelled */"]
         if m in ('movq','movd'):
             w = 8 if m=='movq' else 4
             T = 'uint64_t' if w==8 else 'uint32_t'
@@ -1375,6 +1400,24 @@ class Lifter:
             else: raise Unsupported(m)
             return [f"{{ uint64_t _q={src}; c->xmm[{di}].f[0]=(float)(int32_t)(uint32_t)_q;"
                     f" c->xmm[{di}].f[1]=(float)(int32_t)(uint32_t)(_q>>32); }}"]
+        if m=='cvtpi2pd' and is_xm(0):
+            # two int32 (MMX register or m64) -> two doubles
+            di=XM[o[0].reg]
+            if is_mm(1): src = f"c->mm[{MM[o[1].reg]}]"
+            elif is_mem(1): src = "MR64" + self.ea(o[1].mem)
+            else: raise Unsupported(m)
+            return [f"{{ uint64_t _q={src}; c->xmm[{di}].d[0]=(double)(int32_t)(uint32_t)_q;"
+                    f" c->xmm[{di}].d[1]=(double)(int32_t)(uint32_t)(_q>>32); }}"]
+        if m in ('cvtps2pi','cvttps2pi','cvtpd2pi','cvttpd2pi') and is_mm(0):
+            # two floats / doubles -> two int32 in an MMX register (0x80000000 when out of range)
+            dm=MM[o[0].reg]; dbl = 'pd' in m
+            if is_xm(1): src = lambda k: f"c->xmm[{XM[o[1].reg]}].{'d' if dbl else 'f'}[{k}]"
+            elif is_mem(1): src = lambda k: f"{'MRF64' if dbl else 'MRF32'}({self.ea(o[1].mem, extra=(8 if dbl else 4)*k)})"
+            else: raise Unsupported(m)
+            rnd = 'trunc' if m.startswith('cvtt') else 'nearbyint'
+            return [f"{{ double _a=(double)({src(0)}), _b=(double)({src(1)});"
+                    f" c->mm[{dm}] = (uint64_t)x86_cvt_i32({rnd}(_a))"
+                    f" | ((uint64_t)x86_cvt_i32({rnd}(_b)) << 32); }}"]
         if m in ('sqrtps','rcpps','rsqrtps','maxps','minps') and is_xm(0):
             di=XM[o[0].reg]
             if m in ('sqrtps','rcpps','rsqrtps'):
