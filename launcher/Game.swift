@@ -48,6 +48,8 @@ enum Paths {
     static var saves: URL { home.appendingPathComponent("Library/Application Support/NFSU2 Saves") }
     static var logs: URL { home.appendingPathComponent("Library/Logs/NFSU2") }
     static var registry: URL { home.appendingPathComponent(".nfsu2_registry") }
+    /// The UHUD pack the launcher made from the mod (UHUDPack.swift)
+    static var uhudPack: URL { home.appendingPathComponent("Library/Application Support/NFSU2/Textures/uhud.pak") }
 
     /// The engine binary for a build of SPEED2.EXE (nil: the European one).
     static func engine(_ build: ExeBuild?, hd: Bool) -> URL {
@@ -68,6 +70,7 @@ enum Prefs {
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
+    static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
 }
 
 enum Locator {

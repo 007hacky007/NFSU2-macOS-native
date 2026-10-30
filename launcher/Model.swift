@@ -21,6 +21,10 @@ final class LauncherModel: ObservableObject {
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
+    @Published var uhud: Bool { didSet { defaults.set(uhud, forKey: Prefs.uhud) } }
+    @Published var uhudBusy = false
+    @Published var uhudError: String? = nil
+    @Published var hasUHUDPack = false
     @Published var job: Job? = nil
     @Published var notice: String? = nil
 
@@ -51,6 +55,8 @@ final class LauncherModel: ObservableObject {
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
+        uhud = defaults.bool(forKey: Prefs.uhud)
+        hasUHUDPack = FileManager.default.fileExists(atPath: Paths.uhudPack.path)
     }
 
     var location: GameLocation? {
@@ -118,6 +124,10 @@ final class LauncherModel: ObservableObject {
             if wideHUD { setenv("HUDPOS", "1", 1); setHUDPOS = true }
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
         }
+        if uhud && hasUHUDPack {
+            setenv("NFSU2_UHUD", "on", 0)
+            setenv("NFSU2_UHUD_PACK", Paths.uhudPack.path, 0)
+        }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
@@ -173,6 +183,49 @@ final class LauncherModel: ObservableObject {
         guard a.runModal() == .alertFirstButtonReturn else { return }
         do { try Registry.resetGraphics(); notice = "Graphics settings reset." }
         catch { alert("Could not reset the settings", error.localizedDescription) }
+    }
+
+    // MARK: UHUD
+
+    func openUHUDPage() { NSWorkspace.shared.open(UHUDPack.modPage) }
+
+    /// The pack from the mod's archive (or its extracted folder), made in Application Support.
+    func addUHUD() {
+        guard let loc = location else { return }
+        let p = NSOpenPanel()
+        p.canChooseFiles = true
+        p.canChooseDirectories = true
+        p.allowsMultipleSelection = false
+        p.prompt = "Add"
+        p.message = "Choose the Upscaled HUD mod as downloaded from nfsmods.xyz (NFSU2UHUD11192022a.7z), or the folder it was extracted to. Your game folder stays as it is."
+        p.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard p.runModal() == .OK, let mod = p.url else { return }
+        makeUHUD(mod: mod, game: loc.folder)
+    }
+
+    func makeUHUD(mod: URL, game: URL, to dest: URL = Paths.uhudPack) {
+        uhudBusy = true
+        uhudError = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            var res: UHUDPack.Summary? = nil, err: String? = nil
+            do { res = try UHUDPack.make(mod: mod, game: game, to: dest) }
+            catch let e as UHUDPack.Failure { err = e.message }
+            catch { err = error.localizedDescription }
+            DispatchQueue.main.async {
+                self.uhudBusy = false
+                self.uhudError = err
+                self.hasUHUDPack = FileManager.default.fileExists(atPath: Paths.uhudPack.path)
+                if res != nil && dest == Paths.uhudPack { self.uhud = true }
+                if ProcessInfo.processInfo.environment["NFSU2_LAUNCHER_TEST"] != nil {
+                    if let r = res {
+                        print("uhud pack: \(r.textures) textures (\(r.shared) more share one), \(r.bytes) bytes -> \(dest.path)")
+                        if !r.skipped.isEmpty { print("  skipped \(r.skipped.count): " + r.skipped.prefix(8).joined(separator: ", ")) }
+                        exit(0)
+                    }
+                    print("uhud pack FAILED: \(err ?? "?")"); exit(1)
+                }
+            }
+        }
     }
 
     // MARK: portable copy
