@@ -18,6 +18,7 @@
 #import <Metal/Metal.h>
 #include "enhance.h"
 #include "perflog.h"
+#include "fpscounter.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -3662,6 +3663,22 @@ static void hd_composite(id<MTLCommandBuffer> cb, int rb, unsigned i, id<MTLText
     atomic_fetch_add(&g_hd_ssr_n, 1ull);
 }
 #endif
+/* for the frame-rate counter (fpscounter.m): the screen's MSAA samples (HD) and
+ * the refresh rate of the screen the window is on (main thread) */
+int metal_msaa_now(void){
+#if NFS_ENHANCED
+    return g_hd_msn > 1 ? g_hd_msn : 1;
+#else
+    return 1;
+#endif
+}
+int metal_display_hz(void){
+    NSInteger hz = 0;
+    if (@available(macOS 12.0, *)){
+        NSScreen *sc = (g_win ? [g_win screen] : nil) ?: [NSScreen mainScreen];
+        hz = [sc maximumFramesPerSecond]; }
+    return hz > 0 ? (int)hz : 60;
+}
 /* --- PASS MERGING (both builds) ------------------------------------------
  * At 3024x1964 in the normal build the screen was drawn in 5 separate passes per
  * frame (PASSPROF content dump, 2026-10-15): an empty pass with only a Clear, the
@@ -5063,6 +5080,7 @@ void metal_early_init(void){
     g_dev = MTLCreateSystemDefaultDevice();
     if (!g_dev){ fprintf(stderr, "metal: device not found\n"); return; }
     g_queue = [g_dev newCommandQueue];
+    fpscounter_init(g_dev);
     @autoreleasepool {
         g_vbuf[0] = malloc(sizeof(MVert)*MAXV); g_vbuf[1] = malloc(sizeof(MVert)*MAXV);
         g_dbuf[0] = malloc(sizeof(MDraw)*MAXD); g_dbuf[1] = malloc(sizeof(MDraw)*MAXD);
@@ -6076,6 +6094,7 @@ void metal_run_main_loop(void){
               [fs2 setKeyEquivalentModifierMask:NSEventModifierFlagControl | NSEventModifierFlagCommand];
               if (@available(macOS 13.0, *)){
                   [fs2 setHidden:YES]; [fs2 setAllowsKeyEquivalentWhenHidden:YES]; } }
+            fpscounter_add_menu(appMenu);      /* Cmd-N: frame-rate counter */
             [appMenu addItem:[NSMenuItem separatorItem]];
             [appMenu addItemWithTitle:@"NFSU2'den Cik" action:@selector(terminate:)
                         keyEquivalent:@"q"];
@@ -7621,6 +7640,21 @@ void metal_run_main_loop(void){
                             [e3 endEncoding];
                         }
                         if (g_perflog && atomic_exchange(&g_pl_thumb_req, 0)) pl_thumb(cb, dtex, fno_pre);
+                        /* frame-rate counter (off by default, fpscounter.m): after the
+                         * game's frame; after the dump copy unless NFSU2_FPS_COUNTER_DUMP=1.
+                         * The layer fits the frame into the window keeping its aspect
+                         * ratio: fc_ppp = frame pixels per window point, fc_bw x fc_bh =
+                         * the screen pixels the frame is shown at. */
+                        int fc_px = fpscounter_on() && rb >= 0;
+                        double fc_ppp = 1.0; unsigned fc_bw = 0, fc_bh = 0;
+                        if (fc_px){ double cw = atomic_load(&g_cont_w), ch = atomic_load(&g_cont_h);
+                            double bs = g_win ? [g_win backingScaleFactor] : 2.0;
+                            if (cw > 0 && ch > 0){
+                                fc_ppp = fmax(dtex.width / cw, dtex.height / ch);
+                                fc_bw = (unsigned)lround(dtex.width / fc_ppp * bs);
+                                fc_bh = (unsigned)lround(dtex.height / fc_ppp * bs); } }
+                        if (fc_px && fpscounter_in_dumps()){
+                            fpscounter_draw(cb, dtex, fc_ppp, fc_bw, fc_bh); fc_px = 0; }
                         /* Take a readable copy BEFORE present: reading back from a presented
                          * drawable's texture isn't reliable. */
                         if (dumpnow){
@@ -7649,6 +7683,7 @@ void metal_run_main_loop(void){
                                 [bl endEncoding];
                             }
                         }
+                        if (fc_px) fpscounter_draw(cb, dtex, fc_ppp, fc_bw, fc_bh);
                         { struct timespec _e1; clock_gettime(CLOCK_MONOTONIC,&_e1);
                           unsigned long long dt =
                               (unsigned long long)(_e1.tv_sec-_e0.tv_sec)*1000000000ull
@@ -7675,13 +7710,18 @@ void metal_run_main_loop(void){
                                 if (abt_mode >= 0 && abt_cnt){ atomic_fetch_add(&g_abt_ns[abt_mode], ns); atomic_fetch_add(&g_abt_cnt[abt_mode], 1ull); }
                                 atomic_fetch_add(&g_gpu_ns, ns);
                                 atomic_fetch_add(&g_gpu_n, 1ull);
+                                fpscounter_note_gpu(g / 1e6);
                                 if (g_perflog) perflog_gpu(fno_pre, g);
                                 unsigned long long mx = atomic_load(&g_gpu_max_ns);
                                 while (ns > mx &&
                                        !atomic_compare_exchange_weak(&g_gpu_max_ns, &mx, ns)) {}
                             } }];
                         if (d && fbonly_on() && dtex != d.texture) fbonly_copy(cb, dtex, d.texture);
-                        if (d) [cb presentDrawable:d];
+                        /* presentedTime: the frame-rate counter's frame times (kept while it is off) */
+                        if (d){ [d addPresentedHandler:^(id<MTLDrawable> pd){
+                                    fpscounter_note_presented(pd.presentedTime); }];
+                                [cb presentDrawable:d]; }
+                        fpscounter_note_present();
                         [cb commit];
                         long fno = atomic_fetch_add(&g_frames_drawn, 1) + 1;
                         if (g_perflog){ struct timespec _p1; clock_gettime(CLOCK_MONOTONIC, &_p1);
