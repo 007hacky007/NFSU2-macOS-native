@@ -141,9 +141,9 @@ final class LauncherModel: ObservableObject {
 
     // MARK: tools
 
-    func openSaves() {
-        try? FileManager.default.createDirectory(at: Paths.saves, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(Paths.saves)
+    func manageSaves() {
+        SaveManagerWindow.show(saves: Paths.saves, registry: Paths.registry,
+            gameRunning: { [weak self] in self?.isPlaying ?? true })
     }
 
     func openLogs() {
