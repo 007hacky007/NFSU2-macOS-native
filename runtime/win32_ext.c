@@ -617,6 +617,12 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         else if (!strcasecmp(vn,"StreamingInstall")){ dval=0; have_d=1; }
         else if (!strcasecmp(vn,"VERSION"))       sval="1.2.0.0";
         else if (!strcasecmp(vn,"SIZE")){ dval=0; have_d=1; }
+        /* HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0 "~MHz".  The movie
+         * player's timer (sub_006f625d) reads it; without it the timer calibrates
+         * RDTSC against QueryPerformanceCounter, waiting for two measurements that
+         * agree.  Our QPC is the virtual clock and RDTSC is real time, so they never
+         * agree and the first movie hung for ever.  3000 matches rdtsc_shim (3 GHz). */
+        else if (!strcasecmp(vn,"~MHz")){ dval=3000; have_d=1; }
 
         if (sval){
             uint32_t need = (uint32_t)strlen(sval) + 1u;
