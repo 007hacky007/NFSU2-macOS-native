@@ -45,11 +45,33 @@ static _Thread_local CPU *tl_cpu = 0;
 static _Thread_local void *tl_obj = 0;   /* this thread's object */
 /* Wait semantics.  Waits used to give up early: events after 2 s even for INFINITE, multi-object
  * waits after 200 ms.  A game thread that waits for an event during a long load (the NIS
- * audio stream thread, for instance) then saw a bogus WAIT_TIMEOUT.  NFSU2_WAIT_LEGACY=1 restores
- * the old behaviour. */
+ * audio stream thread, for instance) then saw a bogus WAIT_TIMEOUT.  NFSU2_WAIT_LEGACY=1 cuts
+ * waits at 2 s / 200 ms again (A/B). */
 static int wait_legacy(void){ static int v=-1; if (v<0){ const char *e=getenv("NFSU2_WAIT_LEGACY"); v = (e && *e && *e!='0'); } return v; }
-static uint64_t wait_now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000u + (uint64_t)t.tv_nsec/1000000u; }
+static uint64_t wait_now_us(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000u + (uint64_t)t.tv_nsec/1000u; }
 static int wait_thread_killed(void);
+/* The deadline of a wait (monotonic clock, UINT64_MAX = INFINITE) and the next slice of it.
+ * Short slices let a TerminateThread end a waiting thread; a condition variable may also
+ * wake early, so every wait loops until its object is ready or the deadline has passed. */
+static uint64_t wait_deadline(uint32_t ms, uint32_t legacy_cap_ms){
+    if (wait_legacy() && (ms == 0xFFFFFFFFu || ms > legacy_cap_ms)) ms = legacy_cap_ms;
+    return ms == 0xFFFFFFFFu ? UINT64_MAX : wait_now_us() + (uint64_t)ms * 1000u;
+}
+static uint64_t wait_slice(uint64_t deadline, uint64_t slice_us){
+    uint64_t now = wait_now_us();
+    return deadline <= now ? 0 : deadline - now < slice_us ? deadline - now : slice_us;
+}
+/* With o->mtx held.  A mutex is ready when it is free or already ours (recursion); a wait
+ * on it takes ownership.  A semaphore gives one count per wait, an auto-reset event resets,
+ * a thread stays signaled once it has ended. */
+static int wait_ready(Obj *o, uint32_t tid){
+    return o->signaled > 0 || (o->kind == OB_MUTEX && o->owner_tid == tid && o->rec > 0);
+}
+static void wait_take(Obj *o, uint32_t tid){
+    if (o->kind == OB_MUTEX){ o->signaled = 0; o->owner_tid = tid; o->rec++; }
+    else if (o->kind == OB_SEM) o->signaled--;
+    else if (o->kind == OB_EVENT && !o->manual) o->signaled = 0;
+}
 /* THREADLOG=1: log thread creation, termination and stack recycling */
 static int thread_log(void){ static int v=-1; if (v<0){ const char *e=getenv("THREADLOG"); v = (e && *e && *e!='0'); } return v; }
 
@@ -811,58 +833,20 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                         g_wstat[i].waiter_tid);
           } }
         if(!o){ r=0; }
-        else if (o->kind == OB_MUTEX){
-            /* MUTEX: ownership + RECURSION.  The same thread must be able to take the same
-             * mutex again; otherwise the game's CRT wrapper that takes nested locks
+        else {
+            /* MUTEX: ownership + RECURSION (wait_ready).  The same thread must be able to take
+             * the same mutex again; otherwise the game's CRT wrapper that takes nested locks
              * deadlocks itself (this is how the video player froze). */
             uint32_t me = cur_tid(c);
+            uint64_t deadline = wait_deadline(ms, o->kind == OB_MUTEX && ms == 0xFFFFFFFFu ? ms : 2000u), us;
             guest_yield_begin();
             pthread_mutex_lock(&o->mtx);
-            if (o->owner_tid == me && o->rec > 0){
-                o->rec++; r = 0;                       /* WAIT_OBJECT_0 */
-            } else {
-                struct timespec ts;
-                int timed_out = 0;
-                while (!o->signaled && !timed_out){
-                    if (!ms){ timed_out = 1; break; }
-                    clock_gettime(CLOCK_REALTIME,&ts);
-                    uint32_t wait = (ms==0xFFFFFFFFu)? 2000u : (ms>2000u?2000u:ms);
-                    ts.tv_sec += wait/1000; ts.tv_nsec += (long)(wait%1000)*1000000L;
-                    if(ts.tv_nsec>=1000000000L){ts.tv_sec++;ts.tv_nsec-=1000000000L;}
-                    if (pthread_cond_timedwait(&o->cv,&o->mtx,&ts) != 0 &&
-                        ms != 0xFFFFFFFFu) timed_out = 1;
-                    if (ms != 0xFFFFFFFFu) break;
-                }
-                if (o->signaled){ o->signaled = 0; o->owner_tid = me; o->rec = 1; r = 0; }
-                else r = 0x102u;                        /* WAIT_TIMEOUT */
+            while (!wait_ready(o, me) && !wait_thread_killed() && (us = wait_slice(deadline, 50000u))){
+                struct timespec ts = { (time_t)(us / 1000000u), (long)(us % 1000000u) * 1000L };
+                pthread_cond_timedwait_relative_np(&o->cv, &o->mtx, &ts);
             }
-            pthread_mutex_unlock(&o->mtx);
-            guest_yield_end();
-        }
-        else {
-            guest_yield_begin();
-            pthread_mutex_lock(&o->mtx);
-            if(!o->signaled && ms){
-                uint64_t t0 = wait_now_ms();
-                for (;;){
-                    struct timespec ts; clock_gettime(CLOCK_REALTIME,&ts);
-                    uint32_t wait = 2000u;
-                    if (!wait_legacy()){
-                        wait = 50u;                               /* short slices: see terminate */
-                        if (ms != 0xFFFFFFFFu){
-                            uint64_t el = wait_now_ms() - t0;
-                            if (el >= ms) break;
-                            if (ms - el < wait) wait = (uint32_t)(ms - el);
-                        }
-                    } else if (ms != 0xFFFFFFFFu && ms < wait) wait = ms;
-                    ts.tv_sec += wait/1000; ts.tv_nsec += (long)(wait%1000)*1000000L;
-                    if(ts.tv_nsec>=1000000000L){ts.tv_sec++;ts.tv_nsec-=1000000000L;}
-                    pthread_cond_timedwait(&o->cv,&o->mtx,&ts);
-                    if (o->signaled || wait_legacy() || wait_thread_killed()) break;
-                }
-            }
-            r = o->signaled ? 0u : 0x102u;              /* WAIT_OBJECT_0 / WAIT_TIMEOUT */
-            if(o->signaled && !o->manual) o->signaled=0;
+            r = wait_ready(o, me) ? 0u : 0x102u;        /* WAIT_OBJECT_0 / WAIT_TIMEOUT */
+            if (!r) wait_take(o, me);
             pthread_mutex_unlock(&o->mtx);
             guest_yield_end();
         } }
@@ -944,36 +928,47 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         r=0; }
     else if (!strcmp(n,"WaitForMultipleObjects")){
         uint32_t cnt=A(c,0), parr=A(c,1), waitall=A(c,2), ms=A(c,3);
-        guest_yield_begin();
-        uint32_t got=0x102u;
-        uint64_t t0 = wait_now_ms();
-        for (int spin=0; ; spin++){
-            if (waitall && !wait_legacy()){
-                uint32_t nsig=0, nobj=0;
-                for (uint32_t i=0;i<cnt && i<64;i++){
-                    Obj*o=obj_get(MR32(parr+4u*i)); if(!o) continue; nobj++;
-                    pthread_mutex_lock(&o->mtx); if (o->signaled) nsig++; pthread_mutex_unlock(&o->mtx); }
-                if (nobj && nsig==nobj){
-                    for (uint32_t i=0;i<cnt && i<64;i++){
-                        Obj*o=obj_get(MR32(parr+4u*i)); if(!o) continue;
-                        pthread_mutex_lock(&o->mtx); if(!o->manual) o->signaled=0; pthread_mutex_unlock(&o->mtx); }
-                    got=0; }
-            } else
-            for (uint32_t i=0;i<cnt && i<64;i++){
-                Obj*o=obj_get(MR32(parr+4u*i));
-                if(o){ pthread_mutex_lock(&o->mtx);
-                       int sig=o->signaled;
-                       if(sig && !o->manual) o->signaled=0;
-                       pthread_mutex_unlock(&o->mtx);
-                       if(sig){ got=i; break; } }
+        /* Unknown handles are skipped, as before.  Wait-all checks and takes every object
+         * under all of their locks, taken in address order: a partial take could hand an
+         * auto-reset event or a semaphore count to two waiters. */
+        Obj *objs[64], *locks[64];
+        uint32_t idx[64], nobj = 0, nl = 0, me = cur_tid(c);
+        if (!cnt || cnt > 64u || !parr || !mem_is_committed(parr) || !mem_is_committed(parr + 4u*cnt - 1u)){
+            r = 0xFFFFFFFFu;                                         /* WAIT_FAILED */
+        } else {
+            for (uint32_t i = 0; i < cnt; i++){
+                Obj *o = obj_get(MR32(parr + 4u*i));
+                if (!o) continue;
+                objs[nobj] = o; idx[nobj++] = i;
+                uint32_t j = 0;
+                while (j < nl && locks[j] < o) j++;
+                if (j < nl && locks[j] == o) continue;                /* the same object twice */
+                memmove(locks + j + 1u, locks + j, (nl - j) * sizeof *locks);
+                locks[j] = o; nl++;
             }
-            if (got!=0x102u || ms==0) break;
-            if (wait_legacy()){ if (spin>=199) break; }
-            else { if (ms!=0xFFFFFFFFu && wait_now_ms()-t0 >= ms) break; if (wait_thread_killed()) break; }
-            struct timespec ts={0,1000000L}; nanosleep(&ts,0);
-        }
-        guest_yield_end();
-        r=got; }
+            uint64_t deadline = wait_deadline(ms, 200u), us;
+            guest_yield_begin();
+            for (;;){
+                uint32_t got = 0x102u;
+                if (waitall && nl){
+                    for (uint32_t i = 0; i < nl; i++) pthread_mutex_lock(&locks[i]->mtx);
+                    uint32_t ready = 0;
+                    for (uint32_t i = 0; i < nl; i++) ready += wait_ready(locks[i], me) != 0;
+                    if (ready == nl){ for (uint32_t i = 0; i < nl; i++) wait_take(locks[i], me); got = 0; }
+                    for (uint32_t i = nl; i > 0; i--) pthread_mutex_unlock(&locks[i-1u]->mtx);
+                } else if (!waitall){
+                    for (uint32_t k = 0; k < nobj && got == 0x102u; k++){
+                        pthread_mutex_lock(&objs[k]->mtx);
+                        if (wait_ready(objs[k], me)){ wait_take(objs[k], me); got = idx[k]; }
+                        pthread_mutex_unlock(&objs[k]->mtx);
+                    }
+                }
+                r = got;
+                if (got != 0x102u || wait_thread_killed() || !(us = wait_slice(deadline, 1000u))) break;
+                struct timespec ts = { 0, (long)us * 1000L }; nanosleep(&ts, 0);
+            }
+            guest_yield_end();
+        } }
     else if (!strcmp(n,"SwitchToThread")){ guest_yield_begin(); sched_yield(); guest_yield_end(); r=1; }
     else if (!strcmp(n,"CloseHandle")) r=1;
     else if (!strcmp(n,"DuplicateHandle")){ uint32_t p=A(c,3); if(p) MR32(p)=A(c,1); r=1; }
