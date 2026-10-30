@@ -274,6 +274,9 @@ def flag_liveness(blocks, addrs, in_text):
 
 class Unsupported(Exception): pass
 
+import os as _os_pc
+_X87PC = _os_pc.environ.get('X87PC', '') == '1'   # see "x87 FPU" in lift_insn
+
 # ---- X87OPT: in-block x87 register allocation ---------------------------------
 # ST(n) = c->st[(c->top+n)&7] is indexed at run time: clang can never keep these
 # values in registers, every x87 operation is a top read + address + load/store.
@@ -598,6 +601,15 @@ class Lifter:
             return [f"POP32(c->eip);" + (f" c->esp += {n}u;" if n else "") + " return;"]
 
         # ---------------- x87 FPU ----------------
+        # X87PC=1 (lift time): results of FADD/FSUB/FMUL/FDIV (+P/R/I forms) and
+        # FSQRT go through X87R(), which rounds them to a 24-bit significand when
+        # the thread's control word selects single precision (PC=00), like the
+        # hardware.  PC=53/64 stay plain double.  X87R(x87_r2(a, b, r)) is
+        # emitted as X87R2(a, b, r): one test on the fast path (cpu.h).
+        def PCR(e):
+            if not _X87PC: return e
+            if e.startswith('x87_r2(') and e.endswith(')'): return 'X87R2(' + e[len('x87_r2('):]
+            return f"X87R({e})"
         ST_REGS = {X86_REG_ST0:0,X86_REG_ST1:1,X86_REG_ST2:2,X86_REG_ST3:3,
                    X86_REG_ST4:4,X86_REG_ST5:5,X86_REG_ST6:6,X86_REG_ST7:7}
         def is_st(k): return o[k].type==X86_OP_REG and o[k].reg in ST_REGS
@@ -651,13 +663,13 @@ class Lifter:
                 src = f"ST({sti(0)})" if is_st(0) else fmem(0)
                 lhs, rhs = ("_s","_d") if rev else ("_d","_s")
                 return [f"{{ double _d=ST(0), _s=({src});"
-                        f" ST(0)=x87_r2(_d,_s,{lhs} {op_c} {rhs}); }}"]
+                        f" ST(0)={PCR(f'x87_r2(_d,_s,{lhs} {op_c} {rhs})')}; }}"]
             d = sti(0) if is_st(0) else None
             s2 = f"ST({sti(1)})" if is_st(1) else fmem(1)
             if d is None: raise Unsupported(m)
             lhs, rhs = ("_s","_d") if rev else ("_d","_s")
             return [f"{{ double _d=ST({d}), _s=({s2});"
-                    f" ST({d})=x87_r2(_d,_s,{lhs} {op_c} {rhs}); }}"]
+                    f" ST({d})={PCR(f'x87_r2(_d,_s,{lhs} {op_c} {rhs})')}; }}"]
         if m in ('faddp','fsubp','fmulp','fdivp','fsubrp','fdivrp'):
             rev = m in ('fsubrp','fdivrp')
             base = {'faddp':'fadd','fsubp':'fsub','fmulp':'fmul','fdivp':'fdiv',
@@ -666,7 +678,7 @@ class Lifter:
             d = sti(0) if (len(o)>0 and is_st(0)) else 1
             lhs, rhs = ("_s","_d") if rev else ("_d","_s")
             return [f"{{ double _d=ST({d}), _s=ST(0);"
-                    f" ST({d})=x87_r2(_d,_s,{lhs} {op_c} {rhs}); }}", "FPOP();"]
+                    f" ST({d})={PCR(f'x87_r2(_d,_s,{lhs} {op_c} {rhs})')}; }}", "FPOP();"]
         if m in ('fcom','fcomp','fcompp','fucom','fucomp','fucompp'):
             npop = 2 if m.endswith('pp') else (1 if m.endswith('p') else 0)
             if len(o)==0: src="ST(1)"
@@ -681,7 +693,7 @@ class Lifter:
         if m=='ftst':   return [("fcompare_bl" if _os.environ.get('FCMPBL','')=='1' else "fcompare") + "(c, ST(0), 0.0);"]
         if m=='fchs':   return ["ST(0) = -ST(0);"]
         if m=='fabs':   return ["ST(0) = fabs(ST(0));"]
-        if m=='fsqrt':  return ["{ double _a=ST(0); ST(0)=x87_r1(_a, sqrt(_a)); }"]
+        if m=='fsqrt':  return ["{ double _a=ST(0); ST(0)=" + PCR("x87_r1(_a, sqrt(_a))") + "; }"]
         if m=='fsin':   return ["ST(0) = sin(ST(0));"]
         if m=='fcos':   return ["ST(0) = cos(ST(0));"]
         if m=='fptan':  return ["ST(0) = tan(ST(0));","FPUSH(1.0);"]
@@ -849,12 +861,13 @@ class Lifter:
             sz=o[0].size; ea2=self.ea(o[0].mem)
             src = {2:f"(double)(int16_t)MR16{ea2}",4:f"(double)(int32_t)MR32{ea2}"}.get(sz)
             if src is None: raise Unsupported(f"{m} size {sz}")
-            if m=='fiadd':  return [f"ST(0) = ST(0) + ({src});"]
-            if m=='fimul':  return [f"ST(0) = ST(0) * ({src});"]
-            if m=='fisub':  return [f"ST(0) = ST(0) - ({src});"]
-            if m=='fisubr': return [f"ST(0) = ({src}) - ST(0);"]
-            if m=='fidiv':  return [f"ST(0) = ST(0) / ({src});"]
-            if m=='fidivr': return [f"ST(0) = ({src}) / ST(0);"]
+            PCR = (lambda e: f"X87R({e})") if _X87PC else (lambda e: e)
+            if m=='fiadd':  return [f"ST(0) = {PCR(f'ST(0) + ({src})')};"]
+            if m=='fimul':  return [f"ST(0) = {PCR(f'ST(0) * ({src})')};"]
+            if m=='fisub':  return [f"ST(0) = {PCR(f'ST(0) - ({src})')};"]
+            if m=='fisubr': return [f"ST(0) = {PCR(f'({src}) - ST(0)')};"]
+            if m=='fidiv':  return [f"ST(0) = {PCR(f'ST(0) / ({src})')};"]
+            if m=='fidivr': return [f"ST(0) = {PCR(f'({src}) / ST(0)')};"]
             fc = 'fcompare_bl' if _os.environ.get('FCMPBL','') == '1' else 'fcompare'
             if m=='ficom':  return [f"{fc}(c, ST(0), {src});"]
             return [f"{fc}(c, ST(0), {src});", "FPOP();"]

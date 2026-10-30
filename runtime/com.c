@@ -2329,6 +2329,18 @@ int com_call(CPU *c, uint32_t magic){
              * from the settings menu had no effect -- the game recreates the device
              * with the new size, and we gave back the same device and ignored the size. */
             uint32_t ppp=A(c,5);
+            /* x87 state, as Direct3D 9 leaves it: without D3DCREATE_FPU_PRESERVE
+             * (0x2) the calling thread's control word becomes single precision,
+             * round to nearest, all exceptions masked (PC=00, RC=00).  The game
+             * passes 0x50 / 0x20, so its main thread runs at PC=24.  Only code
+             * lifted with X87PC=1 rounds to it (tools/lift.py, cpu.h X87R);
+             * NFSU2_FPU_PRESERVE=1 keeps the old word (A/B). */
+            if (!(A(c,4) & 0x2u) && !ENVC("NFSU2_FPU_PRESERVE")){
+                uint16_t ocw = c->fcw;
+                c->fcw = (uint16_t)((c->fcw & ~0x0F3Fu) | 0x003Fu);
+                fprintf(stderr, "com: CreateDevice flags 0x%x: x87 control word %04x -> %04x\n",
+                        A(c,4), ocw, c->fcw);
+            }
             if (ppp && mem_is_committed(ppp+7)){
                 uint32_t w4=MR32(ppp), h4=MR32(ppp+4);
                 uint32_t win4 = mem_is_committed(ppp+35) ? MR32(ppp+32) : 1u;

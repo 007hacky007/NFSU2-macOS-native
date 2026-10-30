@@ -274,6 +274,64 @@ static inline double x87_r1(double a, double r){
     if (a != a) return a;
     return X87_INDEF;
 }
+/* ---- x87 precision control (lift-time X87PC=1, tools/lift.py) ---------
+ * The hardware rounds the result of FADD/FSUB/FMUL/FDIV/FSQRT (and their
+ * P/R/I forms) to the significand width the control word's PC field
+ * (bits 8-9) selects: 00 = 24 bits, 10 = 53, 11 = 64.  The game's main
+ * thread runs at PC=00 on Windows (Direct3D's CreateDevice without
+ * D3DCREATE_FPU_PRESERVE sets it, com.c), so its intermediates are single
+ * precision with the extended exponent range.  Our registers are doubles:
+ * PC=53/64 stay double, PC=24 rounds the double result to 24 bits in the
+ * rounding direction of the RC field.  The double is the correctly rounded
+ * (to nearest) exact result, so with RC = nearest this is exact whenever
+ * both operands have at most 24 significant bits (53 >= 2*24+2); with a
+ * wider operand (fild of a big int, a double constant) a 24-bit tie can very
+ * rarely round differently.  With RC = down/up/chop it can be 1 ulp off when
+ * the nearest double is itself a 24-bit value; the game does no x87
+ * arithmetic at such RC on its PC=24 thread (its fldcw sites are float->int
+ * conversions and CRT/D3DX code at PC=64).  (After th0mk/nfsu2-web, MIT.)
+ * Out of line and cold: the fast paths below inline only the FCVT pair. */
+static __attribute__((noinline, cold, unused)) double x87_round24(double v, uint32_t rc){
+    uint64_t b; memcpy(&b, &v, 8);
+    uint64_t low = b & 0x1FFFFFFFull;            /* the 29 bits below 24 */
+    if (!low || ((b >> 52) & 0x7FFu) == 0x7FFu) return v;   /* exact, inf, nan */
+    uint64_t t = b - low;                        /* toward zero */
+    int up;
+    if (rc == 0) up = low > 0x10000000ull || (low == 0x10000000ull && (t & 0x20000000ull));
+    else if (rc == 3) up = 0;
+    else up = (int)(b >> 63) == (rc == 1);       /* down: negatives grow; up: positives */
+    if (up) t += 0x20000000ull;
+    memcpy(&v, &t, 8); return v;
+}
+/* PC=24 with RC=nearest (the game thread's word): the hardware double->float
+ * conversion rounds to nearest even exactly like x87_round24 as long as the
+ * result is a normal float.  Zero, float subnormals, overflow and NaN take
+ * the exact path. */
+static inline double x87_pcround(uint16_t fcw, double v){
+    if (__builtin_expect((fcw & 0x0F00u) == 0u, 1)){
+        float f = (float)v, a = __builtin_fabsf(f);
+        if (__builtin_expect(a > 0x1p-126f && a <= 0x1.fffffep127f, 1)) return (double)f;
+        return x87_round24(v, 0);
+    }
+    if (fcw & 0x0300u) return v;                 /* PC=53/64: double */
+    return x87_round24(v, (fcw >> 10) & 3u);
+}
+#define X87R(v) x87_pcround(c->fcw, (v))
+/* X87R(x87_r2(a, b, r)) with one test on the fast path (tools/lift.py emits
+ * X87R2 for the x87 arithmetic).  A result in the normal float range is no
+ * NaN, so the NaN test of x87_r2 is only made on the way to the slow path. */
+static __attribute__((noinline, cold, unused)) double x87_r2pc_slow(uint16_t fcw, double a, double b, double r){
+    return x87_pcround(fcw, x87_r2(a, b, r));
+}
+static inline double x87_r2pc(uint16_t fcw, double a, double b, double r){
+    if (__builtin_expect((fcw & 0x0F00u) == 0u, 1)){
+        float f = (float)r, m = __builtin_fabsf(f);
+        if (__builtin_expect(m > 0x1p-126f && m <= 0x1.fffffep127f, 1)) return (double)f;
+        if (r == 0.0) return r;                  /* exact */
+    } else if ((fcw & 0x0300u) && __builtin_expect(r == r, 1)) return r;   /* PC=53/64 */
+    return x87_r2pc_slow(fcw, a, b, r);
+}
+#define X87R2(a, b, r) x87_r2pc(c->fcw, (a), (b), (r))
 static inline float sse_r2f(float a, float b, float r){
     if (r == r) return r;
     if (a != a) return a;

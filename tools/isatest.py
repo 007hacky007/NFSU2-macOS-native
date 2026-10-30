@@ -2,6 +2,7 @@
 """x86 instruction semantics verification suite.
    Hand-encoded machine code + the results expected from the Intel spec."""
 import sys, os, subprocess, struct
+os.environ.setdefault('X87PC', '1')     # lift as tools/gen_v2.sh does (x87 precision control)
 sys.path.insert(0,'tools')
 from lift import RawLifter, Unsupported
 
@@ -279,6 +280,16 @@ T("__ftol pattern (2.6+0.001 -> 2)",
   [0xD9,0x05]+a32(FD+0x28) +                    # fld dword [FD+0x28]
   [0xDB,0x1D]+a32(FD+0x2C),                     # fistp dword [FD+0x2C]
   {}, memf={FD+0x28:2.601}, expect={}, fmem={FD+0x2C:2})
+
+# x87 precision control (X87PC=1): fldcw [m]; fld1; fdiv dword [m+4] (3.0);
+# fstp qword [m+8].  PC=24 rounds the quotient to a float, PC=53/64 do not.
+FP_ = 0x00C71000
+def _pc(name, cw, lo, hi, base):
+    T(name, [0xD9,0x2D]+a32(base) + [0xD9,0xE8] + [0xD8,0x35]+a32(base+4) + [0xDD,0x1D]+a32(base+8),
+      {}, mem={base:cw}, memf={base+4:3.0}, expect={}, fmem={base+8:lo, base+12:hi})
+_pc("fdiv 1/3 at PC=24 (CW 0x007F) -> float-rounded", 0x007F, 0x60000000, 0x3FD55555, FP_)
+_pc("fdiv 1/3 at PC=53 (CW 0x027F) -> double",        0x027F, 0x55555555, 0x3FD55555, FP_+0x20)
+_pc("fdiv 1/3 at PC=64 (CW 0x037F) -> double",        0x037F, 0x55555555, 0x3FD55555, FP_+0x40)
 
 # ---------------- MMX/SSE moves ----------------
 MX = 0x00C40000
