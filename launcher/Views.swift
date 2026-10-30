@@ -159,11 +159,11 @@ struct GraphicsCard: View {
 struct UHUDRow: View {
     @ObservedObject var model: LauncherModel
     private var text: String {
-        if model.uhudBusy { return "Making the pack from the mod…" }
+        if model.uhudBusy { return model.uhudPhase }
         if model.hasUHUDPack {
             return "LunicAura106's Upscaled HUD mod: menus, HUD, fonts and icons drawn at four times the detail. Cmd-T switches while playing. Off: as in the original game."
         }
-        return "LunicAura106's Upscaled HUD mod draws the menus, HUD, fonts and icons at four times the detail. Download its .7z from nfsmods.xyz, then add it here. Your game folder stays as it is."
+        return "LunicAura106's Upscaled HUD mod draws the menus, HUD, fonts and icons at four times the detail. Download gets it from nfsmods.xyz (2.8 MB) and sets it up; your game folder stays as it is."
     }
     var body: some View {
         HStack(alignment: .center) {
@@ -181,8 +181,9 @@ struct UHUDRow: View {
                 Toggle("", isOn: $model.uhud).labelsHidden().toggleStyle(SwitchToggleStyle())
             } else {
                 VStack(alignment: .trailing, spacing: 6) {
-                    Button("Get the Mod") { model.openUHUDPage() }.buttonStyle(SecondaryButtonStyle())
-                    Button("Add…") { model.addUHUD() }.buttonStyle(SecondaryButtonStyle())
+                    Button("Download") { model.downloadUHUD() }.buttonStyle(SecondaryButtonStyle())
+                        .disabled(model.location == nil || model.uhudBusy)
+                    Button("Add File…") { model.addUHUD() }.buttonStyle(SecondaryButtonStyle())
                         .disabled(model.location == nil || model.uhudBusy)
                 }
             }

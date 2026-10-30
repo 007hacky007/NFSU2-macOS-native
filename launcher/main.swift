@@ -14,10 +14,11 @@
 //   NFSU2_SKIP_LAUNCHER=1        start the engine without showing the window
 //   NFSU2_ENGINE=original|hd     engine choice for this start
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
-//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud   fake state for the snapshot
-//                                (uhud: ready, with a UHUD pack added)
+//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy   fake state for the snapshot
+//                                (uhud: ready, with a UHUD pack added; uhud-busy: downloading it)
 //   NFSU2_LAUNCHER_TEST=portable:<game folder>:<destination.app>   build a portable copy, quit
 //   NFSU2_LAUNCHER_TEST=uhud:<mod .7z or folder>:<game folder>:<pack>   make a UHUD pack, quit
+//   NFSU2_LAUNCHER_TEST=uhud-download:<game folder>:<pack>   download the mod and make the pack, quit
 //   NFSU2_LAUNCHER_TEST=play     window off screen, press Play after a second (tests the
 //                                normal path: window open -> Play -> engine)
 import AppKit
@@ -38,6 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
+        if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("uhud-download:") {
+            let parts = t.dropFirst("uhud-download:".count).split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
+            model.makeUHUD(mod: nil, game: URL(fileURLWithPath: parts[0]), to: URL(fileURLWithPath: parts[1]))
+            return
+        }
         if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("uhud:") {
             let parts = t.dropFirst("uhud:".count).split(separator: ":", maxSplits: 2).map(String.init)
             guard parts.count == 3 else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
@@ -114,6 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "uhud":
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.hasUHUDPack = true
+        case "uhud-busy":
+            model.game = .ready(GameLocation(exe: exe, embedded: false))
+            model.uhudBusy = true
+            model.uhudPhase = "Downloading the mod from nfsmods.xyz… 1.2 MB of 2.8 MB"
         case "copying":
             model.job = LauncherModel.Job(phase: "Copying the game files…", done: 612_000_000, total: 1_430_000_000)
         case "done":

@@ -3,9 +3,11 @@
 // into one file the engine reads (runtime/uhud.m).  After th0mk's nfsu2-web
 // tools/texpacks.py, which writes the same file.
 //
-// The mod is not part of this app: the player downloads its archive
-// (NFSU2UHUD11192022a.7z) and adds it in the launcher.  The mod's installer writes
-// its textures into the game's own files; this leaves the game folder as it is.
+// The mod is not part of this app.  The launcher's Download button fetches its
+// archive (NFSU2UHUD11192022a.7z) from the mod's own page on nfsmods.xyz, only when
+// the player clicks it, and checks it against the release this was made for
+// (SHA-256); Add File... takes a copy the player already has.  The mod's installer
+// writes its textures into the game's own files; this leaves the game folder as it is.
 // For each of the mod's textures it finds the game's texture of the same name in
 // the game's bundles and keys the mod's one by what the game uploads for that
 // texture: CRC-32 and Adler-32 of level 0, its size and its format.
@@ -20,12 +22,64 @@
 //            name                             file offset of its name (for the log)
 //   the names, then the levels, in the order of the game files and textures they replace
 import Foundation
+import CryptoKit
 
 enum UHUDPack {
     struct Failure: Error { let message: String }
     struct Summary { let textures: Int; let shared: Int; let bytes: Int; let skipped: [String] }
 
-    static let modPage = URL(string: "https://nfsmods.xyz/mod/4319")!
+    // The release this was tested with (19 Nov 2022); another file is not used.
+    static let archive = URL(string: "https://nfsmods.xyz/uploads/mods/4319/e17d26-NFSU2UHUD11192022a.7z")!
+    static let archiveSize: Int64 = 2_818_583
+    static let archiveSHA256 = "28a71f5bc166110d827c4c2d1e95ce7cddaf138a497a353e3f33eeeb28d9dadd"
+
+    /// Downloads the mod's archive (progress: bytes so far), checks it and makes the pack.
+    static func download(game: URL, to dest: URL, progress: @escaping (Int64) -> Void) throws -> Summary {
+        let file = try Downloader(progress: progress).fetch(archive)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let data = try Data(contentsOf: file)
+        let sum = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard sum == archiveSHA256 else {
+            throw Failure(message: "The file on nfsmods.xyz is not the release this was made for. Download the mod from its page yourself and use Add File….")
+        }
+        return try make(mod: file, game: game, to: dest)
+    }
+
+    /// One download into a temporary .7z, waiting for it (call it off the main thread).
+    final class Downloader: NSObject, URLSessionDownloadDelegate {
+        private let progress: (Int64) -> Void
+        private let done = DispatchSemaphore(value: 0)
+        private var file: URL?
+        private var failure: Error?
+        init(progress: @escaping (Int64) -> Void) { self.progress = progress }
+
+        func fetch(_ url: URL) throws -> URL {
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 30
+            let s = URLSession(configuration: cfg, delegate: self, delegateQueue: nil)
+            s.downloadTask(with: url).resume()
+            done.wait()
+            s.finishTasksAndInvalidate()
+            if let f = file { return f }
+            throw Failure(message: "The mod could not be downloaded (\((failure as? Failure)?.message ?? failure?.localizedDescription ?? "no answer from nfsmods.xyz")). Try again later, or download it from its page and use Add File….")
+        }
+        func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64,
+                        totalBytesWritten: Int64, totalBytesExpectedToWrite _: Int64) {
+            progress(totalBytesWritten)
+        }
+        func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            guard let http = downloadTask.response as? HTTPURLResponse, http.statusCode == 200 else {
+                failure = Failure(message: "HTTP \((downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0)"); return
+            }
+            // the system removes location when this returns
+            let f = FileManager.default.temporaryDirectory.appendingPathComponent("nfsu2-uhud-\(UUID().uuidString).7z")
+            do { try FileManager.default.moveItem(at: location, to: f); file = f } catch { failure = error }
+        }
+        func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            if let e = error { failure = e }
+            done.signal()
+        }
+    }
 
     // UHUD's folders (under assets/) and the game files whose textures they replace, as its
     // install.end binds them.  The per-HUD files hold compressed copies of

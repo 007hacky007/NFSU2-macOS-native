@@ -23,6 +23,7 @@ final class LauncherModel: ObservableObject {
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     @Published var uhud: Bool { didSet { defaults.set(uhud, forKey: Prefs.uhud) } }
     @Published var uhudBusy = false
+    @Published var uhudPhase = ""
     @Published var uhudError: String? = nil
     @Published var hasUHUDPack = false
     @Published var job: Job? = nil
@@ -187,7 +188,11 @@ final class LauncherModel: ObservableObject {
 
     // MARK: UHUD
 
-    func openUHUDPage() { NSWorkspace.shared.open(UHUDPack.modPage) }
+    /// Downloads the mod from nfsmods.xyz and makes the pack (the Download button).
+    func downloadUHUD() {
+        guard let loc = location else { return }
+        makeUHUD(mod: nil, game: loc.folder)
+    }
 
     /// The pack from the mod's archive (or its extracted folder), made in Application Support.
     func addUHUD() {
@@ -203,12 +208,23 @@ final class LauncherModel: ObservableObject {
         makeUHUD(mod: mod, game: loc.folder)
     }
 
-    func makeUHUD(mod: URL, game: URL, to dest: URL = Paths.uhudPack) {
+    /// The pack from the mod's archive or folder, or (mod nil) from a download.
+    func makeUHUD(mod: URL?, game: URL, to dest: URL = Paths.uhudPack) {
         uhudBusy = true
         uhudError = nil
+        uhudPhase = mod == nil ? "Downloading the mod from nfsmods.xyz…" : "Making the pack from the mod…"
         DispatchQueue.global(qos: .userInitiated).async {
             var res: UHUDPack.Summary? = nil, err: String? = nil
-            do { res = try UHUDPack.make(mod: mod, game: game, to: dest) }
+            do {
+                if let m = mod { res = try UHUDPack.make(mod: m, game: game, to: dest) }
+                else {
+                    res = try UHUDPack.download(game: game, to: dest) { got in
+                        let text = got >= UHUDPack.archiveSize ? "Making the pack from the mod…"
+                            : "Downloading the mod from nfsmods.xyz… \(formatBytes(got)) of \(formatBytes(UHUDPack.archiveSize))"
+                        DispatchQueue.main.async { self.uhudPhase = text }
+                    }
+                }
+            }
             catch let e as UHUDPack.Failure { err = e.message }
             catch { err = error.localizedDescription }
             DispatchQueue.main.async {

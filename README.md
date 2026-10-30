@@ -303,11 +303,13 @@ a report.
 
 **Sharper menus and HUD.** LunicAura106's
 [Upscaled HUD](https://nfsmods.xyz/mod/4319) mod redraws the menus, HUD, fonts,
-icons and logos at four times their size. It is not part of this repository:
-download its archive (`NFSU2UHUD11192022a.7z`), then in the launcher's Graphics
-card click **Add…** and choose it. The launcher makes `uhud.pak` from it in
-`~/Library/Application Support/NFSU2/Textures/` and leaves the game folder as it
-is; the switch next to it turns the mod on (off is the original game). While
+icons and logos at four times their size. It is not part of this repository: in
+the launcher's Graphics card, **Download** fetches it from the mod's page on
+nfsmods.xyz (2.8 MB, checked against the release this was made for), or **Add
+File…** takes a copy of `NFSU2UHUD11192022a.7z` you already have. The launcher
+makes `uhud.pak` from it in `~/Library/Application Support/NFSU2/Textures/` and
+leaves the game folder as it is; the switch that then appears turns the mod on
+(off is the original game). While
 playing, **Cmd-T** switches between the mod's textures and the game's own. From
 the command line: `NFSU2_UHUD=on`, with the pack in `NFSU2_UHUD_PACK` or in the
 game folder's `TEXPACKS/uhud.pak` (runtime/uhud.m).
