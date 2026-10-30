@@ -21,6 +21,7 @@ final class LauncherModel: ObservableObject {
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
+    @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
 
@@ -41,7 +42,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true])
+        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.garage: true])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -51,6 +52,7 @@ final class LauncherModel: ObservableObject {
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
+        garage = defaults.bool(forKey: Prefs.garage)
     }
 
     var location: GameLocation? {
@@ -118,6 +120,7 @@ final class LauncherModel: ObservableObject {
             if wideHUD { setenv("HUDPOS", "1", 1); setHUDPOS = true }
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
         }
+        if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

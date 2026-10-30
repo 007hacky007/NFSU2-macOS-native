@@ -170,6 +170,16 @@ struct MoreCard: View {
                     .buttonStyle(SecondaryButtonStyle())
                     .disabled(!model.isReady)
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("10-car garage and Trade Car").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Career slots 6-10, and trading a car in for 80% of what it cost. A save made while off loses the cars in slots 6-10. Off: as in the original game.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.garage).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
             HStack(spacing: 8) {
                 Button("Saves") { model.openSaves() }.buttonStyle(SecondaryButtonStyle())
                 Button("Logs") { model.openLogs() }.buttonStyle(SecondaryButtonStyle())
@@ -274,6 +284,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(width: 560, height: 664)
     }
 }
