@@ -37,6 +37,7 @@ The game boots, reaches the menus, and races are playable with sound.
 | Windowed, fullscreen, Retina-native and 1080p widescreen | working |
 | Career mode: profile creation (name entry), save and load | working |
 | LAN (hosting runs the game's own `server.dll`) and Online through a relay server | working, see [Multiplayer](#multiplayer) |
+| Free roam with other players (Online) | working, see [Multiplayer](#multiplayer) |
 | Double-clickable `.app` with a launcher window (`./pack.sh`) | working |
 | Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAPHICS_RESEARCH.md` |
 
@@ -318,6 +319,20 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   `web/server-rs`).  The server stands in for EA's long-gone Online servers and
   carries the virtual LAN; the player name is the Online name.  Environment:
   `NFSU2_NET=online`, `NFSU2_SERVER_URL`, `NFSU2_ROAM_NAME`.
+- **Free roam with other players** (with Play online; Off, the default, is free
+  roam as in the original game): the players in career free roam see each
+  other's cars live, with their customization and names, on the minimap and
+  the world map, through the same server (`runtime/roam*.c`, from
+  nfsu2-web).  **Solid cars** can touch, **ghost cars** drive through each
+  other.  At a career race's marker the race card asks Solo or Multiplayer;
+  Multiplayer opens a race lobby there that the others join with Enter, and
+  the race is the game's own LAN race on that track, started in every game of
+  the lobby at once (`runtime/mprace.c`); only its prize goes into the
+  career.  Two players near each other can challenge each other to an
+  outrun.  **Room**: only players with the same room name see each other;
+  **Crew**: names and arrows of your crew in its colour at any distance.
+  Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
+  `NFSU2_ROAM_CREW`.
 - `NFSU2_NET=off` turns networking off; `NFSU2_NET=loopback` confines it to
   127.0.0.1 for two games on one Mac (see the top of `runtime/winsock.c`).
 

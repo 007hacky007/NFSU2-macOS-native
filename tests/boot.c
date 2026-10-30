@@ -42,6 +42,7 @@ static void all_reports(void){
     com_report(); win32_report(); { void vclock_report(void); vclock_report(); }
     { void metal_budget_report(void); metal_budget_report(); }
     dispatch_report();
+    { void roam_game_report(void); roam_game_report(); }   /* free-roam multiplayer: statistics, goodbye to the others */
 }
 
 static void all_reports(void);

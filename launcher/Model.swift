@@ -4,6 +4,7 @@ import Darwin
 
 final class LauncherModel: ObservableObject {
     enum Engine: String { case original, hd }
+    enum FreeRoam: String { case off, solid, ghost }
 
     struct Job {
         var phase: String
@@ -24,7 +25,17 @@ final class LauncherModel: ObservableObject {
     @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
     @Published var server: String { didSet { defaults.set(server, forKey: Prefs.server) } }
     @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
-    var onlineError: String? { online ? OnlineSettings.error(server: server, name: playerName) : nil }
+    @Published var freeRoam: FreeRoam { didSet { defaults.set(freeRoam.rawValue, forKey: Prefs.freeRoam) } }
+    @Published var roamRoom: String { didSet { defaults.set(roamRoom, forKey: Prefs.roamRoom) } }
+    @Published var roamCrew: String { didSet { defaults.set(roamCrew, forKey: Prefs.roamCrew) } }
+    var onlineError: String? {
+        guard online else { return nil }
+        if let e = OnlineSettings.error(server: server, name: playerName) { return e }
+        if freeRoam != .off && !(OnlineSettings.validTag(roamRoom) && OnlineSettings.validTag(roamCrew)) {
+            return "Room and crew: up to 24 letters, numbers or signs."
+        }
+        return nil
+    }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
 
@@ -58,6 +69,9 @@ final class LauncherModel: ObservableObject {
         online = defaults.bool(forKey: Prefs.online)
         server = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
         playerName = defaults.string(forKey: Prefs.playerName) ?? ""
+        freeRoam = FreeRoam(rawValue: defaults.string(forKey: Prefs.freeRoam) ?? "") ?? .off
+        roamRoom = defaults.string(forKey: Prefs.roamRoom) ?? ""
+        roamCrew = defaults.string(forKey: Prefs.roamCrew) ?? ""
     }
 
     var location: GameLocation? {
@@ -135,6 +149,17 @@ final class LauncherModel: ObservableObject {
             setenv("NFSU2_SERVER_URL", server, 0)
             setenv("NFSU2_ROAM_NAME", playerName, 0)
             setenv("NFSU2_NET_NAME", playerName, 0)
+        }
+        // Free roam with other players, through the same server (runtime/roam.c,
+        // roam_game.c).  Off: free roam as in the original game.
+        if online && freeRoam != .off {
+            setenv("NFSU2_ROAM", "1", 0)
+            setenv("NFSU2_ROAM_COLLIDE", freeRoam == .solid ? "1" : "0", 0)
+            setenv("NFSU2_ROAM_DISCOVERY", "0", 0)
+            let room = roamRoom.trimmingCharacters(in: .whitespaces)
+            let crew = roamCrew.trimmingCharacters(in: .whitespaces)
+            if !room.isEmpty { setenv("NFSU2_ROAM_ROOM", room, 0) }
+            if !crew.isEmpty { setenv("NFSU2_ROAM_CREW", crew, 0) }
         }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }

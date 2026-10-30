@@ -321,11 +321,19 @@ static void autotext_tick(long f){
     if ((f - start) / 6 >= pos){ char_push((unsigned char)txt[pos]); pos++; }
 }
 
+/* Key taps from the runtime (mprace.c drives the menus of a free-roam
+ * race's trip): the key is held until that frame */
+static _Atomic long g_key_tap_until[256];
+void metal_key_tap(unsigned dik, long frames){
+    if (dik < 256) atomic_store(&g_key_tap_until[dik], atomic_load(&g_frames_drawn) + (frames > 0 ? frames : 1));
+}
+
 /* Guest side: fill the DirectInput keyboard state */
 void metal_fill_keyboard(unsigned char *dst, unsigned n){
     if (n > 256) n = 256;
+    long f = atomic_load(&g_frames_drawn);
     for (unsigned i = 0; i < n; i++)
-        dst[i] = atomic_load(&g_keys[i]) ? 0x80 : 0x00;
+        dst[i] = atomic_load(&g_keys[i]) || atomic_load(&g_key_tap_until[i]) > f ? 0x80 : 0x00;
 }
 
 /* Textures are created BEFORE the window opens.  So the "usable" criterion is the
