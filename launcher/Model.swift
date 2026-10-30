@@ -21,6 +21,7 @@ final class LauncherModel: ObservableObject {
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
+    @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
 
@@ -51,6 +52,7 @@ final class LauncherModel: ObservableObject {
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
+        intro = defaults.string(forKey: Prefs.intro) ?? "skippable"
     }
 
     var location: GameLocation? {
@@ -118,6 +120,7 @@ final class LauncherModel: ObservableObject {
             if wideHUD { setenv("HUDPOS", "1", 1); setHUDPOS = true }
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
         }
+        if intro != "skippable" { setenv("NFSU2_INTRO", intro, 0) }      // one set by hand wins
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
