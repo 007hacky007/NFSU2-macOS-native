@@ -1,11 +1,12 @@
 // The Texture Packs window (TexturePacks.swift): the packs on this Mac, in the order the
-// engine uses them, and the catalog's packs to download or import.
+// engine uses them; the community's packs to download or import, with a search; and
+// Import Texture Pack… for any other pack.
 import AppKit
 import SwiftUI
 
 enum TexturePackWindow {
     private static var window: NSWindow?
-    static let size = NSSize(width: 640, height: 660)
+    static let size = NSSize(width: 680, height: 720)
     static func show(store: TexturePackStore, model: LauncherModel) {
         if let w = window, w.isVisible { w.makeKeyAndOrderFront(nil); return }
         window = make(store: store, model: model)
@@ -26,47 +27,71 @@ enum TexturePackWindow {
 struct TexturePackManagerView: View {
     @ObservedObject var store: TexturePackStore
     @ObservedObject var model: LauncherModel
+    @State var search = ""
+    @State var category = "all"
+
+    private var available: [CatalogPack] {
+        let words = search.lowercased().split(separator: " ").map(String.init)
+        return TexturePackCatalog.packs.filter { c in
+            guard store.pack(c.id) == nil, category == "all" || c.category == category else { return false }
+            let text = (c.name + " " + c.author + " " + c.description + " " + c.kind).lowercased()
+            return words.allSatisfy { text.contains($0) }
+        }
+    }
+    private var importing: [String] { store.phase.keys.filter { $0.hasPrefix("import-") }.sorted() }
 
     var body: some View {
         ZStack {
             Theme.background
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Texture Packs").font(.system(size: 19, weight: .bold)).foregroundColor(Theme.text)
-                    Text("The community's texture mods, drawn in place of the game's own textures. Your game folder stays as it is. With no pack on, the game looks as in the original.")
-                        .font(.system(size: 11.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Texture Packs").font(.system(size: 19, weight: .bold)).foregroundColor(Theme.text)
+                        Text("The community's texture mods, drawn in place of the game's own textures. Your game folder stays as it is. With no pack on, the game looks as in the original.")
+                            .font(.system(size: 11.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button("Import Texture Pack…") { store.importPanel(for: nil) }
+                            .buttonStyle(PrimaryButtonStyle.Small()).disabled(model.location == nil)
+                        Text("Any pack, also one not in the list:\n.tpf, TexWizard, .zip, .7z, .rar or a folder")
+                            .font(.system(size: 10)).foregroundColor(Theme.dim).multilineTextAlignment(.trailing)
+                            .fixedSize()
+                    }
                 }
                 ScrollView {
                     VStack(spacing: 12) {
-                        if !store.installed.isEmpty || store.phase.keys.contains(where: { $0.hasPrefix("import-") }) {
+                        if !store.installed.isEmpty || !importing.isEmpty {
                             Card("On this Mac · where two change the same texture, the higher one wins") {
                                 ForEach(store.installed) { p in InstalledPackRow(store: store, pack: p) }
-                                ForEach(store.phase.keys.filter { $0.hasPrefix("import-") }.sorted(), id: \.self) { id in
-                                    BusyLine(text: store.phase[id] ?? "", fraction: nil)
-                                }
-                            }
-                        }
-                        Card("Available") {
-                            ForEach(TexturePackCatalog.packs.filter { store.pack($0.id) == nil }) { c in
-                                CatalogPackRow(store: store, pack: c, canAdd: model.location != nil)
-                            }
-                            if TexturePackCatalog.packs.allSatisfy({ store.pack($0.id) != nil }) {
-                                Text("Every pack of the list is on this Mac.").font(.system(size: 11)).foregroundColor(Theme.dim)
+                                ForEach(importing, id: \.self) { id in BusyLine(text: store.phase[id] ?? "", fraction: nil) }
                             }
                         }
                         ForEach(store.errors.keys.filter { $0.hasPrefix("import-") || $0 == "store" }.sorted(), id: \.self) { k in
                             Text(store.errors[k] ?? "").font(.system(size: 11)).foregroundColor(Theme.bad)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                        Card("Packs from the community · \(TexturePackCatalog.packs.count) in the list, most popular first") {
+                            HStack(spacing: 8) {
+                                TextField("Search by name, author or what it changes", text: $search)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle()).font(.system(size: 12))
+                                Picker("", selection: $category) {
+                                    ForEach(CatalogPack.categories, id: \.0) { Text($0.1).tag($0.0) }
+                                }.labelsHidden().frame(width: 150)
+                            }
+                            ForEach(available) { c in
+                                CatalogPackRow(store: store, pack: c, canAdd: model.location != nil)
+                            }
+                            if available.isEmpty {
+                                Text(search.isEmpty && category == "all" ? "Every pack of the list is on this Mac."
+                                     : "No pack in the list matches. Import Texture Pack… takes any other.")
+                                    .font(.system(size: 11)).foregroundColor(Theme.dim)
+                            }
+                        }
                     }
                 }
-                HStack(alignment: .center, spacing: 10) {
-                    Text("The Upscaled HUD switch in the launcher comes after these packs. Cmd-T in the game shows the original textures for comparing.")
-                        .font(.system(size: 10.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 6)
-                    Button("Import…") { store.importPanel(for: nil) }.buttonStyle(SecondaryButtonStyle())
-                        .disabled(model.location == nil)
-                }
+                Text("Download: the release tested with this port, from the author's page (checked by SHA-256). Details: the pack's page on its site. The Upscaled HUD switch comes after these packs. Cmd-T in the game shows the original textures.")
+                    .font(.system(size: 10.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 20).padding(.vertical, 16)
         }
@@ -133,22 +158,26 @@ struct CatalogPackRow: View {
                     Text(pack.name).font(.system(size: 12.5, weight: .medium)).foregroundColor(Theme.text)
                     Text("by \(pack.author) · \(pack.kind)" + (pack.size > 0 ? " · \(formatBytes(pack.size))" : ""))
                         .font(.system(size: 11)).foregroundColor(Theme.dim)
-                    Text(pack.changes).font(.system(size: 11)).foregroundColor(Theme.text.opacity(0.8))
+                    Text(pack.description).font(.system(size: 11)).foregroundColor(Theme.text.opacity(0.8))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 if store.phase[pack.id] == nil {
-                    Button("Page") { NSWorkspace.shared.open(pack.page) }.buttonStyle(SecondaryButtonStyle())
-                        .help(pack.page.absoluteString)
+                    Button("Details") { NSWorkspace.shared.open(pack.page) }.buttonStyle(SecondaryButtonStyle())
+                        .help("Opens the pack's page: " + pack.page.absoluteString)
                     if pack.download != nil {
                         Button("Download") { store.download(pack) }.buttonStyle(PrimaryButtonStyle.Small())
                             .disabled(!canAdd || store.busy)
+                    } else {
+                        Button("Import Downloaded File…") { store.importPanel(for: pack) }.buttonStyle(SecondaryButtonStyle())
+                            .disabled(!canAdd)
+                            .help("Choose the file you downloaded from the pack's page")
                     }
-                    Button("Import…") { store.importPanel(for: pack) }.buttonStyle(SecondaryButtonStyle())
-                        .disabled(!canAdd)
                 }
             }
-            Text(pack.note).font(.system(size: 10.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
+            if let n = pack.note {
+                Text(n).font(.system(size: 10.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
+            }
             if let p = store.phase[pack.id] { BusyLine(text: p, fraction: store.fraction[pack.id]) }
             if let e = store.errors[pack.id] {
                 Text(e).font(.system(size: 11)).foregroundColor(Theme.bad).fixedSize(horizontal: false, vertical: true)
@@ -177,27 +206,23 @@ extension PrimaryButtonStyle {
     }
 }
 
-/// The launcher's row: what is on, and the button that opens the window.
+/// The launcher's row: one line, and the button that opens the window.
 struct TexturePacksRow: View {
     @ObservedObject var model: LauncherModel
     @ObservedObject var store: TexturePackStore
     private var text: String {
         let on = store.installed.filter { $0.enabled }
-        if store.installed.isEmpty {
-            return "The community's texture mods (TexMod, TexWizard): sharper roads, sky and menus, downloaded or imported in one click. Off: as in the original game."
-        }
-        if on.isEmpty { return "\(store.installed.count) on this Mac, none on. Off: as in the original game." }
-        return "On: " + on.map { $0.name }.joined(separator: ", ") + ". Off: as in the original game."
+        if on.isEmpty { return "Community texture mods for roads, sky and menus. None on: the original game." }
+        return "On: " + on.map { $0.name }.joined(separator: ", ")
     }
     var body: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Texture packs").font(.system(size: 12.5)).foregroundColor(Theme.text)
-                Text(text).font(.system(size: 11)).foregroundColor(Theme.dim)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(text).font(.system(size: 11)).foregroundColor(Theme.dim).lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 8)
-            Button("Texture Packs…") { TexturePackWindow.show(store: store, model: model) }
+            Button("Manage…") { TexturePackWindow.show(store: store, model: model) }
                 .buttonStyle(SecondaryButtonStyle())
         }
     }

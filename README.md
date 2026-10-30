@@ -314,29 +314,26 @@ playing, **Cmd-T** switches between the mod's textures and the game's own. From
 the command line: `NFSU2_UHUD=on`, with the pack in `NFSU2_UHUD_PACK` or in the
 game folder's `TEXPACKS/uhud.pak` (runtime/texrep.m).
 
-**Texture packs.** The launcher's **Texture Packs…** window (in the Graphics card)
-lists the community's most downloaded texture mods: TexMod packs (`.tpf`),
-TexWizard packs and mods that replace the game's texture files. None of them is
-part of this repository. Where the author's page has a direct link, **Download**
-fetches the release this was tested with (checked by SHA-256) and turns the pack
-on; packs whose site needs a browser (a wait or a captcha) are marked "Import
-only", and **Import…** takes the file you downloaded, or any other such mod. The
-launcher makes one pack file per mod in
-`~/Library/Application Support/NFSU2/TexturePacks/` and leaves the game folder as
-it is. Each pack has its own switch; where two change the same texture, the
-higher one in the list wins, and the Upscaled HUD comes after all of them. With
-no pack on, the game looks as in the original. The engine draws a pack's texture
-in place of the game's own, which keeps its own size, so the game never sees the
-larger textures. **Cmd-T** while playing switches between the packs' textures and
-the game's own. From the command line: `NFSU2_TEXPACKS=<pack>[:<pack>...]`.
-
-| Pack | Author | Kind | In the launcher |
-|---|---|---|---|
-| [Remastered Underground 2](https://www.gamepressure.com/download/need-for-speed-underground-2-remastered-underground-2-v10-mod/z014c4d) | instanity | TexMod pack and texture files | Import only |
-| [RETextured v2.0](https://www.gamepressure.com/download/need-for-speed-underground-2-retextured-v20-mod/ze142be) | Dragozool | TexMod pack | Import only |
-| [Last Breath Final](https://nfsmods.xyz/mod/1717) | Stre1itzia | TexMod pack | Import only |
-| [8K HDRI Skyboxes](https://nfsmods.xyz/mod/7417) | BadassBaboon, TexWizard port by RKBDI | TexWizard pack | Download (43 MB) |
-| [Scout's UI Remaster](https://nfsmods.xyz/mod/378) | BlackScout | texture files | Download (11.7 MB) |
+**Texture packs.** The launcher's Texture Packs window (**Manage…** in the
+Graphics card) handles the community's texture mods: TexMod packs (`.tpf`),
+TexWizard packs, mods that replace the game's texture files, and DDS or PNG files
+named after the game's textures. None of them is part of this repository.
+**Import Texture Pack…** takes any of them, as downloaded (`.zip`, `.7z`, `.rar`,
+`.tpf` or a folder). The window also lists 38 popular packs (nfsmods.xyz's most
+viewed NFSU2 texture and interface mods, and large packs hosted elsewhere) with a
+search and categories; **Details** opens a pack's page. The 27 releases that were
+tested with this port on both game versions have **Download**, which fetches that
+release from the author's page and checks it by SHA-256; the others are
+downloaded on their page and imported. The launcher makes one pack file per mod
+in `~/Library/Application Support/NFSU2/TexturePacks/` and leaves the game folder
+as it is; a mod with a symbolic link in it is refused. Each pack has its own
+switch; where two change the same texture, the higher one in the list wins, and
+the Upscaled HUD comes after all of them. With no pack on, the game looks as in
+the original. The engine draws a pack's texture in place of the game's own, which
+keeps its own size, so the game never sees the larger textures. **Cmd-T** while
+playing switches between the packs' textures and the game's own. From the command
+line: `NFSU2_TEXPACKS=<pack>[:<pack>...]`. `tests/texture_packs.sh` checks that mods
+with links are refused.
 
 ## FAQ
 

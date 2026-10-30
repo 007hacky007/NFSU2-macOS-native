@@ -14,10 +14,11 @@
 //   NFSU2_SKIP_LAUNCHER=1        start the engine without showing the window
 //   NFSU2_ENGINE=original|hd     engine choice for this start
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
-//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window
+//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window|texpacks-busy
 //                                fake state for the snapshot (uhud: ready, with a UHUD pack added;
 //                                uhud-busy: downloading it; texpacks: two texture packs, one on;
-//                                texpacks-window: the Texture Packs window with them, one downloading)
+//                                texpacks-window: the Texture Packs window with them; texpacks-busy:
+//                                the same, one downloading)
 //   NFSU2_LAUNCHER_TEST=portable:<game folder>:<destination.app>   build a portable copy, quit
 //   NFSU2_LAUNCHER_TEST=uhud:<mod .7z or folder>:<game folder>:<pack>   make a UHUD pack, quit
 //   NFSU2_LAUNCHER_TEST=uhud-download:<game folder>:<pack>   download the mod and make the pack, quit
@@ -102,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if let s = env["NFSU2_LAUNCHER_STATE"] { fakeState(s) }
         buildMenu()
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 734),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 726),
                          styleMask: [.titled, .closable, .miniaturizable],
                          backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
@@ -112,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(calibratedRed: 0.067, green: 0.071, blue: 0.082, alpha: 1)
         w.contentView = NSHostingView(rootView: LauncherView(model: model))
-        if env["NFSU2_LAUNCHER_STATE"] == "texpacks-window" {
+        if ["texpacks-window", "texpacks-busy"].contains(env["NFSU2_LAUNCHER_STATE"] ?? "") {
             let tw = TexturePackWindow.make(store: model.packs, model: model)
             w.setContentSize(TexturePackWindow.size); w.contentView = tw.contentView
         }
@@ -168,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.uhudBusy = true
             model.uhudPhase = "Downloading the mod from nfsmods.xyz… 1.2 MB of 2.8 MB"
-        case "texpacks", "texpacks-window":
+        case "texpacks", "texpacks-window", "texpacks-busy":
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.packs.fake([
                 InstalledPack(id: "remastered-ug2", name: "Remastered Underground 2", author: "instanity", file: "remastered-ug2.ntxp",
@@ -176,9 +177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 InstalledPack(id: "retextured", name: "RETextured v2.0", author: "Dragozool", file: "retextured.ntxp",
                               enabled: false, textures: 205, bytes: 191_036_416, source: "Imported from nfsu2retex20.zip"),
             ])
-            if s == "texpacks-window" {
-                model.packs.phase["hdri-sky-8k"] = "Downloading from nfsmods.xyz… 17.3 MB of 43 MB"
-                model.packs.fraction["hdri-sky-8k"] = 0.4
+            if s == "texpacks-busy" {
+                model.packs.phase["scout-ui"] = "Downloading from nfsmods.xyz… 4.6 MB of 11.7 MB"
+                model.packs.fraction["scout-ui"] = 0.4
             }
         case "copying":
             model.job = LauncherModel.Job(phase: "Copying the game files…", done: 612_000_000, total: 1_430_000_000)

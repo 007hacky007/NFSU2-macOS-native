@@ -16,61 +16,24 @@
 import AppKit
 import CryptoKit
 
-struct CatalogPack: Identifiable {
+struct CatalogPack: Identifiable, Decodable {
     let id: String
     let name: String
     let author: String
-    let changes: String           // what it changes, in plain words
+    let category: String          // ui | world | sky | cars
     let kind: String              // "TexMod pack" ...
+    let description: String       // what it changes, in plain words
     let page: URL                 // the author's page
-    let download: URL?            // nil: Import only
-    let fileName: String          // the file as downloaded
-    let size: Int64               // the file's size (0: not known)
-    let sha256: String?           // the release this was tested with (Download only)
-    let exclude: [String]         // parts of the download not to use
-    let note: String              // terms, why Import only, what it needs
-}
-
-enum TexturePackCatalog {
-    static let packs: [CatalogPack] = [
-        CatalogPack(id: "remastered-ug2", name: "Remastered Underground 2", author: "instanity",
-                    changes: "Roads, walls, sky, vegetation, billboards, car textures, HUD and effects.",
-                    kind: "TexMod pack",
-                    page: URL(string: "https://www.gamepressure.com/download/need-for-speed-underground-2-remastered-underground-2-v10-mod/z014c4d")!,
-                    download: nil, fileName: "underground2rem10.zip", size: 121_453_867, sha256: nil, exclude: [],
-                    note: "Import only: gamepressure.com gives the file to a browser after a wait. Download it there, then Import… the .zip (or REMASTER.tpf). Its ReShade preset and plugins are not used."),
-        CatalogPack(id: "retextured", name: "RETextured v2.0", author: "Dragozool",
-                    changes: "Higher-resolution roads, fences, trees and buildings.",
-                    kind: "TexMod pack",
-                    page: URL(string: "https://www.gamepressure.com/download/need-for-speed-underground-2-retextured-v20-mod/ze142be")!,
-                    download: nil, fileName: "nfsu2retex20.zip", size: 140_432_669, sha256: nil, exclude: [],
-                    note: "Import only: gamepressure.com gives the file to a browser after a wait. Download it there, then Import… the .zip (or the .tpf in it)."),
-        CatalogPack(id: "last-breath", name: "Last Breath Final", author: "Stre1itzia",
-                    changes: "4K roads, remastered map and tracks, 250+ HD textures, HD HUD.",
-                    kind: "TexMod pack",
-                    page: URL(string: "https://nfsmods.xyz/mod/1717")!,
-                    download: nil, fileName: "U2_LastBreath_Final.rar", size: 0, sha256: nil, exclude: [],
-                    note: "Import only: the mod's page links to a file host that needs a browser (about 372 MB). Import… the .rar or its .tpf. The author asks that its textures are not repacked; the pack made here stays on this Mac."),
-        CatalogPack(id: "hdri-sky-8k", name: "8K HDRI Skyboxes", author: "BadassBaboon, TexWizard port by RKBDI",
-                    changes: "The sky at sunrise, sunset and night, at 8192 × 2048.",
-                    kind: "TexWizard pack",
-                    page: URL(string: "https://nfsmods.xyz/mod/7417")!,
-                    download: URL(string: "https://nfsmods.xyz/uploads/mods/7417/e318e2-UG2HDR8KSKY_UPDATE.7z")!,
-                    fileName: "UG2HDR8KSKY_UPDATE.7z", size: 42_963_808,
-                    sha256: "c62d71ab1742cb97d0598f69be1449afeda59747b27f65ff56c455486d9911b8",
-                    exclude: ["optional/"],
-                    note: "Uses about 205 MB on disk."),
-        CatalogPack(id: "scout-ui", name: "Scout's UI Remaster", author: "BlackScout",
-                    changes: "Menus, HUD, fonts, speedometers and part of the map redrawn at four times the detail.",
-                    kind: "texture files",
-                    page: URL(string: "https://nfsmods.xyz/mod/378")!,
-                    download: URL(string: "https://nfsmods.xyz/uploads/mods/378/af6d1b-ScoutNFSU2UIRemaster1.0.1.zip")!,
-                    fileName: "ScoutNFSU2UIRemaster1.0.1.zip", size: 11_685_588,
-                    sha256: "57cd1ca8ff93df4c4d155eabe57c40587f8925c50f19e17ce8452ae3e39e8f23",
-                    exclude: ["old tpf version/"],
-                    note: "Its textures may be reused with credit to BlackScout. The HD Content Support plugin it asks for is not needed here."),
-    ]
-    static func pack(_ id: String) -> CatalogPack? { packs.first { $0.id == id } }
+    let download: URL?            // the tested release; nil: Details and Import
+    let sha256: String?           // its SHA-256 (with download only)
+    let knownSHA256: [String]?    // tested releases without a direct link
+    let fileName: String          // the file as downloaded ("" when not known)
+    let size: Int64               // its size (0: not known)
+    let include: [String]?        // only these parts of the download are used
+    let exclude: [String]?        // these are not
+    let releases: String          // "EU and NA" (tested) or "not checked"
+    let note: String?
+    static let categories = [("all", "All"), ("ui", "Menus and HUD"), ("world", "World"), ("sky", "Sky"), ("cars", "Cars")]
 }
 
 /// A pack the launcher made (packs.json).
@@ -147,8 +110,8 @@ final class TexturePackStore: ObservableObject {
             guard try Self.sha256(file) == sha else {
                 throw UHUDPack.Failure(message: "The file on \(host) is not the release this was tested with. Download it from its page yourself and use Import….")
             }
-            return try self.make(c.id, name: c.name, author: c.author, mod: file, game: game, exclude: c.exclude,
-                                 source: "Downloaded from \(host) (\(c.fileName))", report)
+            return try self.make(c.id, name: c.name, author: c.author, mod: file, game: game, include: c.include ?? [],
+                                 exclude: c.exclude ?? [], source: "Downloaded from \(host) (\(c.fileName))", report)
         } done: { done?($0) }
     }
 
@@ -166,14 +129,19 @@ final class TexturePackStore: ObservableObject {
         importMod(mod, for: c)
     }
 
+    /// c nil (the general Import Texture Pack… button): a file that is a release in the list
+    /// (by its SHA-256) is made as that entry, with its name and the parts it uses.
     func importMod(_ mod: URL, for c: CatalogPack?, done: ((Bool) -> Void)? = nil) {
         guard let game = game() else { return }
         let base = mod.deletingPathExtension().lastPathComponent
-        let id = c?.id ?? "import-" + String(base.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.prefix(40))
+        let tmpID = c?.id ?? "import-" + String(base.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.prefix(40))
             + "-" + String(UUID().uuidString.prefix(6)).lowercased()
-        start(id, "Making the pack from \(mod.lastPathComponent)…") { report in
-            try self.make(id, name: c?.name ?? base, author: c?.author ?? "", mod: mod, game: game,
-                          exclude: c?.exclude ?? [], source: "Imported from \(mod.lastPathComponent)", report)
+        start(tmpID, "Making the pack from \(mod.lastPathComponent)…") { report in
+            var c = c
+            if c == nil, !UHUDPack.isDirectory(mod), let sum = try? Self.sha256(mod) { c = TexturePackCatalog.pack(sha256: sum) }
+            return try self.make(c?.id ?? tmpID, name: c?.name ?? base, author: c?.author ?? "", mod: mod, game: game,
+                                 include: c?.include ?? [], exclude: c?.exclude ?? [],
+                                 source: "Imported from \(mod.lastPathComponent)", report)
         } done: { done?($0) }
     }
 
@@ -202,10 +170,11 @@ final class TexturePackStore: ObservableObject {
         }
     }
 
-    private func make(_ id: String, name: String, author: String, mod: URL, game: URL, exclude: [String],
+    private func make(_ id: String, name: String, author: String, mod: URL, game: URL, include: [String], exclude: [String],
                       source: String, _ report: @escaping (String, Double?) -> Void) throws -> InstalledPack {
         let file = id + ".ntxp"
-        let s = try PackBuilder.build(mod: mod, game: game, exclude: exclude, to: Self.dir.appendingPathComponent(file)) { report($0, nil) }
+        let s = try PackBuilder.build(mod: mod, game: game, include: include, exclude: exclude,
+                                      to: Self.dir.appendingPathComponent(file)) { report($0, nil) }
         if ProcessInfo.processInfo.environment["NFSU2_LAUNCHER_TEST"] != nil {
             print("texture pack \(id): \(s.textures) textures (\(s.texmod) TexMod, \(s.named) by name, \(s.content) by content), \(s.bytes) bytes")
             print("  from: " + s.sources.joined(separator: ", "))

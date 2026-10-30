@@ -133,21 +133,26 @@ enum PackBuilder {
 
     // MARK: finding the mod's parts
 
-    /// The pack from a mod as downloaded (archive, .tpf, folder).  exclude: parts of
-    /// paths not to use (a mod's old versions, its optional extras).
-    static func build(mod: URL, game: URL, exclude: [String] = [], to dest: URL,
+    /// The pack from a mod as downloaded (archive, .tpf, folder).  include: if not empty, only
+    /// paths that contain one of these are used (a mod's variant); exclude: paths not to use
+    /// (its old versions, the originals it keeps for uninstalling).
+    ///
+    /// Safety: an archive is unpacked only into a new temporary folder of ours, and a mod
+    /// (unpacked or a folder the player chose) that holds a symbolic link, or anything that
+    /// is not a plain file or folder, is refused, so nothing outside it is ever read.
+    static func build(mod: URL, game: URL, include: [String] = [], exclude: [String] = [], to dest: URL,
                       progress: @escaping (String) -> Void = { _ in }) throws -> Summary {
         let fm = FileManager.default
         var temps = [URL]()
         defer { for t in temps { try? fm.removeItem(at: t) } }
         func unpack(_ archive: URL) throws -> URL {
             let t = fm.temporaryDirectory.appendingPathComponent("nfsu2-texpack-\(UUID().uuidString)")
-            try fm.createDirectory(at: t, withIntermediateDirectories: true)
+            try fm.createDirectory(at: t, withIntermediateDirectories: false)
             temps.append(t)
-            // bsdtar (libarchive) reads ZIP, 7-Zip and RAR archives
+            // bsdtar (libarchive) reads ZIP, 7-Zip and RAR archives; it refuses absolute paths and ".."
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-            p.arguments = ["-xf", archive.path, "-C", t.path]
+            p.arguments = ["-xf", archive.path, "-C", t.path, "--no-same-owner", "--no-same-permissions"]
             p.standardOutput = FileHandle.nullDevice
             p.standardError = FileHandle.nullDevice
             try p.run()
@@ -157,25 +162,35 @@ enum PackBuilder {
             }
             return t
         }
+        let modFile = !UHUDPack.isDirectory(mod)
         var root = mod
-        if !UHUDPack.isDirectory(mod) && !isTPF(mod) {
+        if modFile && !isTPF(mod) {
             progress("Unpacking \(mod.lastPathComponent)…")
             root = try unpack(mod)
         }
         // the files, archives inside the archive unpacked too (two levels)
-        var files = [(URL, String)]()           // file, path shown in the summary
-        func walk(_ dir: URL, _ shown: String, depth: Int) throws {
-            if !UHUDPack.isDirectory(dir) { files.append((dir, dir.lastPathComponent)); return }
-            let dir = dir.resolvingSymlinksInPath()             // /var -> /private/var, as the enumerator has it
-            guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return }
+        var files = [(URL, String)]()           // file, path inside the mod
+        func walk(_ top: URL, _ shown: String, depth: Int) throws {
+            if !UHUDPack.isDirectory(top) { files.append((top, top.lastPathComponent)); return }
+            let dir = URL(fileURLWithPath: realPath(top.path))
+            let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
+            guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: keys) else { return }
             var inner = [URL]()
-            for case let u0 as URL in en {
-                let u = u0.resolvingSymlinksInPath()
-                guard (try? u.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
-                let rel = shown + (u.path.hasPrefix(dir.path + "/") ? String(u.path.dropFirst(dir.path.count + 1)) : u.lastPathComponent)
-                if exclude.contains(where: { rel.lowercased().contains($0.lowercased()) }) { continue }
+            for case let u as URL in en {             // the enumerator does not follow links
+                let v = try u.resourceValues(forKeys: Set(keys))
+                let rel = u.path.hasPrefix(dir.path + "/") ? String(u.path.dropFirst(dir.path.count + 1)) : ""
+                if v.isSymbolicLink == true || rel.isEmpty || rel.split(separator: "/").contains("..") {
+                    throw Failure(message: "\(mod.lastPathComponent) contains a link (\(shown + (rel.isEmpty ? u.lastPathComponent : rel))) that could point outside the mod. It was not used; a texture pack has only plain files.")
+                }
+                if v.isDirectory == true { continue }
+                guard v.isRegularFile == true else {
+                    throw Failure(message: "\(mod.lastPathComponent) contains \(shown + rel), which is not a plain file. It was not used.")
+                }
+                let path = shown + rel, low = path.lowercased()
+                if !include.isEmpty && !include.contains(where: { low.contains($0.lowercased()) }) { continue }
+                if exclude.contains(where: { low.contains($0.lowercased()) }) { continue }
                 if ["zip", "7z", "rar"].contains(u.pathExtension.lowercased()) { inner.append(u) }
-                else { files.append((u, rel)) }
+                else { files.append((u, path)) }
             }
             for a in inner.sorted(by: { $0.path < $1.path }) where depth < 2 {
                 progress("Unpacking \(a.lastPathComponent)…")
@@ -187,22 +202,28 @@ enum PackBuilder {
 
         let writer = try Writer()
         var sum = Summary()
+        var used = Set<String>()
+        let gameIndex = GameIndex(game)
         // 1. the game's own files, changed
         for (f, rel) in files where ["bun", "bin", "lzc"].contains(f.pathExtension.lowercased()) {
-            guard let g = gameFile(for: rel, game: game) else { continue }
+            guard let g = try gameFile(for: f, rel, game: game, gameIndex) else { continue }
             progress("Comparing \(g.rel) with the game's…")
+            used.insert(rel)
             let before = writer.entries.count
             try diffBundle(mod: f, game: g.url, label: g.rel, writer, &sum)
             if writer.entries.count > before { sum.sources.append(rel) }
         }
-        // 2. TexWizard packs
-        for (f, rel) in files where f.lastPathComponent.lowercased() == "textures.bin" {
-            progress("Reading the TexWizard pack \(f.deletingLastPathComponent().lastPathComponent)…")
+        // 2. TexWizard packs: textures.bin with meta.json, or in a TexturePacks folder
+        for (f, rel) in files where f.lastPathComponent.lowercased() == "textures.bin" && !used.contains(rel) {
+            let dir = f.deletingLastPathComponent()
+            guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("meta.json").path)
+                    || rel.lowercased().contains("texturepacks/") else { continue }
+            progress("Reading the TexWizard pack \(dir.lastPathComponent)…")
             let before = writer.entries.count
             try texWizard(f, writer, &sum)
             if writer.entries.count > before { sum.sources.append(rel) }
         }
-        // 3. TexMod packs, then loose TexMod files
+        // 3. TexMod packs, then loose TexMod files (named by their hash)
         for (f, rel) in files where isTPF(f) {
             progress("Reading \(f.lastPathComponent)…")
             let before = writer.entries.count
@@ -217,17 +238,41 @@ enum PackBuilder {
         var looseDef: [UInt8]? = nil
         for (f, rel) in files where !isTPF(f) {
             if f.lastPathComponent.lowercased() == "texmod.def" { looseDef = try? [UInt8](Data(contentsOf: f)); continue }
-            if texModHash(f.lastPathComponent) != nil || imageExtensions.contains(f.pathExtension.lowercased()) {
+            if imageExtensions.contains(f.pathExtension.lowercased()) {
                 loose[normal(rel)] = { try [UInt8](Data(contentsOf: f)) }
             }
         }
-        if !loose.isEmpty {
+        if looseDef != nil || loose.keys.contains(where: { texModHash($0) != nil }) {
             let before = writer.entries.count
-            try texMod(def: looseDef, files: loose, label: "TexMod files", writer, &sum, progress)
+            try texMod(def: looseDef, files: loose, label: "TexMod files", writer, &sum, progress, onlyPresent: true)
             if writer.entries.count > before { sum.sources.append("TexMod files") }
         }
+        // 4. images named after the game's textures (as texture editors export them)
+        // (other images only with a name as the game writes them, A-Z, 0-9 and _: not a preview)
+        let named = files.filter { f in
+            let ext = f.0.pathExtension.lowercased(), base = textureName(f.0.deletingPathExtension().lastPathComponent)
+            guard texModHash(f.0.lastPathComponent) == nil else { return false }
+            if ext == "dds" { return true }
+            return ["png", "tga", "bmp"].contains(ext) && !base.isEmpty
+                && base.unicodeScalars.allSatisfy { ("A"..."Z").contains($0) || ("0"..."9").contains($0) || $0 == "_" }
+        }
+        if !named.isEmpty {
+            progress("Reading \(named.count) images…")
+            let before = writer.entries.count
+            for (f, rel) in named {
+                let name = textureName(f.deletingPathExtension().lastPathComponent)
+                let key = Key.name(UHUDPack.stringHash(name.uppercased()))
+                guard !writer.has(key) else { continue }
+                let ext = f.pathExtension.lowercased()
+                guard let b = try? [UInt8](Data(contentsOf: f)), let t = ext == "dds" ? dds(b, mips: false) : image(b, ext: ext, mips: true) else {
+                    sum.skipped.append("\(rel): a format this does not read"); continue
+                }
+                if try writer.add(key, t, rel) { sum.named += 1 }
+            }
+            if writer.entries.count > before { sum.sources.append("images named after the game's textures") }
+        }
         guard !writer.entries.isEmpty else {
-            throw Failure(message: "\(mod.lastPathComponent) has no textures this can use: no TexMod pack (.tpf), no TexWizard pack (textures.bin) and none of the game's texture files.")
+            throw Failure(message: "\(mod.lastPathComponent) has no textures this can use: no TexMod pack (.tpf), no TexWizard pack, none of the game's texture files and no image named after a game texture.")
         }
         progress("Writing the pack…")
         try writer.finish(to: dest)
@@ -235,6 +280,39 @@ enum PackBuilder {
         let attrs = try? fm.attributesOfItem(atPath: dest.path)
         sum.bytes = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         return sum
+    }
+
+    static func realPath(_ p: String) -> String {
+        guard let r = realpath(p, nil) else { return p }
+        defer { free(r) }
+        return String(cString: r)
+    }
+
+    /// The texture's name from an image file's name: NFS-TexEd exports "1-5-DXT1-nfs_u2_mw-NAME",
+    /// Binary's folders number textures of the same name "103_NAME".
+    static func textureName(_ base: String) -> String {
+        let parts = base.split(separator: "-", maxSplits: 4, omittingEmptySubsequences: false)
+        if parts.count == 5, Int(parts[0]) != nil, Int(parts[1]) != nil, parts[3].lowercased().hasPrefix("nfs") {
+            return String(parts[4])
+        }
+        if let u = base.firstIndex(of: "_"), u > base.startIndex, base[..<u].allSatisfy({ $0.isASCII && $0.isNumber }) {
+            return String(base[base.index(after: u)...])
+        }
+        return base
+    }
+
+    /// The game's texture files by file name, for mods that ship one without its folder.
+    struct GameIndex {
+        var byName = [String: [String]]()          // file name, lowercased -> paths in the game folder
+        init(_ game: URL) {
+            for dir in ["GLOBAL", "FRONTEND", "FRONTEND/PLATFORMS", "TRACKS", "CARS", "CARS/WHEELS", "LANGUAGES"] {
+                guard let d = UHUDPack.find(game, dir),
+                      let names = try? FileManager.default.contentsOfDirectory(atPath: d.path) else { continue }
+                for n in names where ["bun", "bin", "lzc"].contains((n as NSString).pathExtension.lowercased()) {
+                    byName[n.lowercased(), default: []].append(dir + "/" + n)
+                }
+            }
+        }
     }
 
     static let imageExtensions: Set<String> = ["dds", "png", "bmp", "tga", "jpg", "jpeg"]
@@ -245,14 +323,31 @@ enum PackBuilder {
         return t
     }
 
-    /// The game file a mod's file replaces: the longest end of its path that is a file in the game folder.
-    static func gameFile(for rel: String, game: URL) -> (url: URL, rel: String)? {
+    /// The game file a mod's file replaces: the longest end of its path that is a file in the
+    /// game folder; otherwise, of the game's texture files with its name (GlobalB.lzc in a
+    /// "screen" folder, TEXTURES.BIN of the cars or the wheels), the one that shares the most
+    /// texture names with it.
+    static func gameFile(for file: URL, _ rel: String, game: URL, _ index: GameIndex) throws -> (url: URL, rel: String)? {
         let parts = rel.split(separator: "/").map(String.init)
-        for k in 0..<parts.count {
+        for k in 0..<max(0, parts.count - 1) {
             let r = parts[k...].joined(separator: "/")
             if let u = UHUDPack.find(game, r), !UHUDPack.isDirectory(u) { return (u, r) }
         }
-        return nil
+        guard let n = parts.last, let cands = index.byName[n.lowercased()] else { return nil }
+        if cands.count == 1 { return UHUDPack.find(game, cands[0]).map { ($0, cands[0]) } }
+        let mine = Set(try tpkTextures(try loadBundle(file)).map { $0.nh })
+        var best: (URL, String)? = nil, bestN = 0
+        for c in cands {
+            guard let u = UHUDPack.find(game, c), let b = try? loadBundle(u), let t = try? tpkTextures(b) else { continue }
+            let k = Set(t.map { $0.nh }).intersection(mine).count
+            if k > bestN { best = (u, c); bestN = k }
+        }
+        return best.map { (url: $0.0, rel: $0.1) }
+    }
+    static func loadBundle(_ u: URL) throws -> [UInt8] {
+        var d = [UInt8](try Data(contentsOf: u))
+        if d.starts(with: Array("JDLZ".utf8)) { d = try UHUDPack.jdlz(d) }
+        return d
     }
 
     // MARK: TexMod
@@ -266,8 +361,9 @@ enum PackBuilder {
         return UInt32(hex, radix: 16)
     }
 
+    /// onlyPresent: loose files, where a texmod.def may list a whole pack of which only some are here
     static func texMod(def: [UInt8]?, files: [String: () throws -> [UInt8]], label: String,
-                       _ w: Writer, _ sum: inout Summary, _ progress: (String) -> Void) throws {
+                       _ w: Writer, _ sum: inout Summary, _ progress: (String) -> Void, onlyPresent: Bool = false) throws {
         var list = [(UInt32, String)]()
         if let d = def {
             for line in String(decoding: d, as: UTF8.self).split(whereSeparator: { $0.isNewline }) {
@@ -283,7 +379,8 @@ enum PackBuilder {
             for k in files.keys.sorted() { if let v = texModHash(k) { list.append((v, k)) } }
         }
         // decoding and making the lower levels takes the time: several at once, in order
-        let todo = list.filter { !w.has(.texmod($0.0)) }
+        func present(_ f: String) -> Bool { files[f] != nil || files.keys.contains(where: { $0.hasSuffix("/" + f) }) }
+        let todo = list.filter { !w.has(.texmod($0.0)) && (!onlyPresent || present($0.1)) }
         var i = 0
         while i < todo.count {
             let batch = Array(todo[i..<min(todo.count, i + 32)])
@@ -415,11 +512,7 @@ enum PackBuilder {
     // MARK: the game's texture files
 
     static func diffBundle(mod: URL, game: URL, label: String, _ w: Writer, _ sum: inout Summary) throws {
-        func load(_ u: URL) throws -> [UInt8] {
-            var d = [UInt8](try Data(contentsOf: u))
-            if d.starts(with: Array("JDLZ".utf8)) { d = try UHUDPack.jdlz(d) }
-            return d
-        }
+        let load = loadBundle
         var gameTex = [UInt32: TPKTex]()
         for t in try tpkTextures(try load(game)) where gameTex[t.nh] == nil { gameTex[t.nh] = t }
         for t in try tpkTextures(try load(mod)) {
