@@ -22,8 +22,8 @@ final class PortableBuilder {
     private var cancelFlag = false
 
     // The engine never reads these: no video decoder (MOVIES, ~250 MB) and Windows-only plugins.
-    static let skippedGameItems: Set<String> = ["MOVIES", "SCRIPTS", "dinput8.dll", "server.dll",
-                                                "server.cfg", "SafeMode.bat"]
+    // server.dll and its server.cfg are copied: hosting a LAN game loads them.
+    static let skippedGameItems: Set<String> = ["MOVIES", "SCRIPTS", "dinput8.dll", "SafeMode.bat"]
 
     init(sourceApp: URL, gameFolder: URL, destination: URL) {
         self.sourceApp = sourceApp
