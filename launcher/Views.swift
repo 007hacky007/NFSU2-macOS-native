@@ -182,6 +182,35 @@ struct MultiplayerCard: View {
                 }
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Free roam with other players").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                        Text("See the other players' cars in career free roam and race them from the race markers. Ghost cars drive through yours.")
+                            .font(.system(size: 11)).foregroundColor(Theme.dim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Picker("", selection: $model.freeRoam) {
+                        Text("Off (original)").tag(LauncherModel.FreeRoam.off)
+                        Text("Solid cars").tag(LauncherModel.FreeRoam.solid)
+                        Text("Ghost cars").tag(LauncherModel.FreeRoam.ghost)
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                HStack(spacing: 10) {
+                    Text("Room").font(.system(size: 12.5)).foregroundColor(Theme.text).frame(width: 84, alignment: .leading)
+                    TextField("Everyone", text: $model.roamRoom).textFieldStyle(RoundedBorderTextFieldStyle())
+                    Text("Crew").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    TextField("None", text: $model.roamCrew).textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+                .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
+                Text("Room: only players in the same room see each other. Crew: your crew's names and arrows in its colour, at any distance.")
+                    .font(.system(size: 11)).foregroundColor(Theme.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(model.freeRoam == .off ? 0.5 : 1)
+            }
+            .disabled(!model.online).opacity(model.online ? 1 : 0.5)
         }
     }
 }
@@ -307,6 +336,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 724)
+        .frame(width: 560, height: 824)
     }
 }

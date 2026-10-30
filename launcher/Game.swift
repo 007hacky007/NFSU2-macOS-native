@@ -71,6 +71,9 @@ enum Prefs {
     static let online = "LauncherOnline"           // LAN and Online through a server
     static let server = "LauncherServer"
     static let playerName = "LauncherPlayerName"
+    static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost"
+    static let roamRoom = "LauncherRoamRoom"
+    static let roamCrew = "LauncherRoamCrew"
 }
 
 /* Online play goes through a relay server (th0mk's nfsu2-web server, the only
@@ -103,6 +106,11 @@ enum OnlineSettings {
         if !validServer(server) { return "Use a wss:// server address (ws:// only for a server on this Mac)." }
         if !validName(name) { return "Enter a player name: 3-15 letters, numbers, _ or -." }
         return nil
+    }
+    /* a free-roam room or crew: up to 24 printable ASCII characters (the game
+     * shows no others), empty for none */
+    static func validTag(_ text: String) -> Bool {
+        text.utf8.count <= 24 && text.utf8.allSatisfy { (32...126).contains($0) }
     }
 }
 

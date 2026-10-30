@@ -42,7 +42,7 @@ case "${BUILD:-eu}" in
   *)  echo "BUILD must be eu or na"; exit 1 ;;
 esac
 
-CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick"
+CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace"
 MSRC="metal audio bundle gamepad net_native"
 FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework GameController"
 SHARDS="$SOBJ/shard_*.o $SOBJ/fntab.o $SOBJ/stubs.o"
@@ -57,7 +57,10 @@ build_rt(){
   mkdir -p "$od"
   for f in $CSRC; do
     [ -f "runtime/$f.c" ] || continue
-    clang $OPT $XDEF -DNFS_ENHANCED=$enh -DNFS_VERSION=$VERSION -Iruntime -I$GEN -c -o "$od/$f.o" "runtime/$f.c" & pids="$pids $!"
+    # roam_core, roam_game: no fused multiply-add, so their floats are
+    # nfsu2-web's on every platform (roam_game.c)
+    local fx=""; case "$f" in roam_core|roam_game) fx="-ffp-contract=off" ;; esac
+    clang $OPT $fx $XDEF -DNFS_ENHANCED=$enh -DNFS_VERSION=$VERSION -Iruntime -I$GEN -c -o "$od/$f.o" "runtime/$f.c" & pids="$pids $!"
   done
   for f in $MSRC; do
     clang $OPT $XDEF -DNFS_ENHANCED=$enh -DNFS_VERSION=$VERSION -fobjc-arc -Iruntime -I$GEN -c -o "$od/$f.o" "runtime/$f.m" & pids="$pids $!"

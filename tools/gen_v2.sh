@@ -19,17 +19,17 @@ PY="$ROOT/.venv/bin/python"
 # (see PROJECT.md "Commands", D3DX_HLE.md "Regeneration").  OVR is in European
 # addresses; OVR_NA is the same list mapped to the North American build
 # (tools/addrmap.py list out/na/addrmap.json "$OVR").
-OVR=60fab0,61e390,61f130,5c7ed0,50d510,65ae35,6623ea,66aa3f,66ace2,6691b1,669296,664a2f,663a42,688e89,663275,662edc,660a52,668e0d,664792,66ac27,65addb,65acf5,66d13a,66d303,66d7e9,66e8a9,66f501,66ca38,65ab24,67193e,66056c,65cf44,640c12,668cd0,65ccd8,74b730,4effd0,4f19a0,5156f0,53ed30,4b3e40,498400,4b3110,4b3190,5f8d50,5f8910
-OVR_NA=60faa0,61e380,61f120,5c7ec0,50d510,65ae25,6623da,66aa2f,66acd2,6691a1,669286,664a1f,663a32,688e79,663265,662ecc,660a42,668dfd,664782,66ac17,65adcb,65ace5,66d12a,66d2f3,66d7d9,66e899,66f4f1,66ca28,65ab14,67192e,66055c,65cf34,640c02,668cc0,65ccc8,74b730,4effd0,4f19a0,5156f0,53ed20,4b3e40,498400,4b3110,4b3190,5f8d40,5f8900
+OVR=60fab0,61e390,61f130,5c7ed0,50d510,65ae35,6623ea,66aa3f,66ace2,6691b1,669296,664a2f,663a42,688e89,663275,662edc,660a52,668e0d,664792,66ac27,65addb,65acf5,66d13a,66d303,66d7e9,66e8a9,66f501,66ca38,65ab24,67193e,66056c,65cf44,640c12,668cd0,65ccd8,74b730,4effd0,4f19a0,5156f0,53ed30,4b3e40,498400,4b3110,4b3190,5f8d50,5f8910,5f46b0,5b2620,42cd60,4901d0,440df0,63a700,610760,63a1c0
+OVR_NA=60faa0,61e380,61f120,5c7ec0,50d510,65ae25,6623da,66aa2f,66acd2,6691a1,669286,664a1f,663a32,688e79,663265,662ecc,660a42,668dfd,664782,66ac17,65adcb,65ace5,66d12a,66d2f3,66d7d9,66e899,66f4f1,66ca28,65ab14,67192e,66055c,65cf34,640c02,668cc0,65ccc8,74b730,4effd0,4f19a0,5156f0,53ed20,4b3e40,498400,4b3110,4b3190,5f8d40,5f8900,5f46a0,5b2610,42cd60,4901d0,440df0,63a6f0,610750,63a1b0
 
 SHA="$(shasum -a 256 "$EXE" | cut -c1-64)"
 case "$SHA" in
   8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297)
     BUILD=eu; DEF=gen/all; WORK=out
-    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336}" ;;   # runtime/wsfov.c, sndlead.c
+    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336,0x581485,0x6005f0}" ;;   # runtime/wsfov.c, sndlead.c, roam.c
   f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7)
     BUILD=na; DEF=gen/na; WORK=out/na; OVR=$OVR_NA; export LIFT_MISSING=1
-    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336}" ;;   # runtime/wsfov.c, sndlead.c (same sites, NA addresses)
+    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336,0x581475,0x6005e0}" ;;   # runtime/wsfov.c, sndlead.c, roam.c (same sites, NA addresses)
   *) echo "unsupported SPEED2.EXE (sha256 $SHA); see README, \"Game versions\""; exit 1 ;;
 esac
 OUT="${GENOUT:-$DEF}"
