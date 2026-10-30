@@ -154,6 +154,32 @@ struct GraphicsCard: View {
     }
 }
 
+struct ControllerCard: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        Card("Controller") {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Use a game controller").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Xbox, PlayStation or MFi. Connect it before Play; buttons are set in the game's Controls menu.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.controller).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
+            HStack(alignment: .center, spacing: 10) {
+                Text("Stick dead zone").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                Slider(value: $model.stickDeadzone, in: 0...0.5, step: 0.01)
+                Text("\(Int((model.stickDeadzone * 100).rounded())) %")
+                    .font(.system(size: 11.5).monospacedDigit()).foregroundColor(Theme.dim)
+                    .frame(width: 40, alignment: .trailing)
+            }
+            .disabled(!model.controller).opacity(model.controller ? 1 : 0.5)
+        }
+    }
+}
+
 struct MoreCard: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
@@ -253,6 +279,7 @@ struct LauncherView: View {
 
                 GameCard(model: model)
                 GraphicsCard(model: model)
+                ControllerCard(model: model)
                 MoreCard(model: model)
 
                 Spacer(minLength: 0)
@@ -274,6 +301,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(width: 560, height: 724)
     }
 }
