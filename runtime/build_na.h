@@ -54,6 +54,7 @@
 #define GA_0x0078fa08u 0x0078fa08u   /* operand pair */
 #define GA_0x0078fa14u 0x0078fa14u   /* operand pair */
 #define GA_0x0078fa1cu 0x0078fa1cu   /* operand pair */
+#define GA_0x007a66bcu 0x007a66b4u   /* operand pair */
 #define GA_0x007fb700u 0x007fb700u   /* operand pair */
 #define GA_0x007fb710u 0x007fb710u   /* operand pair */
 #define GA_0x007fb714u 0x007fb714u   /* operand pair */
