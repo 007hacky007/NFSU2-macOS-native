@@ -151,7 +151,7 @@ struct MoreCard: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Portable copy").font(.system(size: 12.5, weight: .medium)).foregroundColor(Theme.text)
-                    Text("One app with the game inside (about 1.4 GB), for another Mac or a USB drive.")
+                    Text("One app with the game inside (about 2.5 GB, or 1.4 GB without the movies), for another Mac or a USB drive.")
                         .font(.system(size: 11)).foregroundColor(Theme.dim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
