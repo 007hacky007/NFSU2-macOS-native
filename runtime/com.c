@@ -5,7 +5,7 @@
 #include <stdatomic.h>
 #include "cpu.h"
 #include "d3d9_tables.h"
-#include "uhud.h"
+#include "texrep.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -3214,7 +3214,7 @@ int com_call(CPU *c, uint32_t magic){
                   void cov_reset(void); cov_reset();
                   fprintf(stderr,"  coverage reset (Present %u)\n", g_present_no);
               } }
-            uhud_frame();
+            texrep_frame();
             if (metal_available()) metal_present();
             { extern int g_perflog; void perflog_guest_frame(void);
               if (g_perflog) perflog_guest_frame(); }
@@ -3484,7 +3484,13 @@ int com_call(CPU *c, uint32_t magic){
                     if (sr3<6){ sr3++;
                         fprintf(stderr,"  [RT-tex] %ux%u fmt=%u levels=%u -> id=%u\n",
                                 w,h,fmt,lev?lev:1u,tid); } }
-                else if (tid) uhud_created(tid, w, h, fmt, usage, pool);   /* runtime/uhud.m */
+                else if (tid){
+                    /* runtime/texrep.m.  The game's texture loader (0x5CE180, thiscall:
+                     * the TextureInfo in esi) creates its textures from one of these two
+                     * calls; the TextureInfo has the texture's name hash at +0x24. */
+                    uint32_t nm = (c->eip == GA(0x005CE2EAu) || c->eip == GA(0x005CE30Eu)) ? MR32(c->esi + 0x24) : 0;
+                    texrep_created(tid, w, h, fmt, usage, pool, nm);
+                }
                 if (!tid){ g_tex_fail++;
                     static uint32_t bad[16]; static int nb=0; int seen=0;
                     for (int q=0;q<nb;q++) if (bad[q]==fmt) seen=1;
@@ -3838,8 +3844,8 @@ int com_call(CPU *c, uint32_t magic){
                     metal_upload_texture(mid, level, g_mem+buf,
                                          metal_level_pitch(w,level,fmt), w, h, fmt);
                 if (iface==IF_TEX && !is_cube2 && level==0)
-                    uhud_uploaded(mid, g_mem+buf, metal_level_pitch(w,0,fmt), metal_level_rows(h,0,fmt));
-                else if (iface==IF_SURF) uhud_surface_written(mid);   /* the car skin composite */
+                    texrep_uploaded(mid, g_mem+buf, metal_level_pitch(w,0,fmt), metal_level_rows(h,0,fmt));
+                else if (iface==IF_SURF) texrep_surface_written(mid);   /* the car skin composite */
             }
             if (ENVC("LOCKLOG") && w==640 && h==480){
                 static int nl=0;

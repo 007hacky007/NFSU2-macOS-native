@@ -26,6 +26,8 @@ final class LauncherModel: ObservableObject {
     @Published var uhudPhase = ""
     @Published var uhudError: String? = nil
     @Published var hasUHUDPack = false
+    let packs = TexturePackStore()       // Texture Packs (TexturePacks.swift)
+    private var setTexpacks = false      // NFSU2_TEXPACKS was set by us
     @Published var job: Job? = nil
     @Published var notice: String? = nil
 
@@ -58,6 +60,7 @@ final class LauncherModel: ObservableObject {
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         uhud = defaults.bool(forKey: Prefs.uhud)
         hasUHUDPack = FileManager.default.fileExists(atPath: Paths.uhudPack.path)
+        packs.game = { [weak self] in self?.location?.folder }
     }
 
     var location: GameLocation? {
@@ -124,6 +127,13 @@ final class LauncherModel: ObservableObject {
         if setHUDPOS || env["HUDPOS"] == nil {
             if wideHUD { setenv("HUDPOS", "1", 1); setHUDPOS = true }
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
+        }
+        // Texture Packs that are on, highest first (engine: runtime/texrep.m).  One given by
+        // the caller wins; otherwise it follows the list.
+        if setTexpacks || env["NFSU2_TEXPACKS"] == nil {
+            let on = packs.enabledPaths
+            if !on.isEmpty { setenv("NFSU2_TEXPACKS", on.joined(separator: ":"), 1); setTexpacks = true }
+            else if setTexpacks { unsetenv("NFSU2_TEXPACKS"); setTexpacks = false }
         }
         if uhud && hasUHUDPack {
             setenv("NFSU2_UHUD", "on", 0)

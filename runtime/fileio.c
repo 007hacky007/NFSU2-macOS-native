@@ -91,7 +91,7 @@ int fileio_game_file_exists(const char *win){
     char p[1024]; struct stat st;
     return resolve_in(g_root, win, p, sizeof p) && stat(p, &st) == 0 && S_ISREG(st.st_mode);
 }
-/* The Mac path of a file in the game folder (uhud.m: TEXPACKS\uhud.pak); 0 if it isn't there. */
+/* The Mac path of a file in the game folder (texrep.m: TEXPACKS\uhud.pak); 0 if it isn't there. */
 int fileio_game_path(const char *win, char *out, size_t outsz){
     struct stat st;
     return resolve_in(g_root, win, out, outsz) && stat(out, &st) == 0 && S_ISREG(st.st_mode);

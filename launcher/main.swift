@@ -14,11 +14,17 @@
 //   NFSU2_SKIP_LAUNCHER=1        start the engine without showing the window
 //   NFSU2_ENGINE=original|hd     engine choice for this start
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
-//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy   fake state for the snapshot
-//                                (uhud: ready, with a UHUD pack added; uhud-busy: downloading it)
+//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window
+//                                fake state for the snapshot (uhud: ready, with a UHUD pack added;
+//                                uhud-busy: downloading it; texpacks: two texture packs, one on;
+//                                texpacks-window: the Texture Packs window with them, one downloading)
 //   NFSU2_LAUNCHER_TEST=portable:<game folder>:<destination.app>   build a portable copy, quit
 //   NFSU2_LAUNCHER_TEST=uhud:<mod .7z or folder>:<game folder>:<pack>   make a UHUD pack, quit
 //   NFSU2_LAUNCHER_TEST=uhud-download:<game folder>:<pack>   download the mod and make the pack, quit
+//   NFSU2_LAUNCHER_TEST=texpack:<mod>:<game folder>:<pack>   make a texture pack (TexturePackBuilder.swift), quit
+//   NFSU2_LAUNCHER_TEST=texpack-download:<catalog id>:<game folder>:<store>   Download as the button
+//                                does, into <store> instead of Application Support/NFSU2/TexturePacks, quit
+//   NFSU2_LAUNCHER_TEST=texpack-import:<catalog id or ->:<mod>:<game folder>:<store>   Import… the same way
 //   NFSU2_LAUNCHER_TEST=play     window off screen, press Play after a second (tests the
 //                                normal path: window open -> Play -> engine)
 import AppKit
@@ -39,6 +45,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
+        if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("texpack") {
+            let parts = t.split(separator: ":", maxSplits: 4).map(String.init)
+            let finish: (Bool) -> Void = { ok in
+                if !ok { print("texture pack FAILED: \(self.model.packs.errors.values.joined(separator: "; "))") }
+                else { print("installed: " + self.model.packs.installed.map { "\($0.id) on=\($0.enabled)" }.joined(separator: ", "))
+                       print("NFSU2_TEXPACKS=" + self.model.packs.enabledPaths.joined(separator: ":")) }
+                exit(ok ? 0 : 1)
+            }
+            switch (parts.first, parts.count) {
+            case ("texpack", 4):
+                DispatchQueue.global().async {
+                    do {
+                        let s = try PackBuilder.build(mod: URL(fileURLWithPath: parts[1]), game: URL(fileURLWithPath: parts[2]),
+                                                      to: URL(fileURLWithPath: parts[3])) { print($0) }
+                        print("texture pack: \(s.textures) textures (\(s.texmod) TexMod, \(s.named) by name, \(s.content) by content), \(s.bytes) bytes")
+                        print("  from: " + s.sources.joined(separator: ", "))
+                        if !s.skipped.isEmpty { print("  skipped \(s.skipped.count): " + s.skipped.prefix(8).joined(separator: "; ")) }
+                        exit(0)
+                    } catch { print("texture pack FAILED: \((error as? UHUDPack.Failure)?.message ?? error.localizedDescription)"); exit(1) }
+                }
+            case ("texpack-download", 4):
+                guard let c = TexturePackCatalog.pack(parts[1]) else { print("no catalog pack \(parts[1])"); exit(2) }
+                TexturePackStore.testDir = URL(fileURLWithPath: parts[3]); model.packs.load()
+                model.packs.game = { URL(fileURLWithPath: parts[2]) }
+                model.packs.download(c, done: finish)
+            case ("texpack-import", 5):
+                TexturePackStore.testDir = URL(fileURLWithPath: parts[4]); model.packs.load()
+                model.packs.game = { URL(fileURLWithPath: parts[3]) }
+                model.packs.importMod(URL(fileURLWithPath: parts[2]), for: TexturePackCatalog.pack(parts[1]), done: finish)
+            default: print("bad NFSU2_LAUNCHER_TEST"); exit(2)
+            }
+            return
+        }
         if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("uhud-download:") {
             let parts = t.dropFirst("uhud-download:".count).split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
@@ -63,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if let s = env["NFSU2_LAUNCHER_STATE"] { fakeState(s) }
         buildMenu()
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 684),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 734),
                          styleMask: [.titled, .closable, .miniaturizable],
                          backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
@@ -73,6 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(calibratedRed: 0.067, green: 0.071, blue: 0.082, alpha: 1)
         w.contentView = NSHostingView(rootView: LauncherView(model: model))
+        if env["NFSU2_LAUNCHER_STATE"] == "texpacks-window" {
+            let tw = TexturePackWindow.make(store: model.packs, model: model)
+            w.setContentSize(TexturePackWindow.size); w.contentView = tw.contentView
+        }
         w.center()
         w.delegate = self
         window = w
@@ -125,6 +168,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.uhudBusy = true
             model.uhudPhase = "Downloading the mod from nfsmods.xyz… 1.2 MB of 2.8 MB"
+        case "texpacks", "texpacks-window":
+            model.game = .ready(GameLocation(exe: exe, embedded: false))
+            model.packs.fake([
+                InstalledPack(id: "remastered-ug2", name: "Remastered Underground 2", author: "instanity", file: "remastered-ug2.ntxp",
+                              enabled: true, textures: 522, bytes: 293_563_248, source: "Imported from underground2rem10.zip"),
+                InstalledPack(id: "retextured", name: "RETextured v2.0", author: "Dragozool", file: "retextured.ntxp",
+                              enabled: false, textures: 205, bytes: 191_036_416, source: "Imported from nfsu2retex20.zip"),
+            ])
+            if s == "texpacks-window" {
+                model.packs.phase["hdri-sky-8k"] = "Downloading from nfsmods.xyz… 17.3 MB of 43 MB"
+                model.packs.fraction["hdri-sky-8k"] = 0.4
+            }
         case "copying":
             model.job = LauncherModel.Job(phase: "Copying the game files…", done: 612_000_000, total: 1_430_000_000)
         case "done":
