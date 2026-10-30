@@ -170,6 +170,16 @@ struct MoreCard: View {
                     .buttonStyle(SecondaryButtonStyle())
                     .disabled(!model.isReady)
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Show in Discord").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Your Discord status shows the game and the race you are in. Only with the Discord app on this Mac.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.discord).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
             HStack(spacing: 8) {
                 Button("Saves") { model.openSaves() }.buttonStyle(SecondaryButtonStyle())
                 Button("Logs") { model.openLogs() }.buttonStyle(SecondaryButtonStyle())
@@ -274,6 +284,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(width: 560, height: 664)
     }
 }
