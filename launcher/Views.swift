@@ -173,7 +173,7 @@ struct MoreCard: View {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Show in Discord").font(.system(size: 12.5)).foregroundColor(Theme.text)
-                    Text("Your Discord status shows the game and the race you are in. Only with the Discord app on this Mac.")
+                    Text("Your Discord status shows the game and the race you are in. Only with the Discord app on this Mac. Off: as in the original game.")
                         .font(.system(size: 11)).foregroundColor(Theme.dim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
