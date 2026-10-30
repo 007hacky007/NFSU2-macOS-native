@@ -284,7 +284,8 @@ addresses written without `GA(...)` would be wrong in the North American engine.
 
 The app opens a small launcher window first (`launcher/`, built by `pack.sh`
 with `swiftc`): it finds and checks `SPEED2.EXE`, offers Original or HD graphics
-and full screen, opens the logs folder, manages saves (**Saves…**: the career
+and full screen, an optional picture setting (the PC version's colour tint; off
+by default, see `run.sh`), opens the logs folder, manages saves (**Saves…**: the career
 profiles, backups, ZIP export and import; the current saves are backed up before
 an import replaces them; tests/save_manager.sh), and **Make Copy…** builds a
 portable app with the game files inside (APFS clones, seconds on the same disk),
