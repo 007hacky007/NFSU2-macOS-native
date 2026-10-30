@@ -129,6 +129,8 @@ enum UHUDPack {
             try p.run()
             p.waitUntilExit()
             guard p.terminationStatus == 0 else { throw Failure(message: "\(mod.lastPathComponent) could not be unpacked. Choose the mod's .7z file as downloaded, or the folder it was extracted to.") }
+            // the mod has no links; one in an archive could point the reads below at other files
+            guard !hasLink(t) else { throw Failure(message: "\(mod.lastPathComponent) contains links to other files and is not the Upscaled HUD mod.") }
             root = t
         }
         guard let assets = findAssets(root, depth: 0) else {
@@ -147,6 +149,13 @@ enum UHUDPack {
             if let a = findAssets(i, depth: depth + 1) { return a }
         }
         return nil
+    }
+
+    /// any symbolic link under dir (not followed)
+    static func hasLink(_ dir: URL) -> Bool {
+        guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey]) else { return true }
+        for case let u as URL in e where (try? u.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true { return true }
+        return false
     }
 
     static func isDirectory(_ u: URL) -> Bool {
