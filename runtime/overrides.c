@@ -377,6 +377,7 @@ static const char *gstr(uint32_t p){
     return (const char *)(g_mem + p);
 }
 void sub_0050d510(CPU *c){
+    { extern void discord_fe_log(CPU *); discord_fe_log(c); }   /* front-end screens for the Discord presence */
     static int on = -1;
     if (on < 0){ const char *e = getenv("GAMELOG"); on = (e && *e && *e != '0'); }
     if (on){

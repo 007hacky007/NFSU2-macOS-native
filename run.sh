@@ -23,6 +23,10 @@ fi
 #   HD_GSEP=1 (G-buffer in a separate single-sampled pass), HD_MBFIX=1 (the scene stays
 #   multisampled during motion blur), HD_RT_FAR / HD_RT_BMIN (ray limits; off by default).
 #   Details: runtime/enhance.c, runtime/metal.m (sections of the same name)
+# NFSU2_DISCORD=1: Discord Rich Presence (off by default): while the Discord app runs,
+#   your Discord profile shows what you are doing in the game.  Only the Discord app's
+#   local socket is used.  NFSU2_DISCORD_DETAIL=minimal: only that you are playing.
+#   Details: runtime/discord.c
 # In game, Cmd+Shift+D: a PNG of that frame + the draw list (~/Library/Logs/NFSU2/
 #   or the PERFLOG directory).  Measurement recording while playing: tools/session.sh [hd].
 MODE="${1:-window}"

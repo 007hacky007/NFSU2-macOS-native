@@ -295,6 +295,13 @@ from scripts.
 
 `run.sh` documents the environment switches; most are diagnostics.
 
+`NFSU2_DISCORD=1` turns on Discord Rich Presence: while the Discord app is
+running, your Discord profile shows that you are playing and what you are doing
+(menus, race type and track, lap and position, career stage).
+`NFSU2_DISCORD_DETAIL=minimal` shows only that you are playing. It is off by
+default; the game talks only to the Discord app's local socket. For the app,
+`launchctl setenv NFSU2_DISCORD 1` before opening it.
+
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
 draw list (to `~/Library/Logs/NFSU2/`), for reporting rendering problems.
 `tools/session.sh [hd]` records a play session (frame times, CPU/GPU power,
