@@ -5583,6 +5583,15 @@ static void dump_one_texture(unsigned id_, long frame){
                 for (NSUInteger q = 0; q < w*h; q++){ unsigned a = px[q*4+3]; sa += a; if (a < amin) amin = a; if (a > amax) amax = a; }
                 fprintf(stderr, "metal: texture %u (%lux%lu) RAW dump, alpha mean %.1f min %u max %u\n", id_,
                         (unsigned long)w, (unsigned long)h, sa/(double)(w*h), amin, amax);
+                /* DUMPALPHA=1: also write the alpha channel as a grey picture (frame 95000+id) */
+                if (ENVC("DUMPALPHA")){
+                    for (NSUInteger q = 0; q < w*h; q++){ uint8_t a = px[q*4+3]; px[q*4] = px[q*4+1] = px[q*4+2] = a; px[q*4+3] = 255; }
+                    MTLTextureDescriptor *ad = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                     width:w height:h mipmapped:NO];
+                    ad.storageMode = MTLStorageModeShared;
+                    id<MTLTexture> at = [g_dev newTextureWithDescriptor:ad];
+                    if (at){ [at replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:px bytesPerRow:w*4];
+                             dump_texture(at, 95000 + (long)id_); } }
                 free(px); }
             dump_texture(shd, tg);
             return;

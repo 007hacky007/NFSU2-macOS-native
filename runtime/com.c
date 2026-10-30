@@ -450,6 +450,7 @@ static uint32_t *g_lk_tid=0; static unsigned *g_lk_cnt=0; static uint64_t *g_lk_
 static uint32_t *g_lock_obj=0; static unsigned *g_lock_cnt=0; static int g_lock_n=0;
 static uint64_t g_snd_bytes=0, g_snd_nonzero=0, g_snd_zero=0, g_snd_play=0;
 static uint32_t g_cur_rt = 0;
+static uint32_t g_cur_rt_w = 0, g_cur_rt_h = 0;   /* its size as the game sees it (HD may enlarge it in Metal) */
 /* D3DRENDERSTATETYPE values; the defaults are D3D9's initial state */
 /* Resolutions to offer in the game's settings menu (desktop last). */
 /* The game's OWN internal resolution table.  Measured experimentally:
@@ -1379,6 +1380,12 @@ static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const
     g_asp_cw3[vs] = vsk->f[cw][3];
     { float ax = fabsf(vsk->f[cw][0]) + fabsf(vsk->f[cw][1]) + fabsf(vsk->f[cw][2]);
       if (ax < 1e-6f){ g_asp_ortho++; g_asp_no[vs]++;
+        /* Orthographic draws into a SMALL render target (the rear-view mirror, 256x256:
+         * its frame shade and shape mask) are not UI: squeezing them narrowed the mask
+         * and left strips of the mirror's scene at its sides.  Only the screen and
+         * screen-sized targets get the HUD treatment. */
+        if (g_cur_rt && g_cur_rt_w && g_cur_rt_h &&
+            (g_cur_rt_w * 2u < g_bb_w || g_cur_rt_h * 2u < g_bb_h)) return vsk;
         /* HUDFIX=1: also scale the UI about the center, so circles stay circular.
          * CAUTION: fullscreen post-process quads are orthographic too; if they get
          * shrunk, bars appear at the edges. */
@@ -3326,6 +3333,8 @@ int com_call(CPU *c, uint32_t magic){
                             (unsigned long long)org[4],(unsigned long long)org[7]); } }
                 uint32_t face = (surf && mem_is_committed(surf+47)) ? MR32(surf+44) : 0u;
                 g_cur_rt = tid;
+                g_cur_rt_w = (tid && mem_is_committed(surf+11)) ? MR32(surf+4) : 0u;
+                g_cur_rt_h = (tid && mem_is_committed(surf+11)) ? MR32(surf+8) : 0u;
                 metal_set_render_target(tid | ((face & 7u) << 16));
                 if (tid) g_rt_set++; else g_rt_screen++;
             }
@@ -3433,7 +3442,7 @@ int com_call(CPU *c, uint32_t magic){
             g_cur_zid = 1;
             if (metal_available()){ void metal_set_zsurf(unsigned); metal_set_zsurf(1);
                                     metal_set_render_target(0); } }
-            g_cur_tex = 0; g_cur_rt = 0; g_cur_ps_id = 0;
+            g_cur_tex = 0; g_cur_rt = 0; g_cur_rt_w = g_cur_rt_h = 0; g_cur_ps_id = 0;
             for (int q6=0;q6<4;q6++) g_tex_stage[q6]=0;
             r=0; }
         else if (MID(SetFVF)){ g_cur_fvf=A(c,1); g_raw_fvf=g_cur_fvf; r=0; }
