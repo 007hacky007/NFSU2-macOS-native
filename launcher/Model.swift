@@ -14,7 +14,14 @@ final class LauncherModel: ObservableObject {
         var fraction: Double { total > 0 ? min(1, Double(done) / Double(total)) : 0 }
     }
 
-    @Published var game: GameState = .searching
+    @Published var game: GameState = .searching {
+        didSet {
+            languages = Languages.installed(in: location?.folder)
+            if location != nil && !languages.contains(language) { language = "english" }
+        }
+    }
+    @Published var languages = ["english"]          // installed in the found game folder
+    @Published var language: String { didSet { defaults.set(language, forKey: Prefs.language) } }
     @Published var engine: Engine { didSet { defaults.set(engine.rawValue, forKey: Prefs.engine); engineForced = false } }
     private var engineForced = false     // NFSU2_ENGINE: this start only, not saved
     @Published var fullscreen: Bool { didSet { defaults.set(fullscreen, forKey: Prefs.fullscreen) } }
@@ -48,6 +55,7 @@ final class LauncherModel: ObservableObject {
         if e == .original && !hasOriginal && hasHD { e = .hd }
         engine = e
         engineForced = ProcessInfo.processInfo.environment["NFSU2_ENGINE"] != nil
+        language = defaults.string(forKey: Prefs.language) ?? "english"
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
@@ -121,6 +129,7 @@ final class LauncherModel: ObservableObject {
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
+        setenv("NFSU2_LANGUAGE", language, 0)      // NFSU2_LANGUAGE set by hand still wins
         // A child process, not exec(): macOS attributes the child's file access to
         // this launcher (the "responsible" process), so folder permissions the
         // player granted here (Downloads, Documents...) are not asked for again.

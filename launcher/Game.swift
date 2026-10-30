@@ -68,6 +68,39 @@ enum Prefs {
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
+    static let language = "LauncherLanguage"      // passed to the engine as NFSU2_LANGUAGE
+}
+
+/// The game's languages (runtime/language.c).  One is offered when the game folder
+/// has its LANGUAGES file, or its language pack (LANGPACKS/<id>) has one.
+enum Languages {
+    static let all: [(id: String, name: String, file: String)] = [
+        ("english", "English", "English.bin"), ("french", "French", "French.bin"),
+        ("german", "German", "German.bin"), ("italian", "Italian", "Italian.bin"),
+        ("spanish", "Spanish", "Spanish.bin"), ("dutch", "Dutch", "Dutch.bin"),
+        ("swedish", "Swedish", "Swedish.bin"), ("danish", "Danish", "Danish.bin"),
+        ("korean", "Korean", "Korean.bin"), ("chinese", "Traditional Chinese", "Chinese.bin"),
+        ("japanese", "Japanese", "Japanese.bin"), ("thai", "Thai", "Thailand.bin"),
+        ("russian", "Russian", "English.bin"), ("portuguese", "Brazilian Portuguese", "English.bin"),
+        ("polish", "Polish", "English.bin"), ("turkish", "Turkish", "English.bin"),
+    ]
+    private static let packOnly: Set<String> = ["russian", "portuguese", "polish", "turkish"]
+
+    private static func child(_ name: String, in dir: URL?) -> URL? {
+        guard let dir = dir else { return nil }
+        return (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
+            .first { $0.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    static func installed(in game: URL?) -> [String] {
+        let retail = child("LANGUAGES", in: game)
+        let packs = child("LANGPACKS", in: game)
+        return all.filter { l in
+            l.id == "english"
+                || (!packOnly.contains(l.id) && child(l.file, in: retail) != nil)
+                || child(l.file, in: child("LANGUAGES", in: child(l.id, in: packs))) != nil
+        }.map { $0.id }
+    }
 }
 
 enum Locator {

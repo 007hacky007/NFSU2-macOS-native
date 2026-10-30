@@ -109,6 +109,18 @@ struct GameCard: View {
                     Button("Show in Finder") { model.revealGame() }.buttonStyle(SecondaryButtonStyle())
                 }
             }
+            if model.languages.count > 1 {
+                HStack(alignment: .center) {
+                    Text("Language").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Spacer(minLength: 8)
+                    Picker("", selection: $model.language) {
+                        ForEach(model.languages, id: \.self) { id in
+                            Text(Languages.all.first { $0.id == id }?.name ?? id).tag(id)
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+            }
         }
     }
 }

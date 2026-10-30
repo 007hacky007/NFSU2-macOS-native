@@ -625,7 +625,9 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             fprintf(stderr,"  [registry] QueryValue(\"%s\")\n", vn);
 
         const char *sval = 0; uint32_t dval = 0; int have_d = 0;
-        { int ri = reg_find(vn);            /* look at the SAVED value first */
+        const char *language_registry(void);    /* runtime/language.c: NFSU2_LANGUAGE */
+        int set_lang = !strcasecmp(vn,"Language") && language_registry();
+        { int ri = set_lang ? -1 : reg_find(vn);   /* look at the SAVED value first */
           if (ri >= 0){
               if (g_reg[ri].is_str) sval = g_reg[ri].sv;
               else { dval = g_reg[ri].dw; have_d = 1; }
@@ -638,6 +640,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
          * first launch detects, writes NotFirstTime=1 itself, and later launches
          * read it back.  REGFIRST=1 restores the fake. */
         else if (!strcasecmp(vn,"NotFirstTime") && getenv("REGFIRST")){ dval=1; have_d=1; }
+        else if (set_lang)                        sval=language_registry();
         else if (!strcasecmp(vn,"Language"))      sval="English";
         else if (!strcasecmp(vn,"Install Dir"))   sval="C:\\NFSU2";
         else if (!strcasecmp(vn,"CD Drive"))      sval="C:\\NFSU2";
