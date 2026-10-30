@@ -180,17 +180,30 @@ final class LauncherModel: ObservableObject {
         p.directoryURL = FileManager.default.isWritableFile(atPath: "/Applications")
             ? URL(fileURLWithPath: "/Applications")
             : FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+        var moviesBox: NSButton? = nil
+        if let size = PortableBuilder.moviesSize(in: loc.folder) {
+            let b = NSButton(checkboxWithTitle: "Include the movies ("
+                             + ByteCountFormatter.string(fromByteCount: size, countStyle: .file) + ")",
+                             target: nil, action: nil)
+            b.state = .on
+            b.sizeToFit()
+            let v = NSView(frame: NSRect(x: 0, y: 0, width: b.frame.width + 40, height: b.frame.height + 16))
+            b.setFrameOrigin(NSPoint(x: 20, y: 8))
+            v.addSubview(b)
+            p.accessoryView = v
+            moviesBox = b
+        }
         guard p.runModal() == .OK, var dest = p.url else { return }
         if dest.pathExtension.lowercased() != "app" { dest.appendPathExtension("app") }
         if dest.standardizedFileURL == Paths.bundle.standardizedFileURL {
             alert("Choose another name", "The copy can't replace the app that is running.")
             return
         }
-        startPortable(from: loc.folder, to: dest)
+        startPortable(from: loc.folder, to: dest, movies: moviesBox?.state != .off)
     }
 
-    func startPortable(from game: URL, to dest: URL) {
-        let b = PortableBuilder(sourceApp: Paths.bundle, gameFolder: game, destination: dest)
+    func startPortable(from game: URL, to dest: URL, movies: Bool = true) {
+        let b = PortableBuilder(sourceApp: Paths.bundle, gameFolder: game, destination: dest, movies: movies)
         builder = b
         job = Job(phase: "Starting…")
         DispatchQueue.global(qos: .userInitiated).async {

@@ -331,7 +331,7 @@ the app › Open). If macOS says the app is damaged, run once in Terminal:
 
 **Can I carry the game to another Mac in one piece?**
 Yes. In the app's window, **Make Copy…** creates "NFSU2 Portable.app" with the
-game files inside (about 1.4 GB). It runs on its own; saves stay in
+game files inside (about 2.5 GB, or 1.4 GB without the movies: untick "Include the movies" when saving it). It runs on its own; saves stay in
 `~/Library/Application Support/NFSU2 Saves` on each Mac. It contains the game,
 so keep it for yourself.
 

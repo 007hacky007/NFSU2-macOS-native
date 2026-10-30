@@ -21,14 +21,31 @@ final class PortableBuilder {
     private let lock = NSLock()
     private var cancelFlag = false
 
-    // The engine never reads these: no video decoder (MOVIES, ~250 MB) and Windows-only plugins.
-    static let skippedGameItems: Set<String> = ["MOVIES", "SCRIPTS", "dinput8.dll", "server.dll",
+    // The engine never reads these: Windows-only plugins and scripts.
+    static let skippedGameItems: Set<String> = ["SCRIPTS", "dinput8.dll", "server.dll",
                                                 "server.cfg", "SafeMode.bat"]
+    // Left out on request: without it the game skips its movies.
+    static let moviesFolder = "MOVIES"
 
-    init(sourceApp: URL, gameFolder: URL, destination: URL) {
+    let movies: Bool
+
+    init(sourceApp: URL, gameFolder: URL, destination: URL, movies: Bool = true) {
         self.sourceApp = sourceApp
         self.gameFolder = gameFolder
         self.destination = destination
+        self.movies = movies
+    }
+
+    /// The size of the game folder's MOVIES, nil if it has none.
+    static func moviesSize(in gameFolder: URL) -> Int64? {
+        let fm = FileManager.default
+        guard let name = (try? fm.contentsOfDirectory(atPath: gameFolder.path))?
+                .first(where: { $0.caseInsensitiveCompare(moviesFolder) == .orderedSame }),
+              let e = fm.enumerator(at: gameFolder.appendingPathComponent(name),
+                                    includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
+        var total: Int64 = 0
+        for case let u as URL in e { total += Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+        return total
     }
 
     func cancel() { lock.lock(); cancelFlag = true; lock.unlock() }
@@ -101,7 +118,10 @@ final class PortableBuilder {
 
         report(Progress(done: 0, total: 0, phase: "Looking at the game files…"))
         let appItems = list(sourceApp) { rel, _ in rel == "Contents/Resources/Game" || rel == "Contents/_CodeSignature" }
-        let gameItems = list(gameFolder) { rel, level in level == 1 && Self.skippedGameItems.contains(rel) }
+        let gameItems = list(gameFolder) { rel, level in
+            level == 1 && (Self.skippedGameItems.contains(rel)
+                           || (!movies && rel.caseInsensitiveCompare(Self.moviesFolder) == .orderedSame))
+        }
         let total = (appItems + gameItems).reduce(Int64(0)) { $0 + $1.size }
 
         // Clones on the same disk need no space; on another disk the whole size is needed.

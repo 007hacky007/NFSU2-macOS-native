@@ -16,6 +16,7 @@
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
 //   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done   fake state for the snapshot
 //   NFSU2_LAUNCHER_TEST=portable:<game folder>:<destination.app>   build a portable copy, quit
+//                                (NFSU2_LAUNCHER_TEST_MOVIES=0: without the movies)
 //   NFSU2_LAUNCHER_TEST=play     window off screen, press Play after a second (tests the
 //                                normal path: window open -> Play -> engine)
 import AppKit
@@ -32,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("portable:") {
             let parts = t.dropFirst("portable:".count).split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
-            model.startPortable(from: URL(fileURLWithPath: parts[0]), to: URL(fileURLWithPath: parts[1]))
+            model.startPortable(from: URL(fileURLWithPath: parts[0]), to: URL(fileURLWithPath: parts[1]),
+                                movies: env["NFSU2_LAUNCHER_TEST_MOVIES"] != "0")
             return
         }
 
