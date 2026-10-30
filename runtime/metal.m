@@ -4541,63 +4541,65 @@ static long scr_redirect_plan(int rb, id<MTLTexture> scr, unsigned *outT){
  * elements on the left go to the left edge and the ones on the right to the
  * right edge, still unstretched.  com.c hands over each HUD draw's 4:3 clip
  * rectangle (only while the world is loaded); before a frame is encoded the
- * draws are grouped -- consecutive draws with the same texture on the same row
- * (a text line, a gauge) -- and each group is moved as one piece.  A group
- * crossing the middle stays, and so does anything drawn inside a large centered
- * panel (results table, pause menu, loading screen), so those never split. */
+ * draws are joined into elements (below) and each element is moved as one
+ * piece, so a text, a gauge, a panel or the mirror never splits. */
 static int g_nhud_ok = 0; static float g_nhud[4];
 void metal_set_next_hud(float x0, float x1, float y0, float y1){
     g_nhud[0] = x0; g_nhud[1] = x1; g_nhud[2] = y0; g_nhud[3] = y1; g_nhud_ok = 1;
 }
 static _Atomic unsigned long long g_hud_moved = 0, g_hud_kept = 0;
+/* Elements are the connected pieces of the frame's HUD: draws whose rectangles
+ * overlap or touch (a song box with its frame pieces and text, a gauge with its
+ * needle and digits, the mirror with its frame, a 9-piece panel with its
+ * contents) form one element, found with a union-find over the frame's HUD
+ * draws.  An element crossing the middle stays; one on the left goes to the
+ * left edge, one on the right to the right edge.  If elements chain across
+ * the middle the result is the old centered layout, never a split element. */
+#define HUD_MAXN 1536
+static int hud_find(int *par, int x){ while (par[x] != x){ par[x] = par[par[x]]; x = par[x]; } return x; }
 static void hud_anchor_plan(int rb){
     unsigned n = g_dn[rb]; MDraw *D = g_dbuf[rb];
     float asp = atomic_load(&g_ui_asp) / 10000.0f;
     for (unsigned i = 0; i < n; i++) D[i].xsh = 0.f;
     if (!(asp < 0.999f)) return;
     float sh = 1.f - asp;                       /* the 4:3 edge -> the screen edge */
-    float pan[32][4]; int np = 0;               /* large centered panels this frame */
-    unsigned g0 = 0, gn = 0; unsigned gtex = 0; float gb[4] = {0,0,0,0};
-    #define HUD_FLUSH() do { if (gn){ \
-        float sx = 0.f; \
-        if (gb[0] < -0.15f && gb[1] > 0.15f){ } \
-        else if ((gb[0] + gb[1]) * 0.5f < -0.25f) sx = -sh; \
-        else if ((gb[0] + gb[1]) * 0.5f >  0.25f) sx =  sh; \
-        for (unsigned q = g0; q < g0 + gn; q++) if (D[q].hudok){ D[q].xsh = sx; } \
-        if (sx != 0.f) atomic_fetch_add(&g_hud_moved, gn); else atomic_fetch_add(&g_hud_kept, gn); \
-        gn = 0; } } while (0)
-    /* First pass: the large centered panels of this frame (a results table or a
-     * menu is drawn as 9 pieces -- corners and edges may come BEFORE the centre
-     * fill, so this has to be known before any piece is classified).  A
-     * full-screen picture/fade (both axes ~full) is not a panel. */
-    for (unsigned i = 0; i < n && np < 32; i++){
+    static unsigned idx[HUD_MAXN]; static int par[HUD_MAXN]; static float bb[HUD_MAXN][4];
+    int m = 0;
+    for (unsigned i = 0; i < n; i++){
         const MDraw *d = &D[i];
         if (!d->hudok || d->target || d->is_clear || d->is_blit || d->is_up || d->vsid <= 0) continue;
-        float w = d->hud[1] - d->hud[0], h = d->hud[3] - d->hud[2];
-        if (d->hud[0] < -0.15f && d->hud[1] > 0.15f && w > 0.6f && h > 0.3f && !(w > 1.9f && h > 1.9f)){
-            pan[np][0] = d->hud[0] - 0.08f; pan[np][1] = d->hud[1] + 0.08f;
-            pan[np][2] = d->hud[2] - 0.08f; pan[np][3] = d->hud[3] + 0.08f; np++; }
+        if (m == HUD_MAXN) return;              /* unusual frame: leave it centered */
+        idx[m] = i; par[m] = m; m++;
     }
-    for (unsigned i = 0; i < n; i++){
-        MDraw *d = &D[i];
-        if (!d->hudok || d->target || d->is_clear || d->is_blit || d->is_up || d->vsid <= 0){
-            if (d->target == 0 && !d->is_clear && !d->is_blit && !d->is_up && d->count) HUD_FLUSH();
-            continue; }
-        int inpan = 0;
-        for (int k = 0; k < np && !inpan; k++)
-            if (d->hud[0] >= pan[k][0] && d->hud[1] <= pan[k][1] &&
-                d->hud[2] >= pan[k][2] && d->hud[3] <= pan[k][3]) inpan = 1;
-        if (inpan){ HUD_FLUSH(); d->xsh = 0.f; atomic_fetch_add(&g_hud_kept, 1ull); continue; }
-        int join = gn && d->tex == gtex &&
-                   d->hud[2] <= gb[3] + 0.01f && d->hud[3] >= gb[2] - 0.01f &&     /* same row */
-                   d->hud[0] <= gb[1] + 0.08f && d->hud[1] >= gb[0] - 0.08f;       /* adjacent */
-        if (!join){ HUD_FLUSH(); g0 = i; gtex = d->tex; memcpy(gb, d->hud, sizeof gb); }
-        else { if (d->hud[0] < gb[0]) gb[0] = d->hud[0]; if (d->hud[1] > gb[1]) gb[1] = d->hud[1];
-               if (d->hud[2] < gb[2]) gb[2] = d->hud[2]; if (d->hud[3] > gb[3]) gb[3] = d->hud[3]; }
-        gn = i - g0 + 1;
+    if (!m) return;
+    const float tol = 0.02f;                    /* touching = within 1/100 of the 4:3 width */
+    for (int a = 0; a < m; a++){
+        const float *ra = D[idx[a]].hud;
+        for (int b = a + 1; b < m; b++){
+            const float *rb2 = D[idx[b]].hud;
+            if (ra[0] <= rb2[1] + tol && rb2[0] <= ra[1] + tol &&
+                ra[2] <= rb2[3] + tol && rb2[2] <= ra[3] + tol){
+                int x = hud_find(par, a), y = hud_find(par, b);
+                if (x != y) par[y] = x; }
+        }
     }
-    HUD_FLUSH();
-    #undef HUD_FLUSH
+    for (int a = 0; a < m; a++){ bb[a][0] = bb[a][2] = 1e30f; bb[a][1] = bb[a][3] = -1e30f; }
+    for (int a = 0; a < m; a++){
+        int r = hud_find(par, a); const float *q = D[idx[a]].hud;
+        if (q[0] < bb[r][0]) bb[r][0] = q[0]; if (q[1] > bb[r][1]) bb[r][1] = q[1];
+        if (q[2] < bb[r][2]) bb[r][2] = q[2]; if (q[3] > bb[r][3]) bb[r][3] = q[3];
+    }
+    unsigned long long moved = 0, kept = 0;
+    for (int a = 0; a < m; a++){
+        int r = hud_find(par, a);
+        float x0 = bb[r][0], x1 = bb[r][1], c = (x0 + x1) * 0.5f, sx = 0.f;
+        if (!(x0 < -0.15f && x1 > 0.15f)){      /* not crossing the middle */
+            if (c < -0.25f) sx = -sh; else if (c > 0.25f) sx = sh;
+        }
+        D[idx[a]].xsh = sx;
+        if (sx != 0.f) moved++; else kept++;
+    }
+    atomic_fetch_add(&g_hud_moved, moved); atomic_fetch_add(&g_hud_kept, kept);
 }
 
 static MDraw *raw_rec(int b, unsigned stride, unsigned tex, int vsid,
