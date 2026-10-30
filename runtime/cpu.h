@@ -263,11 +263,22 @@ static inline double x87_round(uint16_t fcw, double v){
  * NaN, it must be fixed separately.  If one of the inputs is a NaN, that one
  * propagates.                                                            */
 #define X87_INDEF (-__builtin_nan(""))
-static inline double x87_r2(double a, double b, double r){
-    if (r == r) return r;
+/* Two NaN operands: the x87 returns the one with the LARGER significand (Intel
+ * SDM vol. 1, table 4-7); the ARM FPU returns the first.  Kept out of line: the
+ * NaN path is cold and inlined at every x87 operation it makes the lifted code
+ * much larger.  (After th0mk/nfsu2-web, MIT.) */
+static __attribute__((noinline, cold, unused)) double x87_r2_nan(double a, double b){
+    if (a != a && b != b){
+        uint64_t x, y; memcpy(&x, &a, 8); memcpy(&y, &b, 8);
+        return (y & 0x000FFFFFFFFFFFFFull) > (x & 0x000FFFFFFFFFFFFFull) ? b : a;
+    }
     if (a != a) return a;
     if (b != b) return b;
     return X87_INDEF;
+}
+static inline double x87_r2(double a, double b, double r){
+    if (__builtin_expect(r == r, 1)) return r;
+    return x87_r2_nan(a, b);
 }
 static inline double x87_r1(double a, double r){
     if (r == r) return r;
@@ -285,7 +296,12 @@ static inline float sse_r1f(float a, float r){
     if (a != a) return a;
     return (float)X87_INDEF;
 }
-static inline double sse_r2d(double a, double b, double r){ return x87_r2(a,b,r); }
+static inline double sse_r2d(double a, double b, double r){   /* SSE: the first NaN operand */
+    if (r == r) return r;
+    if (a != a) return a;
+    if (b != b) return b;
+    return X87_INDEF;
+}
 static inline double sse_r1d(double a, double r){ return x87_r1(a,r); }
 
 /* Out of range / NaN -> "integer indefinite" (the most negative value). */

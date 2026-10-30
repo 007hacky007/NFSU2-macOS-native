@@ -165,6 +165,18 @@ T("fxch",
   [0xD9,0x05]+a32(FA+0xB0)+[0xD9,0x05]+a32(FA+0xB4)+[0xD9,0xC9]+[0xD9,0x1D]+a32(FA+0xB8),
   {}, memf={FA+0xB0:1.0, FA+0xB4:2.0}, expect={}, fmemf={FA+0xB8:1.0})
 
+# x87 NaN propagation (Intel SDM vol. 1, table 4-7): with two NaN operands the
+# result is the one with the larger significand, whichever is the destination.
+FN_ = 0x00C70000
+T("fadd QNaN+QNaN -> larger significand (dst smaller)",
+  [0xD9,0x05]+a32(FN_)+[0xD8,0x05]+a32(FN_+4)+[0xD9,0x1D]+a32(FN_+8),
+  {}, mem={FN_:0x7FC00001, FN_+4:0x7FC00100}, expect={}, fmem={FN_+8:0x7FC00100})
+T("fadd QNaN+QNaN -> larger significand (dst larger)",
+  [0xD9,0x05]+a32(FN_+0x10)+[0xD8,0x05]+a32(FN_+0x14)+[0xD9,0x1D]+a32(FN_+0x18),
+  {}, mem={FN_+0x10:0x7FC00100, FN_+0x14:0xFFC00001}, expect={}, fmem={FN_+0x18:0x7FC00100})
+T("fadd QNaN+1.0 -> the NaN",
+  [0xD9,0x05]+a32(FN_+0x20)+[0xD8,0x05]+a32(FN_+0x24)+[0xD9,0x1D]+a32(FN_+0x28),
+  {}, mem={FN_+0x20:0x3F800000, FN_+0x24:0xFFC00123}, expect={}, fmem={FN_+0x28:0xFFC00123})
 
 # ---------------- memory addressing modes ----------------
 MB = 0x00C10000
