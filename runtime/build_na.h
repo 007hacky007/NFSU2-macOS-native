@@ -2,8 +2,10 @@
  * Reference-build addresses used by the runtime, mapped to this build. */
 #pragma once
 #define GA(x) GA_##x
+#define GA_0x004c1280u 0x004c1280u   /* function 004c1280 + 0x0 */
 #define GA_0x004c4f50u 0x004c4f50u   /* function 004c4f50 + 0x0 */
 #define GA_0x004ec35cu 0x004ec35cu   /* function 004ebec0 + 0x49c */
+#define GA_0x004f4730u 0x004f4730u   /* function 004f4730 + 0x0 */
 #define GA_0x0051cbb0u 0x0051cba0u   /* function 0051cbb0 + 0x0 */
 #define GA_0x005BA0A7u 0x005ba097u   /* function 005ba070 + 0x37 */
 #define GA_0x005BA11Du 0x005ba10du   /* function 005ba070 + 0xad */
@@ -54,6 +56,8 @@
 #define GA_0x0078fa08u 0x0078fa08u   /* operand pair */
 #define GA_0x0078fa14u 0x0078fa14u   /* operand pair */
 #define GA_0x0078fa1cu 0x0078fa1cu   /* operand pair */
+#define GA_0x007f89d0u 0x007f89d0u   /* between pairs 007f7dd4 and 007f9178 (delta +0x0) */
+#define GA_0x007f89ecu 0x007f89ecu   /* between pairs 007f7dd4 and 007f9178 (delta +0x0) */
 #define GA_0x007fb700u 0x007fb700u   /* operand pair */
 #define GA_0x007fb710u 0x007fb710u   /* operand pair */
 #define GA_0x007fb714u 0x007fb714u   /* operand pair */
