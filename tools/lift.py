@@ -211,6 +211,11 @@ def abi_liveness(g, ent, entry_live, is_returning):
     return live_in.get(ent, F_ALL), after, call_after
 
 _ABI = None
+def _retpast():
+    """tools/retpast.txt, next to this file: callees that can return past their caller"""
+    p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'retpast.txt')
+    return {int(x, 16) for ln in open(p) for x in ln.split('#')[0].replace(',', ' ').split()}
+
 def abi_table():
     """FLAGABI=<json> (tools/flagabi.py output) -> (entry, returning) or None"""
     global _ABI
@@ -347,7 +352,7 @@ class RawLifter:
     def __init__(self, data, base=0x00401000, comments=True):
         self.comments=comments; self.trap=False; self.traps=0
         self.trap_kinds=collections.Counter(); self.hooks=set(); self.watch=False
-        self.cov=False
+        self.cov=False; self.retpast=set()
         self.secs=[('.text', base, len(data), bytes(data))]
         self.TVA=base; self.TSZ=len(data); self.TDATA=bytes(data)
         self.md=Cs(CS_ARCH_X86,CS_MODE_32); self.md.detail=True
@@ -365,6 +370,8 @@ class Lifter:
             self.secs.append((nm,self.IB+s.VirtualAddress,s.Misc_VirtualSize,s.get_data()))
         self.TVA,self.TSZ,self.TDATA = next((va,vs,d) for nm,va,vs,d in self.secs if nm=='.text')
         self.md=Cs(CS_ARCH_X86,CS_MODE_32); self.md.detail=True
+        # callees from tools/retpast.txt (a call to one may not come back to the next instruction)
+        self.retpast={a for a in _retpast() if self.in_text(a)}
     def in_text(self,a): return self.TVA<=a<self.TVA+self.TSZ
 
     # ---------- operand -> C expression ----------
@@ -585,6 +592,12 @@ class Lifter:
                     self.oob_calls = getattr(self,'oob_calls',0)+1
                     return [f"PUSH32(0x{i.address+i.size:x}u); dispatch_indirect(c, 0x{t & 0xffffffff:x}u);"]
                 targets.add(t)
+                if t in self.retpast:
+                    # a callee that may return past this function (tools/retpast.txt):
+                    # when the address it returned to is not this call's, this
+                    # function's own return address is gone too; return as well
+                    return [f"PUSH32(0x{i.address+i.size:x}u); sub_{t:08x}(c);",
+                            f"if (c->eip != 0x{i.address+i.size:x}u) return;"]
                 return [f"PUSH32(0x{i.address+i.size:x}u); sub_{t:08x}(c);"]
             # x86: the call target is read BEFORE the return address is PUSHED (call [esp+N]!)
             return [f"{{ uint32_t _ct = {E(0)}; PUSH32(0x{i.address+i.size:x}u); dispatch_indirect(c, _ct); }}"]
@@ -592,8 +605,9 @@ class Lifter:
             n = o[0].imm if o else 0
             # RETEIP=0: the return address isn't written to c->eip (only pushed on the stack).
             # A lifted caller always continues right after the call; the only place
-            # reading c->eip (genexec) now uses the address it pushed.
-            if _os.environ.get('RETEIP','1') == '0':
+            # reading c->eip (genexec) now uses the address it pushed.  The
+            # callees of tools/retpast.txt always write it: their callers compare it.
+            if _os.environ.get('RETEIP','1') == '0' and getattr(self, 'entry', None) not in self.retpast:
                 return [f"c->esp += {4 + n}u; return;"]
             return [f"POP32(c->eip);" + (f" c->esp += {n}u;" if n else "") + " return;"]
 
@@ -1584,9 +1598,12 @@ class Lifter:
     # ---------- function -> C ----------
     def lift(self, entry):
         blocks, calls = self.discover(entry)
+        self.entry = entry
         addrs = sorted(blocks)
         # Flag liveness: the mask "which flags are read after this" for every
         # instruction.  Can be turned off with FLAGOPT=0 (for A/B comparison).
+        # A callee of tools/retpast.txt counts as returning flags: when it
+        # returns past its caller, the caller's early return hands them on.
         import os as _os
         if _os.environ.get('FLAGOPT','1') == '0':
             self.fafter = {}
@@ -1594,7 +1611,8 @@ class Lifter:
             abi = abi_table()
             try:
                 if abi:
-                    _, self.fafter, _ = abi_liveness(abi_cfg(blocks, self.in_text), entry, abi[0], entry in abi[1])
+                    _, self.fafter, _ = abi_liveness(abi_cfg(blocks, self.in_text), entry, abi[0],
+                                                     entry in abi[1] or entry in self.retpast)
                 else:
                     self.fafter = flag_liveness(blocks, addrs, self.in_text)
             except Exception: self.fafter = {}
