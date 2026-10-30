@@ -304,7 +304,8 @@ a report.
 **Cmd-N** shows a frame-rate counter in the top-left corner: frames per second,
 frame time and a frame-time graph; pressed again it adds the 1% low, the GPU time
 per frame, the render size and MSAA, a third time hides it. The choice is kept
-for the next start (`NFSU2_FPS_COUNTER=off|on|detailed` for one run).
+for the next start (`NFSU2_FPS_COUNTER=off|on|detailed` for one run). The
+launcher's Graphics card has the same choice (**Frame-rate counter**).
 
 ## FAQ
 

@@ -64,6 +64,7 @@ enum Prefs {
     // Shared with the engine (same bundle id, same defaults domain).
     static let gameFolder = "OyunDizini"          // name kept for existing installs
     static let fullscreen = "NFSUFullScreen"
+    static let fpsCounter = "NFSUFpsCounter"      // 0 off, 1 on, 2 detailed (Cmd-N in the game)
     // Launcher only.
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"

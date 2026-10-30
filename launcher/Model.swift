@@ -18,6 +18,7 @@ final class LauncherModel: ObservableObject {
     @Published var engine: Engine { didSet { defaults.set(engine.rawValue, forKey: Prefs.engine); engineForced = false } }
     private var engineForced = false     // NFSU2_ENGINE: this start only, not saved
     @Published var fullscreen: Bool { didSet { defaults.set(fullscreen, forKey: Prefs.fullscreen) } }
+    @Published var fpsCounter: Int { didSet { defaults.set(fpsCounter, forKey: Prefs.fpsCounter) } }
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
@@ -49,6 +50,7 @@ final class LauncherModel: ObservableObject {
         engine = e
         engineForced = ProcessInfo.processInfo.environment["NFSU2_ENGINE"] != nil
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
+        fpsCounter = min(max(defaults.integer(forKey: Prefs.fpsCounter), 0), 2)
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
     }
