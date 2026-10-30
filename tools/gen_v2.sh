@@ -26,10 +26,10 @@ SHA="$(shasum -a 256 "$EXE" | cut -c1-64)"
 case "$SHA" in
   8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297)
     BUILD=eu; DEF=gen/all; WORK=out
-    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336}" ;;   # runtime/wsfov.c, sndlead.c
+    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0fa,0x53d155,0x54a745,0x54a75f,0x54ae4c,0x54ae63,0x53d4a6,0x5626b8}" ;;   # runtime/wsfov.c, sndlead.c, powerunits.c
   f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7)
     BUILD=na; DEF=gen/na; WORK=out/na; OVR=$OVR_NA; export LIFT_MISSING=1
-    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336}" ;;   # runtime/wsfov.c, sndlead.c (same sites, NA addresses)
+    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0ea,0x53d145,0x54a735,0x54a74f,0x54ae3c,0x54ae53,0x53d496,0x5626a8}" ;;   # runtime/wsfov.c, sndlead.c, powerunits.c (same sites, NA addresses)
   *) echo "unsupported SPEED2.EXE (sha256 $SHA); see README, \"Game versions\""; exit 1 ;;
 esac
 OUT="${GENOUT:-$DEF}"
