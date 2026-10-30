@@ -180,18 +180,29 @@ final class LauncherModel: ObservableObject {
         p.directoryURL = FileManager.default.isWritableFile(atPath: "/Applications")
             ? URL(fileURLWithPath: "/Applications")
             : FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-        var moviesBox: NSButton? = nil
-        if let size = PortableBuilder.moviesSize(in: loc.folder) {
-            let b = NSButton(checkboxWithTitle: "Include the movies ("
+        // A checkbox for each optional folder the game has, all on: a full copy unless unticked.
+        var boxes: [(String, NSButton)] = []
+        for (x, size) in PortableBuilder.extras(in: loc.folder) {
+            let b = NSButton(checkboxWithTitle: "Include " + x.title + " ("
                              + ByteCountFormatter.string(fromByteCount: size, countStyle: .file) + ")",
                              target: nil, action: nil)
+            b.toolTip = "Without: " + x.without + "."
             b.state = .on
             b.sizeToFit()
-            let v = NSView(frame: NSRect(x: 0, y: 0, width: b.frame.width + 40, height: b.frame.height + 16))
-            b.setFrameOrigin(NSPoint(x: 20, y: 8))
-            v.addSubview(b)
+            boxes.append((x.folder, b))
+        }
+        if !boxes.isEmpty {
+            let h = boxes.reduce(CGFloat(16)) { $0 + $1.1.frame.height + 6 }
+            let w = boxes.map { $0.1.frame.width }.max()! + 40
+            let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+            var y = h - 8
+            for (_, b) in boxes {
+                y -= b.frame.height
+                b.setFrameOrigin(NSPoint(x: 20, y: y))
+                y -= 6
+                v.addSubview(b)
+            }
             p.accessoryView = v
-            moviesBox = b
         }
         guard p.runModal() == .OK, var dest = p.url else { return }
         if dest.pathExtension.lowercased() != "app" { dest.appendPathExtension("app") }
@@ -199,11 +210,11 @@ final class LauncherModel: ObservableObject {
             alert("Choose another name", "The copy can't replace the app that is running.")
             return
         }
-        startPortable(from: loc.folder, to: dest, movies: moviesBox?.state != .off)
+        startPortable(from: loc.folder, to: dest, leaveOut: Set(boxes.filter { $0.1.state == .off }.map { $0.0 }))
     }
 
-    func startPortable(from game: URL, to dest: URL, movies: Bool = true) {
-        let b = PortableBuilder(sourceApp: Paths.bundle, gameFolder: game, destination: dest, movies: movies)
+    func startPortable(from game: URL, to dest: URL, leaveOut: Set<String> = []) {
+        let b = PortableBuilder(sourceApp: Paths.bundle, gameFolder: game, destination: dest, leaveOut: leaveOut)
         builder = b
         job = Job(phase: "Starting…")
         DispatchQueue.global(qos: .userInitiated).async {
