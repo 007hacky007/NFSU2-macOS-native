@@ -68,6 +68,7 @@ enum Prefs {
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
+    static let allCars = "LauncherAllCars"         // both releases' cars (off: NFSU2_ALL_CARS=0)
 }
 
 enum Locator {
@@ -120,6 +121,19 @@ enum Locator {
             }
         }
         return nil
+    }
+
+    /// The folder has both releases' cars, CARS/CORSA, PEUGOT106, CIVIC and RSX
+    /// (runtime/regional.c), in any case.
+    static func hasAllRegionCars(_ folder: URL?) -> Bool {
+        func child(_ dir: URL, _ name: String) -> URL? {
+            let kids = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            return kids.first { $0.caseInsensitiveCompare(name) == .orderedSame }.map { dir.appendingPathComponent($0) }
+        }
+        guard let f = folder, let cars = child(f, "CARS") else { return false }
+        return ["CORSA", "PEUGOT106", "CIVIC", "RSX"].allSatisfy {
+            child(cars, $0).flatMap { child($0, "GEOMETRY.BIN") } != nil
+        }
     }
 
     static func fileSize(_ u: URL) -> UInt64 {

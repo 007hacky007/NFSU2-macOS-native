@@ -170,6 +170,18 @@ struct MoreCard: View {
                     .buttonStyle(SecondaryButtonStyle())
                     .disabled(!model.isReady)
             }
+            if model.hasAllRegionCars {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Both releases' cars").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                        Text("The Corsa, Peugeot 106, Civic and RSX all for sale and in races. Off: as in the original game.")
+                            .font(.system(size: 11)).foregroundColor(Theme.dim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: $model.allCars).labelsHidden().toggleStyle(SwitchToggleStyle())
+                }
+            }
             HStack(spacing: 8) {
                 Button("Saves") { model.openSaves() }.buttonStyle(SecondaryButtonStyle())
                 Button("Logs") { model.openLogs() }.buttonStyle(SecondaryButtonStyle())
@@ -274,6 +286,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(width: 560, height: 664)
     }
 }
