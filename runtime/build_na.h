@@ -77,6 +77,7 @@
 #define GA_0x0086549cu 0x0086549cu   /* operand pair */
 #define GA_0x008654a4u 0x008654a4u   /* operand pair */
 #define GA_0x00865558u 0x00865558u   /* operand pair */
+#define GA_0x00890080u 0x00890080u   /* operand pair */
 #define GA_0x43bdfeu 0x0043bdfeu   /* function 0043bdf0 + 0xe */
 #define GA_0x57eb79u 0x0057eb69u   /* function 0057eae0 + 0x99 */
 #define GA_0x65cd10u 0x0065cd00u   /* function 0065ccd8 + 0x38 */

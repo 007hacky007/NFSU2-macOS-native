@@ -1359,6 +1359,7 @@ static int ortho_full_width(const VSConst *vsk, int cx, const VtxView *vv){
      * loading screen, y -1..1 or larger) keeps its 4:3 shape. */
     return lo <= -0.98f && hi >= 0.98f && (yhi - ylo) < 1.9f && yhi > -1.f && ylo < 1.f;
 }
+static int hudpos_on(void){ static int v = -1; if (v < 0){ const char *e = ENVC("HUDPOS"); v = (e && *e == '1'); } return v; }
 static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const VtxView *vv){
     if (g_aspfix == 1.f || !prog) return vsk;
     unsigned vs = g_cur_vs;
@@ -1398,6 +1399,26 @@ static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const
                               (long)g_present_no, vs, g_cur_ps_id, g_tex_stage[0], vv->nv,
                               (double)g_wide_ylo, (double)g_wide_yhi); } }
               return vsk; }
+          /* HUDPOS=1 (see metal.m HUD ANCHORING): hand the draw's 4:3 clip-space
+           * rectangle to the renderer, which moves the HUD elements to the screen
+           * edges per element.  Only while the game world is loaded (TheWorld). */
+          if (hf && hudpos_on() && vv && vv->vp && vv->nv && vv->nv <= 4096u && vv->stride && vv->p_off >= 0
+              && (vv->p_type == 2 || vv->p_type == 3)
+              && mem_is_committed(GA(0x00890080u) + 3u) && MR32(GA(0x00890080u))){
+              const float *r = vsk->f[cx], *ry = vsk->f[cx + 1];
+              float lo = 1e30f, hi = -1e30f, ylo = 1e30f, yhi = -1e30f; int ok = 1;
+              for (uint32_t i = 0; i < vv->nv; i++){
+                  uint32_t a = vv->vp + i * vv->stride + (uint32_t)vv->p_off;
+                  if (!mem_is_committed(a + 11)){ ok = 0; break; }
+                  float x = MRF32(a), y = MRF32(a + 4), z = MRF32(a + 8);
+                  float w = (vv->p_type == 3) ? MRF32(a + 12) : 1.f;
+                  float cxv = x * r[0] + y * r[1] + z * r[2] + w * r[3];
+                  float cyv = x * ry[0] + y * ry[1] + z * ry[2] + w * ry[3];
+                  if (cxv < lo) lo = cxv; if (cxv > hi) hi = cxv;
+                  if (cyv < ylo) ylo = cyv; if (cyv > yhi) yhi = cyv; }
+              if (ok){ void metal_set_next_hud(float, float, float, float);
+                       metal_set_next_hud(lo, hi, ylo, yhi); }
+          }
           if (hf){ static VSConst ht; vsk_copy_used(&ht, vsk, prog);
                    for (int k = 0; k < 4; k++) ht.f[cx][k] *= g_aspfix;
                    return &ht; } }
