@@ -8,6 +8,7 @@ enum TexturePackWindow {
     private static var window: NSWindow?
     static let size = NSSize(width: 680, height: 720)
     static func show(store: TexturePackStore, model: LauncherModel) {
+        TexturePackCatalog.shared.refresh()              // the list from the repository, once per launch
         if let w = window, w.isVisible { w.makeKeyAndOrderFront(nil); return }
         window = make(store: store, model: model)
         window?.center(); window?.makeKeyAndOrderFront(nil)
@@ -27,12 +28,13 @@ enum TexturePackWindow {
 struct TexturePackManagerView: View {
     @ObservedObject var store: TexturePackStore
     @ObservedObject var model: LauncherModel
+    @ObservedObject var catalog = TexturePackCatalog.shared
     @State var search = ""
     @State var category = "all"
 
     private var available: [CatalogPack] {
         let words = search.lowercased().split(separator: " ").map(String.init)
-        return TexturePackCatalog.packs.filter { c in
+        return catalog.packs.filter { c in
             guard store.pack(c.id) == nil, category == "all" || c.category == category else { return false }
             let text = (c.name + " " + c.author + " " + c.description + " " + c.kind).lowercased()
             return words.allSatisfy { text.contains($0) }
@@ -71,7 +73,7 @@ struct TexturePackManagerView: View {
                             Text(store.errors[k] ?? "").font(.system(size: 11)).foregroundColor(Theme.bad)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Card("Packs from the community · \(TexturePackCatalog.packs.count) in the list, most popular first") {
+                        Card("Packs from the community · \(catalog.packs.count) in the list, most popular first") {
                             HStack(spacing: 8) {
                                 TextField("Search by name, author or what it changes", text: $search)
                                     .textFieldStyle(RoundedBorderTextFieldStyle()).font(.system(size: 12))
@@ -82,7 +84,10 @@ struct TexturePackManagerView: View {
                             ForEach(available) { c in
                                 CatalogPackRow(store: store, pack: c, canAdd: model.location != nil)
                             }
-                            if available.isEmpty {
+                            if catalog.packs.isEmpty {
+                                Text("The list of packs could not be read. Import Texture Pack… still takes any pack.")
+                                    .font(.system(size: 11)).foregroundColor(Theme.bad)
+                            } else if available.isEmpty {
                                 Text(search.isEmpty && category == "all" ? "Every pack of the list is on this Mac."
                                      : "No pack in the list matches. Import Texture Pack… takes any other.")
                                     .font(.system(size: 11)).foregroundColor(Theme.dim)

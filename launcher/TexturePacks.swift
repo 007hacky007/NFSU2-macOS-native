@@ -16,26 +16,6 @@
 import AppKit
 import CryptoKit
 
-struct CatalogPack: Identifiable, Decodable {
-    let id: String
-    let name: String
-    let author: String
-    let category: String          // ui | world | sky | cars
-    let kind: String              // "TexMod pack" ...
-    let description: String       // what it changes, in plain words
-    let page: URL                 // the author's page
-    let download: URL?            // the tested release; nil: Details and Import
-    let sha256: String?           // its SHA-256 (with download only)
-    let knownSHA256: [String]?    // tested releases without a direct link
-    let fileName: String          // the file as downloaded ("" when not known)
-    let size: Int64               // its size (0: not known)
-    let include: [String]?        // only these parts of the download are used
-    let exclude: [String]?        // these are not
-    let releases: String          // "EU and NA" (tested) or "not checked"
-    let note: String?
-    static let categories = [("all", "All"), ("ui", "Menus and HUD"), ("world", "World"), ("sky", "Sky"), ("cars", "Cars")]
-}
-
 /// A pack the launcher made (packs.json).
 struct InstalledPack: Codable, Identifiable, Equatable {
     var id: String

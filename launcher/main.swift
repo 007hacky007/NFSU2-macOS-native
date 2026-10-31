@@ -24,7 +24,9 @@
 //   NFSU2_LAUNCHER_TEST=uhud-download:<game folder>:<pack>   download the mod and make the pack, quit
 //   NFSU2_LAUNCHER_TEST=texpack:<mod>:<game folder>:<pack>   make a texture pack (TexturePackBuilder.swift), quit
 //   NFSU2_LAUNCHER_TEST=texpack-download:<catalog id>:<game folder>:<store>   Download as the button
-//                                does, into <store> instead of Application Support/NFSU2/TexturePacks, quit
+//                                does (list fetched as the window does), into <store> instead of
+//                                Application Support/NFSU2/TexturePacks, quit
+//   NFSU2_LAUNCHER_TEST=texpack-catalog:<store>   load and fetch the texture pack list, say which one is used
 //   NFSU2_LAUNCHER_TEST=texpack-import:<catalog id or ->:<mod>:<game folder>:<store>   Import… the same way
 //   NFSU2_LAUNCHER_TEST=play     window off screen, press Play after a second (tests the
 //                                normal path: window open -> Play -> engine)
@@ -67,10 +69,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     } catch { print("texture pack FAILED: \((error as? UHUDPack.Failure)?.message ?? error.localizedDescription)"); exit(1) }
                 }
             case ("texpack-download", 4):
-                guard let c = TexturePackCatalog.pack(parts[1]) else { print("no catalog pack \(parts[1])"); exit(2) }
                 TexturePackStore.testDir = URL(fileURLWithPath: parts[3]); model.packs.load()
                 model.packs.game = { URL(fileURLWithPath: parts[2]) }
-                model.packs.download(c, done: finish)
+                TexturePackCatalog.shared.refresh { _ in        // the list as the window has it
+                    guard let c = TexturePackCatalog.pack(parts[1]) else { print("no catalog pack \(parts[1])"); exit(2) }
+                    self.model.packs.download(c, done: finish)
+                }
+            case ("texpack-catalog", 2):
+                TexturePackStore.testDir = URL(fileURLWithPath: parts[1])
+                let cat = TexturePackCatalog.shared
+                print("before: \(cat.source) \(cat.updated), \(cat.packs.count) packs")
+                cat.refresh { src in
+                    print("list: \(src) \(cat.updated), \(cat.packs.count) packs, \(cat.packs.filter { $0.download != nil }.count) with Download")
+                    exit(0)
+                }
             case ("texpack-import", 5):
                 TexturePackStore.testDir = URL(fileURLWithPath: parts[4]); model.packs.load()
                 model.packs.game = { URL(fileURLWithPath: parts[3]) }
