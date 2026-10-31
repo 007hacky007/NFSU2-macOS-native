@@ -41,6 +41,7 @@ static void all_reports(void){
     sampler_report();
     com_report(); win32_report(); { void vclock_report(void); vclock_report(); }
     { void metal_budget_report(void); metal_budget_report(); }
+    { void hfr_report(void); hfr_report(); }   /* framerate.c */
     dispatch_report();
 }
 

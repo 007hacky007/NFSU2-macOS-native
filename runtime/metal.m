@@ -973,6 +973,7 @@ static pthread_cond_t  g_qcond = PTHREAD_COND_INITIALIZER;
  * is immediate. */
 static pthread_cond_t  g_rcond = PTHREAD_COND_INITIALIZER;
 static _Atomic long    g_frames_dropped = 0;
+static _Atomic long    g_frames_replaced = 0;   /* mailbox (framerate.c hfr_mailbox) */
 /* The buffer the main thread is ENCODING right now (-1 = none).  Even if
  * metal_present times out it CAN'T swap into this buffer: the main thread walks
  * g_dbuf[rb] without a lock; if the guest wrote the new frame's draws into the
@@ -4904,8 +4905,29 @@ void metal_clear_target_ex(unsigned argb, unsigned flags, float z){
     pthread_mutex_unlock(&g_qlock);
 }
 
+/* The screen's maximum refresh rate (framerate.c: NFSU2_FPS=auto, the present
+ * pacing).  Read on the main thread (at window creation and every 64 loop
+ * iterations, so a move to another screen or a changed refresh rate is seen),
+ * used by the guest thread.  60 until the window exists. */
+static _Atomic int g_display_hz = 0;
+static void display_hz_update(void){
+    NSInteger hz = 0;
+    if (@available(macOS 12.0, *)){
+        NSScreen *sc = (g_win ? [g_win screen] : nil) ?: [NSScreen mainScreen];
+        hz = [sc maximumFramesPerSecond]; }
+    int v = hz > 0 ? (int)hz : 60, old = atomic_exchange(&g_display_hz, v);
+    if (old != v) fprintf(stderr, "metal: screen refresh %d Hz\n", v);
+}
+int metal_display_hz(void){ int v = atomic_load(&g_display_hz); return v > 0 ? v : 60; }
+
 void metal_present(void){
     if (!g_layer || !g_vbuf[0]) return;
+    /* Mailbox (framerate.c: a frame rate above the screen's): a newer frame
+     * replaces one the main thread has not started to encode; only a frame
+     * being encoded is waited for (its buffer is the one the guest writes
+     * next).  The replaced frame is handled like a dropped one. */
+    int hfr_mailbox(void);
+    int mailbox = hfr_mailbox();
     pthread_mutex_lock(&g_qlock);
     /* If the previous frame hasn't been put on screen yet, WAIT.  If we don't, the
      * guest writes over the next frame and the screen is blank at intervals
@@ -4916,15 +4938,16 @@ void metal_present(void){
      * played and the menu music came in fragments (fine when minimised: no frames).
      * The lock is given up for the wait and taken back after g_qlock is released,
      * so the two are never waited for in opposite orders. */
-    int yielded = 0;
-    if (g_ready >= 0){
+    int yielded = 0, replaced = 0;
+    if (mailbox && g_ready >= 0 && g_enc_rb < 0){ replaced = 1; atomic_fetch_add(&g_frames_replaced, 1); }
+    if (g_ready >= 0 && !replaced){
         pthread_mutex_unlock(&g_qlock);
         int guest_blocking_begin(void);
         yielded = guest_blocking_begin();
         pthread_mutex_lock(&g_qlock);
     }
-    int dropped = 0;
-    if (g_ready >= 0){
+    int dropped = replaced;
+    if (g_ready >= 0 && !replaced){
         struct timespec ts, _w0; clock_gettime(CLOCK_MONOTONIC,&_w0);
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += 60L * 1000000L;             /* at most 60 ms */
@@ -4935,6 +4958,7 @@ void metal_present(void){
              * don't give up, wait.  The swap would point g_cur at the buffer it is
              * reading (see g_enc_rb).  The signal comes as soon as encoding ends. */
             if (late && g_enc_rb >= 0){ pthread_cond_wait(&g_qcond, &g_qlock); continue; }
+            if (mailbox && g_enc_rb < 0){ dropped = 1; atomic_fetch_add(&g_frames_replaced, 1); break; }
             if (pthread_cond_timedwait(&g_qcond, &g_qlock, &ts) != 0){
                 if (g_enc_rb >= 0){
                     if (!late){ late = 1;
@@ -6109,6 +6133,7 @@ void metal_run_main_loop(void){
         [g_win setContentView:view];
         g_layer = (CAMetalLayer *)view.layer;
         dlink_start(view);
+        display_hz_update();
         /* Needed so StretchRect can read from the back buffer.  FBONLY=1 (test):
          * render-target-only drawables (compressible, eligible for direct display). */
         g_layer.framebufferOnly = fbonly_on() ? YES : NO;
@@ -6228,6 +6253,7 @@ void metal_run_main_loop(void){
              * at most n frames a second. */
             { static int bg = -2; if (bg == -2){ const char *e = ENVC("BGFPS"); bg = e ? atoi(e) : 0; }
               if (bg > 0 && ![NSApp isActive]) usleep((useconds_t)(1000000 / bg)); }
+            { static unsigned hz_n = 0; if ((++hz_n & 63u) == 0) display_hz_update(); }
             /* FPSCAP=<n> (test): at most n frames a second, always */
             { static int cap = -2; if (cap == -2){ const char *e = ENVC("FPSCAP"); cap = e ? atoi(e) : 0; }
               if (cap > 0) usleep((useconds_t)(1000000 / cap)); }
@@ -7681,7 +7707,13 @@ void metal_run_main_loop(void){
                                        !atomic_compare_exchange_weak(&g_gpu_max_ns, &mx, ns)) {}
                             } }];
                         if (d && fbonly_on() && dtex != d.texture) fbonly_copy(cb, dtex, d.texture);
-                        if (d) [cb presentDrawable:d];
+                        /* framerate.c: at least the frame period minus half a refresh
+                         * after the previous drawable, so 60 fps on a 120 Hz screen
+                         * holds every frame for exactly two refreshes */
+                        if (d){ double hfr_present_min_duration(void);
+                                double md = hfr_present_min_duration();
+                                if (md > 0.0) [cb presentDrawable:d afterMinimumDuration:md];
+                                else [cb presentDrawable:d]; }
                         [cb commit];
                         long fno = atomic_fetch_add(&g_frames_drawn, 1) + 1;
                         if (g_perflog){ struct timespec _p1; clock_gettime(CLOCK_MONOTONIC, &_p1);
@@ -7766,6 +7798,9 @@ void metal_run_main_loop(void){
           for (unsigned i = 1; i < g_texn && i < MAXTEX; i++) if (g_tex[i]){ live++; tb += g_tex[i].allocatedSize; }
           fprintf(stderr, "metal: texture ids used %u of %u (%u still alive, %.0f MB), table full %lu times\n",
                   g_texn, (unsigned)MAXTEX, live, tb / 1048576.0, g_tex_full_hits); }
+        if (atomic_load(&g_frames_replaced))
+            fprintf(stderr, "metal: %ld frames replaced before the screen showed them (frame rate above the screen's)\n",
+                    atomic_load(&g_frames_replaced));
         fprintf(stderr, "metal: window closed (%ld frames drawn)\n",
                 atomic_load(&g_frames_drawn));
     }

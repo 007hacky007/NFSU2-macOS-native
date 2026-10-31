@@ -446,7 +446,8 @@ void sub_0050d510(CPU *c){
  * FORCERAIN=1 sets the target to 1.0, FORCERAIN=2 sets it to 0 (always dry).
  * FORCERAIN=3 an OVERCAST sky without rain (+0x509c and the target +0x5098 = 0;
  * 1.0 = clear sky), FORCERAIN=4 overcast sky + rain.
- * Without the variable the behavior is EXACTLY the game's.  In both builds. */
+ * Without the variable the behavior is EXACTLY the game's.  In both builds.
+ * The update itself goes through framerate.c (above 60 fps it runs every frame). */
 static int force_rain(void){
     static int fr = -1;
     if (fr < 0){ const char *e = getenv("FORCERAIN"); fr = e ? atoi(e) : 0; }
@@ -458,13 +459,13 @@ void sub_0061e390(CPU *c){
     int fr = force_rain();
     if (fr == 1 || fr == 4) ST(0) = 1.0; else if (fr == 2 || fr == 3) ST(0) = 0.0;
 }
-void sub_0061f130_orig(CPU *c);
+void hfr_rain_update(CPU *c);          /* framerate.c: sub_0061f130_orig at any frame rate */
 void sub_0061f130(CPU *c){
     uint32_t rain = c->ecx;
     int fr = force_rain();
     if (fr && rain && mem_is_committed(rain + 0x50a3u))
         MRF32(rain + 0x5094u) = (fr == 1 || fr == 4) ? 1.0f : 0.0f;
-    sub_0061f130_orig(c);
+    hfr_rain_update(c);
     if (fr >= 3 && rain && mem_is_committed(rain + 0x50a3u)){
         MRF32(rain + 0x5098u) = 0.0f; MRF32(rain + 0x509cu) = 0.0f; }
 }

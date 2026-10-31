@@ -196,10 +196,13 @@ void frame_pace(void){
      * nanosleep; with it off the race went 63.7 -> 79.4 fps and the menus to
      * 120 fps (the display refresh limit).
      * PACE60=1 brings back the old behavior.  Runaway fps is cut by vsync
-     * anyway; the virtual clock's per-frame increment is floored at 4 ms (250 fps). */
+     * anyway; the virtual clock's per-frame increment is floored at 4 ms (250 fps).
+     * framerate.c paces every frame unless NFSU2_FPS=off and reads PACE60=1 as
+     * NFSU2_FPS=60, so this loop only runs with NFSU2_FPS=off. */
     static int off = -1;
     if (off < 0){ const char *e = getenv("PACE60");
-                  off = !(e && *e && *e != '0'); }
+                  int hfr_mode_off(void);
+                  off = !(e && *e && *e != '0') || !hfr_mode_off(); }
     if (off) return;
     static uint64_t deadline = 0;
     struct timespec ts;

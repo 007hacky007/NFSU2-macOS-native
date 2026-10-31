@@ -295,7 +295,7 @@ __attribute__((constructor)) static void perflog_init(void){
 #else
         fprintf(m, "build normal\n");
 #endif
-        const char *keys[] = { "NFSRES", "NFSFULL", "SPINSLEEP", "PACE60", "HD_RT", "HD_MSAA", NULL };
+        const char *keys[] = { "NFSRES", "NFSFULL", "SPINSLEEP", "PACE60", "NFSU2_FPS", "NFSU2_CUTSCENES_60", "HD_RT", "HD_MSAA", NULL };
         for (int i = 0; keys[i]; i++){ const char *v = getenv(keys[i]); if (v) fprintf(m, "env %s=%s\n", keys[i], v); }
         fclose(m);
     }
@@ -318,7 +318,8 @@ void perflog_guest_frame(void){
     if (first){ first = 0; thr_register(&th_guest); }
     struct timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     uint64_t cpu = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
-    uint64_t w = perflog_now_us(), sl = spin_slept_us(), pw = metal_wait_present_ns() / 1000ull;
+    uint64_t hfr_paced_sleep_us(void);   /* framerate.c: the frame pacer's sleep */
+    uint64_t w = perflog_now_us(), sl = spin_slept_us() + hfr_paced_sleep_us(), pw = metal_wait_present_ns() / 1000ull;
     uint64_t e[PL_NEV][3];
     for (int k = 0; k < PL_NEV; k++){ e[k][0] = atomic_load(&ev_n[k]); e[k][1] = atomic_load(&ev_ns[k]); e[k][2] = atomic_load(&ev_b[k]); }
     uint32_t gf = atomic_fetch_add(&g_gframe, 1u) + 1u;

@@ -27,7 +27,16 @@
  * inverse of that squeeze.
  *
  * Only screens wider than 4:3 (aspfix < 1) take this path; narrower ones keep
- * the renderer path.  NFSU2_FOV=renderer restores the old behaviour.        */
+ * the renderer path.  NFSU2_FOV=renderer restores the old behaviour.
+ *
+ * Cutscene black bars (NFSU2_CUTSCENE_BORDERS=off): race intros and other
+ * in-engine scenes slide a letterbox in.  sub_005cbdd0 draws it as two HUD
+ * quads, the bar height from the player camera (+0xc8, a fraction of the
+ * screen height) at [esp+0xc]; the fld at 0x5cbe54 (NA 0x5cbe44) turns it
+ * into 640x480 units.  Off sets the height to 0 there: no bars, the whole
+ * picture stays visible (nothing is zoomed or cut off).  Hook site from
+ * iburakct's high-FPS work (PR #10), after ThirteenAG's Widescreen Fix
+ * (DisableCutsceneBorders).                                                 */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +46,13 @@
 float com_aspfix(void);
 
 static int g_mode = -1;              /* 1 = game projection, 0 = renderer */
-static unsigned long g_proj, g_proj_wide, g_mark, g_mark_moved;
+static unsigned long g_proj, g_proj_wide, g_mark, g_mark_moved, g_bars;
+static int g_borders = -1;           /* 1 = the game's letterbox, 0 = none */
+static int borders_on(void){
+    if (g_borders < 0){ const char *e = getenv("NFSU2_CUTSCENE_BORDERS");
+                        g_borders = !(e && (!strcasecmp(e, "off") || !strcmp(e, "0"))); }
+    return g_borders;
+}
 
 static void ws_init(void){
     if (g_mode >= 0) return;
@@ -75,6 +90,9 @@ int ws_hook(CPU *c, uint32_t ip){
         ST(0) = 320.0 + (ST(0) - 320.0) / (double)com_aspfix();
         g_mark_moved++;
         return 1; }
+    case GA(0x005cbe54u):                    /* fld [esp+0xc] = letterbox bar height */
+        if (!borders_on() && MRF32(c->esp + 0xcu) > 0.f){ MRF32(c->esp + 0xcu) = 0.f; g_bars++; }
+        return 1;
     }
     return 0;
 }
@@ -83,4 +101,5 @@ void ws_report(void){
     ws_init();
     fprintf(stderr, "  widescreen fov   : %s; projection setups %lu (Hor+ %lu), HUD markers %lu (moved %lu)\n",
             g_mode ? "game" : "renderer", g_proj, g_proj_wide, g_mark, g_mark_moved);
+    fprintf(stderr, "  cutscene bars    : %s; %lu frames without them\n", borders_on() ? "on" : "off", g_bars);
 }

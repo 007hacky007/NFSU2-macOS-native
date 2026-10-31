@@ -114,6 +114,6 @@ case "$MODE" in
             SAMPLE=1 ALARM="${ALARM:-30}" exec "$BIN" "$EXE" ;;
   trace)    echo "D3D9 call trace"
             COMTRACE=1 ALARM="${ALARM:-20}" exec "$BIN" "$EXE" ;;
-  test)     "$ROOT/out/isatest" && "$ROOT/out/nfsu2_all" "$EXE" ;;
+  test)     "$ROOT/out/isatest" && "$ROOT/out/nfsu2_all" "$EXE" && sh "$ROOT/tests/framerate.sh" ;;
   *)        echo "usage: [NFSHD=1] ./run.sh [window|1080p|hd|hd1080p|headless|profile|trace|test]"; exit 1 ;;
 esac
