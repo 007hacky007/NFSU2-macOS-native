@@ -194,6 +194,43 @@ struct GraphicsCard: View {
                 .labelsHidden()
                 .fixedSize()
             }
+            UHUDRow(model: model)
+        }
+    }
+}
+
+/// LunicAura106's Upscaled HUD: added once from the mod's download, then a switch.
+struct UHUDRow: View {
+    @ObservedObject var model: LauncherModel
+    private var text: String {
+        if model.uhudBusy { return model.uhudPhase }
+        if model.hasUHUDPack {
+            return "LunicAura106's Upscaled HUD mod: menus, HUD, fonts and icons drawn at four times the detail. Cmd-T switches while playing. Off: as in the original game."
+        }
+        return "LunicAura106's Upscaled HUD mod draws the menus, HUD, fonts and icons at four times the detail. Download gets it from nfsmods.xyz (2.8 MB) and sets it up; your game folder stays as it is."
+    }
+    var body: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Sharper menus and HUD").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                Text(text).font(.system(size: 11)).foregroundColor(Theme.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let e = model.uhudError {
+                    Text(e).font(.system(size: 11)).foregroundColor(Theme.bad)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            if model.hasUHUDPack && !model.uhudBusy {
+                Toggle("", isOn: $model.uhud).labelsHidden().toggleStyle(SwitchToggleStyle())
+            } else {
+                VStack(alignment: .trailing, spacing: 6) {
+                    Button("Download") { model.downloadUHUD() }.buttonStyle(SecondaryButtonStyle())
+                        .disabled(model.location == nil || model.uhudBusy)
+                    Button("Add File…") { model.addUHUD() }.buttonStyle(SecondaryButtonStyle())
+                        .disabled(model.location == nil || model.uhudBusy)
+                }
+            }
         }
     }
 }
@@ -367,6 +404,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 664)
+        .frame(width: 560, height: 724)
     }
 }

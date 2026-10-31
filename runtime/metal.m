@@ -20,6 +20,7 @@
 #include "perflog.h"
 #include "fpscounter.h"
 #include "headlights.h"
+#include "uhud.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -1201,6 +1202,8 @@ static uint8_t g_tex_cube[MAXTEX];          /* 1 = MTLTextureTypeCube */
 static unsigned g_tex_lvlmask[MAXTEX];
 static id<MTLTexture> g_tex[MAXTEX];
 static unsigned       g_texn = 1;            /* 0 = "no texture" (white) */
+_Static_assert(MAXTEX == UHUD_MAXTEX, "uhud.h UHUD_MAXTEX");
+id<MTLDevice> metal_device(void){ return g_dev; }    /* uhud.m's loader */
 /* --- releasing render targets on Reset --------------------------------
  * In D3D9 the game must release ALL D3DPOOL_DEFAULT resources (render targets
  * included) before Reset, otherwise Reset fails.  We never released the Metal
@@ -6125,6 +6128,7 @@ void metal_run_main_loop(void){
               if (@available(macOS 13.0, *)){
                   [fs2 setHidden:YES]; [fs2 setAllowsKeyEquivalentWhenHidden:YES]; } }
             fpscounter_add_menu(appMenu);      /* Cmd-N: frame-rate counter */
+            uhud_add_menu(appMenu);            /* Cmd-T, while the UHUD pack is in use */
             [appMenu addItem:[NSMenuItem separatorItem]];
             [appMenu addItemWithTitle:@"NFSU2'den Cik" action:@selector(terminate:)
                         keyEquivalent:@"q"];
@@ -6474,6 +6478,7 @@ void metal_run_main_loop(void){
                       + (unsigned long long)_d1.tv_nsec - (unsigned long long)_d0.tv_nsec);
                     if (dtex){
                         struct timespec _e0; clock_gettime(CLOCK_MONOTONIC,&_e0);
+                        uhud_main_frame();              /* the UHUD pack's textures (uhud.m) */
                         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
                         pp_begin(atomic_load(&g_frames_drawn) + 1);
                         int ab_count = 0;
@@ -7582,7 +7587,7 @@ void metal_run_main_loop(void){
                                       unsigned tt = ts[q4];
                                       freed_use(tt, 0);
                                       id<MTLTexture> txn = (tt && tt < MAXTEX && g_tex[tt])
-                                                           ? g_tex[tt] : g_white;
+                                                           ? uhud_pick(tt, g_tex[tt]) : g_white;
                                       [enc setFragmentTexture:txn atIndex:(NSUInteger)q4];
                                   } }
                                 atomic_fetch_add(&g_draw_n, 1ull);

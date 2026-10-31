@@ -42,9 +42,9 @@ case "${BUILD:-eu}" in
   *)  echo "BUILD must be eu or na"; exit 1 ;;
 esac
 
-CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead carshadow sponsors tunegraph regional intro powerunits language headlights discord garage"
-MSRC="metal audio bundle gamepad fpscounter"
-FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework GameController"
+CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead carshadow sponsors tunegraph regional intro powerunits language headlights discord garage texpack"
+MSRC="metal audio bundle gamepad fpscounter uhud"
+FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework GameController -lz"
 SHARDS="$SOBJ/shard_*.o $SOBJ/fntab.o $SOBJ/stubs.o"
 
 # $1 = object directory, $2 = NFS_ENHANCED value.  Files are compiled in parallel.

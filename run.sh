@@ -36,6 +36,8 @@ fi
 #   or the PERFLOG directory).  Measurement recording while playing: tools/session.sh [hd].
 # In game, Cmd-N: the frame-rate counter, off -> on -> detailed (remembered);
 #   NFSU2_FPS_COUNTER=off|on|detailed sets it for one run (runtime/fpscounter.m).
+# NFSU2_UHUD=on: the Upscaled HUD mod's menus and HUD (NFSU2_UHUD_PACK=<uhud.pak>, otherwise
+#   TEXPACKS/uhud.pak in the game folder; the launcher makes it); Cmd-T switches (runtime/uhud.m).
 MODE="${1:-window}"
 case "$MODE" in
   hd)      NFSHD=1; MODE=window ;;
