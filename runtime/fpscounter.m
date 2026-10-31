@@ -1,6 +1,7 @@
 /* fpscounter.m -- on-screen frame-rate counter.
  *
- *   NFSU2_FPS_COUNTER = off (default) | on | detailed
+ *   NFSU2_FPS_COUNTER = off (default) | on | detailed   (NFSU2_FPSCOUNTER=1, upstream's
+ *       name, is "on")
  *       on        frames per second, mean frame time, a frame-time graph
  *       detailed  also the 1% low and the longest frame of the last second,
  *                 the GPU time per frame, the engine and the display's
@@ -54,6 +55,7 @@ static int fc_mode(void){
     int m = atomic_load(&g_fmode);
     if (m < 0){
         const char *e = getenv("NFSU2_FPS_COUNTER");
+        if (!(e && *e)) e = getenv("NFSU2_FPSCOUNTER");   /* upstream's name (metal.m's counter) */
         m = 0;
         if (!(e && *e)){                  /* the last Cmd-N choice */
             NSInteger d = [[NSUserDefaults standardUserDefaults] integerForKey:@"NFSUFpsCounter"];
