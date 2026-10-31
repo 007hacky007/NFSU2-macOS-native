@@ -88,6 +88,8 @@ final class LauncherModel: ObservableObject {
         }
         return nil
     }
+    @Published var controller: Bool { didSet { defaults.set(controller, forKey: Prefs.controller) } }
+    @Published var stickDeadzone: Double { didSet { defaults.set(stickDeadzone, forKey: Prefs.stickDeadzone) } }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -117,7 +119,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true])
+        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -163,6 +165,8 @@ final class LauncherModel: ObservableObject {
         roamCrew = defaults.string(forKey: Prefs.roamCrew) ?? ""
         horn = Horn(rawValue: defaults.string(forKey: Prefs.horn) ?? "") ?? .off
         hearCars = defaults.bool(forKey: Prefs.hearCars)
+        controller = defaults.bool(forKey: Prefs.controller)
+        stickDeadzone = min(0.5, max(0, defaults.double(forKey: Prefs.stickDeadzone)))
     }
 
     var location: GameLocation? {
@@ -297,6 +301,9 @@ final class LauncherModel: ObservableObject {
         // Horns between players in free roam and Online races (runtime/horn.c,
         // racehorn.c).  Off: no horn, as in the original game.
         if online && horn != .off { setenv("NFSU2_HORN", horn.rawValue, 0) }
+        // Controller settings; NFSU2_PAD / NFSU2_PAD_DEADZONE set by hand still win.
+        setenv("NFSU2_PAD", controller ? "1" : "0", 0)
+        setenv("NFSU2_PAD_DEADZONE", String(format: "%.2f", stickDeadzone), 0)
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

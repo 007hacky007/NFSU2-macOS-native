@@ -67,6 +67,9 @@ enum Prefs {
     static let gameFolder = "OyunDizini"          // name kept for existing installs
     static let fullscreen = "NFSUFullScreen"
     static let fpsCounter = "NFSUFpsCounter"      // 0 off, 1 on, 2 detailed (Cmd-N in the game)
+    // Launcher only; passed to the engine as NFSU2_PAD / NFSU2_PAD_DEADZONE.
+    static let controller = "LauncherController"
+    static let stickDeadzone = "LauncherStickDeadzone"
     // Launcher only.
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
