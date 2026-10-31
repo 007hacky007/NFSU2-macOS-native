@@ -68,10 +68,16 @@ for b in $BUILDS; do
   check "buffer heap: 0 bad frees, no OOM" "$([ "${v:-x}" = 0 ] && [ "$o" = 0 ] && echo 1 || echo 0)" "${v:-?} bad, $o OOM"
   v=$(num "[0-9]+ MISSING" ', ([0-9]+) MISSING'); check "missing mip levels = 0" "$([ "${v:-x}" = 0 ] && echo 1 || echo 0)" "${v:-?}"
   v=$(grep -a -E "^ +vs[0-9]+: version" "$LOG" | grep -a -v -c ", 0 unknown"); check "unknown in vertex shaders = 0" "$([ "$v" = 0 ] && echo 1 || echo 0)" "$v shaders"
-  # high-FPS fixes (highfps.c): installed, particle steps seen in the race
+  # high-FPS fixes: particle steps seen in the race, from highfps.c, or from
+  # framerate.c when the frame pacer owns the fix ("[hfr] race ... particles=<s>/s")
   if [ "${NFSU2_HIGHFPS:-1}" != 0 ]; then
     v=$(grep -a "^  \\[highfps\\] on: " "$LOG" | sed -E 's/.*particle steps ([0-9]+).*/\1/' | tail -1)
-    check "highfps: particle steps > 0" "$([ "${v:-0}" -gt 0 ] 2>/dev/null && echo 1 || echo 0)" "${v:-0}"
+    if [ -n "$v" ]; then
+      check "highfps: particle steps > 0" "$([ "${v:-0}" -gt 0 ] 2>/dev/null && echo 1 || echo 0)" "${v:-0}"
+    else
+      v=$(grep -a "^\\[hfr\\] race " "$LOG" | sed -E 's/.*particles=([0-9.]+)s\/s.*/\1/' | tail -1)
+      check "framerate: particle time > 0.5 s/s" "$(awk -v p="${v:-0}" 'BEGIN{print (p > 0.5) ? 1 : 0}')" "${v:-0} s/s"
+    fi
   fi
   v=$(num "sound cursor overrun" ': ([0-9]+) callbacks'); check "audio: cursor overrun = 0" "$([ "${v:-0}" = 0 ] && echo 1 || echo 0)" "${v:-(sound off)}"
   # did we really get into a race: draws per frame in the measurement window (menu ~475, race ~900+)
