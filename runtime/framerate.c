@@ -811,3 +811,13 @@ void hfr_report(void){
             mode_name(), display_hz(), mode_rate(), fs, g_cutscenes60 ? "on" : "off");
     if (g_tot.frames) stat_line(g_log == 2 ? "all" : "race", &g_tot);
 }
+
+/* highfps.c (upstream, PR #10) fixes the tick, the particle step and the NOS trail
+ * too.  While this file paces the frames (NFSU2_FPS is not "off") it owns those
+ * fixes, so highfps.c leaves them alone; its intro60 / borders options still work.
+ * Runs before main(), ahead of highfps_install().  NFSU2_HIGHFPS_OFF set by hand wins. */
+__attribute__((constructor)) static void framerate_claim_highfps(void){
+    const char *fps = getenv("NFSU2_FPS");
+    if (fps && !strcasecmp(fps, "off")) return;
+    setenv("NFSU2_HIGHFPS_OFF", "tick,particles,nos", 0);
+}
