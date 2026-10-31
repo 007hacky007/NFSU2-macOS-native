@@ -21,6 +21,7 @@
 #include "fpscounter.h"
 #include "headlights.h"
 #include "texrep.h"
+#include "native_scene.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -6304,6 +6305,7 @@ void metal_run_main_loop(void){
                   [fs2 setHidden:YES]; [fs2 setAllowsKeyEquivalentWhenHidden:YES]; } }
             fpscounter_add_menu(appMenu);      /* Cmd-N: frame-rate counter */
             texrep_add_menu(appMenu);          /* Cmd-T, while a texture pack is in use */
+            native_scene_add_menu(appMenu);    /* Photo Mode (NFSU2_PHOTO=1) */
             [appMenu addItem:[NSMenuItem separatorItem]];
             [appMenu addItemWithTitle:@"NFSU2'den Cik" action:@selector(terminate:)
                         keyEquivalent:@"q"];
@@ -6358,6 +6360,7 @@ void metal_run_main_loop(void){
         win_apply_size(rw, rh);
         [g_win center];
         [g_win setAcceptsMouseMovedEvents:YES];
+        native_scene_attach(g_win);            /* photo and drift panels (native_scene.m) */
         /* NOFOCUS=1: open in the background, DON'T take focus from the app the user is
          * working in (for automated test/measurement runs). */
         if (ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0'){
@@ -6468,6 +6471,7 @@ void metal_run_main_loop(void){
                                                    inMode:NSDefaultRunLoopMode
                                                   dequeue:YES])){
                     NSEventType et = [ev type];
+                    if (native_scene_handle_event(ev)) continue;   /* photo mode's keys and mouse */
                     if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp){
                         /* Cmd shortcuts must go to the menu, NOT TO THE GAME:
                          * otherwise Cmd-Q doesn't work.  The game itself doesn't
@@ -6546,6 +6550,7 @@ void metal_run_main_loop(void){
                  * never responds to Quit. */
                 [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
                                          beforeDate:[NSDate distantPast]];
+                native_scene_pump();
 
                 /* AUTOKEY=<vk>[,<vk>...]: periodic synthetic key presses to measure whether
                  * the game reacts to input. */
@@ -7934,6 +7939,7 @@ void metal_run_main_loop(void){
                                 [bl endEncoding];
                             }
                         }
+                        if (native_scene_take_capture()) native_scene_encode_capture(cb, dtex);   /* F12: a PNG (native_scene.m) */
                         if (fc_px) fpscounter_draw(cb, dtex, fc_ppp, fc_bw, fc_bh);
                         { struct timespec _e1; clock_gettime(CLOCK_MONOTONIC,&_e1);
                           unsigned long long dt =

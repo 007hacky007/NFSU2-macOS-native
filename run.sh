@@ -35,6 +35,9 @@ fi
 #   your Discord profile shows what you are doing in the game.  Only the Discord app's
 #   local socket is used.  NFSU2_DISCORD_DETAIL=minimal: only that you are playing.
 #   Details: runtime/discord.c
+# NFSU2_PHOTO=1: photo mode (F12, Cmd+Shift+P, the pause menu) and F12 screenshots, PNGs in
+#   ~/Library/Application Support/NFSU2/Screenshots (NFSU2_APPSUPPORT=<dir>: <dir>/Screenshots).
+#   NFSU2_DRIFT=1: X in free roam switches drift mode.  Details: runtime/photo.c, drift.c, native_scene.m
 # Reflections (both builds, off by default; the launcher sets them, runtime/reflect.c):
 #   NFSU2_REFLECTIONS=sharp|sharpest (original build: larger reflection targets),
 #   NFSU2_REFLECT_SKY=1 (sky in the road reflection and the mirror),

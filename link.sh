@@ -42,8 +42,8 @@ case "${BUILD:-eu}" in
   *)  echo "BUILD must be eu or na"; exit 1 ;;
 esac
 
-CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead regional powerunits language headlights discord garage texpack reflect visual framerate module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace horn hornmenu racehorn carsfx xpatch highfps"
-MSRC="metal audio bundle gamepad fpscounter picture texrep net_native"
+CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead regional powerunits language headlights discord garage texpack reflect visual framerate module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace horn hornmenu racehorn carsfx xpatch highfps photo drift"
+MSRC="metal audio bundle gamepad fpscounter picture texrep net_native native_scene"
 FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework GameController -lz"
 SHARDS="$SOBJ/shard_*.o $SOBJ/fntab.o $SOBJ/stubs.o"
 # server.dll (tools/gen_v2.sh -> gen/server, build.sh -> out/obj/srv); a stub

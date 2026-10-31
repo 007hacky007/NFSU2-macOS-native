@@ -102,6 +102,8 @@ void guest_hook(CPU *c, uint32_t ip){
     { int visual_hook(CPU *, uint32_t); if (visual_hook(c, ip)) return; }   /* visual.c */
     { int hfr_hook(CPU *, uint32_t); if (hfr_hook(c, ip)) return; }   /* framerate.c */
     { int racenet_hook(CPU *, uint32_t); racenet_hook(c, ip); }   /* racenet.c: network races, every frame */
+    { int drift_hook(CPU *, uint32_t); if (drift_hook(c, ip)) return; }   /* drift.c: drift mode in free roam */
+    { int photo_hook(CPU *, uint32_t); photo_hook(c, ip); }   /* photo.c: photo mode, every frame */
     { int roam_hook(CPU *, uint32_t); if (roam_hook(c, ip)) return; }   /* roam.c: free-roam multiplayer */
     { int hornmenu_hook(CPU *, uint32_t); if (hornmenu_hook(c, ip)) return; }   /* hornmenu.c: the Horn Volume slider */
     { int highfps_hook(CPU *, uint32_t); if (highfps_hook(c, ip)) return; }   /* highfps.c */

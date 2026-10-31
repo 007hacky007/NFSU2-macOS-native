@@ -334,6 +334,20 @@ running, your Discord profile shows that you are playing and what you are doing
 default (in the app: **Show in Discord** in the launcher's More card); the game
 talks only to the Discord app's local socket.
 
+**Photo mode** (`NFSU2_PHOTO=1`; launcher: Settings > Game > Photo mode, off by
+default): while you drive offline, F12, Cmd+Shift+P or the pause menu's Photo
+Mode stops the world and the race clock, hides the HUD and frees the camera
+(orbit and free camera, field of view, tilt, reset; keys, mouse and controller,
+listed in a panel while it is on). F12 or Space saves a PNG; F12 anywhere else
+(menus, network races) saves a screenshot without holding the game up. The
+pictures go to `~/Library/Application Support/NFSU2/Screenshots`
+(`NFSU2_APPSUPPORT=<dir>` puts them in `<dir>/Screenshots`), and the launcher's
+**Screenshots…** shows, exports and deletes them. **Drift mode in free roam**
+(`NFSU2_DRIFT=1`; Settings > Game, off by default): X in the career's free roam
+turns on the game's drift handling, drift camera and drift scoring, with a points
+panel over the window; X again turns them off. Tests: `tests/native_scene.sh`,
+`tests/photo_gallery.sh`, `tests/photo_drift.sh`.
+
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
 draw list (to `~/Library/Logs/NFSU2/`), for reporting rendering problems.
 ### Multiplayer
