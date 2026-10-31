@@ -62,7 +62,7 @@ void watch_arm(uint32_t addr){
 }
 
 void watch_dump(const char *why, int maxn){
-    fprintf(stderr,"\n=== WATCHPOINT DOKUMU (%s) ===\n", why);
+    fprintf(stderr,"\n=== WATCHPOINT DUMP (%s) ===\n", why);
     fprintf(stderr,"  watched address: 0x%08x   total changes: %llu\n",
             g_watch_addr, (unsigned long long)g_wcount);
     uint64_t start = g_wcount > (uint64_t)maxn ? g_wcount - maxn : 0;
@@ -102,6 +102,8 @@ void guest_hook(CPU *c, uint32_t ip){
     { int visual_hook(CPU *, uint32_t); if (visual_hook(c, ip)) return; }   /* visual.c */
     { int hfr_hook(CPU *, uint32_t); if (hfr_hook(c, ip)) return; }   /* framerate.c */
     { int racenet_hook(CPU *, uint32_t); racenet_hook(c, ip); }   /* racenet.c: network races, every frame */
+    { int display_hook(CPU *, uint32_t); if (display_hook(c, ip)) return; }   /* display.c */
+    { int language_hook(CPU *, uint32_t); if (language_hook(c, ip)) return; }   /* language.c: subtitles; texts of ours (main loop, not consumed) */
     { int roam_hook(CPU *, uint32_t); if (roam_hook(c, ip)) return; }   /* roam.c: free-roam multiplayer */
     { int hornmenu_hook(CPU *, uint32_t); if (hornmenu_hook(c, ip)) return; }   /* hornmenu.c: the Horn Volume slider */
     { int highfps_hook(CPU *, uint32_t); if (highfps_hook(c, ip)) return; }   /* highfps.c */

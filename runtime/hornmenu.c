@@ -94,7 +94,15 @@ static uint32_t fbits(float f){ uint32_t u; memcpy(&u, &f, 4); return u; }
 #define G_LANG_ID     GA(0x007f70d0u)   /* the language's id, -1 before one is loaded */
 #define G_LANG_TAB    GA(0x007f7020u)   /* the table: 11 entries, ENGLISH .. JAPANESE */
 #define N_LANG        11u
+const char *language_name(void);               /* language.c */
 static const char *label(void){
+    /* the languages that play as English with their pack's text (language.c):
+     * Polish's letters as its pack's fonts draw them (l-stroke 0xEE, s-acute
+     * 0xE2, c-acute 0xE9); Turkish's "Korna Sesi" after its "Motor Sesi" */
+    static const struct { const char *lang, *text; } P[] = {
+        { "portuguese", "Volume da Buzina" }, { "polish", "G\xeeo\xe2no\xe2\xe9 klaksonu" }, { "turkish", "Korna Sesi" },
+    };
+    for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) if (!strcmp(language_name(), P[i].lang)) return P[i].text;
     static const struct { const char *lang, *text; } T[] = {
         { "FRENCH", "Volume klaxon" }, { "GERMAN", "Hupenlautst\xe4rke" }, { "ITALIAN", "Volume clacson" },
         { "SPANISH", "Volumen claxon" }, { "DUTCH", "Claxonvolume" }, { "SWEDISH", "Tutvolym" },

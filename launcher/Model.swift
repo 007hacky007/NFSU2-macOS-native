@@ -66,12 +66,18 @@ final class LauncherModel: ObservableObject {
     /// PictureOptions.all[i] -> chosen index (0 = the original game).
     @Published var picture: [Int] { didSet { savePicture() } }
     let packs = TexturePackStore()       // Texture Packs (TexturePacks.swift)
+    let langPacks = LanguagePackStore()  // Settings › Mods › Languages (LanguagePackViews.swift)
     private var setTexpacks = false      // NFSU2_TEXPACKS was set by us
     @Published var frameRate: String { didSet { defaults.set(frameRate, forKey: Prefs.frameRate) } }
     @Published var cutscenes60: Bool { didSet { defaults.set(cutscenes60, forKey: Prefs.cutscenes60) } }
     @Published var cutsceneBars: Bool { didSet { defaults.set(cutsceneBars, forKey: Prefs.cutsceneBars) } }
     @Published var music: String { didSet { defaults.set(music, forKey: Prefs.music) } }             // Music.swift
     @Published var musicFolder: String { didSet { defaults.set(musicFolder, forKey: Prefs.musicFolder) } }
+    // The Display card (DisplayOptions.swift)
+    @Published var resolutionScale: String { didSet { defaults.set(resolutionScale, forKey: Prefs.resolutionScale) } }
+    @Published var movieFraming: String { didSet { defaults.set(movieFraming, forKey: Prefs.movieFraming) } }
+    @Published var subtitles: Bool { didSet { defaults.set(subtitles, forKey: Prefs.subtitles) } }
+    @Published var background: String { didSet { defaults.set(background, forKey: Prefs.background) } }
     /// NFSU2_FPS values; the labels are in FrameRateCard.
     static let frameRates = ["auto", "30", "60", "120", "240", "uncapped"]
     @Published var seedRegistry: Bool { didSet { defaults.set(seedRegistry, forKey: Prefs.seedRegistry) } }   // EngineOptions.swift
@@ -160,6 +166,10 @@ final class LauncherModel: ObservableObject {
         cutsceneBars = defaults.bool(forKey: Prefs.cutsceneBars)
         music = defaults.string(forKey: Prefs.music) == "folder" ? "folder" : "game"
         musicFolder = defaults.string(forKey: Prefs.musicFolder) ?? ""
+        resolutionScale = DisplayOptions.pick(defaults.string(forKey: Prefs.resolutionScale), DisplayOptions.scales, DisplayOptions.originalScale)
+        movieFraming = DisplayOptions.pick(defaults.string(forKey: Prefs.movieFraming), DisplayOptions.framings, DisplayOptions.originalFraming)
+        subtitles = defaults.bool(forKey: Prefs.subtitles)
+        background = DisplayOptions.pick(defaults.string(forKey: Prefs.background), DisplayOptions.backgrounds, DisplayOptions.originalBackground)
         online = defaults.bool(forKey: Prefs.online)
         server = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
         playerName = defaults.string(forKey: Prefs.playerName) ?? ""
@@ -286,6 +296,12 @@ final class LauncherModel: ObservableObject {
         applyMusic()                // a music folder through EA Trax (Music.swift)
         if seedRegistry { setenv("NFSU2_SEED_REGISTRY", "1", 0) }        // runtime/regseed.c
         if lanTiming != "pc" { setenv("NFSU2_LAN_TIMING", lanTiming, 0) }   // framerate.c
+        // Resolution scale, movies and the background (runtime/display.c, language.c,
+        // lifecycle.c); the original game's values set nothing.
+        for (k, v) in DisplayOptions.environment(scale: resolutionScale, framing: movieFraming,
+                                                 subtitles: subtitles, background: background) {
+            setenv(k, v, 0)
+        }
         // Online: the game's LAN and Online modes through the server (runtime/
         // net_relay.c, net_native.m).  Off: LAN on this Mac's network.  Values
         // set by hand in the environment win.

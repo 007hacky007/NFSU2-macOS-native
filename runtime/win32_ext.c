@@ -463,7 +463,7 @@ uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args);
 int metal_take_char(int remove);            /* metal.m: WM_CHAR queue */
 static uint32_t g_wndproc = 0;
 static uint32_t g_hwnd    = 0x00B00001u;
-#define WMQ 8
+#define WMQ 32
 static struct { uint32_t msg, wp, lp; } g_wmq[WMQ];
 static int g_wmq_head = 0, g_wmq_tail = 0;
 static int g_wm_activated = 0;
@@ -475,6 +475,10 @@ static void wm_push(uint32_t m, uint32_t wp, uint32_t lp){
     g_wmq[g_wmq_tail].msg = m; g_wmq[g_wmq_tail].wp = wp; g_wmq[g_wmq_tail].lp = lp;
     g_wmq_tail = nx;
 }
+/* lifecycle.c: quit and app (de)activation as window messages (guest thread only) */
+void win32_post_message(uint32_t m, uint32_t wp, uint32_t lp){ wm_push(m, wp, lp); }
+void lifecycle_pump(void); int lifecycle_may_park(void); int lifecycle_game_parked(void);
+void audio_set_muted(int on);
 static int wm_pop(uint32_t *m, uint32_t *wp, uint32_t *lp){
     if (g_wmq_head == g_wmq_tail) return 0;
     *m = g_wmq[g_wmq_head].msg; *wp = g_wmq[g_wmq_head].wp; *lp = g_wmq[g_wmq_head].lp;
@@ -1171,6 +1175,28 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
         /* MSG: +0 hwnd +4 message +8 wParam +12 lParam +16 time +20 pt */
         uint32_t pm=A(c,0), m=0, wp=0, lp=0;
         int remove = !strcmp(n,"GetMessageA") ? 1 : (A(c,4) & 1u);
+        /* Quit requests and app (de)activation (WM_CLOSE, WM_ACTIVATE(APP),
+         * lifecycle.c) join the queue here, once the game window exists. */
+        if (g_wm_activated) lifecycle_pump();
+        /* GetMessageA waits while the queue is empty, but only while the game
+         * has been told it is inactive: that is the one case where it calls it
+         * (its pump, sub_005bf1d0), and where Windows would wait too.  The
+         * guest lock is released meanwhile so the audio and timer threads keep
+         * running; the output stays muted until the game is active again (a
+         * message that wakes it earlier runs one frame of an inactive game,
+         * whose streams nothing refills: the mixer would replay stale buffers). */
+        if (remove && !strcmp(n,"GetMessageA") && g_wmq_head == g_wmq_tail && lifecycle_may_park()){
+            audio_set_muted(1);
+            guest_yield_begin();
+            for (;;){
+                struct timespec ts = { 0, 5000000L }; nanosleep(&ts, 0);
+                guest_yield_end();
+                lifecycle_pump();
+                if (g_wmq_head != g_wmq_tail || !lifecycle_may_park()) break;
+                guest_yield_begin();
+            }
+            if (!lifecycle_game_parked()) audio_set_muted(0);
+        }
         if (g_wmq_head != g_wmq_tail){
             if (remove) wm_pop(&m,&wp,&lp);
             else { m=g_wmq[g_wmq_head].msg; wp=g_wmq[g_wmq_head].wp; lp=g_wmq[g_wmq_head].lp; }
@@ -1639,3 +1665,33 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
 }
 uint64_t win32_ext_threads(void){ return g_threads_started; }
 uint64_t win32_ext_threads_exited(void){ return g_threads_exited; }
+
+/* Exit path (tests/boot.c): take the guest lock for good, so no guest thread
+ * can start another file or registry write while the process goes down.  A
+ * helper thread queues on the mutex (a trylock loop would never win against
+ * the guest, which locks again right after each yield) and keeps it; 0 if
+ * that did not happen within max_ms (a guest thread stuck in a call). */
+static pthread_mutex_t g_frz_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_frz_cv = PTHREAD_COND_INITIALIZER;
+static int g_frozen = 0;
+static void *freeze_main(void *unused){
+    (void)unused;
+    pthread_mutex_lock(&g_guest);
+    pthread_mutex_lock(&g_frz_mx); g_frozen = 1; pthread_cond_broadcast(&g_frz_cv);
+    pthread_mutex_unlock(&g_frz_mx);
+    for (;;) pause();
+    return 0;
+}
+int win32_freeze_guest(int max_ms){
+    pthread_t th;
+    if (pthread_create(&th, 0, freeze_main, 0) != 0) return 0;
+    pthread_detach(th);
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += max_ms / 1000; ts.tv_nsec += (long)(max_ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L){ ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&g_frz_mx);
+    while (!g_frozen && pthread_cond_timedwait(&g_frz_cv, &g_frz_mx, &ts) == 0) {}
+    int ok = g_frozen;
+    pthread_mutex_unlock(&g_frz_mx);
+    return ok;
+}

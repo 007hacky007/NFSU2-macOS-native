@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <time.h>
+#include <stdatomic.h>
 static uint64_t now_ns_io(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
     return (uint64_t)ts.tv_sec*1000000000ull + (uint64_t)ts.tv_nsec;
@@ -308,6 +309,9 @@ typedef struct { int fd; int empty; int used; char path[512]; DIR *dir; char pat
                  DIR *dir2; char path1[512];        /* dir2: the game root (while the save layer is active) */
                  int wr; } FH;                      /* wr: opened for writing */
 static FH g_fh[FH_MAX];
+/* write handles still open: lifecycle.c lets the game close them before the process exits */
+static _Atomic int g_open_wr = 0;
+int fileio_open_writers(void){ return atomic_load(&g_open_wr); }
 static uint32_t fh_new(void){
     for (int i=1;i<FH_MAX;i++) if(!g_fh[i].used){ memset(&g_fh[i],0,sizeof g_fh[i]);
         g_fh[i].used=1; g_fh[i].fd=-1; return FH_BASE+(uint32_t)i; }
@@ -480,6 +484,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
             if(!h){ close(fd); r=INVALID_HANDLE; }
             else { FH*f=fh_get(h); f->fd=fd; f->empty = g_empty_next; g_empty_next = 0;
                    f->wr = flags != O_RDONLY;
+                   if (f->wr) atomic_fetch_add(&g_open_wr, 1);
                    snprintf(f->path,sizeof f->path,"%s",real);
                    g_file_open++; r=h; }
         }
@@ -578,6 +583,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
         if(f->fd>=0) close(f->fd);
         if(f->dir) closedir(f->dir);
         if(f->wr && f->fd>=0 && is_profile(f->path)) garage_profile_written(f->path);
+        if(f->wr) atomic_fetch_sub(&g_open_wr, 1);
         f->used=0; r=1;
     }
     else if (!strcmp(n,"GetFileAttributesA")){

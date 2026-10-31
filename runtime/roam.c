@@ -180,7 +180,6 @@ void roam_hud_marker(float *x, float *y){
  * of them; 0x4FF9D0 searches it). */
 #define G_LANG          GA(0x008383d8u)
 #define G_LANG_N        GA(0x008383d0u)
-#define FN_NEW          GA(0x00575630u)   /* cdecl (size): operator new */
 static uint32_t game_text(uint32_t hash){
     uint32_t tab = MR32(G_LANG), n = MR32(G_LANG_N);
     if (!tab || !n || n > 0x100000u || !mem_is_committed(tab) || !mem_is_committed(tab + 8u * n - 1u)) return 0;
@@ -202,70 +201,10 @@ int roam_no_profile(const char *name){
     return s && mem_is_committed(s) && mem_is_committed(s + 15u) && !strncasecmp(name, (const char *)(g_mem + s), 16);
 }
 /* Texts the game shows but has none of (the free-roam race questions'
- * buttons, roam_game.c) go into its language table under names of ours, so
- * that it looks them up as its own.  The game only points the table into
- * its language chunk (0x5125B0 loads it, 0x4FFAE0 clears it).  Each frame a
- * table that is not ours, or one older than a text added since, is replaced
- * by a copy with every text of ours merged in by hash (unsigned, as 0x4FF9D0
- * compares; a hash the game has keeps the game's), their strings after the
- * entries.  The game's own array stays as it was, for the next copy. */
-#define OWN_MAX         8
-static struct { uint32_t hash; char text[256]; } g_own[OWN_MAX];
-static int g_nown, g_own_merged;              /* texts named; how many of them the copy has */
-static uint32_t g_own_copy, g_own_from, g_own_from_n;   /* the copy, while the game points at it; the game's array */
-uint32_t roam_add_text(const char *name, const char *text){
-    uint32_t h = 0xffffffffu;                 /* bStringHash (0x43DB50) */
-    for (const char *s = name; *s; s++) h = h * 33u + (uint8_t)*s;
-    int i = 0;
-    while (i < g_nown && g_own[i].hash != h) i++;
-    if (i == OWN_MAX){ fprintf(stderr, "[roam] no room for the text %s\n", name); return h; }
-    if (i == g_nown) g_nown++;
-    g_own[i].hash = h;
-    snprintf(g_own[i].text, sizeof g_own[i].text, "%s", text);
-    g_own_merged = -1;                        /* a new copy, also for a text changed */
-    return h;
-}
-static uint32_t guest_new(CPU *c, uint32_t size){
-    CPU save = *c;
-    c->esp = (c->esp - 256u) & ~15u;
-    PUSH32(size);
-    PUSH32(HOOK_MAINLOOP);                    /* the hook's address as the return address: the callee's ret pops it */
-    dispatch_indirect(c, FN_NEW);
-    uint32_t r = c->eax;
-    *c = save;
-    return r;
-}
-void roam_texts_frame(CPU *c){
-    uint32_t t = MR32(G_LANG), n = MR32(G_LANG_N);
-    if (!g_nown || !t || !n || n > 0x100000u) return;
-    if (t == g_own_copy){
-        if (g_own_merged == g_nown) return;
-        t = g_own_from; n = g_own_from_n;
-    }
-    if (!mem_is_committed(t) || !mem_is_committed(t + 8u * n - 1u)) return;
-    int ord[OWN_MAX];
-    uint32_t strs = 0;
-    for (int i = 0; i < g_nown; i++){ ord[i] = i; strs += (uint32_t)strlen(g_own[i].text) + 1u; }
-    for (int i = 1; i < g_nown; i++)
-        for (int j = i; j > 0 && g_own[ord[j - 1]].hash > g_own[ord[j]].hash; j--){ int x = ord[j]; ord[j] = ord[j - 1]; ord[j - 1] = x; }
-    uint32_t mem = guest_new(c, (n + (uint32_t)g_nown) * 8u + strs);
-    if (!mem){ fprintf(stderr, "[roam] guest memory for our texts failed\n"); g_own_copy = t; g_own_merged = g_nown; return; }
-    uint32_t sp = mem + (n + (uint32_t)g_nown) * 8u, sa[OWN_MAX];
-    for (int i = 0; i < g_nown; i++){
-        size_t l = strlen(g_own[i].text) + 1u;
-        memcpy(g_mem + sp, g_own[i].text, l); sa[i] = sp; sp += (uint32_t)l;
-    }
-    uint32_t o = 0; int k = 0, kept = 0;
-    for (uint32_t i = 0; i <= n; i++){
-        uint32_t h = i < n ? MR32(t + 8u * i) : 0xffffffffu;
-        while (k < g_nown && g_own[ord[k]].hash <= h){
-            if (g_own[ord[k]].hash == h && i < n){ k++; kept++; continue; }   /* the game has the name already */
-            MR32(mem + 8u * o) = g_own[ord[k]].hash; MR32(mem + 8u * o + 4u) = sa[ord[k]]; o++; k++;
-        }
-        if (i < n){ MR32(mem + 8u * o) = h; MR32(mem + 8u * o + 4u) = MR32(t + 8u * i + 4u); o++; }
-    }
-    MR32(G_LANG) = mem; MR32(G_LANG_N) = o;
-    g_own_copy = mem; g_own_from = t; g_own_from_n = n; g_own_merged = g_nown;
-    fprintf(stderr, "[roam] %d text%s of our own added to the game's %u%s\n", g_nown - kept, g_nown - kept == 1 ? "" : "s", n,
-            kept ? " (some names the game has already: the game's stay)" : "");
-}
+ * buttons, roam_game.c) go into its language table under names of ours
+ * (language.c language_add_text: one table for every text of ours, merged in
+ * each frame from the main-loop hook). */
+uint32_t language_add_text(const char *name, const char *text);
+void language_texts_frame(CPU *c);
+uint32_t roam_add_text(const char *name, const char *text){ return language_add_text(name, text); }
+void roam_texts_frame(CPU *c){ language_texts_frame(c); }

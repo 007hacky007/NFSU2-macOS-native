@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <math.h>
+#include <stdatomic.h>
 #include "horn.h"
 #include "carsfx.h"
 
@@ -273,6 +274,14 @@ void audio_set_volume(int id, long millibel){
     pthread_mutex_unlock(&g_slock);
 }
 
+/* The output while the game is parked in the background (lifecycle.c): the
+ * mixer runs as usual, silence goes to the speakers. */
+static _Atomic int g_out_muted = 0;
+void audio_set_muted(int on){
+    if (atomic_exchange(&g_out_muted, on ? 1 : 0) != (on ? 1 : 0))
+        fprintf(stderr, "sound: output %s\n", on ? "muted (game inactive)" : "unmuted");
+}
+
 static void mix_into(int16_t *out, unsigned frames){
     static float acc[FRAMES * OUT_CH];
     if (frames > FRAMES) frames = FRAMES;
@@ -483,8 +492,9 @@ static void mix_into(int16_t *out, unsigned frames){
     static int test_mute = -1;                 /* NFSU2_MUTE=1 (test aid): mixed as always, zeros out */
     if (test_mute < 0){ const char *e = getenv("NFSU2_MUTE"); test_mute = e && *e && *e != '0';
                         if (test_mute) fprintf(stderr, "sound: NFSU2_MUTE: the output is silent\n"); }
+    int muted = atomic_load(&g_out_muted);        /* lifecycle.c: parked in the background */
     for (unsigned k = 0; k < frames * OUT_CH; k++){
-        float v = test_mute ? 0.f : acc[k];
+        float v = (test_mute || muted) ? 0.f : acc[k];
         if (v >  1.f) v =  1.f;
         if (v < -1.f) v = -1.f;
         out[k] = (int16_t)(v * 32767.f);

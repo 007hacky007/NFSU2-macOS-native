@@ -101,6 +101,10 @@ enum Prefs {
     static let musicFolder = "LauncherMusicFolder"
     static let seedRegistry = "LauncherSeedRegistry" // NFSU2_SEED_REGISTRY=1: highest graphics on the first launch
     static let lanTiming = "LauncherLanTiming"     // NFSU2_LAN_TIMING: "pc" | "exact"
+    static let resolutionScale = "LauncherResolutionScale" // NFSU2_RENDER: DisplayOptions.scales
+    static let movieFraming = "LauncherMovieFraming"       // NFSU2_MOVIE: fit | fill | stretch
+    static let subtitles = "LauncherMovieSubtitles"        // NFSU2_SUBTITLES=1
+    static let background = "LauncherBackground"           // NFSU2_BACKGROUND: pause | run
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -130,6 +134,10 @@ enum Prefs {
         OriginalValue(\.music, "game"),
         OriginalValue(\.seedRegistry, false),
         OriginalValue(\.lanTiming, "pc"),
+        OriginalValue(\.resolutionScale, DisplayOptions.originalScale),
+        OriginalValue(\.movieFraming, DisplayOptions.originalFraming),
+        OriginalValue(\.subtitles, false),
+        OriginalValue(\.background, DisplayOptions.originalBackground),
     ]
 }
 
