@@ -17,6 +17,15 @@ struct SaveProfile: Identifiable {
         }
         return ~crc
     }
+    /// A magazine or DVD cover the game saved (the photo of your car, 512x512): the same
+    /// "20CM" container as a profile, 1 MiB of pixels.  It lives in its own folder beside
+    /// the profiles ("Talha Magazine 2/Talha Magazine 2").
+    static func isCover(_ data: Data) -> Bool {
+        data.count == 1048612 && data.prefix(4) == Data("20CM".utf8) && data.u32(4) == 1048612 &&
+            data.u32(8) == 8 && data.u32(12) == 0x100000 && data.u32(28) == 0x10d && data.u32(32) == 0x100000 &&
+            data.u32(16) == checksum(Data(data[28..<36])) && data.u32(20) == checksum(Data(data[36...])) &&
+            data.u32(24) == checksum(Data(data[..<24]))
+    }
     static func validate(_ data: Data, name: String) throws {
         guard data.count == 54966, data.prefix(4) == Data("20CM".utf8), data.u32(4) == 54966,
               data.u32(8) == 8, data.u32(12) == 54930, data.u32(28) == 0x10d, data.u32(32) == 54930,
@@ -129,7 +138,9 @@ struct SaveStore {
         return lines.isEmpty ? nil : Data((lines.joined(separator: "\n") + "\n").utf8)
     }
     /// Only what belongs to the game's saves is imported: the files in the folder of a valid
-    /// profile, written under the profile root's own spelling, and the settings from registry.txt.  Paths are
+    /// profile, the game's magazine / DVD covers (each in a folder of its own, checked like a
+    /// profile's container), written under the profile root's own spelling, and the settings
+    /// from registry.txt.  Paths are
     /// compared as the file system compares them (any case, canonical Unicode), so a variant
     /// spelling cannot put an unchecked profile in place.  Anything else is skipped.
     static func validated(_ data: Data) throws -> (entries: [SaveEntry], skipped: Int) {
@@ -146,8 +157,11 @@ struct SaveStore {
                 if let reg = registrySettings(e.data) { kept.append(SaveEntry(path: "registry.txt", data: reg, modified: e.modified)) }
                 continue
             }
-            guard k.count == 3, parts.count == 3, k[0] == profileRoot.lowercased(), profiles.contains(k[1]),
+            guard k.count == 3, parts.count == 3, k[0] == profileRoot.lowercased(),
                   (parts[1] + parts[2]).utf8.allSatisfy({ $0 >= 32 && $0 < 127 }) else { continue }
+            // a valid profile's folder, or a magazine / DVD cover in a folder of its own
+            let cover = !profiles.contains(k[1]) && k[1] == k[2] && profileName(e.path) == nil && SaveProfile.isCover(e.data)
+            guard profiles.contains(k[1]) || cover else { continue }
             kept.append(SaveEntry(path: "\(profileRoot)/\(parts[1])/\(parts[2])", data: e.data, modified: e.modified))
         }
         return (kept, entries.count - kept.count)

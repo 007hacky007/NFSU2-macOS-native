@@ -90,6 +90,7 @@ final class LauncherModel: ObservableObject {
     }
     @Published var controller: Bool { didSet { defaults.set(controller, forKey: Prefs.controller) } }
     @Published var stickDeadzone: Double { didSet { defaults.set(stickDeadzone, forKey: Prefs.stickDeadzone) } }
+    private var setPad = false           // NFSU2_PAD / NFSU2_PAD_DEADZONE were set by us
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -301,9 +302,13 @@ final class LauncherModel: ObservableObject {
         // Horns between players in free roam and Online races (runtime/horn.c,
         // racehorn.c).  Off: no horn, as in the original game.
         if online && horn != .off { setenv("NFSU2_HORN", horn.rawValue, 0) }
-        // Controller settings; NFSU2_PAD / NFSU2_PAD_DEADZONE set by hand still win.
-        setenv("NFSU2_PAD", controller ? "1" : "0", 0)
-        setenv("NFSU2_PAD_DEADZONE", String(format: "%.2f", stickDeadzone), 0)
+        // Controller settings; NFSU2_PAD / NFSU2_PAD_DEADZONE set by hand still win.  Ours
+        // are overwritten on every Play, so a change takes effect without restarting.
+        if setPad || (env["NFSU2_PAD"] == nil && env["NFSU2_PAD_DEADZONE"] == nil) {
+            setenv("NFSU2_PAD", controller ? "1" : "0", 1)
+            setenv("NFSU2_PAD_DEADZONE", String(format: "%.2f", stickDeadzone), 1)
+            setPad = true
+        }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
