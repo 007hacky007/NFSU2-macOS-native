@@ -155,7 +155,6 @@ int main(int argc,char**argv){
     dispatch_init(); win32_init();
     { extern void overrides_install(void); overrides_install(); }
     { extern void gamepad_install(void); gamepad_install(); }   /* runtime/gamepad.m */
-    { extern void sponsors_install(void); sponsors_install(); }   /* the sponsor screens' Continue (help bar) */
     { extern void regional_install(void); regional_install(); }   /* both regions' cars when the folder has all four */
     { extern void language_install(void); language_install(); }   /* NFSU2_LANGUAGE: runtime/language.c */
     { extern void garage_install(void); garage_install(); }   /* the career garage's slots 6-10 and Trade Car */
