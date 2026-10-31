@@ -91,12 +91,12 @@ wscameras:ws_cameras.txt:$FLOW:
 wspause:ws_pause.txt:$FLOW:
 careerbot:career_bot.txt:segment done:NFSU2_CAREER_BOT_RACES=2 ALARM=900
 lan_host:lan_host_once.txt:waitfng UI_OLMAIN.fng satisfied:NFSU2_NET=loopback NFSU2_NET_LOOPOFFSET=2101
-"
-# opt-in, run only when named: leaving LAN hosting and hosting again (the
-# server.dll stop/start cycle); fork-next faults in the unloaded server.dll's
-# threads on the leave (2026-10-31)
-OPT="
 lan_cycle:lan_host_short.txt:waitfng UI_OLMAIN.fng satisfied:NFSU2_NET=loopback NFSU2_NET_LOOPOFFSET=2101
+lan_srvcycle:lan_srvcycle.txt:[srvcycle] 6 cycles, 0 failed:NFSU2_NET=loopback NFSU2_NET_LOOPOFFSET=2101
+"
+# opt-in, run only when named: four host/leave rounds through the menus (~2 min)
+OPT="
+lan_cycles:lan_host_cycles.txt:waitfng UI_OLMAIN.fng satisfied:NFSU2_NET=loopback NFSU2_NET_LOOPOFFSET=2101
 "
 [ $# -gt 0 ] && ALL="$ALL$OPT"
 pass=0; fail=0

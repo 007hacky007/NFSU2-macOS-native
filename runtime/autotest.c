@@ -111,6 +111,11 @@
  *     click X Y                a left click at X, Y (fractions of the window
  *                              content from the top left), released 8 frames
  *                              later (through the real mouse path)
+ *     srvcycle N [MS]          LAN hosting test: N times start the lifted
+ *                              server.dll through the game's own glue, keep it
+ *                              running MS ms, stop and unload it; logs
+ *                              "[srvcycle]" per cycle (threads, sockets, fds,
+ *                              TLS, object slots) and an [expect] PASS|FAIL
  *     quit                     clean exit
  *     close                    what Cmd-Q / the close button do: WM_CLOSE to
  *                              the game, which then shuts itself down
@@ -292,7 +297,7 @@ enum { C_DOWN, C_UP, C_TAP, C_TYPE, C_DUMP, C_WAITMEM, C_LOG, C_QUIT, C_PEEK, C_
        C_PAD, C_TAPPAD, C_AXIS, C_TAPPADUNTIL, C_PADSET, C_PADTAP, C_PADTAPUNTIL, C_IN, C_SHOT,
        C_NSDOWN, C_NSUP, C_NSTAP, C_NSREPEAT, C_NSTYPE, C_NSFOCUS, C_NSMOUSE, C_NSTAPUNTIL,
        C_LOOP, C_ENDLOOP, C_STATUS, C_STALL, C_CAREER,
-       C_TRACE, C_UNTRACE, C_EXPECT, C_WAITEXPR, C_MARK, C_EDGE, C_CLICK, C_PHOTO };
+       C_TRACE, C_UNTRACE, C_EXPECT, C_WAITEXPR, C_MARK, C_EDGE, C_CLICK, C_PHOTO, C_SRVCYCLE };
 #define PAD_PLUG 0xFFFFu           /* C_PAD: "pad connect|disconnect" */
 /* career.c: test-only career aids (call, memdump, waitx, teleport, autopilot ...) */
 int career_is_cmd(const char *cmd);
@@ -439,6 +444,7 @@ static int add_line(char *p, int ln){
         e.xtext = strdup(rest);
         if (e.cmd == C_WAITEXPR) e.n = a4[0] ? atol(a4) : 0; }
     else if (!strcasecmp(cmd, "click")) { e.cmd = C_CLICK; e.fv = (float)atof(a1); e.val = (uint32_t)(atof(a2) * 1e6); }
+    else if (!strcasecmp(cmd, "srvcycle")) { e.cmd = C_SRVCYCLE; e.n = a1[0] ? atol(a1) : 1; e.val = a2[0] ? (uint32_t)atol(a2) : 0u; }
     else if (!strcasecmp(cmd, "headlights")) { e.cmd = C_HEADLIGHTS; snprintf(e.text, sizeof e.text, "%s", a1); }
     else if (!strcasecmp(cmd, "photo")) { e.cmd = C_PHOTO; snprintf(e.text, sizeof e.text, "%s", rest); }
     else if (!strcasecmp(cmd, "waitfng")){ e.cmd = C_WAITFNG;
@@ -516,7 +522,7 @@ static int add_line(char *p, int ln){
                                           "not in this port\n", ln, a1); return 0; }
         e.cmd = C_CAREER; snprintf(e.text, sizeof e.text, "%s %s", keep[k][1], after_words(rest, 1)); }
     else if (!strcasecmp(cmd, "displayhz") || !strcasecmp(cmd, "texrep") || !strcasecmp(cmd, "covreset") ||
-             !strcasecmp(cmd, "covdump") || !strcasecmp(cmd, "srvcycle") || !strcasecmp(cmd, "audiostall")){
+             !strcasecmp(cmd, "covdump") || !strcasecmp(cmd, "audiostall")){
         fprintf(stderr, "[autotest] script line %d: '%s' is not available in this port (skipped)\n", ln, cmd); return 0; }
     else if (career_is_cmd(cmd)){ e.cmd = C_CAREER; snprintf(e.text, sizeof e.text, "%s %s", cmd, rest); }
     else { fprintf(stderr, "[autotest] script line %d: unknown command '%s'\n", ln, cmd); return 0; }
@@ -878,6 +884,11 @@ static int fire(CPU *c, Ev *e, double tms){
         ns_sched(g_frame + 1, KSYN_MOUSE_DOWN, 0, 0, 0, 0);
         ns_sched(g_frame + 9, KSYN_MOUSE_UP, 0, 0, 0, 0);
         fprintf(stderr, "[autotest] f=%ld click %.3f %.3f\n", g_frame, (double)e->fv, e->val / 1e6); break;
+    case C_SRVCYCLE: { int module_test_cycle(CPU *, int, int);   /* module.c: LAN server start/stop */
+        int bad = module_test_cycle(c, (int)e->n, (int)e->val);
+        fprintf(stderr, "[expect] %s f=%ld w=%.0f line %d: srvcycle %ld: %d failed\n", bad ? "FAIL" : "PASS",
+                g_frame, world_ms(), e->line, e->n, bad);
+        break; }
     case C_QUIT: do_quit("script"); break;
     case C_CLOSE: { void lifecycle_request_quit(const char *); lifecycle_request_quit("autotest close"); break; }
     case C_BLUR: {

@@ -1,0 +1,11 @@
+# Suite: start and stop the lifted server.dll six times in one session
+# through the game's own glue (srvcycle, runtime/module.c: StartLANServer,
+# 1.5 s of hosting, UnloadServer = StopServer + FreeLibrary), loopback
+# network (NFSU2_NET=loopback).  Each cycle must end every thread the server
+# started before the module is unloaded, close all of its sockets and host
+# fds, and give its TLS index back: "[srvcycle] 6 cycles, 0 failed".
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN
++0    waitfng GarageMain.fng 3000
++120  srvcycle 6 1500
++60   quit
