@@ -35,6 +35,9 @@ esac
 OUT="${GENOUT:-$DEF}"
 mkdir -p "$WORK"
 export RELOCS="$WORK/relocs.txt"
+# x87 precision control (tools/lift.py, cpu.h X87R): on by default, so the game
+# thread computes at PC=24 like on Windows; X87PC=0 lifts plain doubles.
+export X87PC="${X87PC:-1}"
 echo "build: $BUILD -> $OUT"
 
 "$PY" tools/reloc2.py "$EXE"                        # -> $RELOCS
