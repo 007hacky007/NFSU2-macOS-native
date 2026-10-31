@@ -1,0 +1,44 @@
+# Suite: host a LAN game and leave it (Yes) four times in one session, on the
+# loopback network (NFSU2_NET=loopback), through the menus as a player does:
+# each leave stops the lifted server.dll (StopServer waits for its threads)
+# and unloads it, the next host loads a fresh copy.  peek 0x89011C is the
+# game's server.dll handle: 0 after every leave.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN
++0    waitfng GarageMain.fng 3000
++300  tap RIGHT
++60   tap RIGHT
++120  tap RETURN
++8000ms click 0.407 0.919
++0    waitfng UI_PC_LAN.fng 600
++30   tap BACK
++10   tap BACK
++10   tap BACK
++10   tap BACK
++30   type HOSTA
++60   tap RETURN
++0    waitfng UI_OLMAIN.fng 1500
++300  tap ESCAPE
++200  tap LEFT
++60   tap RETURN
++300  peek 0x89011C 1
++60   tap RETURN
++0    loop 3
++8000ms click 0.407 0.919
++0    waitfng UI_PC_LAN.fng 600
++30   tap BACK
++10   tap BACK
++10   tap BACK
++10   tap BACK
++10   tap BACK
++30   type HOSTB
++60   tap RETURN
++0    waitfng UI_OLMAIN.fng 1500
++300  dump lan_cycle
++0    tap ESCAPE
++200  tap LEFT
++60   tap RETURN
++300  peek 0x89011C 1
++60   tap RETURN
++0    endloop
++60   quit

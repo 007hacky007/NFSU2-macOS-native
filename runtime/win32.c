@@ -223,6 +223,11 @@ static const char *unimpl_name = 0;
 uint64_t g_win32_calls = 0, g_win32_unimpl = 0;
 
 static uint32_t tls_slot[128]; static int tls_next = 0;
+/* TlsFree'd indices, handed out again first: server.dll's CRT takes one per
+ * load and frees it on unload, so without reuse hosting would stop working
+ * after ~120 host sessions. */
+static uint32_t tls_free[128]; static int tls_nfree = 0;
+int win32_tls_in_use(void){ return tls_next - tls_nfree; }
 static uint32_t g_cmdline = 0;
 static uint64_t tick0;
 
@@ -348,9 +353,16 @@ static int dll_known(uint32_t p){
     return 0;
 }
 
+/* Which module's import is being served on this thread: 0 = SPEED2.EXE,
+ * 1 = server.dll.  win32_ext.c gives the lifted DLL Windows' thread exit
+ * semantics without changing what the exe has always been told. */
+static _Thread_local int tl_imp_mod = 0;
+int win32_caller_module(void){ return tl_imp_mod; }
+
 int win32_call(CPU *c, uint32_t idx){
     if (idx >= g_nimps) return 0;
     const ImpEnt *e = &g_imps[idx];
+    int prev_mod = tl_imp_mod; tl_imp_mod = idx >= g_imp_count;
     stat_[idx].calls++; g_win32_calls++;
     guest_fair_yield();          /* give the other guest threads a turn */
     POP32(c->eip);                      /* take the return address */
@@ -372,6 +384,15 @@ int win32_call(CPU *c, uint32_t idx){
      * are modheap.c's, in guest memory nothing else uses
      * (0x01000000-0x0F000000); every other heap call is gheap.c's. */
     else if (idx >= g_imp_count && !strcmp(n,"HeapCreate")) r = modheap_create();
+    /* server.dll's time() is real UTC.  The HLE's GetSystemTimeAsFileTime
+     * is a counter that advances 10 ms per call, which would end StopServer's
+     * 10 s wait for its thread after 1,000 polls instead of 10 s. */
+    else if (idx >= g_imp_count && !strcmp(n,"GetSystemTimeAsFileTime")){
+        uint32_t p = ARG(c,0);
+        if (p){ struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+            uint64_t ft = ((uint64_t)ts.tv_sec + 11644473600ull) * 10000000ull + (uint64_t)ts.tv_nsec / 100u;
+            mem_commit(p, 8); MR32(p) = (uint32_t)ft; MR32(p+4) = (uint32_t)(ft >> 32); }
+        r = 0; }
     else if (n[0] == 'H' && !strncmp(n,"Heap",4) && strcmp(n,"HeapCreate") && modheap_owns(ARG(c,0))){
         uint32_t h = ARG(c,0);
         if      (!strcmp(n,"HeapDestroy")) r = (uint32_t)modheap_destroy(h);
@@ -472,7 +493,9 @@ int win32_call(CPU *c, uint32_t idx){
     else if (!strcmp(n,"GetOEMCP"))              r = 437;
     else if (!strcmp(n,"GetCPInfo")){ uint32_t p=ARG(c,1); if(p){ mem_commit(p,20); memset(g_mem+p,0,20); MR32(p)=1; } r=1; }
     else if (!strcmp(n,"IsValidCodePage"))       r = 1;
-    else if (!strcmp(n,"TlsAlloc"))              r = (tls_next<128)? (uint32_t)tls_next++ : 0xffffffffu;
+    else if (!strcmp(n,"TlsAlloc")){
+        if (tls_nfree) r = tls_free[--tls_nfree];
+        else r = (tls_next<128)? (uint32_t)tls_next++ : 0xffffffffu; }
     else if (!strcmp(n,"TlsSetValue")){
         uint32_t i=ARG(c,0), v=ARG(c,1);
         uint32_t arr = (c->fs_base && mem_is_committed(c->fs_base+0x2cu)) ? MR32(c->fs_base+0x2cu) : 0;
@@ -483,7 +506,21 @@ int win32_call(CPU *c, uint32_t idx){
         uint32_t arr = (c->fs_base && mem_is_committed(c->fs_base+0x2cu)) ? MR32(c->fs_base+0x2cu) : 0;
         if (arr && i<256u && mem_is_committed(arr+4u*i)) r = MR32(arr+4u*i);
         else r = (i<128)?tls_slot[i]:0; }
-    else if (!strcmp(n,"TlsFree"))               r = 1;
+    else if (!strcmp(n,"TlsFree")){
+        /* Windows clears the slot in every thread, so the next TlsAlloc of
+         * this index reads NULL everywhere: here the main TEB, the created
+         * threads' TEBs (0x00C20000 + 0x2000 n) and the timer thread's. */
+        uint32_t i = ARG(c,0); r = 0;
+        if (i < (uint32_t)tls_next){
+            int dup = 0; for (int k = 0; k < tls_nfree; k++) dup |= tls_free[k] == i;
+            if (!dup && tls_nfree < 128){
+                tls_slot[i] = 0;
+                for (uint32_t teb = 0x00C00000u; teb < 0x00D00000u; teb += 0x2000u)
+                    if (mem_is_committed(teb + 0x2Cu) && MR32(teb + 0x18u) == teb){
+                        uint32_t arr = MR32(teb + 0x2Cu);
+                        if (arr && mem_is_committed(arr + 4u*i + 3u)) MR32(arr + 4u*i) = 0;
+                    }
+                tls_free[tls_nfree++] = i; r = 1; } } }
     /* Critical sections are NOT HANDLED here; they are implemented in win32_ext.c
      * with REAL recursive locks (see cs_for).  If left as a no-op stub, the GIL's
      * fair sharing breaks mutual exclusion. */
@@ -644,6 +681,7 @@ int win32_call(CPU *c, uint32_t idx){
     }
     c->eax = r;
     c->esp += 4u * (uint32_t)e->nargs;      /* stdcall: the callee cleans up the arguments */
+    tl_imp_mod = prev_mod;
     return 1;
 }
 

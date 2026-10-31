@@ -69,10 +69,11 @@ Scripts that start from a career save (garage_*, shop_*, tune_graph,
 career_cover*, career_lot_badstock, dyno_units, career_outrun) need
 `NFSU2_SAVE_SEED=<a save folder>`; their headers say which stage.
 
-`tests/run_suite.sh --game <out> lan_cycle` (opt-in) leaves LAN hosting and
-hosts again (`lan_host_short.txt`); on this branch the game faults in
-server.dll's threads after leaving (the module is unloaded while they run),
-so it is not in the default list.
+`lan_cycle` leaves LAN hosting and hosts again (`lan_host_short.txt`);
+`lan_srvcycle` starts and stops server.dll six times through the game's own
+glue and checks that every cycle ends the server's threads before the unload
+and leaves no socket, host fd or TLS index behind. `tests/run_suite.sh --game
+<out> lan_cycles` (opt-in) hosts and leaves four times through the menus.
 
 Some scripts need a variable of the feature they test (their headers say
 which): NFSU2_PHOTO=1 (photo_mode, native_photo, native_headlights),

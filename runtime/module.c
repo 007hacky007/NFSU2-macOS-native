@@ -1,7 +1,7 @@
 /* Second guest modules: game DLLs lifted next to SPEED2.EXE.
  *
  * Today that is one module, server.dll, EA's LAN server, which the game loads
- * when a player hosts a LAN game (SPEED2.EXE 0x5FA300: LoadLibraryA("server"),
+ * when a player hosts a LAN game (SPEED2.EXE 0x5FA310: LoadLibraryA("server"),
  * GetProcAddress StartServer/StopServer/IsServerRunning, StartServer(...)).
  * tools/gen_v2.sh lifts it at the fixed guest base 0x00A00000 (its preferred base
  * 0x10000000 is the guest heap) into gen/server; this file maps the ORIGINAL
@@ -19,6 +19,10 @@
  *   5. DllMain(DLL_PROCESS_ATTACH) runs on the loading thread, with the guest
  *      lock held (Windows: under the loader lock);
  *   6. FreeLibrary of the last reference runs DllMain(DLL_PROCESS_DETACH).
+ *      No thread of the module is left by then: the game calls StopServer
+ *      first, which waits until the server thread has ended (win32_ext.c
+ *      gives the DLL Windows' GetExitCodeThread), and that thread first
+ *      waits for its NetLib idle thread and closes its sockets.
  *      The pages stay committed, so a thread that is still inside the module
  *      reads stale data instead of faulting; the next load copies a fresh
  *      image, so .data and BSS start over as on Windows.
@@ -341,4 +345,48 @@ void module_report(void){
                 m->info->name, *m->fn_count, (unsigned long long)m->loads, (unsigned long long)m->unloads,
                 m->mapped ? "loaded" : "not loaded", m->refused ? ", REFUSED (sha256 mismatch)" : "");
     }
+}
+
+/* ---- test: host start/stop cycles through the game's own glue ------------
+ * Script command "srvcycle N [hold_ms]" (autotest.c), on the guest main
+ * thread at Present: N times StartLANServer (SPEED2.EXE 0x5FA310, thiscall
+ * on 0x89CF48: LoadLibraryA("server"), GetProcAddress x3, StartServer(name,
+ * region)), keep it running hold_ms with the guest lock released, then
+ * UnloadServer (0x5F0900: StopServer, FreeLibrary).  Each cycle logs what
+ * would leak or outlive the module: its threads, its sockets and host fds,
+ * kernel-object slots, TLS indices. */
+uint64_t win32_ext_threads(void); uint64_t win32_ext_threads_exited(void);
+int win32_tls_in_use(void); int win32_obj_live(void);
+uint32_t com_scratch(uint32_t n);
+void guest_sleep_ns(long ns);                    /* win32_ext.c: with the guest lock released */
+int module_test_cycle(CPU *c, int n, int hold_ms){
+    static uint32_t nm = 0;
+    if (!nm) nm = com_scratch(64);
+    GuestMod *m = &g_mods[0];
+    int bad = 0, fds0 = host_fds_open();
+    for (int i = 1; i <= n; i++){
+        uint64_t t0 = win32_ext_threads(), e0 = win32_ext_threads_exited();
+        int tls0 = win32_tls_in_use(), ob0 = win32_obj_live();
+        snprintf((char *)(g_mem + nm), 64, "CYCLE%02d", i);
+        uint32_t ecx = c->ecx; c->ecx = GA(0x0089CF48u);
+        uint32_t ok = call_guest(c, GA(0x005FA310u), 1, &nm) & 0xFFu;
+        c->ecx = ecx;
+        uint32_t isrun = MR32(GA(0x00890128u)), running = isrun ? call_guest(c, isrun, 0, 0) & 0xFFu : 0u;
+        if (hold_ms > 0) guest_sleep_ns((long)hold_ms * 1000000L);
+        uint32_t t1 = (uint32_t)(win32_ext_threads() - t0);
+        c->ecx = GA(0x0089CF48u);
+        call_guest(c, GA(0x005F0900u), 0, 0);
+        c->ecx = ecx;
+        /* no grace period: StopServer itself waits for the server thread,
+         * which waits for its NetLib idle thread, as on Windows */
+        uint32_t ended = (uint32_t)(win32_ext_threads_exited() - e0);
+        int dtls = win32_tls_in_use() - tls0, dob = win32_obj_live() - ob0, dfd = host_fds_open() - fds0;
+        int fail = !ok || !running || m->mapped || ended != t1 || dtls != 0 || m->nsocks != 0 || dfd != 0;
+        bad += fail;
+        fprintf(stderr, "[srvcycle] %d/%d start=%u running=%u threads +%u started, %u ended; loaded after stop=%d;"
+                        " sockets left %d, host fds %+d, TLS indices %+d, object slots %+d%s\n",
+                i, n, ok, running, t1, ended, m->mapped, m->nsocks, dfd, dtls, dob, fail ? "  FAIL" : "");
+    }
+    fprintf(stderr, "[srvcycle] %d cycles, %d failed\n", n, bad);
+    return bad;
 }

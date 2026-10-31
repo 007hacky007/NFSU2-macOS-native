@@ -726,11 +726,19 @@ static void thread_report(void){
     void win32_gil_report(void); win32_gil_report();
 }
 /* Windows' thread exit semantics for GetExitCodeThread (STILL_ACTIVE while a
- * thread runs, then its real exit code): NFSU2_THREAD_EXIT=windows.  Off by
- * default: the exe has always been told that every thread had ended with 0,
- * and its RealCore wait loop (0x6F5A04) spins until that is true, so with
- * the Windows answer it now yields while it polls a running thread. */
+ * thread runs, then its real exit code).  Always for a lifted DLL: server.dll's
+ * StopServer sets its stop flag and polls GetExitCodeThread until the server
+ * thread has ended (up to 10 s, then TerminateThread), and the game's
+ * UnloadServer (0x5F0900) calls FreeLibrary right after it.  Told "ended"
+ * at once, StopServer returned while the thread still ran, and the thread
+ * and its NetLib idle thread went on in the unloaded module.  For SPEED2.EXE
+ * only with NFSU2_THREAD_EXIT=windows: the exe has always been told that
+ * every thread had ended with 0, and its RealCore wait loop (0x6F5A04) spins
+ * until that is true, so with the Windows answer it yields while it polls a
+ * running thread. */
+int win32_caller_module(void);                    /* win32.c */
 static int exit_semantics(void){
+    if (win32_caller_module()) return 1;
     static int g = -1;
     if (g < 0){ const char *e = getenv("NFSU2_THREAD_EXIT"); g = e && !strcasecmp(e, "windows"); }
     return g;
@@ -758,6 +766,10 @@ static void guest_thread_die(uint32_t code){
     }
     { static int sh = 0; if (thread_log() && sh++ < 200)
         fprintf(stderr, "  [thread] tid=%u ends (exit code %u), stack slot %08x recycled\n", o ? o->tid : 0u, code, tl_stack_lo); }
+    { const char *mn = 0;                             /* threads of a lifted DLL: say so */
+      uint32_t module_nearest_fn(uint32_t, const char **);
+      if (o && module_nearest_fn(o->guest_entry, &mn))
+          fprintf(stderr, "[thread] tid=%u (%s, entry 0x%08x) ended, exit code %u\n", o->tid, mn, o->guest_entry, code); }
     tstack_put(tl_stack_lo); tl_stack_lo = 0;
     __sync_fetch_and_add(&g_threads_exited, 1);
     guest_unlock();
@@ -1384,7 +1396,15 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
             r=1;
             { static int sh = 0; if (thread_log() && o->ended && sh++ < 64)
                 fprintf(stderr, "  [thread] GetExitCodeThread(tid=%u) -> %u\n", o->tid, code); }
-            /* A poll loop without a sleep (RealCore 0x6F5A04): on Windows the
+            /* evidence for the hosting tests: how long StopServer waited */
+            if (win32_caller_module()){
+                static uint32_t last_h = 0, polls = 0;
+                if (h != last_h){ last_h = h; polls = 0; }
+                polls++;
+                if (o->ended) fprintf(stderr, "[thread] GetExitCodeThread(tid=%u) -> %u after %u STILL_ACTIVE poll(s)\n",
+                                      o->tid, code, polls - 1);
+            }
+            /* A poll loop without a sleep (RealCore 0x6F5A04, StopServer): on Windows the
              * scheduler would run the thread it waits for, here that thread
              * needs the guest lock: give it up for a moment. */
             if (!o->ended){ guest_yield_begin(); struct timespec ts={0,1000000L}; nanosleep(&ts,0); guest_yield_end(); }
