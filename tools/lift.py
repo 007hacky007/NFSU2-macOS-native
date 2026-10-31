@@ -145,12 +145,13 @@ def _flag_defuse_abi(i):
         if ef & um: d |= bit
     return d, u
 
-def abi_cfg(blocks, in_text):
+def abi_cfg(blocks, in_text, jtab=None):
     """Compact flow graph for FLAGABI: block -> (successors, exit_kind, instructions)
     exit_kind: 0 none, 1 unknown outside edge (all flags live), 2 indirect jmp
     (virtual tail call / switch table: dead in the ABI).
     instruction: (address, def, use, kind, target)  kind: 0 normal, 1 direct call,
-    2 indirect call, 3 ret."""
+    2 indirect call, 3 ret.
+    jtab (JTSWITCH, Lifter.jtab): a jump table's targets are successors of its jmp."""
     g = {}
     for ba in blocks:
         ins = blocks[ba]
@@ -162,7 +163,9 @@ def abi_cfg(blocks, in_text):
         if m == 'jmp' or cond:
             o = last.operands[0] if last.operands else None
             if o is not None and o.type == X86_OP_IMM and o.imm in blocks: s.append(o.imm)
-            elif m == 'jmp' and (o is None or o.type != X86_OP_IMM): ext = 2
+            elif m == 'jmp' and (o is None or o.type != X86_OP_IMM):
+                ext = 2
+                if jtab and last.address in jtab: s += [t for t in dict.fromkeys(jtab[last.address][2]) if t in blocks]
             else: ext = 1
             if cond:
                 nxt = last.address + last.size
@@ -216,6 +219,23 @@ def abi_liveness(g, ent, entry_live, is_returning):
                 live_in[ba] = cur; changed = True
         if not changed: break
     return live_in.get(ent, F_ALL), after, call_after
+
+# FTOL2INL=1: a direct call of the CRT's _ftol2 becomes cpu.h's FTOL2_INL (its
+# body in place, checked against the lifted one by tests/main_all.c); with
+# X87PC=1 only (the macro rounds its subtraction like the lifted body at
+# PC=24).  The function is at the same address in the European and the North
+# American v1.2 executable; the lift checks its bytes.
+FTOL2_ADDR = 0x0075bed4
+FTOL2_CODE = bytes.fromhex('558bec83ec2083e4f0d9c0d9542418df7c2410df6c24108b5424188b44241085c0743cdee9')
+_LREGS = None
+def _lregs():
+    """tools/lregs.py (LREGS=1), next to this file"""
+    global _LREGS
+    if _LREGS is None:
+        import importlib.util as _iu
+        sp = _iu.spec_from_file_location('lregs', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'lregs.py'))
+        _LREGS = _iu.module_from_spec(sp); sp.loader.exec_module(_LREGS)
+    return _LREGS
 
 _ABI = None
 def _retpast():
@@ -366,7 +386,7 @@ class RawLifter:
     def __init__(self, data, base=0x00401000, comments=True):
         self.comments=comments; self.trap=False; self.traps=0
         self.trap_kinds=collections.Counter(); self.hooks=set(); self.watch=False
-        self.cov=False; self.retpast=set(); self.xp=None
+        self.cov=False; self.retpast=set(); self.xp=None; self.jtab={}; self.ftol2=None
         self.secs=[('.text', base, len(data), bytes(data))]
         self.TVA=base; self.TSZ=len(data); self.TDATA=bytes(data)
         self.md=Cs(CS_ARCH_X86,CS_MODE_32); self.md.detail=True
@@ -386,6 +406,9 @@ class Lifter:
         self.md=Cs(CS_ARCH_X86,CS_MODE_32); self.md.detail=True
         # callees from tools/retpast.txt (a call to one may not come back to the next instruction)
         self.retpast={a for a in _retpast() if self.in_text(a)}
+        self.jtab={}
+        o = FTOL2_ADDR - self.TVA
+        self.ftol2 = FTOL2_ADDR if self.TDATA[o:o+len(FTOL2_CODE)] == FTOL2_CODE else None
     def in_text(self,a): return self.TVA<=a<self.TVA+self.TSZ
 
     # ---------- operand -> C expression ----------
@@ -439,46 +462,115 @@ class Lifter:
             return {1:'MR8',2:'MR16',4:'MR32',8:'MR64'}[op.size] + self.ea(op.mem) + f" = ({val});"
         raise Unsupported("destination operand")
 
+    # ---------- JTSWITCH: switch jump tables ----------
+    # MSVC compiles a dense switch to 'cmp r32, n; ja default; jmp [r32*4 + table]'
+    # (sometimes 'movzx r2, byte [r32 + bytes]' in between: the two-level form).
+    # Without JTSWITCH that jmp is a tail call through the dispatcher and every
+    # case is a function of its own; with JTSWITCH=1 the cases are blocks of this
+    # function and the jmp is a C switch whose arms check the table entry in
+    # guest memory (a changed table still goes through the dispatcher).
+    _JT_PASS = frozenset(('mov', 'movzx', 'movsx', 'push', 'pop', 'lea', 'nop'))
+    def _jt_writes(self, i, fam):
+        """does i write any part of the register family fam ('eax', ...)?"""
+        try: return any((R32.get(r) or R16.get(r) or R8L.get(r) or R8H.get(r)) == fam for r in i.regs_access()[1])
+        except Exception: return True
+    def _jt_bound(self, ins):
+        """(reg, n, the block the bound holds in) for a block ending in 'cmp r32, n; [...]; ja/jbe'"""
+        j = ins[-1]
+        if j.mnemonic not in ('ja', 'jbe') or j.operands[0].type != X86_OP_IMM: return None
+        between = []
+        for k in reversed(ins[:-1]):
+            if k.mnemonic == 'cmp':
+                o = k.operands
+                if len(o) != 2 or o[0].type != X86_OP_REG or o[0].reg not in R32 or o[1].type != X86_OP_IMM: return None
+                if any(self._jt_writes(x, R32[o[0].reg]) for x in between): return None
+                held = j.address + j.size if j.mnemonic == 'ja' else j.operands[0].imm
+                return o[0].reg, o[1].imm & 0xffffffff, held
+            if k.mnemonic not in self._JT_PASS: return None
+            between.append(k)
+        return None
+    def _jt_table(self, ins, bound):
+        """(index reg, table, [targets]) for a block 'jmp dword [r*4 + table]' under bound
+        (r32, n), maybe after 'movzx r2, byte [r32 + bytes]' (MSVC's two-level switch:
+        the index is r2, up to the largest byte) and instructions that leave the index
+        alone; else None"""
+        reg, n = bound
+        if not ins or n > 1023: return None
+        for k in ins[:-1]:
+            if k.mnemonic == 'movzx' and len(k.operands) == 2 and k.operands[1].type == X86_OP_MEM and k.operands[1].size == 1 \
+               and k.operands[0].type == X86_OP_REG and k.operands[0].reg in R32:
+                m = k.operands[1].mem
+                if not m.segment and ((m.base == reg and not m.index) or (not m.base and m.index == reg and m.scale == 1)):
+                    bd = m.disp & 0xffffffff
+                    if not (self.in_text(bd) and self.in_text(bd + n)): return None
+                    n = max(self.TDATA[bd - self.TVA:bd - self.TVA + n + 1]); reg = k.operands[0].reg
+                    continue
+            if k.mnemonic not in self._JT_PASS or self._jt_writes(k, R32[reg]): return None
+        i = ins[-1]
+        if i.mnemonic != 'jmp' or not i.operands or i.operands[0].type != X86_OP_MEM or i.operands[0].size != 4: return None
+        m = i.operands[0].mem
+        if m.segment or m.base or m.index != reg or m.scale != 4: return None
+        d = m.disp & 0xffffffff
+        if not (self.in_text(d) and self.in_text(d + 4 * n + 3)): return None
+        ents = list(struct.unpack_from(f'<{n + 1}I', self.TDATA, d - self.TVA))
+        return (reg, d, ents) if all(self.in_text(t) for t in ents) else None
+
     # ---------- function discovery (CFG) ----------
     def discover(self, entry, maxins=4000):
         blocks={}; q=collections.deque([entry]); seen=set([entry]); calls=set()
-        while q:
-            va=q.popleft(); ins=[]
-            while True:
-                if not self.in_text(va): break
-                off=va-self.TVA
-                try: i=next(self.md.disasm(self.TDATA[off:off+16],va))
-                except StopIteration: break
-                ins.append(i); m=i.mnemonic
-                if m in ('ret','retf'): break
-                if m=='jmp':
-                    o=i.operands[0]
-                    if o.type==X86_OP_IMM and self.in_text(o.imm):
-                        t=o.imm
-                        if t not in seen: seen.add(t); q.append(t)
-                    break
-                if (m.startswith('j') and m[1:] in CC) or \
-                   m in ('jecxz','jcxz','loop','loope','loopz','loopne','loopnz'):
-                    o=i.operands[0]
-                    if o.type==X86_OP_IMM:
-                        for t in (o.imm, i.address+i.size):
-                            if self.in_text(t) and t not in seen: seen.add(t); q.append(t)
-                    break
-                if m=='call':
-                    o=i.operands[0]
-                    if o.type==X86_OP_IMM: calls.add(o.imm)
-                if m == 'int3':
-                    # A single int3 = assertion/debug break -> treat as no-op, CONTINUE.
-                    # A run of 0xCC = padding between functions -> stop.
-                    off2 = va + i.size - self.TVA
-                    pad = self.TDATA[off2:off2+3]
-                    if pad == b'\xcc\xcc\xcc': break
-                    va = i.address + i.size
-                    continue
-                if m in ('hlt','ud2'): break
-                va=i.address+i.size
-                if len(ins)>maxins: break
-            blocks[ins[0].address if ins else va]=ins
+        jt = _os.environ.get('JTSWITCH', '') == '1'
+        bounds = {}; self.jtab = {}
+        while True:
+            while q:
+                va=q.popleft(); ins=[]
+                while True:
+                    if not self.in_text(va): break
+                    off=va-self.TVA
+                    try: i=next(self.md.disasm(self.TDATA[off:off+16],va))
+                    except StopIteration: break
+                    ins.append(i); m=i.mnemonic
+                    if m in ('ret','retf'): break
+                    if m=='jmp':
+                        o=i.operands[0]
+                        if o.type==X86_OP_IMM and self.in_text(o.imm):
+                            t=o.imm
+                            if t not in seen: seen.add(t); q.append(t)
+                        break
+                    if (m.startswith('j') and m[1:] in CC) or \
+                       m in ('jecxz','jcxz','loop','loope','loopz','loopne','loopnz'):
+                        o=i.operands[0]
+                        if o.type==X86_OP_IMM:
+                            for t in (o.imm, i.address+i.size):
+                                if self.in_text(t) and t not in seen: seen.add(t); q.append(t)
+                        break
+                    if m=='call':
+                        o=i.operands[0]
+                        if o.type==X86_OP_IMM: calls.add(o.imm)
+                    if m == 'int3':
+                        # A single int3 = assertion/debug break -> treat as no-op, CONTINUE.
+                        # A run of 0xCC = padding between functions -> stop.
+                        off2 = va + i.size - self.TVA
+                        pad = self.TDATA[off2:off2+3]
+                        if pad == b'\xcc\xcc\xcc': break
+                        va = i.address + i.size
+                        continue
+                    if m in ('hlt','ud2'): break
+                    va=i.address+i.size
+                    if len(ins)>maxins: break
+                blocks[ins[0].address if ins else va]=ins
+                if jt and ins:
+                    b = self._jt_bound(ins)
+                    if b: bounds[b[2]] = b[:2]
+            # JTSWITCH: a block under a bound that ends in a table jmp brings in its targets
+            new = False
+            for ba, ins in list(blocks.items()):
+                if not (jt and ins and ba in bounds and ins[-1].address not in self.jtab): continue
+                tab = self._jt_table(ins, bounds[ba])
+                if tab is None: continue
+                self.jtab[ins[-1].address] = tab
+                for t in tab[2]:
+                    if t not in seen: seen.add(t); q.append(t); new = True
+            if not new: break
         return blocks, calls
 
     # ---------- single instruction -> C ----------
@@ -612,6 +704,8 @@ class Lifter:
                     # function's own return address is gone too; return as well
                     return [f"PUSH32(0x{i.address+i.size:x}u); sub_{t:08x}(c);",
                             f"if (c->eip != 0x{i.address+i.size:x}u) return;"]
+                if t == self.ftol2 and _X87PC and _os.environ.get('FTOL2INL', '') == '1':
+                    return [f"PUSH32(0x{i.address+i.size:x}u); FTOL2_INL(c);   /* _ftol2 */"]
                 return [f"PUSH32(0x{i.address+i.size:x}u); sub_{t:08x}(c);"]
             # x86: the call target is read BEFORE the return address is PUSHED (call [esp+N]!)
             return [f"{{ uint32_t _ct = {E(0)}; PUSH32(0x{i.address+i.size:x}u); dispatch_indirect(c, _ct); }}"]
@@ -1729,7 +1823,7 @@ class Lifter:
     # ---------- function -> C ----------
     def lift(self, entry):
         blocks, calls = self.discover(entry)
-        self.entry = entry
+        self.last_blocks = blocks; self.entry = entry
         addrs = sorted(blocks)
         # Flag liveness: the mask "which flags are read after this" for every
         # instruction.  Can be turned off with FLAGOPT=0 (for A/B comparison).
@@ -1742,7 +1836,7 @@ class Lifter:
             abi = abi_table()
             try:
                 if abi:
-                    _, self.fafter, _ = abi_liveness(abi_cfg(blocks, self.in_text), entry, abi[0],
+                    _, self.fafter, _ = abi_liveness(abi_cfg(blocks, self.in_text, self.jtab), entry, abi[0],
                                                      entry in abi[1] or entry in self.retpast)
                 else:
                     self.fafter = flag_liveness(blocks, addrs, self.in_text)
@@ -1796,6 +1890,13 @@ class Lifter:
                         body.append(f"    dispatch_indirect(c, 0x{o0.imm & 0xffffffff:x}u); return;")
                         continue
                     if o0.type!=X86_OP_IMM:
+                        tab = self.jtab.get(i.address)
+                        if tab:
+                            reg, d, ents = tab
+                            body.append(f"    switch (c->{R32[reg]}) {{   /* jump table 0x{d:x} */")
+                            for k2, t in enumerate(ents):
+                                body.append(f"    case {k2}u: if (MR32(0x{d + 4 * k2:x}u) == 0x{t:x}u) goto L_{t:08x}; break;")
+                            body.append("    }")
                         body.append(f"    dispatch_indirect(c, {self.rd(o0)}); return;   /* indirect tail-call */")
                         continue
                 # jecxz/jcxz and the loop family: the condition isn't in the CC table.
@@ -1893,7 +1994,11 @@ class Lifter:
         out.append(f"    goto L_{entry:08x};")
         out += body
         out.append("}")
-        return "\n".join(out), targets|calls
+        code = "\n".join(out)
+        if _os.environ.get('LREGS', '') == '1':
+            abi = abi_table()
+            code = _lregs().transform(code, abi[0] if abi else None, (abi[1] | self.retpast) if abi else None)
+        return code, targets|calls
 
 if __name__=='__main__':
     exe=sys.argv[1]; L=Lifter(exe)
@@ -1913,5 +2018,5 @@ if __name__=='__main__':
 
 
 # RawLifter shares the Lifter's analysis/generation methods
-for _m in ('ea','rd','wr','discover','insn','lift','_fm'):
+for _m in ('ea','rd','wr','discover','insn','lift','_fm','_jt_bound','_jt_table','_jt_writes','_JT_PASS'):
     setattr(RawLifter, _m, getattr(Lifter, _m))

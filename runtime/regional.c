@@ -72,7 +72,7 @@ void regional_install(void){
 
 /* Called from guest_hook (debug.c); tools/gen_v2.sh lifts the hook site. */
 int regional_hook(CPU *c, uint32_t ip){
-    if (ip != GA(0x004febadu)) return 0;     /* mov eax, [esp+0x34]: esi the list, ebp its length */
+    if (ip != HOOK_SITE(0x004febadu)) return 0;     /* mov eax, [esp+0x34]: esi the list, ebp its length */
     if (g_on && (c->esi == AI_CARS_R0 || c->esi == AI_CARS_OTHER) && c->ebp == AI_CARS_N){
         static int told;
         if (!told++) fprintf(stderr, "cars: AI racers pick from %u cars\n", AI_CARS_N + 2u);

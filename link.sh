@@ -15,7 +15,7 @@
 #   Shards from gen/na -> out/obj_na (BUILD=na ./build.sh), the runtime compiled
 #   with -DNFS_EXE_NA=1 and runtime/build_na.h (the reference build's addresses
 #   mapped to this build, tools/addrmap.py), binaries out/nfsu2_na_boot and
-#   out/nfsu2_na_hd_boot.  No test suite binary.
+#   out/nfsu2_na_hd_boot, test suite out/nfsu2_na_all.
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 MCPU="${MCPU:-apple-m1}"; MINOS="${MINOS:-11.0}"   # see build.sh
@@ -37,10 +37,13 @@ case "${BUILD:-eu}" in
       # (it needs both executables to build; the committed header is used otherwise)
       if [ -f out/na/addrmap.json ]; then
         "$ROOT/.venv/bin/python" tools/addrmap.py header out/na/addrmap.json runtime/build_na.h \
-          runtime/*.c runtime/*.m runtime/*.h tests/boot.c
+          runtime/*.c runtime/*.m runtime/*.h tests/boot.c tests/main_all.c
       fi ;;
   *)  echo "BUILD must be eu or na"; exit 1 ;;
 esac
+# the lift must have every override and hook the runtime has (tools/genlists.py;
+# a stale lift links but silently skips a hook)
+"$ROOT/.venv/bin/python" tools/genlists.py check "${BUILD:-eu}" $GEN
 
 CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead regional powerunits language headlights discord garage texpack reflect visual framerate module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace horn hornmenu racehorn carsfx xpatch highfps radio gamefix hlefix watchdog regseed display lifecycle photo drift keyboard dinput_kbd dinput_pad dikeys roamfix dinput_ff"
 MSRC="metal audio bundle gamepad fpscounter picture texrep net_native radio_native native_scene keyboard_mac inputseq native_controls rumble"
@@ -80,10 +83,10 @@ if [ "$WHICH" != hd ]; then
   rm -f $RO/enhance.o                # not part of the original build
   RT="$(rt_objs $RO)"
   clang ${LDOPT} -o $BOOT $SHARDS $RT $RO/boot.o $FW
-  if [ "${BUILD:-eu}" = eu ]; then
-    clang $OPT -Iruntime -Igen/all -c -o out/obj/main.o tests/main_all.c
-    clang ${LDOPT} -o out/nfsu2_all  $SHARDS $RT out/obj/main.o $FW
-  fi
+  # the function and runtime checks (tests/main_all.c, ./run.sh test, tests/main_all.sh)
+  ALL=out/nfsu2_all; [ "${BUILD:-eu}" = na ] && ALL=out/nfsu2_na_all
+  clang $OPT $XDEF -Iruntime -I$GEN -c -o $RO/main.o tests/main_all.c
+  clang ${LDOPT} -o $ALL $SHARDS $RT $RO/main.o $FW
   echo "link OK: original ($BOOT)"
 fi
 if [ "$WHICH" != orig ]; then

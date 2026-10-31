@@ -67,7 +67,7 @@ const void *visual_tex_upload(uint32_t tex, const void *src, uint32_t w, uint32_
 
 /* Called from guest_hook (debug.c) BEFORE the instruction at ip runs. */
 int visual_hook(CPU *c, uint32_t ip){
-    if (ip != GA(0x005c6766u)) return 0;        /* call [ecx+0x88]: SetVector(effect, handle, &v) */
+    if (ip != HOOK_SITE(0x005c6766u)) return 0;        /* call [ecx+0x88]: SetVector(effect, handle, &v) */
     int m = tint_mode();
     uint32_t v = mem_is_committed(c->esp + 11u) ? MR32(c->esp + 8u) : 0u;
     if (m && v && mem_is_committed(v + 15u)){

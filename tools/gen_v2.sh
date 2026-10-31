@@ -15,27 +15,30 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 EXE="${1:?usage: tools/gen_v2.sh <SPEED2.EXE>}"
 PY="$ROOT/.venv/bin/python"
 
-# The OVERRIDE list must MATCH runtime/overrides.c + runtime/d3dx_hle.c + runtime/reflect.c
-# (see PROJECT.md "Commands", D3DX_HLE.md "Regeneration").  OVR is in European
-# addresses; OVR_NA is the same list mapped to the North American build
-# (tools/addrmap.py list out/na/addrmap.json "$OVR").  7292bc..73b900 are runtime/radio.c (music
-# folder, music event tick), at the same addresses in both builds; 559ca0..5ff4a0 are
-# runtime/gamefix.c (engine fixes).
-OVR=60fab0,61e390,61f130,5c7ed0,50d510,65ae35,6623ea,66aa3f,66ace2,6691b1,669296,664a2f,663a42,688e89,663275,662edc,660a52,668e0d,664792,66ac27,65addb,65acf5,66d13a,66d303,66d7e9,66e8a9,66f501,66ca38,65ab24,67193e,66056c,65cf44,640c12,668cd0,65ccd8,5d6d30,503510,503680,5035c0,5162d0,534860,525ee0,526980,53fec0,52a5e0,516480,532840,551330,532d00,515d70,52a290,52a460,52a4d0,516850,534780,5344e0,54e6f0,52d340,6154a0,494270,57eae0,57a060,57a0f0,61ad90,483b40,74b730,4effd0,4f19a0,5156f0,53ed30,4b3e40,498400,4b3110,4b3190,5f8d50,5f8910,5f46b0,5b2620,42cd60,4901d0,440df0,63a700,610760,63a1c0,7292bc,4580e0,4ac9f0,72d18d,739320,73b900,559ca0,4df9c0,483e40,574680,61b990,5ff4a0,5c7150,5378d0,4c2640,56dde0,4c85d0,4ac120,4da590,5b81c0,5b8470,5c1730,407750,50b410,61c610,631e30,639f30
-OVR_NA=60faa0,61e380,61f120,5c7ec0,50d510,65ae25,6623da,66aa2f,66acd2,6691a1,669286,664a1f,663a32,688e79,663265,662ecc,660a42,668dfd,664782,66ac17,65adcb,65ace5,66d12a,66d2f3,66d7d9,66e899,66f4f1,66ca28,65ab14,67192e,66055c,65cf34,640c02,668cc0,65ccc8,5d6d20,503510,503680,5035c0,5162d0,534850,525ed0,526970,53feb0,52a5d0,516480,532830,551320,532cf0,515d70,52a280,52a450,52a4c0,516850,534770,5344d0,54e6e0,52d330,615490,494270,57ead0,57a050,57a0e0,61ad80,483b40,74b730,4effd0,4f19a0,5156f0,53ed20,4b3e40,498400,4b3110,4b3190,5f8d40,5f8900,5f46a0,5b2610,42cd60,4901d0,440df0,63a6f0,610750,63a1b0,7292bc,4580e0,4ac9f0,72d18d,739320,73b900,559c90,4df9c0,483e40,574670,61b980,5ff490,5c7140,5378c0,4c2640,56ddd0,4c85d0,4ac120,4da590,5b81b0,5b8460,5c1720,407750,50b410,61c600,631e20,639f20
-
 SHA="$(shasum -a 256 "$EXE" | cut -c1-64)"
 case "$SHA" in
   8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297)
     BUILD=eu; DEF=gen/all; WORK=out
-    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336,0x4febad,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0fa,0x53d155,0x54a745,0x54a75f,0x54ae4c,0x54ae63,0x53d4a6,0x5626b8,0x547695,0x5cab69,0x5cae71,0x60f9f6,0x5d6666,0x63167d,0x6311fc,0x5c6766,0x5d2c27,0x5cbe54,0x581485,0x6005f0,0x4b7102,0x4c36a3,0x61ad90,0x5c804e,0x536a42,0x5c7cf9,0x50d388,0x553a72,0x482279,0x471b95}"   # runtime/wsfov.c, sndlead.c, regional.c; runtime/wsfov.c, sndlead.c, powerunits.c; runtime/wsfov.c, sndlead.c, garage.c; runtime/wsfov.c, sndlead.c, reflect.c; runtime/wsfov.c, sndlead.c, visual.c; runtime/wsfov.c, sndlead.c, framerate.c, wsfov.c (cutscene bars); runtime/wsfov.c, sndlead.c, racenet.c; runtime/wsfov.c, sndlead.c, racenet.c + roam.c, roam.c; runtime/wsfov.c, sndlead.c, racenet.c + roam.c, roam.c, hornmenu.c, highfps.c, display.c (movie, rain), language.c (subtitles)
     export XPATCH="${XPATCH:-tools/xpatch_eu.txt}" ;;   # tools/xpatch.py
   f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7)
-    BUILD=na; DEF=gen/na; WORK=out/na; OVR=$OVR_NA; export LIFT_MISSING=1
-    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336,0x4febad,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0ea,0x53d145,0x54a735,0x54a74f,0x54ae3c,0x54ae53,0x53d496,0x5626a8,0x547685,0x5cab59,0x5cae61,0x60f9e6,0x5d6656,0x63166d,0x6311ec,0x5c6756,0x5d2c17,0x5cbe44,0x581475,0x6005e0,0x4b7102,0x4c36a3,0x61ad80,0x5c803e,0x536a32,0x5c7ce9,0x50d388,0x553a62,0x482279,0x471b95}"   # runtime/wsfov.c, sndlead.c, regional.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, powerunits.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, garage.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, reflect.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, visual.c (same sites, NA addresses); the same sites, NA addresses; runtime/wsfov.c, sndlead.c, racenet.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, racenet.c + roam.c, roam.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, racenet.c + roam.c, roam.c, hornmenu.c (same sites, NA addresses), highfps.c, display.c, language.c
+    BUILD=na; DEF=gen/na; WORK=out/na
     export XPATCH="${XPATCH:-tools/xpatch_na.txt}" ;;   # tools/xpatch.py
   *) echo "unsupported SPEED2.EXE (sha256 $SHA); see README, \"Game versions\""; exit 1 ;;
 esac
+# The overrides (every sub_X_orig of the runtime, d3dx_hle.c's DX_WRAP table)
+# and the hook sites (every HOOK_SITE(0x...) of the runtime) come from the
+# runtime sources (tools/genlists.py), in European addresses mapped to the North
+# American build, so the lift always matches the runtime; link.sh stops on a
+# lift older than the runtime.  HOOKS=0x...,... adds sites (in this build's
+# addresses), e.g. debug.c's debugging hooks.
+"$PY" tools/genlists.py lint
+OVR="$("$PY" tools/genlists.py overrides $BUILD)"
+HK="$("$PY" tools/genlists.py hooks $BUILD)"
+export HOOKS="$HK${HOOKS:+,$HOOKS}"
+echo "overrides: $(echo "$OVR" | tr ',' '\n' | grep -c .), hooks: $(echo "$HK" | tr ',' '\n' | grep -c .)"
+# Call targets the discovery missed are lifted too instead of becoming traps
+# (genall.py LIFT_MISSING; NOCLOSURE=1 turns it off).
+[ "${NOCLOSURE:-}" = 1 ] || export LIFT_MISSING=1
 OUT="${GENOUT:-$DEF}"
 mkdir -p "$WORK"
 export RELOCS="$WORK/relocs.txt"
@@ -44,10 +47,34 @@ export RELOCS="$WORK/relocs.txt"
 export X87PC="${X87PC:-1}"
 echo "build: $BUILD -> $OUT"
 
+# Optional lift options, all off by default (measurements: LIFTER_EFFICIENCY.md
+# section 7): JTSWITCH=1 switch jump tables as C switches, LREGS=1
+# registers and flags in C locals (tools/lregs.py), FTOL2INL=1 the CRT's
+# _ftol2 in place (cpu.h FTOL2_INL), INLINE_LIST=1 the hot functions of
+# tools/inline_hot.txt inlined at their call sites (European addresses,
+# mapped here for the North American build; INLINE_LIST=<file> another list).
+export JTSWITCH="${JTSWITCH:-}" LREGS="${LREGS:-}" FTOL2INL="${FTOL2INL:-}"
+case "${INLINE_LIST:-}" in
+  ""|0) unset INLINE_LIST ;;
+  *) IL="$INLINE_LIST"; [ "$IL" = 1 ] && IL=tools/inline_hot.txt
+     if [ $BUILD = na ]; then
+       mkdir -p "$WORK"
+       "$PY" tools/addrmap.py list out/na/addrmap.json "$(grep -oE '^[0-9a-fA-F]{6,8}' "$IL" | paste -sd, -)" | tr ',' '\n' > "$WORK/inline_list.txt"
+       IL="$WORK/inline_list.txt"
+     fi
+     export INLINE_LIST="$IL" ;;
+esac
+echo "options: X87PC=$X87PC JTSWITCH=${JTSWITCH:-0} LREGS=${LREGS:-0} FTOL2INL=${FTOL2INL:-0} INLINE_LIST=${INLINE_LIST:-0}"
+
 "$PY" tools/reloc2.py "$EXE"                        # -> $RELOCS
 "$PY" tools/flagabi.py "$EXE" "$WORK/flagabi.json"  # inter-function flag liveness (~30 s)
 OVERRIDE=$OVR GENOUT="$OUT" FLAGABI="$WORK/flagabi.json" X87OPT=1 RETEIP=0 MEMARG=1 \
   "$PY" tools/genall.py "$EXE" 128
+# what this lift was made with: link.sh compares the lists with the runtime's
+{ "$PY" tools/genlists.py stamp $BUILD
+  echo "extra hooks ${HOOKS#$HK}"
+  echo "options X87PC=$X87PC JTSWITCH=${JTSWITCH:-0} LREGS=${LREGS:-0} FTOL2INL=${FTOL2INL:-0} INLINE_LIST=${INLINE_LIST:+$(basename "$INLINE_LIST")} NOCLOSURE=${NOCLOSURE:-0}"
+} > "$OUT/lists.txt"
 # argcount.py writes <GENOUT>/impargs.c; run it only for the real generation
 if [ "$OUT" = "$DEF" ]; then GENOUT="$OUT" "$PY" tools/argcount.py "$EXE"; fi
 echo "v2 generated: $OUT"

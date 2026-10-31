@@ -36,7 +36,7 @@ def summarize(a):
         blocks, calls = _L.discover(a)
     except Exception:
         return a, None
-    return a, abi_cfg(blocks, _L.in_text)
+    return a, abi_cfg(blocks, _L.in_text, _L.jtab)   # JTSWITCH: the jump tables' targets
 
 
 def analyze(G):
@@ -67,7 +67,7 @@ if __name__ == '__main__':
     t0 = time.time()
     sys.argv = sys.argv[:2]            # genall expects argv[2]=NSHARD
     import genall                      # discover_all: genall.EXE = sys.argv[1]
-    funcs = genall.discover_all()
+    funcs = genall.discover_all()[0]
     print(f'{len(funcs)} functions ({time.time()-t0:.0f}s)')
     with mp.Pool(mp.cpu_count(), initializer=_init) as pool:
         G = dict(pool.map(summarize, funcs, chunksize=64))

@@ -646,7 +646,7 @@ void sub_0057a0f0(CPU *c){
  * the real dt up to 1/30 (the emitters' countdowns take it as time too).
  * Hook site from #10. */
 int hfr_hook(CPU *c, uint32_t ip){
-    if (ip != GA(0x005d2c27u)) return 0;
+    if (ip != HOOK_SITE(0x005d2c27u)) return 0;
     if (c->ecx == A_PART_SYS){
         float k = MRF32(c->esp);
         if (g_fix & FX_PARTICLES){

@@ -39,6 +39,10 @@ cd "$ROOT/$GEN"
 # captured in a variable, then truncated; clang's exit code is kept (if any shard
 # fails to compile, xargs and therefore build.sh return an error).
 export OPT ROOT OBJ
+# objects of shards (and stubs) the current lift no longer has: link.sh links shard_*.o
+for o in "$ROOT/$OBJ"/shard_*.o "$ROOT/$OBJ"/stubs.o; do
+  [ -f "$o" ] && [ ! -f "$(basename "$o" .o).c" ] && rm -f "$o"
+done
 ls shard_*.c fntab.c stubs.c 2>/dev/null | \
   xargs -P "$J" -n 1 sh -c '
     o=$(clang $OPT -c -I"$ROOT/runtime" -I. -Wno-unused-label -Wno-parentheses-equality \

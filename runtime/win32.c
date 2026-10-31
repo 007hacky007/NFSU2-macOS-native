@@ -182,9 +182,18 @@ uint64_t host_us(void){
     uint64_t stalled = (now > rb) ? (now - rb) : 0ull;      /* unclamped */
     /* Safety valve: threshold 200 ms -> 60 ms, step 2 ms -> 4 ms.  Since the
      * ceiling was raised, this path now only runs on REAL stalls. */
-    if (stalled > 60000ull && (n & 15u) == 15u){
-        if (atomic_load(&g_vclock_creep) < 200000ull)
-            atomic_fetch_add(&g_vclock_creep, 4000ull);
+    if (stalled > 60000ull){
+        if (atomic_load(&g_vclock_creep) < 200000ull){
+            if ((n & 15u) == 15u) atomic_fetch_add(&g_vclock_creep, 4000ull);
+        } else
+            /* Past the 200 ms the clock must still move, or a busy-wait in
+             * the same long frame never sees its deadline: 0x45A630 waits
+             * 20 ticks for each sound object it destroys on the way into a
+             * race, and a career hung there for good when that frame had
+             * already run long (tests/main_all.c section 6).  1 us per read
+             * keeps the frame's extra game time small.  (From th0mk's
+             * nfsu2-web runtime/win32.c, MIT.) */
+            atomic_fetch_add(&g_vclock_creep, 1ull);
     }
     return base + d + atomic_load(&g_vclock_creep);
 }

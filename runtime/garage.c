@@ -649,7 +649,7 @@ void sub_005344e0(CPU *c){
 /* The shop's buys (0x547580) add each part to the career car it finds among
  * the 5 by handle; none: esi 0, and the part went to address 0x434. */
 int garage_hook(CPU *c, uint32_t ip){
-    if (ip != GA(0x00547695u)) return 0;    /* mov ecx, [esp+0x10]: esi the car or 0 */
+    if (ip != HOOK_SITE(0x00547695u)) return 0;    /* mov ecx, [esp+0x10]: esi the car or 0 */
     if (!c->esi){
         uint32_t x = xfind(CARS0, MR32(CAREER + K_CAR));
         if (x){ c->esi = x; fprintf(stderr, "[garage] the shop's buy: for the car in slot %u\n", 6u + (x - X_AT(0)) / REC_SZ); }

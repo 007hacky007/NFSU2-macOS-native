@@ -64,12 +64,12 @@ uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args);   /* 
 #define RET_MIRROR      GA(0x005BA1DDu)
 #define RET_CUBE        GA(0x005BA559u)
 /* hook sites (tools/gen_v2.sh HOOKS) */
-#define H_ROAD_SCENERY  GA(0x005cab69u)   /* push 8: view 4's scenery list */
-#define H_MIRROR_SCENERY GA(0x005cae71u)  /* push 1: view 3's scenery list */
-#define H_SKY_SCALE     GA(0x0060f9f6u)   /* cmp edx,1: the sky's scale is in st0 */
-#define H_SCENERY_LOD   GA(0x005d6666u)   /* test bh,0x18: ebx = the view's flags */
-#define H_CAR_LOD       GA(0x0063167du)   /* push ecx: ecx/edx = model/wheel LOD */
-#define H_CAR_LOD2      GA(0x006311fcu)   /* mov edx,[ebp+0xc]: eax/ecx = model/wheel LOD */
+#define H_ROAD_SCENERY  HOOK_SITE(0x005cab69u)   /* push 8: view 4's scenery list */
+#define H_MIRROR_SCENERY HOOK_SITE(0x005cae71u)  /* push 1: view 3's scenery list */
+#define H_SKY_SCALE     HOOK_SITE(0x0060f9f6u)   /* cmp edx,1: the sky's scale is in st0 */
+#define H_SCENERY_LOD   HOOK_SITE(0x005d6666u)   /* test bh,0x18: ebx = the view's flags */
+#define H_CAR_LOD       HOOK_SITE(0x0063167du)   /* push ecx: ecx/edx = model/wheel LOD */
+#define H_CAR_LOD2      HOOK_SITE(0x006311fcu)   /* mov edx,[ebp+0xc]: eax/ecx = model/wheel LOD */
 #define FN_SKY          GA(0x0060f890u)
 #define FN_DRAW_QUEUED  GA(0x005cf430u)
 #define CUBE_FAR        GA(0x007fee8cu)   /* float, 64.0 */

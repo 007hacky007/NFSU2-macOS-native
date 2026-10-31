@@ -166,11 +166,11 @@ int display_fill_target(void){ return g_fill > 0; }
  * lifter writes the x87 region back first, so ST(0) is the live value. */
 int display_hook(CPU *c, uint32_t ip){
     switch (ip){
-    case GA(0x00536a42u):                    /* mov ecx, ebx; call sub_0051a1c0 (the movie quad) */
+    case HOOK_SITE(0x00536a42u):                    /* mov ecx, ebx; call sub_0051a1c0 (the movie quad) */
         display_init();
         movie_quad(c->esp);
         return 1;
-    case GA(0x005c7cf9u):                    /* fadd [esp+10]: centre + the rain drop's extent */
+    case HOOK_SITE(0x005c7cf9u):                    /* fadd [esp+10]: centre + the rain drop's extent */
         g_rain++;
         ST(0) *= (double)hud_k();
         return 1;

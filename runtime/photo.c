@@ -102,8 +102,8 @@ void native_scene_guest_frame(void);
 void native_scene_f12(void);
 void native_scene_request_capture(void);
 
-#define HOOK_MAINLOOP  GA(0x00581485u)   /* GameLoop, before its second debug no-op call */
-#define HOOK_RET       GA(0x00581485u)   /* the guest calls' return address */
+#define HOOK_MAINLOOP  HOOK_SITE(0x00581485u)   /* GameLoop, before its second debug no-op call */
+#define HOOK_RET       HOOK_SITE(0x00581485u)   /* the guest calls' return address */
 #define G_FLOW         GA(0x008654a4u)   /* 6: in the world */
 #define G_RACE         GA(0x00890118u)   /* the race status: +0 4 racing, 6 paused */
 #define G_RACEKIND     GA(0x0089e7b0u)   /* 0 free roam */

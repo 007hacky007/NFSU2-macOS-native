@@ -8,9 +8,10 @@
 #   ./tools/check.sh orig|hd      a single build
 #
 # NFSU2_DATA: the game folder or SPEED2.EXE (same as run.sh).  The window is never
-# visible (NOFOCUS=2), sound is off, settings (~/.nfsu2_registry) are restored
-# after the run, saves go to a temporary folder (real career saves are not
-# touched).  One build takes ~1.5 min.  Exit code: 0 = all passed.
+# visible (NOFOCUS=2), sound and game controllers are off (a connected pad
+# changes the menu path), settings (~/.nfsu2_registry) are restored after the
+# run, saves go to a temporary folder (real career saves are not touched).
+# One build takes ~1.5 min.  Exit code: 0 = all passed.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXE="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2/SPEED2.EXE"
@@ -48,7 +49,7 @@ for b in $BUILDS; do
   echo "== $b ($(basename "$BIN"), $Q frames)"
   env -i HOME="$HOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
     FIXMAT=1 FIXMAT_MODE=3 NOMOVIES=1 SNDSYNC=1 GPUVS=1 WINDOW=1 ALARM=0 \
-    NOFOCUS=2 NOSOUND=1 NFSFULL=0 MOUSEAT=5,5 FSFAKE=300 \
+    NOFOCUS=2 NOSOUND=1 NFSFULL=0 MOUSEAT=5,5 FSFAKE=300 NFSU2_PAD=0 \
     NFSU2_SAVEDIR="$TMP/saves_$b" AUTOSEQ="$SEQ" QUITFRAMES=$Q GPUWIN=6000,6900 \
     ${NFSU2_HEAP_FREE:+NFSU2_HEAP_FREE="$NFSU2_HEAP_FREE"} ${NFSU2_HEAP_QUAR_MB:+NFSU2_HEAP_QUAR_MB="$NFSU2_HEAP_QUAR_MB"} ${HEAPPOISON:+HEAPPOISON="$HEAPPOISON"} ${GBUF_SKIP_MB:+GBUF_SKIP_MB="$GBUF_SKIP_MB"} ${NFSU2_GBUF_MERGE:+NFSU2_GBUF_MERGE="$NFSU2_GBUF_MERGE"} ${NFSU2_GBUF_QUAR:+NFSU2_GBUF_QUAR="$NFSU2_GBUF_QUAR"} ${NFSU2_GBUF_FREE0:+NFSU2_GBUF_FREE0="$NFSU2_GBUF_FREE0"} ${NFSU2_HEAPLOG:+NFSU2_HEAPLOG="$NFSU2_HEAPLOG"} ${THREADLOG:+THREADLOG="$THREADLOG"} \
     ${NFSU2_HIGHFPS:+NFSU2_HIGHFPS="$NFSU2_HIGHFPS"} ${NFSU2_HIGHFPS_OFF:+NFSU2_HIGHFPS_OFF="$NFSU2_HIGHFPS_OFF"} ${NFSU2_HIGHFPS_SET:+NFSU2_HIGHFPS_SET="$NFSU2_HIGHFPS_SET"} ${TIMELOG:+TIMELOG="$TIMELOG"} ${FILEOPLOG:+FILEOPLOG="$FILEOPLOG"} \

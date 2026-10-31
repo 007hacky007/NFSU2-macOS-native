@@ -191,27 +191,27 @@ static void speedo_changed(CPU *c, uint32_t self){
 /* Called from guest_hook (debug.c); tools/gen_v2.sh lifts the hook sites. */
 int powerunits_hook(CPU *c, uint32_t ip){
     switch (ip){
-    case GA(0x004b7439u): add(c, c->esi, FN_ADD, 4u); return 1;   /* Options > Gameplay: after Speedometer Units, before Career Difficulty .. Save */
-    case GA(0x004c3b3au): {                                        /* the pause menu's: Explore Map Mode (not in mode 2), Race Map Mode and Save follow */
+    case HOOK_SITE(0x004b7439u): add(c, c->esi, FN_ADD, 4u); return 1;   /* Options > Gameplay: after Speedometer Units, before Career Difficulty .. Save */
+    case HOOK_SITE(0x004c3b3au): {                                        /* the pause menu's: Explore Map Mode (not in mode 2), Race Map Mode and Save follow */
         uint32_t m = gcall(c, FN_MODE, GA(0x0083aab4u), 0, 0);
         add(c, c->esi, FN_ADD_PAUSE, m == 2u ? 2u : 3u);
         return 1; }
-    case GA(0x0049aeb6u):                                          /* Speedometer Units' method 1, its texts again */
-    case GA(0x0049aed4u): speedo_changed(c, c->esi); return 1;
-    case GA(0x0053d0fau):                                          /* "km/h?" (0x5EA8C0): the chart's power axis */
-    case GA(0x0053d155u):                                          /*   the legend */
-    case GA(0x0054a745u):                                          /*   the chart's maximum, its factor */
-    case GA(0x0054a75fu):                                          /*   and label */
-    case GA(0x0054ae4cu):                                          /*   a run's result, its factor */
-    case GA(0x0054ae63u):                                          /*   and label */
+    case HOOK_SITE(0x0049aeb6u):                                          /* Speedometer Units' method 1, its texts again */
+    case HOOK_SITE(0x0049aed4u): speedo_changed(c, c->esi); return 1;
+    case HOOK_SITE(0x0053d0fau):                                          /* "km/h?" (0x5EA8C0): the chart's power axis */
+    case HOOK_SITE(0x0053d155u):                                          /*   the legend */
+    case HOOK_SITE(0x0054a745u):                                          /*   the chart's maximum, its factor */
+    case HOOK_SITE(0x0054a75fu):                                          /*   and label */
+    case HOOK_SITE(0x0054ae4cu):                                          /*   a run's result, its factor */
+    case HOOK_SITE(0x0054ae63u):                                          /*   and label */
         powerunits_install();
         if (g_hp >= 0) c->eax = (uint32_t)!g_hp;
         return 1;
-    case GA(0x0053d4a6u):                                          /* "mph?" (0x5EA8B0): the chart's curve */
+    case HOOK_SITE(0x0053d4a6u):                                          /* "mph?" (0x5EA8B0): the chart's curve */
         powerunits_install();
         if (g_hp >= 0) c->eax = (uint32_t)g_hp;
         return 1;
-    case GA(0x005626b8u):                                          /* a part's gain: km/h in bl */
+    case HOOK_SITE(0x005626b8u):                                          /* a part's gain: km/h in bl */
         powerunits_install();
         if (g_hp >= 0) c->ebx = (c->ebx & ~0xffu) | (uint32_t)!g_hp;
         return 1;

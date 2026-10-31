@@ -88,7 +88,7 @@
 #define CAR_VEL      0x70u
 #define HIT_M        80.f          /* m: a remote car farther from the player's is out of reach of a hit here */
 #define FS_PORT      3659u         /* the runtime's own UDP port on the virtual LAN */
-#define HOOK_MAINLOOP GA(0x00581485u)  /* GameLoop, before its second debug no-op call */
+#define HOOK_MAINLOOP HOOK_SITE(0x00581485u)  /* GameLoop, before its second debug no-op call */
 #define PEER_MS      5000u
 #define FS_MS        2000u
 #define FS_N         (16 + NAME_N)

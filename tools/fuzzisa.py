@@ -474,7 +474,10 @@ def gen_guest(cases, chunks, workdir):
             names.append(None); skipped.append((i, 'ERROR: ' + str(e))); continue
         bodies.append(code.replace('sub_%08x' % BASE, 't%d' % i))
         names.append('t%d' % i)
-    o = [GUEST_HDR, '\n'.join(bodies), 'static CPU cpu; static CPU *const c = &cpu;']
+    # LREGS=1 (tools/lregs.py): the bodies keep registers in locals; the harness does not
+    lr = os.environ.get('LREGS', '') == '1'
+    o = [GUEST_HDR, '#undef RG_\n#define RG_(x) _r_##x' if lr else '', '\n'.join(bodies),
+         '#undef RG_\n#define RG_(x) c->x' if lr else '', 'static CPU cpu; static CPU *const c = &cpu;']
     o.append('int main(void){ mem_init(); mem_commit(0x0u,0x01000000u); mem_fault_handler_install();')
     o.append('  unsigned char m[%d];' % MEMSZ)
     for i, cs in enumerate(cases):
