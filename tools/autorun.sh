@@ -32,7 +32,7 @@ export HOME="$OUT/home"
 mkdir -p "$HOME/Library/Logs/NFSU2"
 [ -n "$NFSU2_REGFILE_SEED" ] && [ ! -f "$HOME/.nfsu2_registry" ] && cp "$NFSU2_REGFILE_SEED" "$HOME/.nfsu2_registry"
 export FIXMAT="${FIXMAT:-1}" FIXMAT_MODE="${FIXMAT_MODE:-3}" NOMOVIES="${NOMOVIES:-1}"
-export SNDSYNC="${SNDSYNC:-1}" GPUVS="${GPUVS:-1}" MOUSEAT="${MOUSEAT:-5,5}" FSFAKE="${FSFAKE:-300}"
+export SNDSYNC="${SNDSYNC:-1}" GPUVS="${GPUVS:-1}" FSFAKE="${FSFAKE:-300}"
 export WINDOW="${WINDOW-1}" NOFOCUS="${NOFOCUS-2}" ALARM="${ALARM:-120}"
 # Discord presence is OFF in test runs: the real Discord app may be running on
 # this Mac and must never see a test.  A test that wants it sets

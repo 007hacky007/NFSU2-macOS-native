@@ -1,17 +1,19 @@
-# Quick Race in the European game's Vauxhall Corsa (runtime/regional.c).  With
-# no profile Quick Race lists the 206, Focus, Corolla, 240SX, Miata, Civic, 106,
-# Corsa, Escalade, 350Z, GTO and Lancer Evolution: the 8th is raced.  Good: the
-# player's car in the race is car type 7, CORSA (its physics info,
-# [[car +0x10] +0x10], starts with the type).
-300   tap RETURN            # title
-+400  tap RETURN            # "create new profile?" -> No
-+700  tap RETURN            # Main Menu: Quick Race
-+300  tap RETURN            # race type (Circuit)
-+300  tap RETURN            # track (Resort Loop)
-+300  tap RETURN            # game options -> continue
-+400  loop 7
+# Quick Race in the European game's Vauxhall Corsa (runtime/regional.c), from
+# a game folder with both regions' cars.  Good: the player's car in the race
+# is car type 7, CORSA (its physics info, [[car +0x10] +0x10], starts with the
+# type).  EUCARS_RIGHT = how many cars right of the first one the Corsa is in
+# Quick Race's list: 6 with the European SPEED2.EXE (the list has it 7th), 7
+# with the North American one (8th, after the 106); tests/run_suite.sh sets it.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN                                   # "No" profile
++0    tapuntil RETURN UI_QRModeSelect.fng 150 3000 # main menu -> Quick Race
++200  tapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  tapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  tapuntil RETURN UI_QRCarSelect.fng 150 1500
++400  loop ${EUCARS_RIGHT}
 +0    tap RIGHT             # the next car
 +120  endloop
++0    dump car_chosen
 +200  tap RETURN            # this car
 +300  tap RETURN            # transmission: Auto
 +300  tap RETURN

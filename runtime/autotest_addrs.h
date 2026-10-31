@@ -2,6 +2,8 @@
  * Every game address the test scripts use (European), and the same
  * address on this build: runtime/autotest.c maps a script's numbers
  * through it. */
+{ 0x0061c5c0u, GA(0x0061c5c0u) },
+{ 0x00633a10u, GA(0x00633a10u) },
 { 0x008364e8u, GA(0x008364e8u) },
 { 0x0083a9b4u, GA(0x0083a9b4u) },
 { 0x0083ad90u, GA(0x0083ad90u) },
@@ -20,7 +22,6 @@
 { 0x00865188u, GA(0x00865188u) },
 { 0x008654a4u, GA(0x008654a4u) },
 { 0x00865558u, GA(0x00865558u) },
-{ 0x008656f8u, GA(0x008656f8u) },
 { 0x0086eaf0u, GA(0x0086eaf0u) },
 { 0x0086f8a8u, GA(0x0086f8a8u) },
 { 0x0086ffb4u, GA(0x0086ffb4u) },
@@ -53,4 +54,6 @@
 { 0x00890118u, GA(0x00890118u) },
 { 0x0089011cu, GA(0x0089011cu) },
 { 0x0089e7b0u, GA(0x0089e7b0u) },
+{ 0x008a3288u, GA(0x008a3288u) },
+{ 0x008a329cu, GA(0x008a329cu) },
 { 0x008a44f8u, GA(0x008a44f8u) },

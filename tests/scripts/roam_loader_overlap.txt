@@ -1,0 +1,43 @@
+# Cover-shoot reads in free roam while friends' cars load (runtime/roamfix.c
+# sub_0061c610).  A shoot's start reads the player's car type's
+# PARTS_ANIMATIONS.BIN through the car loader (0x4CE770 -> 0x633A10 ->
+# 0x61C610) and its end lets it go (0x499FA0 -> 0x61C5C0).  Here both are
+# called while a friend's car is loading (the loader's busy word 0x8A329C
+# set), SHOOTS times (default 12), while stand-in friends (tests/roam/
+# plan_loader.sh) change cars every few seconds, so their cars load again and
+# again.  Before the fix the part animations' read went out beside the
+# friend's and busy could stay set: the next car load with the rides pool full
+# waited for good (game stuck, sound looping).  Good: "[loader] ... waited"
+# lines, no [watchdog] report, the loop ends (LOG loader_end), quit.
+# NFSU2_TEST_LOADER_OVERLAP=1 is the game's way, for the A/B.
+# Adapted from the old fork's roam_crowd_shoot.txt (its crowd came from the
+# browser's roam-crowd tool; here roam_fakepeer stand-ins on loopback):
+#   NFSU2_DATA=<game> tests/roam/plan.sh <out> 900 roam_loader_overlap.txt 47600 8 tests/roam/plan_loader.sh
+0     tapuntil RETURN MC_Background.fng 120 4000
++120  tap LEFT
++30   tap RETURN
++240  tap BACK
++8    tap BACK
++8    tap BACK
++8    tap BACK
++20   type ${ROAM_PROFILE}
++60   tap RETURN
++240  tap RETURN
++0    waitfng GarageMain.fng 3000
++300  tap LEFT
++60   tap RETURN                      # Career
++300  tap RETURN                      # Start New Career
++0    waitfng UI_EngageMessageDialog.fng 8000
++120  tap RETURN                      # SMS: Continue
++0    waitroam 3000
++0    log ROAM_INROAM
++1800 status crowd                    # the stand-ins join
++0    loop ${SHOOTS}
++0    waitx *0x8a329c 1 6000
++0    call 0x633a10 ecx=0x8a3288
++90   call 0x61c5c0 ecx=0x8a3288
++120  status shoot
++0    endloop
++0    log loader_end
++600  status shoot_end
++60   quit

@@ -588,6 +588,7 @@ void dipad_fe_log(CPU *c){
     if (fr != g_batch_frame){ g_nbatch = 0; g_batch_frame = fr; }
     if (g_nbatch < 8) snprintf(g_batch[g_nbatch++], 64, "%.63s", nm);
     snprintf(g_screen, sizeof g_screen, "%.63s", nm);
+    { void autotest_note_screen(const char *); autotest_note_screen(nm); }   /* the test runner's own record */
 }
 /* name is the top package, the current screen or one initialised with it */
 int dipad_fe_is(const char *name){

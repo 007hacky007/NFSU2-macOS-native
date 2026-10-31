@@ -56,6 +56,12 @@ const char *language_registry(void){ return "English"; }
 void     mem_altstack_install(void){}
 void     mem_commit(uint32_t a, uint32_t n){ (void)a; (void)n; }    /* g_mem is mapped read-write whole */
 long     metal_frames(void){ return 0; }
+/* keyboard.c, lifecycle.c, audio.m: the window side, absent here */
+int      kbd_take_msg(int remove, uint32_t *m, uint32_t *wp, uint32_t *lp){ (void)remove; (void)m; (void)wp; (void)lp; return 0; }
+void     lifecycle_pump(void){}
+int      lifecycle_may_park(void){ return 0; }
+int      lifecycle_game_parked(void){ return 0; }
+void     audio_set_muted(int on){ (void)on; }
 void     metal_game_size(unsigned *w, unsigned *h){ *w = 1280; *h = 720; }
 void     metal_get_cursor(int *x, int *y){ *x = *y = 0; }
 int      metal_take_char(int remove){ (void)remove; return -1; }

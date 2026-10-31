@@ -120,7 +120,7 @@
  *     audioreset               handle a default output device change now
  *     roam SUB ...             the old fork's free-roam research probes: only
  *                              the ones career.c also has are kept (waitroam,
- *                              shopgo, teleport, peek, wait, memdump)
+ *                              shopgo, teleport, peek, wait, memdump, call)
  *   career aids (runtime/career.c, test-only): call, memdump, waitx, peekx,
  *   teleport, autopilot, racewin, careerlist, careergo, shopgo, showgo,
  *   fnglist, waitfe, tapfe, waitroam, cargo, outrun, outrunwin, visual,
@@ -510,7 +510,7 @@ static int add_line(char *p, int ln){
     else if (!strcasecmp(cmd, "roam")){
         /* the probes career.c also has */
         static const char *const keep[][2] = { {"waitroam","waitroam"}, {"shopgo","shopgo"}, {"teleport","teleport"},
-                                               {"peek","peekx"}, {"wait","waitx"}, {"memdump","memdump"}, {0,0} };
+                                               {"peek","peekx"}, {"wait","waitx"}, {"memdump","memdump"}, {"call","call"}, {0,0} };
         int k; for (k = 0; keep[k][0] && strcasecmp(keep[k][0], a1); k++) ;
         if (!keep[k][0]){ fprintf(stderr, "[autotest] script line %d: 'roam %s' is a free-roam research probe of the old fork, "
                                           "not in this port\n", ln, a1); return 0; }
@@ -629,9 +629,25 @@ const char *autotest_top_fng(void){
     }
     return 0;
 }
+/* The screens the game initialised in the guest frame of the last one
+ * (dinput_pad.c passes each on, guest thread): returning to the main menu
+ * prints UI_Main, GarageMain and Chyron_FE in one frame, so the last name
+ * alone cannot tell the main menu from an Options page (the top package
+ * stays GarageMain on both).  Counted in guest frames, so a wait sees the
+ * same batch in every run. */
+static char g_batch[8][64]; static int g_nbatch; static long g_batch_f = -1;
+void autotest_note_screen(const char *nm){
+    if (!nm) return;
+    if (g_batch_f != g_frame){ g_nbatch = 0; g_batch_f = g_frame; }
+    if (g_nbatch < 8) snprintf(g_batch[g_nbatch++], 64, "%.63s", nm);
+}
 /* the current front-end screen, or the top package, or 0 (career.c) */
 const char *autotest_screen(void){ return dipad_fe_top(); }
-static int fe_is(const char *want){ return dipad_fe_is(want); }
+static int fe_is(const char *want){
+    if (dipad_fe_is(want)) return 1;
+    for (int i = 0; i < g_nbatch; i++) if (!strcasecmp(g_batch[i], want)) return 1;
+    return 0;
+}
 
 /* ---- periodic memory trace ("trace" command) ------------------------- */
 #define TR_MAX 24

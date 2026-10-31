@@ -32,8 +32,7 @@
 +0    tapuntil ESCAPE UI_Pause.fng 60 600
 +60   tap RIGHT                                    # Restart
 +40   tap RIGHT                                    # Options
-+40   tap RIGHT                                    # Replay
-+40   tap RIGHT                                    # Photo Mode
++40   tap RIGHT                                    # Photo Mode (the greyed-out Replay is skipped)
 +60   dump pause_photo_item
 +0    tap RETURN
 +120  expect i:[[0x8900ac]+0x238]+0xc == 2         # opened from the pause menu

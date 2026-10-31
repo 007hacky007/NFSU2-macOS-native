@@ -31,6 +31,5 @@
 +0    waitfe MC_Main.fng 1200
 +60   tap LEFT
 +30   tap RETURN                      # save: Yes
-+0    waitfng HUD_SingleRace.fng 3000
-+120  bot on
++120  bot on                          # the bot leaves the car lot
 +0    waitx 0 1

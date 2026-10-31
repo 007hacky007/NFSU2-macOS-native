@@ -22,6 +22,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `game_folder_tools` | tools/writewatch.c and tools/manifest.py (the game-folder proof's tools) |
 | `net_harness` | the Winsock / Netbios HLE (240 checks with the virtual LAN hub tools/vlanhub.py), the native WebSocket relay fixtures (tests/net/native) |
 | `roam_unit` | the free-roam core (287 checks) and a loopback stand-in friend (roam_fakepeer, roam_recv) |
+| `native_controls`, `launcher_online` | Game Tools and quick chat; the launcher's online settings |
 | `save_manager`, `display_options`, `language_packs` | launcher models |
 
 ## Game level
@@ -52,7 +53,8 @@ tests/game_folder_untouched.sh <engine> <SPEED2.EXE> <work>   # the game folder 
 tests/display_runtime.sh, tests/photo_drift.sh, tests/shop_music.sh   # see their headers
 tests/discord_suite.sh <out> [flow gamequit customize latekill malformed absent]   # a mock Discord
 tests/net/loop_run.sh, tests/net/vlan_run.sh, tests/net/lan_race.sh   # LAN play between instances
-tests/roam/plan.sh ...                                 # free roam with stand-in friends
+tests/roam/plan.sh <out> 900 roam_loader_overlap.txt 47600 8 tests/roam/plan_loader.sh   # free roam: friends' car loads during part-animation reads (roamfix.c)
+tests/roam/plan.sh ...                                 # other plans with stand-in friends (tests/roam/plan_*.sh)
 ```
 
 A scenario fails on a fault, a time limit, an unresolved indirect call, a
