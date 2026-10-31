@@ -1050,6 +1050,48 @@ void win32_reg_del(const char *nm){
 }
 void win32_reg_flush(void){}
 
+/* A lifted DLL (server.dll) runs on real time.  The HLE's GetTickCount and
+ * QueryPerformanceCounter are the frame-paced virtual clock, which nearly
+ * stops while the game does not present (loads, hitches); the LAN server's
+ * pings and idle timeouts, its advert cadence and its 33 ms service loop
+ * would stretch against Windows clients, which keep real time.  So its
+ * GetTickCount is real monotonic milliseconds and its QueryPerformanceCounter
+ * real monotonic microseconds (QueryPerformanceFrequency 1 MHz, as for the
+ * exe).  Its time() comes from GetSystemTimeAsFileTime, real UTC as well:
+ * the HLE's own is a counter that advances 10 ms per call, which would end
+ * StopServer's 10 s wait for its thread after 1,000 polls instead of 10 s.
+ * SPEED2.EXE keeps the virtual clock.  win32.c calls this for server.dll's
+ * imports; 0 = not one of these (or the exe's call). */
+int win32_dll_clock(CPU *c, const char *n, uint32_t *out){
+    if (!win32_caller_module() || (n[0] != 'G' && n[0] != 'Q')) return 0;
+    struct timespec ts;
+    if (!strcmp(n,"GetTickCount")){
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        *out = (uint32_t)((uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull) + 1000u;
+        static int said;
+        if (!said){ said = 1; uint32_t host_ms(void);
+            fprintf(stderr, "win32: server.dll on the real clock (GetTickCount %u ms, the game's %u ms)\n", *out, host_ms()); }
+    }
+    else if (!strcmp(n,"QueryPerformanceCounter")){
+        uint32_t p = A(c,0);
+        if (p){ clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t v = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+            mem_commit(p, 8); MR32(p) = (uint32_t)v; MR32(p+4) = (uint32_t)(v >> 32); }
+        *out = 1; }
+    else if (!strcmp(n,"QueryPerformanceFrequency")){
+        uint32_t p = A(c,0);
+        if (p){ mem_commit(p, 8); MR32(p) = 1000000u; MR32(p+4) = 0; }
+        *out = 1; }
+    else if (!strcmp(n,"GetSystemTimeAsFileTime")){
+        uint32_t p = A(c,0);
+        if (p){ clock_gettime(CLOCK_REALTIME, &ts);
+            uint64_t ft = ((uint64_t)ts.tv_sec + 11644473600ull) * 10000000ull + (uint64_t)ts.tv_nsec / 100u;
+            mem_commit(p, 8); MR32(p) = (uint32_t)ft; MR32(p+4) = (uint32_t)(ft >> 32); }
+        *out = 0; }
+    else return 0;
+    return 1;
+}
+
 int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     uint32_t r = 0;
     /* --- Registry --- */

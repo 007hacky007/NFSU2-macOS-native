@@ -49,6 +49,7 @@ void modheap_report(void);
 void mem_commit(uint32_t,uint32_t);
 void guest_backtrace(CPU*,int);
 int win32_ext_call(CPU*, const char*, uint32_t*);
+int win32_dll_clock(CPU*, const char*, uint32_t*);   /* win32_ext.c: server.dll's real clocks */
 void guest_fair_yield(void);
 int fileio_call(CPU*, const char*, uint32_t*);
 void fileio_report(void);
@@ -355,7 +356,8 @@ static int dll_known(uint32_t p){
 
 /* Which module's import is being served on this thread: 0 = SPEED2.EXE,
  * 1 = server.dll.  win32_ext.c gives the lifted DLL Windows' thread exit
- * semantics without changing what the exe has always been told. */
+ * semantics and real clocks without changing what the exe has always been
+ * told. */
 static _Thread_local int tl_imp_mod = 0;
 int win32_caller_module(void){ return tl_imp_mod; }
 
@@ -375,7 +377,11 @@ int win32_call(CPU *c, uint32_t idx){
      * skip the ~20 strcmps of the name chain, the import index is cached on the
      * first match. */
     static uint32_t qpc_idx = 0xFFFFFFFFu;
-    if (idx == qpc_idx || (qpc_idx == 0xFFFFFFFFu && !strcmp(n,"QueryPerformanceCounter") && (qpc_idx = idx, 1))){
+    /* server.dll's GetTickCount, QueryPerformanceCounter/Frequency and
+     * GetSystemTimeAsFileTime are real time (win32_ext.c); the exe's stay
+     * the virtual clock.  Ahead of the cache so it only holds the exe's QPC. */
+    if (idx >= g_imp_count && win32_dll_clock(c, n, &r)) {}
+    else if (idx == qpc_idx || (qpc_idx == 0xFFFFFFFFu && !strcmp(n,"QueryPerformanceCounter") && (qpc_idx = idx, 1))){
         if (ENVC("QPCWHO")) qpc_who(c);
         if (c->eip == GA(0x43bdfeu)) qpc_spin_sleep(c);
         uint64_t v = host_qpc(); uint32_t p=ARG(c,0);
@@ -384,15 +390,6 @@ int win32_call(CPU *c, uint32_t idx){
      * are modheap.c's, in guest memory nothing else uses
      * (0x01000000-0x0F000000); every other heap call is gheap.c's. */
     else if (idx >= g_imp_count && !strcmp(n,"HeapCreate")) r = modheap_create();
-    /* server.dll's time() is real UTC.  The HLE's GetSystemTimeAsFileTime
-     * is a counter that advances 10 ms per call, which would end StopServer's
-     * 10 s wait for its thread after 1,000 polls instead of 10 s. */
-    else if (idx >= g_imp_count && !strcmp(n,"GetSystemTimeAsFileTime")){
-        uint32_t p = ARG(c,0);
-        if (p){ struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
-            uint64_t ft = ((uint64_t)ts.tv_sec + 11644473600ull) * 10000000ull + (uint64_t)ts.tv_nsec / 100u;
-            mem_commit(p, 8); MR32(p) = (uint32_t)ft; MR32(p+4) = (uint32_t)(ft >> 32); }
-        r = 0; }
     else if (n[0] == 'H' && !strncmp(n,"Heap",4) && strcmp(n,"HeapCreate") && modheap_owns(ARG(c,0))){
         uint32_t h = ARG(c,0);
         if      (!strcmp(n,"HeapDestroy")) r = (uint32_t)modheap_destroy(h);
