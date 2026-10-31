@@ -50,6 +50,13 @@ enum Paths {
     static var registry: URL { home.appendingPathComponent(".nfsu2_registry") }
     /// The UHUD pack the launcher made from the mod (UHUDPack.swift)
     static var uhudPack: URL { home.appendingPathComponent("Library/Application Support/NFSU2/Textures/uhud.pak") }
+    /// The game's screenshots (runtime/native_scene.m): NFSU2_APPSUPPORT/Screenshots when that is set
+    static var screenshots: URL {
+        let override = ProcessInfo.processInfo.environment["NFSU2_APPSUPPORT"]
+        let support = override.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
+            ?? home.appendingPathComponent("Library/Application Support/NFSU2")
+        return support.appendingPathComponent("Screenshots", isDirectory: true)
+    }
 
     /// The engine binary for a build of SPEED2.EXE (nil: the European one).
     static func engine(_ build: ExeBuild?, hd: Bool) -> URL {
@@ -97,6 +104,8 @@ enum Prefs {
     static let roamCrew = "LauncherRoamCrew"
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
+    static let photoMode = "LauncherPhotoMode"     // NFSU2_PHOTO=1: photo mode and F12 screenshots
+    static let driftMode = "LauncherDriftMode"     // NFSU2_DRIFT=1: drift mode in free roam (X)
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -123,6 +132,8 @@ enum Prefs {
         OriginalValue(\.intro, "original"),
         OriginalValue(\.discord, false),
         OriginalValue(\.uhud, false),
+        OriginalValue(\.photoMode, false),
+        OriginalValue(\.driftMode, false),
     ]
 }
 
