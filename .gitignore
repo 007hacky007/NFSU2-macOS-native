@@ -25,3 +25,10 @@ __pycache__/
 
 # Old version archive (gen/ and out/ derivatives; see arsiv/v1/OKUBENI.txt)
 /arsiv/
+
+# NFSU2 Builder: SwiftPM build products and the assembled app / disk image
+/builder/.build/
+/builder/.swiftpm/
+/dist/
+# the dev venv may be a symlink to another worktree's
+/.venv
