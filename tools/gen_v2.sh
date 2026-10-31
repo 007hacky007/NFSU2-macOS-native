@@ -60,7 +60,7 @@ if [ "$OUT" = "$DEF" ]; then
   mkdir -p gen/server out/server && find gen/server/ -mindepth 1 -delete
   if [ -f "$SRV" ]; then
     "$PY" tools/prepare_module.py "$SRV" 0x00A00000 out/server gen/server srv_
-    GENOUT=gen/server RELOCS=out/server/relocs.txt SEEDS=out/server/seeds.txt SYMPFX=srv_ \
+    XPATCH= GENOUT=gen/server RELOCS=out/server/relocs.txt SEEDS=out/server/seeds.txt SYMPFX=srv_ \
       X87OPT=1 RETEIP=0 MEMARG=1 "$PY" tools/genall.py out/server/image.dll 8 > out/server/genall.log
     grep -E "functions  *:|traps \(|MISSING" out/server/genall.log | sed 's/^/  server.dll: /'
     RELOCS=out/server/relocs.txt IMPOUT=gen/server/impargs.c SYMPFX=srv_ STRICT=1 IMPDLL="$SRV" \
