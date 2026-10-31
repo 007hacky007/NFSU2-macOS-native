@@ -8,7 +8,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 clang -O1 -Wall -Wno-unused-function -Iruntime -Wl,-dead_strip tests/framerate_unit.c -o "$tmp/framerate_unit"
 run(){ want="$1 $2"; shift 2
-       env -u NFSU2_FPS -u NFSU2_CUTSCENES_60 -u NFSU2_DISPLAY_HZ -u PACE60 -u NFSU2_HFR_FIX "$@" "$tmp/framerate_unit" $want; }
+       env -u NFSU2_FPS -u NFSU2_CUTSCENES_60 -u NFSU2_DISPLAY_HZ -u PACE60 -u NFSU2_HFR_FIX -u NFSU2_LAN_TIMING "$@" "$tmp/framerate_unit" $want; }
+# NFSU2_FPS=uncapped, and network races (NFSU2_LAN_TIMING): the rate and whether
+# the ticks/timer fixes stay on
+runx(){ args="$1"; shift; env -u NFSU2_FPS -u NFSU2_CUTSCENES_60 -u NFSU2_DISPLAY_HZ -u PACE60 -u NFSU2_HFR_FIX -u NFSU2_LAN_TIMING "$@" "$tmp/framerate_unit" $args; }
 run 120 30 NFSU2_X=0
 run 120 30 NFSU2_FPS=120
 run 120 30 NFSU2_FPS=120 NFSU2_CUTSCENES_60=0
@@ -24,4 +27,9 @@ run 240 60 NFSU2_DISPLAY_HZ=240 NFSU2_CUTSCENES_60=1
 run 30 30 NFSU2_DISPLAY_HZ=30
 run 60 30 PACE60=1
 run 120 30 NFSU2_FPS=off
+runx uncapped NFSU2_FPS=uncapped
+runx "net 120 0" NFSU2_FPS=240
+runx "net 120 0" NFSU2_FPS=120
+runx "net 240 1" NFSU2_FPS=240 NFSU2_LAN_TIMING=exact
+runx "net 60 0" NFSU2_FPS=60
 echo "framerate: all passed"
