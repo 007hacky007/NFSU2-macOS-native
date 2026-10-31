@@ -44,6 +44,8 @@ final class LauncherModel: ObservableObject {
     @Published var reflectSky: Bool { didSet { defaults.set(reflectSky, forKey: Prefs.reflectSky) } }
     @Published var reflectLights: Bool { didSet { defaults.set(reflectLights, forKey: Prefs.reflectLights) } }
     @Published var reflectDetail: Bool { didSet { defaults.set(reflectDetail, forKey: Prefs.reflectDetail) } }
+    /// PictureOptions.all[i] -> chosen index (0 = the original game).
+    @Published var picture: [Int] { didSet { savePicture() } }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -100,6 +102,12 @@ final class LauncherModel: ObservableObject {
         reflectSky = defaults.bool(forKey: Prefs.reflectSky)
         reflectLights = defaults.bool(forKey: Prefs.reflectLights)
         reflectDetail = defaults.bool(forKey: Prefs.reflectDetail)
+        let d = UserDefaults.standard
+        picture = PictureOptions.all.map { o in min(max(d.integer(forKey: o.key), 0), o.choices.count - 1) }
+    }
+
+    private func savePicture() {
+        for (o, i) in zip(PictureOptions.all, picture) { defaults.set(i, forKey: o.key) }
     }
 
     var location: GameLocation? {
@@ -190,6 +198,10 @@ final class LauncherModel: ObservableObject {
         if reflectSky { setenv("NFSU2_REFLECT_SKY", "1", 0) }
         if reflectLights { setenv("NFSU2_REFLECT_LIGHTS", "1", 0) }
         if reflectDetail { setenv("NFSU2_REFLECT_DETAIL", "1", 0) }
+        // Picture options: a variable set by hand still wins (overwrite 0).
+        for (o, i) in zip(PictureOptions.all, picture) where i > 0 {
+            setenv(o.env, o.choices[i].value, 0)
+        }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

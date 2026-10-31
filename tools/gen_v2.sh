@@ -26,10 +26,10 @@ SHA="$(shasum -a 256 "$EXE" | cut -c1-64)"
 case "$SHA" in
   8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297)
     BUILD=eu; DEF=gen/all; WORK=out
-    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336,0x4febad,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0fa,0x53d155,0x54a745,0x54a75f,0x54ae4c,0x54ae63,0x53d4a6,0x5626b8,0x547695,0x5cab69,0x5cae71,0x60f9f6,0x5d6666,0x63167d,0x6311fc}" ;;   # runtime/wsfov.c, sndlead.c, regional.c; runtime/wsfov.c, sndlead.c, powerunits.c; runtime/wsfov.c, sndlead.c, garage.c; runtime/wsfov.c, sndlead.c, reflect.c
+    export HOOKS="${HOOKS:-0x5c7ffe,0x4ec35c,0x726336,0x4febad,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0fa,0x53d155,0x54a745,0x54a75f,0x54ae4c,0x54ae63,0x53d4a6,0x5626b8,0x547695,0x5cab69,0x5cae71,0x60f9f6,0x5d6666,0x63167d,0x6311fc,0x5c6766}" ;;   # runtime/wsfov.c, sndlead.c, regional.c; runtime/wsfov.c, sndlead.c, powerunits.c; runtime/wsfov.c, sndlead.c, garage.c; runtime/wsfov.c, sndlead.c, reflect.c; runtime/wsfov.c, sndlead.c, visual.c
   f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7)
     BUILD=na; DEF=gen/na; WORK=out/na; OVR=$OVR_NA; export LIFT_MISSING=1
-    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336,0x4febad,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0ea,0x53d145,0x54a735,0x54a74f,0x54ae3c,0x54ae53,0x53d496,0x5626a8,0x547685,0x5cab59,0x5cae61,0x60f9e6,0x5d6656,0x63166d,0x6311ec}" ;;   # runtime/wsfov.c, sndlead.c, regional.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, powerunits.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, garage.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, reflect.c (same sites, NA addresses)
+    export HOOKS="${HOOKS:-0x5c7fee,0x4ec35c,0x726336,0x4febad,0x4b7439,0x4c3b3a,0x49aeb6,0x49aed4,0x53d0ea,0x53d145,0x54a735,0x54a74f,0x54ae3c,0x54ae53,0x53d496,0x5626a8,0x547685,0x5cab59,0x5cae61,0x60f9e6,0x5d6656,0x63166d,0x6311ec,0x5c6756}" ;;   # runtime/wsfov.c, sndlead.c, regional.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, powerunits.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, garage.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, reflect.c (same sites, NA addresses); runtime/wsfov.c, sndlead.c, visual.c (same sites, NA addresses)
   *) echo "unsupported SPEED2.EXE (sha256 $SHA); see README, \"Game versions\""; exit 1 ;;
 esac
 OUT="${GENOUT:-$DEF}"

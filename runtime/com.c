@@ -3850,9 +3850,15 @@ int com_call(CPU *c, uint32_t magic){
                 if (is_cube2)
                     metal_upload_texture_face(mid, level, (face2 < 6u) ? face2 : 0u, g_mem+buf,
                                               metal_level_pitch(w,level,fmt), w, h, fmt);
-                else
-                    metal_upload_texture(mid, level, g_mem+buf,
-                                         metal_level_pitch(w,level,fmt), w, h, fmt);
+                else {
+                    /* visual.c: NOTINT rewrites the screen filter's colour ramp on the way */
+                    const void *visual_tex_upload(uint32_t, const void *, uint32_t, uint32_t, uint32_t, uint32_t, void *, uint32_t);
+                    static uint8_t vtmp[1024];
+                    uint32_t pitch = metal_level_pitch(w,level,fmt);
+                    const void *src = level ? (const void *)(g_mem+buf)
+                                            : visual_tex_upload(self, g_mem+buf, w, h, fmt, pitch, vtmp, sizeof vtmp);
+                    metal_upload_texture(mid, level, src, pitch, w, h, fmt);
+                }
                 if (iface==IF_TEX && !is_cube2 && level==0)
                     uhud_uploaded(mid, g_mem+buf, metal_level_pitch(w,0,fmt), metal_level_rows(h,0,fmt));
                 else if (iface==IF_SURF) uhud_surface_written(mid);   /* the car skin composite */
@@ -4676,6 +4682,8 @@ void com_report(void){
     fprintf(stderr,"\n=== COM / D3D9 KATMANI ===\n");
     { void ws_report(void); ws_report(); }   /* wsfov.c */
     { void refl_report(void); refl_report(); }   /* reflect.c */
+    { void visual_report(void); visual_report(); }   /* visual.c */
+    { void pic_report(void); pic_report(); }         /* picture.m */
     { void gamepad_report(void); gamepad_report(); }   /* gamepad.m */
     if (g_aspfix != 1.f)
         { fprintf(stderr,"  widescreen       : aspfix %.4f, %lu perspective / %lu orthographic draws\n",
