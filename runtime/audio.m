@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <math.h>
+#include "horn.h"
+#include "carsfx.h"
 
 extern uint8_t *g_mem;
 uint64_t host_us(void);          /* the game's VIRTUAL clock (16.67 ms per frame) */
@@ -474,6 +476,8 @@ static void mix_into(int16_t *out, unsigned frames){
             }
         }
     }
+    horn_mix(acc, frames, OUT_RATE);              /* horns between players over the game's sound (NFSU2_HORN) */
+    carsfx_mix(acc, frames, OUT_RATE);            /* ...and friends' engines, nitrous and hydraulics (NFSU2_ROAM_CARSFX) */
     for (unsigned k = 0; k < frames * OUT_CH; k++){
         float v = acc[k];
         if (v >  1.f) v =  1.f;

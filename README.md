@@ -38,6 +38,7 @@ The game boots, reaches the menus, and races are playable with sound.
 | Career mode: profile creation (name entry), save and load | working |
 | LAN (hosting runs the game's own `server.dll`) and Online through a relay server | working, see [Multiplayer](#multiplayer) |
 | Free roam with other players (Online) | working, see [Multiplayer](#multiplayer) |
+| Horns between players, the other players' engines in free roam | working, see [Multiplayer](#multiplayer) |
 | Double-clickable `.app` with a launcher window (`./pack.sh`) | working |
 | Optional "HD" build: MSAA (2× at 1440 lines and above, 4× below), SSR, ray-traced reflections | working, see `GRAPHICS_RESEARCH.md` |
 
@@ -333,6 +334,16 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   **Crew**: names and arrows of your crew in its colour at any distance.
   Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
   `NFSU2_ROAM_CREW`.
+- **Horns and the other players' car sounds** (with Play online; both off by
+  default, as in the original game, which has no horn): the launcher's
+  **Horn** picker gives the player a horn (dual, single, truck, train, klaxon,
+  La Cucaracha, clown, sad trombone) on N; the others hear it from that car in
+  free roam and in Online races, and the game's Audio options get a Horn
+  Volume slider (`runtime/horn.c`, `racehorn.c`, `hornmenu.c`, from
+  nfsu2-web).  **Hear other players' cars** plays the other players' engines,
+  nitrous and hydraulics in free roam with the game's own sounds
+  (`runtime/carsfx.c`).  Environment: `NFSU2_HORN=<horn>`,
+  `NFSU2_ROAM_CARSFX=1`.  Unit tests: `tests/horn_unit.sh`.
 - `NFSU2_NET=off` turns networking off; `NFSU2_NET=loopback` confines it to
   127.0.0.1 for two games on one Mac (see the top of `runtime/winsock.c`).
 

@@ -5,6 +5,24 @@ import Darwin
 final class LauncherModel: ObservableObject {
     enum Engine: String { case original, hd }
     enum FreeRoam: String { case off, solid, ghost }
+    /// Horns between players (runtime/horn.c): the raw value is the engine's
+    /// NFSU2_HORN name.  The PC game has no horn: off.
+    enum Horn: String, CaseIterable {
+        case off, dual, single, truck, train, klaxon, cucaracha, clown, trombone
+        var label: String {
+            switch self {
+            case .off: return "Off (original)"
+            case .dual: return "Dual"
+            case .single: return "Single"
+            case .truck: return "Truck"
+            case .train: return "Train"
+            case .klaxon: return "Klaxon"
+            case .cucaracha: return "La Cucaracha"
+            case .clown: return "Clown"
+            case .trombone: return "Sad trombone"
+            }
+        }
+    }
 
     struct Job {
         var phase: String
@@ -28,6 +46,8 @@ final class LauncherModel: ObservableObject {
     @Published var freeRoam: FreeRoam { didSet { defaults.set(freeRoam.rawValue, forKey: Prefs.freeRoam) } }
     @Published var roamRoom: String { didSet { defaults.set(roamRoom, forKey: Prefs.roamRoom) } }
     @Published var roamCrew: String { didSet { defaults.set(roamCrew, forKey: Prefs.roamCrew) } }
+    @Published var horn: Horn { didSet { defaults.set(horn.rawValue, forKey: Prefs.horn) } }
+    @Published var hearCars: Bool { didSet { defaults.set(hearCars, forKey: Prefs.hearCars) } }
     var onlineError: String? {
         guard online else { return nil }
         if let e = OnlineSettings.error(server: server, name: playerName) { return e }
@@ -72,6 +92,8 @@ final class LauncherModel: ObservableObject {
         freeRoam = FreeRoam(rawValue: defaults.string(forKey: Prefs.freeRoam) ?? "") ?? .off
         roamRoom = defaults.string(forKey: Prefs.roamRoom) ?? ""
         roamCrew = defaults.string(forKey: Prefs.roamCrew) ?? ""
+        horn = Horn(rawValue: defaults.string(forKey: Prefs.horn) ?? "") ?? .off
+        hearCars = defaults.bool(forKey: Prefs.hearCars)
     }
 
     var location: GameLocation? {
@@ -160,7 +182,13 @@ final class LauncherModel: ObservableObject {
             let crew = roamCrew.trimmingCharacters(in: .whitespaces)
             if !room.isEmpty { setenv("NFSU2_ROAM_ROOM", room, 0) }
             if !crew.isEmpty { setenv("NFSU2_ROAM_CREW", crew, 0) }
+            // The other players' engines, nitrous and hydraulics (runtime/carsfx.c).
+            // Off: their cars sound as the game alone sounds them.
+            if hearCars { setenv("NFSU2_ROAM_CARSFX", "1", 0) }
         }
+        // Horns between players in free roam and Online races (runtime/horn.c,
+        // racehorn.c).  Off: no horn, as in the original game.
+        if online && horn != .off { setenv("NFSU2_HORN", horn.rawValue, 0) }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

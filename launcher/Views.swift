@@ -209,6 +209,31 @@ struct MultiplayerCard: View {
                     .font(.system(size: 11)).foregroundColor(Theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(model.freeRoam == .off ? 0.5 : 1)
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Hear other players' cars").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                        Text("Their engines, nitrous and hydraulics in free roam, from their cars. Off: as in the original game.")
+                            .font(.system(size: 11)).foregroundColor(Theme.dim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: $model.hearCars).labelsHidden().toggleStyle(SwitchToggleStyle())
+                }
+                .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
+            }
+            .disabled(!model.online).opacity(model.online ? 1 : 0.5)
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Horn").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Press N to honk at the other players in free roam and Online races. The PC game has no horn: Off (original).")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Picker("", selection: $model.horn) {
+                    ForEach(LauncherModel.Horn.allCases, id: \.self) { h in Text(h.label).tag(h) }
+                }
+                .labelsHidden().fixedSize()
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
         }
@@ -336,6 +361,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 824)
+        .frame(width: 560, height: 960)
     }
 }

@@ -74,6 +74,8 @@ enum Prefs {
     static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost"
     static let roamRoom = "LauncherRoamRoom"
     static let roamCrew = "LauncherRoamCrew"
+    static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
+    static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
 }
 
 /* Online play goes through a relay server (th0mk's nfsu2-web server, the only
