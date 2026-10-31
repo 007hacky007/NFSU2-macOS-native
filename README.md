@@ -334,6 +334,19 @@ running, your Discord profile shows that you are playing and what you are doing
 default (in the app: **Show in Discord** in the launcher's More card); the game
 talks only to the Discord app's local socket.
 
+**Music** (Settings, Game tab): the game's own soundtrack (original), or a
+folder of your music played through EA Trax (`runtime/radio.c`,
+`radio_native.m`; `NFSU2_RADIO=1` and `NFSU2_MUSIC_FOLDER=<folder>`). macOS's
+own decoders read the files (WAV, MP3, AAC/M4A, FLAC, AIFF, CAF and whatever
+else it decodes), resampled to the game's mixer; a file that does not decode is
+skipped. The EA Trax plaque shows each track's artist and title from its tags,
+or from an "Artist - Title" file name. The game's music volume and pause still
+apply, and nothing goes over the network. While a folder plays, the app menu's
+**Music** submenu pauses, skips to the next track, shuffles, or goes back to the
+game soundtrack (`radio_native.h` has the same controls for other panels).
+Tests: `tests/radio_native.sh`; `tests/shop_music.sh` checks that the music
+keeps playing after entering a shop.
+
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
 draw list (to `~/Library/Logs/NFSU2/`), for reporting rendering problems.
 ### Multiplayer

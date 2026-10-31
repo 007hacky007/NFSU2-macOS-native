@@ -175,6 +175,7 @@ struct GameSettings: View {
                            description: "Your Discord status shows the game and the race you are in. Only with the Discord app on this Mac. Off: as in the original game.",
                            isOn: $model.discord)
             }
+            MusicCard(model: model)
         }
     }
 }

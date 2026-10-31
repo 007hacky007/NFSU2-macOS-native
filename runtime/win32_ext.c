@@ -72,6 +72,14 @@ static void wait_take(Obj *o, uint32_t tid){
     else if (o->kind == OB_SEM) o->signaled--;
     else if (o->kind == OB_EVENT && !o->manual) o->signaled = 0;
 }
+/* A mutex that is free or ours, taken at once (guest_noyield); 0: the wait has to block. */
+static int mutex_take_now(Obj *o, uint32_t tid){
+    pthread_mutex_lock(&o->mtx);
+    int got = wait_ready(o, tid);
+    if (got) wait_take(o, tid);
+    pthread_mutex_unlock(&o->mtx);
+    return got;
+}
 /* THREADLOG=1: log thread creation, termination and stack recycling */
 static int thread_log(void){ static int v=-1; if (v<0){ const char *e=getenv("THREADLOG"); v = (e && *e && *e!='0'); } return v; }
 
@@ -238,6 +246,12 @@ void frame_pace(void){
 static struct { uint32_t key; pthread_mutex_t m; int used; } g_cs[MAXCS];
 static pthread_mutex_t g_cs_tab = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local int tl_cs_depth = 0;
+/* guest_noyield(+1) .. (-1): a guest function that must not lose the GIL to another guest thread halfway
+ * (radio.c, sub_0073b900: the music's event tick).  No fair yield, and a mutex that is free (or already ours) is
+ * taken without handing the GIL over, as Windows does not switch threads there either; a wait that blocks
+ * still gives it up. */
+static _Thread_local int tl_noyield = 0;
+void guest_noyield(int d){ tl_noyield += d; }
 uint64_t g_cs_enter = 0, g_cs_contended = 0;
 
 static int cs_disabled(void){
@@ -297,7 +311,7 @@ static uint32_t cur_tid(CPU *c){
 }
 
 void guest_fair_yield(void){
-    if (tl_cs_depth) return;          /* yielding inside a critical section */
+    if (tl_cs_depth || tl_noyield) return;    /* yielding inside a critical section, or kept (guest_noyield) */
     static _Thread_local uint32_t n = 0;
     if ((++n & 0x3FFu) != 0) return;          /* once every 1024 calls */
     guest_yield_begin();
@@ -858,6 +872,7 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                         g_wstat[i].waiter_tid);
           } }
         if(!o){ r=0; }
+        else if (o->kind == OB_MUTEX && tl_noyield && mutex_take_now(o, cur_tid(c))) r=0;   /* WAIT_OBJECT_0 */
         else {
             /* MUTEX: ownership + RECURSION (wait_ready).  The same thread must be able to take
              * the same mutex again; otherwise the game's CRT wrapper that takes nested locks
