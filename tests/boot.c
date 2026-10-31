@@ -155,7 +155,6 @@ int main(int argc,char**argv){
     dispatch_init(); win32_init();
     { extern void overrides_install(void); overrides_install(); }
     { extern void gamepad_install(void); gamepad_install(); }   /* runtime/gamepad.m */
-    { extern void carshadow_install(void); carshadow_install(); }   /* a car's shadow 1.5 cm above the road, not 4: off its wheels */
     { extern void sponsors_install(void); sponsors_install(); }   /* the sponsor screens' Continue (help bar) */
     { extern void regional_install(void); regional_install(); }   /* both regions' cars when the folder has all four */
     { extern void language_install(void); language_install(); }   /* NFSU2_LANGUAGE: runtime/language.c */
