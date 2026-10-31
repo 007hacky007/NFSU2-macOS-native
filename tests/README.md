@@ -54,6 +54,7 @@ tests/display_runtime.sh, tests/photo_drift.sh, tests/shop_music.sh   # see thei
 tests/discord_suite.sh <out> [flow gamequit customize latekill malformed absent]   # a mock Discord
 tests/net/loop_run.sh, tests/net/vlan_run.sh, tests/net/lan_race.sh   # LAN play between instances
 tests/roam/plan.sh <out> 900 roam_loader_overlap.txt 47600 8 tests/roam/plan_loader.sh   # free roam: friends' car loads during part-animation reads (roamfix.c)
+tests/roam/plan.sh <out> 900 roam_carpool.txt 47600 8 tests/roam/plan_loader.sh NFSU2_ROAM_CARPOOL_KB=24000   # free roam: friends' cars in a small car pool (roamfix.c)
 tests/roam/plan.sh ...                                 # other plans with stand-in friends (tests/roam/plan_*.sh)
 ```
 
@@ -65,3 +66,8 @@ blocked network attempt, or a missing marker. Logs and dumps stay in
 Scripts that start from a career save (garage_*, shop_*, tune_graph,
 career_cover*, career_lot_badstock, dyno_units, career_outrun) need
 `NFSU2_SAVE_SEED=<a save folder>`; their headers say which stage.
+
+`tests/run_suite.sh --game <out> lan_cycle` (opt-in) leaves LAN hosting and
+hosts again (`lan_host_short.txt`); on this branch the game faults in
+server.dll's threads after leaving (the module is unloaded while they run),
+so it is not in the default list.
