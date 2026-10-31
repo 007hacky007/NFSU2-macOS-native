@@ -34,7 +34,7 @@ if [ "${1:-}" != --game ]; then
   UNITS="${UNITS:-hle_unit watchdog_unit heap_stress windows_waits framerate keyboard_unit horn_unit gamepad_harness
     radio_native native_scene headlights_native shader_ps20 save_paths texpack_unit texrep_native game_folder_tools
     net_harness roam_unit native_controls photo_gallery save_manager display_options language_packs texture_packs
-    launcher_online}"
+    launcher_online ff_unit rumble_unit discord_unit launcher_settings vault}"
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
   pass=0; fail=0; failed=""
   for u in $UNITS; do

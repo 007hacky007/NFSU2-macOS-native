@@ -23,6 +23,8 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `net_harness` | the Winsock / Netbios HLE (240 checks with the virtual LAN hub tools/vlanhub.py), the native WebSocket relay fixtures (tests/net/native) |
 | `roam_unit` | the free-roam core (287 checks) and a loopback stand-in friend (roam_fakepeer, roam_recv) |
 | `native_controls`, `launcher_online` | Game Tools and quick chat; the launcher's online settings |
+| `ff_unit`, `rumble_unit` | force feedback effects and the controller's motors |
+| `discord_unit`, `launcher_settings`, `vault` | Discord presence (mock IPC), launcher settings, cloud saves |
 | `save_manager`, `display_options`, `language_packs` | launcher models |
 
 ## Game level
