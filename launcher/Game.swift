@@ -106,6 +106,7 @@ enum Languages {
     }
     static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
     static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
+    static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
 }
 
 enum Locator {

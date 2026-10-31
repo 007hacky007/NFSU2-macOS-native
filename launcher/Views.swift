@@ -253,6 +253,16 @@ struct MoreCard: View {
                 Spacer(minLength: 8)
                 Toggle("", isOn: $model.discord).labelsHidden().toggleStyle(SwitchToggleStyle())
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("10-car garage and Trade Car").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Career slots 6-10, and trading a car in for 80% of what it cost. A save made while off loses the cars in slots 6-10. Off: as in the original game.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.garage).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
             HStack(spacing: 8) {
                 Button("Saves") { model.openSaves() }.buttonStyle(SecondaryButtonStyle())
                 Button("Logs") { model.openLogs() }.buttonStyle(SecondaryButtonStyle())

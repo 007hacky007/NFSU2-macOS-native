@@ -33,6 +33,7 @@ final class LauncherModel: ObservableObject {
     @Published var allCars: Bool { didSet { defaults.set(allCars, forKey: Prefs.allCars) } }
     @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
+    @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
 
@@ -53,7 +54,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true])
+        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -69,6 +70,7 @@ final class LauncherModel: ObservableObject {
         allCars = defaults.bool(forKey: Prefs.allCars)
         intro = defaults.string(forKey: Prefs.intro) ?? "skippable"
         discord = defaults.bool(forKey: Prefs.discord)
+        garage = defaults.bool(forKey: Prefs.garage)
     }
 
     var location: GameLocation? {
@@ -141,6 +143,7 @@ final class LauncherModel: ObservableObject {
         if intro != "skippable" { setenv("NFSU2_INTRO", intro, 0) }      // one set by hand wins
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
+        if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
