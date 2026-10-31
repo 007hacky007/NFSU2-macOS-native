@@ -83,6 +83,9 @@ enum Prefs {
     static let triggerClick = "LauncherTriggerClick"       // false: NFSU2_PAD_TRIGGER_CLICK=off
     static let padMenuKeys = "LauncherPadMenuKeys"         // false: NFSU2_PAD_FE_KEYS=0
     static let padBackground = "LauncherPadBackground"     // NFSU2_PAD_BACKGROUND=1
+    static let rumble = "LauncherRumble"                   // NFSU2_FF=1 (Rumble.swift)
+    static let rumbleCrashes = "LauncherRumbleCrashes"     // NFSU2_FF_JOLT=1
+    static let rumbleStrength = "LauncherRumbleStrength"   // NFSU2_FF_STRENGTH (0.1 .. 1)
     // Launcher only.
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
@@ -169,6 +172,8 @@ enum Prefs {
         OriginalValue(\.padMenuKeys, false),
         OriginalValue(\.padBackground, false),
         OriginalValue(\.discordImage, ""),
+        OriginalValue(\.rumble, false),
+        OriginalValue(\.rumbleCrashes, false),
     ]
 }
 

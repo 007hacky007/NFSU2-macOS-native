@@ -48,8 +48,10 @@
  *   NFSU2_PAD_FE_KEYS=0 A, B and View post no Enter/Escape/Q in the menus
  *   NFSU2_PAD_LOG=1     log enumeration, properties and state changes
  *
- * Not ported from nfsu2-web: force feedback (the Mac's GameController path
- * drives no motors) and the browser's steering wheel.
+ * Force feedback (rumble, NFSU2_FF=1): the pad then reports force-feedback
+ * actuators on X and Y and plays the game's effects (runtime/dinput_ff.c) on
+ * the controller's motors (runtime/rumble.m).
+ * Not ported from nfsu2-web: the browser's steering wheel.
  * Ported from th0mk's nfsu2-web runtime/dinput_pad.c (MIT). */
 #include "cpu.h"
 #include "gamepad.h"
@@ -67,6 +69,11 @@ __attribute__((weak)) void native_scene_filter_pad(PadState *s) { (void)s; }
 
 uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args);
 uint32_t com_scratch(uint32_t n);                          /* com.c */
+/* force feedback (dinput_ff.c) */
+int      dipad_ff_on(void);
+void     dipad_ff_frame(void);
+uint32_t dipad_ff_prop(int set, uint32_t prop, uint32_t h);
+int64_t  dipad_ff_dev_call(CPU *c, const char *nm, const uint32_t *a);
 
 #define DI_OK                 0x00000000u
 #define DI_NOEFFECT           0x00000001u
@@ -81,6 +88,8 @@ uint32_t com_scratch(uint32_t n);                          /* com.c */
 #define DIDFT_TYPEMASK  0x000000FFu
 #define DIDFT_FFACTUATOR 0x01000000u
 #define DIDOI_ASPECTPOSITION 0x00000100u
+#define DIDOI_FFACTUATOR     0x00000001u
+#define DIDC_FORCEFEEDBACK   0x00000100u
 #define DI8DEVTYPE_GAMEPAD 0x15u
 #define PAD_DEVTYPE     (0x00010000u | (2u << 8) | DI8DEVTYPE_GAMEPAD)  /* HID, STANDARD */
 
@@ -219,6 +228,7 @@ static void write_devinst(uint32_t p, uint32_t size, const PadState *s){
     if (size >= 0x12cu) snprintf((char *)(g_mem + p + 0x28), 260, "%s", nm);
     if (size >= 0x230u) snprintf((char *)(g_mem + p + 0x12c), 260, "%s", nm);
     if (size >= 0x244u){ MR16(p + 0x240) = 1; MR16(p + 0x242) = 5; }   /* Generic Desktop, Game Pad */
+    if (size >= 0x240u && dipad_ff_on()) put_guid(p + 0x230, 0x4646504Eu, 0x4E46, 0x11F0, k_inst_d4);   /* guidFFDriver */
 }
 
 /* ---- per-device state ---------------------------------------------------------- */
@@ -261,7 +271,7 @@ void dipad_created(uint32_t obj, uint32_t guid){
 int dipad_enum(CPU *c, uint32_t devtype, uint32_t cb, uint32_t ref, uint32_t flags){
     int mode = pad_mode();
     if (mode == MODE_OFF || !cb) return 0;
-    if (flags & 0x100u) return 0;                         /* DIEDFL_FORCEFEEDBACK: none */
+    if ((flags & 0x100u) && !dipad_ff_on()) return 0;     /* DIEDFL_FORCEFEEDBACK */
     PadState s; gamepad_read(&s);
     uint32_t t = devtype & 0xFFu;
     if (t != 0u && t != 4u && t != DI8DEVTYPE_GAMEPAD) return 0;
@@ -605,8 +615,10 @@ static void write_objinst(uint32_t p, uint32_t size, int i, int fam){
     uint32_t g = i < NAXES ? k_axis_guid[i] : i < NAXES + NPOVS ? 0xA36D02F2u : 0xA36D02F0u;
     put_guid(p + 0x04, g, 0xC9F3, 0x11CF, tail);
     MR32(p + 0x14) = obj_ofs(i);
-    MR32(p + 0x18) = obj_type(i);
-    MR32(p + 0x1c) = i < NAXES ? DIDOI_ASPECTPOSITION : 0u;
+    int act = i < 2 && dipad_ff_on();                    /* X and Y: force-feedback actuators */
+    MR32(p + 0x18) = obj_type(i) | (act ? DIDFT_FFACTUATOR : 0u);
+    MR32(p + 0x1c) = (i < NAXES ? DIDOI_ASPECTPOSITION : 0u) | (act ? DIDOI_FFACTUATOR : 0u);
+    if (act && size >= 0x12cu){ MR32(p + 0x124) = 10000u; MR32(p + 0x128) = 1u; }   /* dwFFMaxForce, dwFFForceResolution */
     if (size >= 0x124u) snprintf((char *)(g_mem + p + 0x20), 260, "%s", obj_name(i, fam));
     if (size >= 0x134u){
         MR16(p + 0x130) = i >= NAXES + NPOVS ? 9u : 1u;      /* Button / Generic Desktop */
@@ -639,6 +651,7 @@ uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint
         PadState at = s;
         if (lost) memset(&at, 0, sizeof at);
         fill_state(g_mem + p, cb, d, &at);
+        dipad_ff_frame();                                     /* rumble */
         fe_keys(d, at.buttons);
         dipad_input_log();
         if (pad_log() && s.buttons != d->last_btn){
@@ -674,6 +687,10 @@ uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint
         MR32(p + 0x04) = 0x00000001u;                         /* DIDC_ATTACHED */
         MR32(p + 0x08) = PAD_DEVTYPE;
         MR32(p + 0x0c) = NAXES; MR32(p + 0x10) = NBTNS; MR32(p + 0x14) = NPOVS;
+        if (dipad_ff_on()){
+            MR32(p + 0x04) |= DIDC_FORCEFEEDBACK;
+            if (sz >= 0x2cu){ MR32(p + 0x18) = 10000u; MR32(p + 0x1c) = 1000u; MR32(p + 0x28) = 1u; }   /* sample period, min. time resolution, driver version */
+        }
         return DI_OK;
     }
     if (!strcmp(nm, "GetDeviceInfo")){
@@ -685,12 +702,12 @@ uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint
     if (!strcmp(nm, "EnumObjects")){
         uint32_t cb = a[1], ref = a[2], fl = a[3];
         if (!cb) return DIERR_INVALIDPARAM;
-        if (fl & DIDFT_FFACTUATOR) return DI_OK;              /* no force feedback */
         static uint32_t oi = 0;
         if (!oi) oi = com_scratch(0x140);
         for (int i = 0; i < NOBJS; i++){
             uint32_t t = obj_type(i);
             if ((fl & DIDFT_TYPEMASK) && !(fl & t & DIDFT_TYPEMASK)) continue;   /* DIDFT_ALL = 0 */
+            if ((fl & DIDFT_FFACTUATOR) && !(i < 2 && dipad_ff_on())) continue;
             write_objinst(oi, 0x13cu, i, s.family);
             uint32_t args[2] = { oi, ref };
             if (call_guest(c, cb, 2, args) == 0u) break;      /* DIENUM_STOP */
@@ -734,7 +751,7 @@ uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint
             else MR32(h + 16) = v[lo];
             return DI_OK; }
         case 9u:  if (set) d->autocenter = MR32(h + 16); else MR32(h + 16) = d->autocenter; return DI_OK;
-        case 7u: case 8u: return DIERR_UNSUPPORTED;           /* FFGAIN, FFLOAD */
+        case 7u: case 8u: return dipad_ff_prop(set, prop, h);   /* FFGAIN, FFLOAD */
         case 3u:  if (!set){ MR32(h + 16) = 1; return DI_OK; } return DIERR_UNSUPPORTED;   /* GRANULARITY */
         case 15u: if (!set){ MR32(h + 16) = 0; return DI_OK; } return DIERR_UNSUPPORTED;   /* JOYSTICKID */
         case 24u: if (!set){ MR32(h + 16) = family_vidpid(s.family); return DI_OK; } return DIERR_UNSUPPORTED;
@@ -746,15 +763,11 @@ uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint
         if (pn && mem_is_committed(pn + 3)) MR32(pn) = 0;
         return lost ? DIERR_INPUTLOST : DI_OK;
     }
-    if (!strcmp(nm, "CreateEffect")){                         /* no force feedback */
-        uint32_t pp = a[3];
-        if (pp && mem_is_committed(pp + 3)) MR32(pp) = 0;
-        return DIERR_UNSUPPORTED;
-    }
-    if (!strcmp(nm, "EnumEffects") || !strcmp(nm, "EnumCreatedEffectObjects") ||
-        !strcmp(nm, "SendForceFeedbackCommand") || !strcmp(nm, "Escape")) return DI_OK;
-    if (!strcmp(nm, "GetEffectInfo") || !strcmp(nm, "GetForceFeedbackState") ||
-        !strcmp(nm, "BuildActionMap") || !strcmp(nm, "SetActionMap") ||
+    /* force feedback: played as rumble with NFSU2_FF=1, otherwise answered
+     * as a device without force feedback (dinput_ff.c) */
+    { int64_t r = dipad_ff_dev_call(c, nm, a); if (r >= 0) return (uint32_t)r; }
+    if (!strcmp(nm, "Escape")) return DI_OK;
+    if (!strcmp(nm, "BuildActionMap") || !strcmp(nm, "SetActionMap") ||
         !strcmp(nm, "GetImageInfo") || !strcmp(nm, "RunControlPanel")) return DIERR_UNSUPPORTED;
     return DI_OK;
 }

@@ -104,6 +104,29 @@ for m in 1 hotplug; do
     if [ $m = hotplug ]; then check "hotplug: DIERR_INPUTLOST on the unplug" "$L" "unplugged: DIERR_INPUTLOST"
     else nocheck "default: the device stays (no DIERR_INPUTLOST)" "$L" "DIERR_INPUTLOST"; fi
 done
+# Force feedback (runtime/dinput_ff.c): the effects a race sends and the motor
+# levels mixed from them; the synthetic pad has no motors (runtime/rumble.m
+# plays nothing for it, tests/rumble_unit.sh covers the motors).
+rm -rf "$WK/ff"; L="$WK/pad_rumble.log"
+run pad_rumble "$WK/ff" "$L" NFSU2_PAD_FAKE=PLUG=1 NFSU2_FF=1 NFSU2_FF_JOLT=1 NFSU2_FF_LOG=1 QUITFRAMES=7000
+check "force feedback reported" "$L" "\[ff\] force feedback on"
+check "the game creates its damper" "$L" "\[ff\] CreateEffect damper"
+check "and a 50 ms vibration it changes every frame" "$L" "\[ff\] parameters (square|sine) #[0-9]+: flags 0x140 magnitude [1-9][0-9]+ offset 0 period 50000 us"
+check "a new kind of vibration: Unload and CreateEffect" "$L" "\[ff\] unload (square|sine)"
+check "the vibration on both motors" "$L" "\[ff\] motors strong 0\.1[0-9] weak 0\.1[0-9]"
+check "a wall: a jolt at full strength" "$L" "\[ff\] jolt [0-9.]+ m/s in [0-9.]+ ms: level 1\.00"
+check "the jolt on the strong motor" "$L" "\[ff\] motors strong (0\.9[0-9]|1\.00) weak 0\.[3-5][0-9]"
+check "the pause menu: motors still" "$L" "\[ff\] the world stands: motors still"
+check "after it: back" "$L" "\[ff\] the world runs again"
+if LC_ALL=C sed -n '/the world stands/,/the world runs again/p' "$L" | grep -a "\[ff\] motors" | grep -a -q -v "strong 0\.00 weak 0\.00"
+then printf "  FAIL  nothing plays in the pause menu\n"; FAILED=1; else printf "  PASS  nothing plays in the pause menu\n"; fi
+nocheck "no effect refused" "$L" "DIERR_DEVICEFULL|Failed to create"
+rm -rf "$WK/ff"; L="$WK/pad_rumble_off.log"
+run pad_race "$WK/ff" "$L" NFSU2_PAD_FAKE=PLUG=1 NFSU2_FF_LOG=1 QUITFRAMES=4500
+check "NFSU2_FF unset: no force feedback" "$L" "\[ff\] force feedback off"
+nocheck "NFSU2_FF unset: no effects" "$L" "\[ff\] CreateEffect"
+check "NFSU2_FF unset: the pad still drives" "$L" "${IN}steer -0\.00 throttle 1\.00"
+
 echo
 if [ $FAILED = 0 ]; then echo "RESULT: all passed"; else echo "RESULT: SOME FAILED"; fi
 exit $FAILED

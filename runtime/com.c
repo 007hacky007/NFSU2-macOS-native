@@ -70,6 +70,9 @@ int      dipad_guid(uint32_t guid);
 void     dipad_created(uint32_t dev, uint32_t guid);
 int      dipad_enum(CPU *c, uint32_t devtype, uint32_t cb, uint32_t ref, uint32_t flags);
 uint32_t dipad_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint32_t *args);
+/* ... and its force-feedback effects (IDirectInputEffect, runtime/dinput_ff.c) */
+uint32_t dipad_effect_call(CPU *c, uint32_t self, const char *nm, int nargs, const uint32_t *args);
+void     dipad_effect_ref(uint32_t obj, int add);
 #define NEL(a) ((unsigned)(sizeof(a)/sizeof(*(a))))
 
 #define COM_MAGIC 0xE0000000u
@@ -297,10 +300,11 @@ static const Iface g_if[] = {
     {"IDirectInputDevice8",      M_DIDEV,      NEL(M_DIDEV)},
     {"IDirectSound",             M_DS,         NEL(M_DS)},
     {"IDirectSoundBuffer",       M_DSBUF,      NEL(M_DSBUF)},
+    {"IDirectInputEffect",       M_DIEFF,      NEL(M_DIEFF)},
 };
 enum { IF_D3D9=1, IF_DEV, IF_TEX, IF_VB, IF_IB, IF_SURF, IF_SIMPLE,
        IF_VSHADER, IF_VDECL, IF_STATEBLOCK, IF_SWAPCHAIN, IF_QUERY,
-       IF_DI8, IF_DIDEV, IF_DS, IF_DSBUF };
+       IF_DI8, IF_DIDEV, IF_DS, IF_DSBUF, IF_DIEFF };
 
 /* --- reference counts of textures, vertex and index buffers -----------------
  * Kept on the host, keyed by the guest object address (objects are never reused:
@@ -398,6 +402,8 @@ static uint32_t com_new(uint32_t iface, uint32_t extra){
     if ((iface == IF_TEX || iface == IF_VB || iface == IF_IB) && obj) rc_set(obj, 1);
     return obj;
 }
+/* dinput_ff.c CreateEffect: a new IDirectInputEffect (16 bytes of its own) */
+uint32_t com_new_dieffect(void){ return com_new(IF_DIEFF, 16u); }
 
 #define PSCUBE 256   /* must be the SAME as in metal.m: cube ps variant */
 uint64_t g_com_calls=0, g_com_unimpl=0;
@@ -2308,6 +2314,7 @@ int com_call(CPU *c, uint32_t magic){
     }
     else if (MID(AddRef)){
         if (iface==IF_TEX || iface==IF_VB || iface==IF_IB) rc_addref(A(c,0));
+        if (iface==IF_DIEFF) dipad_effect_ref(A(c,0), 1);
         r=1; }
     else if (MID(Release)){
         /* The game silences a sound buffer with Release, NOT Stop (measured: Stop=0,
@@ -2324,6 +2331,7 @@ int com_call(CPU *c, uint32_t magic){
         }
         /* The data goes back only when the LAST reference is released (rc_release). */
         if (iface==IF_TEX || iface==IF_VB || iface==IF_IB) obj_release(A(c,0), iface, c->eip);
+        if (iface==IF_DIEFF) dipad_effect_ref(A(c,0), -1);
         if (iface==IF_DSBUF){
             uint32_t self0=A(c,0);
             if (self0 && mem_is_committed(self0+31) && MR32(self0+28)){
@@ -4401,6 +4409,11 @@ int com_call(CPU *c, uint32_t magic){
         else if (MID(FindDevice))      r=0x80070002u;
         else r=0;
     }
+    else if (iface==IF_DIEFF){
+        uint32_t av[8] = {0};
+        for (int i = 0; i < nargs && i < 8; i++) av[i] = A(c,i);
+        r = dipad_effect_call(c, A(c,0), nm, nargs, av);
+    }
     else if (iface==IF_DIDEV){
         uint32_t self=A(c,0);
         uint32_t dkind = (self && mem_is_committed(self+11)) ? MR32(self+8) : 0;
@@ -4680,7 +4693,7 @@ void com_report(void){
     fprintf(stderr,"  --- DirectInput / DirectSound calls ---\n");
     { int any=0;
       for (unsigned i=1;i<NEL(g_if) && i<MSTAT_IF;i++){
-        if (i!=IF_DI8 && i!=IF_DIDEV && i!=IF_DS && i!=IF_DSBUF && i!=IF_QUERY) continue;
+        if (i!=IF_DI8 && i!=IF_DIDEV && i!=IF_DIEFF && i!=IF_DS && i!=IF_DSBUF && i!=IF_QUERY) continue;
         for (unsigned j=0;j<g_if[i].n && j<MSTAT_M;j++)
             if (g_mstat[i][j]){ any=1;
                 fprintf(stderr,"    %-26s %-26s %llu\n",

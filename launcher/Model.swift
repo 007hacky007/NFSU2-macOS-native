@@ -121,6 +121,10 @@ final class LauncherModel: ObservableObject {
     @Published var padMenuKeys: Bool { didSet { defaults.set(padMenuKeys, forKey: Prefs.padMenuKeys) } }
     @Published var padBackground: Bool { didSet { defaults.set(padBackground, forKey: Prefs.padBackground) } }
     private var setPad = false           // the NFSU2_PAD* variables were set by us
+    @Published var rumble: Bool { didSet { defaults.set(rumble, forKey: Prefs.rumble) } }
+    @Published var rumbleCrashes: Bool { didSet { defaults.set(rumbleCrashes, forKey: Prefs.rumbleCrashes) } }
+    @Published var rumbleStrength: Double { didSet { defaults.set(rumbleStrength, forKey: Prefs.rumbleStrength) } }
+    var setRumble = false                // the NFSU2_FF* variables were set by us (Rumble.swift)
     private static let padEnv = ["NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_PAD_TRIGGER_DEADZONE",
                                  "NFSU2_PAD_TRIGGER_CLICK", "NFSU2_PAD_FE_KEYS", "NFSU2_PAD_BACKGROUND"]
     @Published var job: Job? = nil
@@ -154,7 +158,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true])
+        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -218,6 +222,9 @@ final class LauncherModel: ObservableObject {
         triggerClick = defaults.bool(forKey: Prefs.triggerClick)
         padMenuKeys = defaults.bool(forKey: Prefs.padMenuKeys)
         padBackground = defaults.bool(forKey: Prefs.padBackground)
+        rumble = defaults.bool(forKey: Prefs.rumble)
+        rumbleCrashes = defaults.bool(forKey: Prefs.rumbleCrashes)
+        rumbleStrength = min(1, max(0.1, defaults.double(forKey: Prefs.rumbleStrength)))
         packs.game = { [weak self] in self?.location?.folder }
         refreshMods()
     }
@@ -392,6 +399,7 @@ final class LauncherModel: ObservableObject {
             setenv("NFSU2_PAD_BACKGROUND", padBackground ? "1" : "0", 1)
             setPad = true
         }
+        setRumbleEnv(env)                       // Rumble.swift
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

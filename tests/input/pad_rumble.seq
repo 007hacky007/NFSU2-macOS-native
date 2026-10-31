@@ -1,0 +1,32 @@
+# Force feedback as rumble (NFSU2_FF=1, NFSU2_FF_LOG=1; runtime/dinput_ff.c):
+# a pad-only Quick Race, then full throttle, hard steering into the walls,
+# braking, the pause menu and back: the log shows the effects the game
+# creates, changes, starts and stops and the motor levels the mix makes of
+# them (the synthetic pad has no motors, so nothing plays).
+0:untilpad:START:MC_Background.fng:120
++200:untilpad:A:UI_QRModeSelect.fng:300
++200:untilpad:A:UI_QRTrackSelect.fng:150
++200:untilpad:A:UI_QRModeOptions.fng:150
++200:untilpad:A:UI_QRCarSelect.fng:150
++200:untilpad:A:PC_Loading.fng:150
++1500:log:race
++0:pad:RT=1
++600:log:hard left into the wall
++0:pad:LX=-1
++300:pad:LX=0
++120:log:hard right
++0:pad:LX=1
++300:pad:LX=0
++120:log:brake
++0:pad:RT=0;LT=1
++120:pad:LT=0;RT=1
++400:log:pause
++0:padtap:START
++180:log:resume
++0:padtap:START
++120:log:more walls
++0:pad:LX=-1
++300:pad:LX=1
++300:pad:LX=0
++200:pad:OFF
++60:log:end
