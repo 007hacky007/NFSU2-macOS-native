@@ -172,7 +172,7 @@ struct PictureSettings: View {
 struct ControlsSettings: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) { ControllerCard(model: model) }
+        VStack(alignment: .leading, spacing: 12) { ControllerCard(model: model); RumbleCard(model: model) }
     }
 }
 
