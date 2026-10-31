@@ -34,6 +34,9 @@
  *   exit_dll the same for a lifted DLL's call without the variable
  *            (server.dll's StopServer waits for its thread that way)
  *   teb      threads one after the other reuse their TEBs
+ *   dll_clock a lifted DLL's GetTickCount, QueryPerformanceCounter/Frequency
+ *            and GetSystemTimeAsFileTime are real time (server.dll's pings and
+ *            timeouts); the exe's are left to the virtual clock
  * The wait cases check WaitForSingleObject / WaitForMultipleObjects as well.
  * NFSU2_GIL=ticket runs all of it on the ticket lock.
  * Every case prints "PASS <case> ..." or "FAIL <case> ..." lines; exit 1 on a FAIL.
@@ -413,6 +416,48 @@ static void case_exit_dll(void){
           "exit_dll: a lifted DLL is told running 0x%x (STILL_ACTIVE), ExitThread(7) %u, then ended %u; the exe still %u",
           run, xc, done, exe);
 }
+static uint64_t mono_us(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u; }
+/* one import through win32_dll_clock as win32.c makes it; -1 = not handled */
+static int64_t dll_clock(const char *n, int na, uint32_t a0){
+    M->esp -= 4u * (uint32_t)na; if (na) MR32(M->esp) = a0;
+    uint32_t r = 0; int h = win32_dll_clock(M, n, &r);
+    M->esp += 4u * (uint32_t)na;
+    return h ? (int64_t)r : -1;
+}
+static void case_dll_clock(void){
+    int exe = 0;                                 /* the exe's calls are not taken: win32.c's virtual clock answers */
+    exe |= dll_clock("GetTickCount", 0, 0) != -1;
+    exe |= dll_clock("QueryPerformanceCounter", 1, SCRATCH) != -1;
+    exe |= dll_clock("QueryPerformanceFrequency", 1, SCRATCH) != -1;
+    exe |= dll_clock("GetSystemTimeAsFileTime", 1, SCRATCH) != -1;
+    g_caller_mod = 1;
+    err_mark();
+    uint64_t m0 = mono_us();
+    uint32_t t0 = (uint32_t)dll_clock("GetTickCount", 0, 0);
+    int64_t q = dll_clock("QueryPerformanceCounter", 1, SCRATCH);
+    uint64_t q0 = (uint64_t)MR32(SCRATCH) | (uint64_t)MR32(SCRATCH + 4u) << 32;
+    uint64_t m1 = mono_us();
+    int64_t f = dll_clock("QueryPerformanceFrequency", 1, SCRATCH);
+    uint64_t freq = (uint64_t)MR32(SCRATCH) | (uint64_t)MR32(SCRATCH + 4u) << 32;
+    dll_clock("GetSystemTimeAsFileTime", 1, SCRATCH);
+    uint64_t ft = (uint64_t)MR32(SCRATCH) | (uint64_t)MR32(SCRATCH + 4u) << 32;
+    time_t now = time(0);
+    struct timespec nap = { 0, 40 * 1000000L }; nanosleep(&nap, 0);   /* real time, no frame */
+    uint32_t t1 = (uint32_t)dll_clock("GetTickCount", 0, 0);
+    dll_clock("QueryPerformanceCounter", 1, SCRATCH);
+    uint64_t q1 = (uint64_t)MR32(SCRATCH) | (uint64_t)MR32(SCRATCH + 4u) << 32;
+    int other = dll_clock("Sleep", 1, 1u) != -1;
+    g_caller_mod = 0;
+    int64_t ft_s = (int64_t)(ft / 10000000ull) - 11644473600ll - (int64_t)now;
+    int tick_ok = t0 >= (uint32_t)(m0 / 1000u) + 1000u && t0 <= (uint32_t)(m1 / 1000u) + 1000u;
+    int qpc_ok = q == 1 && q0 >= m0 && q0 <= m1;
+    CHECK(!exe && !other && tick_ok && qpc_ok && f == 1 && freq == 1000000u && ft_s >= -2 && ft_s <= 2
+          && t1 - t0 >= 40u && q1 - q0 >= 40000u && err_has("server.dll on the real clock"),
+          "dll_clock: a lifted DLL reads the real clock: GetTickCount %u (monotonic ms + 1000: %llu), QPC %llu us at %llu Hz, "
+          "%u ms / %llu us over a 40 ms sleep, FILETIME %+lld s from UTC; the exe's calls go to the virtual clock (%d)",
+          t0, (unsigned long long)(m0 / 1000u + 1000u), (unsigned long long)q0, (unsigned long long)freq,
+          t1 - t0, (unsigned long long)(q1 - q0), (long long)ft_s, !exe);
+}
 static void case_teb(void){
     uint32_t hi = 0; int ok = 1;
     for (int i = 0; i < 100 && ok; i++){
@@ -431,7 +476,7 @@ static const struct { const char *name; void (*fn)(void); } CASES[] = {
     { "below", case_below }, { "reclaim", case_reclaim }, { "oldest", case_oldest }, { "stale", case_stale }, { "kept", case_kept },
     { "waiting", case_waiting }, { "wait_timeouts", case_wait_timeouts }, { "wait_objects", case_wait_objects },
     { "wait_cancel", case_wait_cancel }, { "exit_old", case_exit_old }, { "exit_code", case_exit_code }, { "exit_dll", case_exit_dll },
-    { "teb", case_teb },
+    { "teb", case_teb }, { "dll_clock", case_dll_clock },
 };
 
 static int run_case(int k){
