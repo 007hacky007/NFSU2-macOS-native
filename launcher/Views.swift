@@ -154,6 +154,55 @@ struct GraphicsCard: View {
     }
 }
 
+struct FrameRateCard: View {
+    @ObservedObject var model: LauncherModel
+    private func label(_ v: String) -> String {
+        switch v {
+        case "auto": return "Auto (follow the screen)"
+        case "120": return "120 FPS (original)"
+        default: return "\(v) FPS"
+        }
+    }
+    var body: some View {
+        Card("Frame rate") {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Frame rate").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Speed, physics, smoke and the NOS trail stay as at 60 at any rate. The original game runs at up to 120.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Picker("", selection: $model.frameRate) {
+                    ForEach(LauncherModel.frameRates, id: \.self) { Text(label($0)).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("60 FPS cutscenes").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Race intros and other in-game scenes at 60 instead of 30 frames a second. Off: as in the original game.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.cutscenes60).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Cutscene black bars").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Bars at the top and bottom of race intros and in-game scenes. Off shows the whole picture. On: as in the original game.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.cutsceneBars).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
+        }
+    }
+}
+
 struct MoreCard: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
@@ -253,6 +302,7 @@ struct LauncherView: View {
 
                 GameCard(model: model)
                 GraphicsCard(model: model)
+                FrameRateCard(model: model)
                 MoreCard(model: model)
 
                 Spacer(minLength: 0)
@@ -274,6 +324,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 624)
+        .frame(width: 560, height: 800)
     }
 }

@@ -68,6 +68,9 @@ enum Prefs {
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
+    static let frameRate = "LauncherFrameRate"     // NFSU2_FPS: auto | 30 | 60 | 120 | 240
+    static let cutscenes60 = "LauncherCutscenes60" // NFSU2_CUTSCENES_60=1
+    static let cutsceneBars = "LauncherCutsceneBars" // false: NFSU2_CUTSCENE_BORDERS=off
 }
 
 enum Locator {
