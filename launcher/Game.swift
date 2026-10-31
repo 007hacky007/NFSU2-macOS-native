@@ -69,6 +69,7 @@ enum Prefs {
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
     static let allCars = "LauncherAllCars"         // both releases' cars (off: NFSU2_ALL_CARS=0)
+    static let intro = "LauncherIntro"             // NFSU2_INTRO: "skippable" | "off" | "original"
 }
 
 enum Locator {

@@ -182,6 +182,23 @@ struct MoreCard: View {
                     Toggle("", isOn: $model.allCars).labelsHidden().toggleStyle(SwitchToggleStyle())
                 }
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Intro movies").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("The logos and the opening movie. Skippable: a key or pad button skips each.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Picker("", selection: $model.intro) {
+                    Text("Skippable").tag("skippable")
+                    Text("Off").tag("off")
+                    Text("Original").tag("original")
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .labelsHidden()
+                .fixedSize()
+            }
             HStack(spacing: 8) {
                 Button("Saves") { model.openSaves() }.buttonStyle(SecondaryButtonStyle())
                 Button("Logs") { model.openLogs() }.buttonStyle(SecondaryButtonStyle())
