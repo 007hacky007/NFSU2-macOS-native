@@ -70,6 +70,8 @@ final class LauncherModel: ObservableObject {
     @Published var frameRate: String { didSet { defaults.set(frameRate, forKey: Prefs.frameRate) } }
     @Published var cutscenes60: Bool { didSet { defaults.set(cutscenes60, forKey: Prefs.cutscenes60) } }
     @Published var cutsceneBars: Bool { didSet { defaults.set(cutsceneBars, forKey: Prefs.cutsceneBars) } }
+    @Published var music: String { didSet { defaults.set(music, forKey: Prefs.music) } }             // Music.swift
+    @Published var musicFolder: String { didSet { defaults.set(musicFolder, forKey: Prefs.musicFolder) } }
     /// NFSU2_FPS values; the labels are in FrameRateCard.
     static let frameRates = ["auto", "30", "60", "120", "240"]
     @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
@@ -152,6 +154,8 @@ final class LauncherModel: ObservableObject {
         frameRate = LauncherModel.frameRates.contains(fr) ? fr : "auto"
         cutscenes60 = defaults.bool(forKey: Prefs.cutscenes60)
         cutsceneBars = defaults.bool(forKey: Prefs.cutsceneBars)
+        music = defaults.string(forKey: Prefs.music) == "folder" ? "folder" : "game"
+        musicFolder = defaults.string(forKey: Prefs.musicFolder) ?? ""
         online = defaults.bool(forKey: Prefs.online)
         server = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
         playerName = defaults.string(forKey: Prefs.playerName) ?? ""
@@ -275,6 +279,7 @@ final class LauncherModel: ObservableObject {
         if frameRate != "auto" { setenv("NFSU2_FPS", frameRate, 0) }
         if cutscenes60 { setenv("NFSU2_CUTSCENES_60", "1", 0) }
         if !cutsceneBars { setenv("NFSU2_CUTSCENE_BORDERS", "off", 0) }
+        applyMusic()                // a music folder through EA Trax (Music.swift)
         // Online: the game's LAN and Online modes through the server (runtime/
         // net_relay.c, net_native.m).  Off: LAN on this Mac's network.  Values
         // set by hand in the environment win.
