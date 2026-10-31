@@ -31,6 +31,8 @@
  *            until a full table has asked for a slot)
  *   exit_code NFSU2_THREAD_EXIT=windows: GetExitCodeThread says STILL_ACTIVE
  *            while a thread runs, then the code it ended with
+ *   exit_dll the same for a lifted DLL's call without the variable
+ *            (server.dll's StopServer waits for its thread that way)
  *   teb      threads one after the other reuse their TEBs
  * The wait cases check WaitForSingleObject / WaitForMultipleObjects as well.
  * NFSU2_GIL=ticket runs all of it on the ticket lock.
@@ -72,6 +74,9 @@ uint32_t hle_tz_info(uint32_t p){ return 0; }
 uint32_t hle_vformat(uint32_t o, uint32_t cap, const char *f, uint32_t va){ return 0; }
 uint32_t hle_disk_free(uint32_t a, int ex){ return 0; }
 const char *const *regseed_lines(int *n){ *n = 0; return 0; }
+static int g_caller_mod;                        /* win32.c: whose import this is (1 = server.dll) */
+int      win32_caller_module(void){ return g_caller_mod; }
+uint32_t module_nearest_fn(uint32_t a, const char **mod){ (void)a; (void)mod; return 0; }
 
 static int g_fail;
 #define CHECK(cond, ...) do{ if (cond) printf("PASS " __VA_ARGS__); else { printf("FAIL " __VA_ARGS__); g_fail = 1; } \
@@ -391,6 +396,23 @@ static void case_exit_code(void){
           "exit_code: NFSU2_THREAD_EXIT=windows: running 0x%x (STILL_ACTIVE), ExitThread(7) %u, TerminateThread(9) %u, returned %u",
           run, xc, tc, rc);
 }
+static void case_exit_dll(void){
+    uint32_t h = start(E_HOLD, 11), x = start(E_EXIT, 7u);
+    int ok = h && x && ended(1);
+    g_caller_mod = 1;
+    imp(M, "GetExitCodeThread", 2, h, SCRATCH); uint32_t run = MR32(SCRATCH);
+    imp(M, "GetExitCodeThread", 2, x, SCRATCH); uint32_t xc = MR32(SCRATCH);
+    g_caller_mod = 0;
+    imp(M, "GetExitCodeThread", 2, h, SCRATCH); uint32_t exe = MR32(SCRATCH);
+    __atomic_store_n(&g_release[11], 1, __ATOMIC_RELEASE);
+    int e2 = ended(2);
+    g_caller_mod = 1;
+    imp(M, "GetExitCodeThread", 2, h, SCRATCH); uint32_t done = MR32(SCRATCH);
+    g_caller_mod = 0;
+    CHECK(ok && run == 0x103u && xc == 7u && exe == 0 && e2 && done == 0,
+          "exit_dll: a lifted DLL is told running 0x%x (STILL_ACTIVE), ExitThread(7) %u, then ended %u; the exe still %u",
+          run, xc, done, exe);
+}
 static void case_teb(void){
     uint32_t hi = 0; int ok = 1;
     for (int i = 0; i < 100 && ok; i++){
@@ -408,7 +430,8 @@ static void case_teb(void){
 static const struct { const char *name; void (*fn)(void); } CASES[] = {
     { "below", case_below }, { "reclaim", case_reclaim }, { "oldest", case_oldest }, { "stale", case_stale }, { "kept", case_kept },
     { "waiting", case_waiting }, { "wait_timeouts", case_wait_timeouts }, { "wait_objects", case_wait_objects },
-    { "wait_cancel", case_wait_cancel }, { "exit_old", case_exit_old }, { "exit_code", case_exit_code }, { "teb", case_teb },
+    { "wait_cancel", case_wait_cancel }, { "exit_old", case_exit_old }, { "exit_code", case_exit_code }, { "exit_dll", case_exit_dll },
+    { "teb", case_teb },
 };
 
 static int run_case(int k){
