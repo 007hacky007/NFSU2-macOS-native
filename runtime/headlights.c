@@ -94,6 +94,14 @@ static int hl_on(void){
     }
     return g_mode;
 }
+/* the test runner's "headlights MODE" (runtime/autotest.c): another mode now,
+ * for an A/B in one run; 0 if MODE is not one */
+int headlights_set(const char *mode){
+    int m = mode_of(mode);
+    if (m < 0) return 0;
+    g_mode = m;
+    return 1;
+}
 /* players: in an online or LAN race every car but traffic (those races have
  * no AI racers); elsewhere none */
 static int wanted(uint32_t car, uint32_t me){

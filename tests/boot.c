@@ -135,6 +135,7 @@ static void *guest_main_thread(void *unused){
 }
 
 int main(int argc,char**argv){
+    { extern void autotest_early(void); autotest_early(); }   /* NFSU2_LOG, NFSU2_TIMEOUT (runtime/autotest.c) */
     /* System shortcut guard (metal.m ks_engel): the same binary, without ever
      * starting the game, waits for the game process to end. */
     if (getenv("NFSU_KISAYOL_BEKCI")){ extern int metal_kisayol_bekci(void); return metal_kisayol_bekci(); }
@@ -169,6 +170,7 @@ int main(int argc,char**argv){
     { extern void lobbyclick_install(void); lobbyclick_install(); }   /* the lobby's list ignores a click on a dialog over it */
     { extern void d3dx_hle_install(void); d3dx_hle_install(); }   /* d3dx_hle.c: Stage 9's effect methods */
     { extern void photo_install(void); photo_install(); }   /* photo mode's pause menu icon (runtime/photo.c) */
+    { extern void autotest_init(void); autotest_init(); }   /* the scripted test runner (runtime/autotest.c) */
     if (getenv("BT")) g_bt_on = 1;
     g_report_fn = all_reports;
     com_set_trace(getenv("COMTRACE")?1:0);

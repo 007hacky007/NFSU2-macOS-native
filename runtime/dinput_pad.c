@@ -596,9 +596,9 @@ int dipad_fe_is(const char *name){
     for (int i = 0; i < g_nbatch; i++) if (!strcasecmp(g_batch[i], name)) return 1;
     return 0;
 }
-/* for logs (tests: runtime/inputseq.m) */
+/* for logs (tests: runtime/autotest.c) */
 const char *dipad_fe_top(void){ return g_screen[0] ? g_screen : fe_top(); }
-/* a dword of guest memory, 0 when not committed (tests: runtime/inputseq.m) */
+/* a dword of guest memory, 0 when not committed (tests: runtime/autotest.c) */
 uint32_t dipad_peek32(uint32_t a){ return mem_is_committed(a + 3u) ? MR32(a) : 0u; }
 static int on_controls_page(void){
     if (!mem_is_committed(G_FLOW + 3u) || MR32(G_FLOW) != 3u) return 0;

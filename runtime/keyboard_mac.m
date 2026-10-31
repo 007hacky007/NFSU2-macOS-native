@@ -671,10 +671,8 @@ static void synth_mouse(const Req *r){
                                     pressure:r->type == KSYN_MOUSE_DOWN ? 1.f : 0.f];
     if (e) [NSApp postEvent:e atStart:NO];
 }
-void inputseq_tick(void);                          /* inputseq.m: NFSU2_INPUT_SEQ (tests) */
 void kbdmac_tick(void){
     kinit();
-    inputseq_tick();
     for (;;){
         Req r;
         pthread_mutex_lock(&g_rq_mx);

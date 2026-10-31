@@ -48,6 +48,7 @@ int roam_hook(CPU *c, uint32_t ip){
     if (ip == HOOK_MAINLOOP){
         if (roam_on()){ roam_texts_frame(c); mprace_frame(c); roam_game_frame(c); }
         racehorn_frame(c); hornmenu_frame(c);  /* with or without free roam */
+        { void career_frame(CPU *); career_frame(c); }   /* career.c: the test runner's career aids */
         return 1;
     }
     if (ip == HOOK_HUD){

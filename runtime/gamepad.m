@@ -381,7 +381,7 @@ void gamepad_report(void){
 }
 
 /* ---- synthetic controller (test scripts) ------------------------------------ */
-/* items as in NFSU2_PAD_FAKE (runtime/inputseq.m); the pad connects first
+/* items as in NFSU2_PAD_FAKE (runtime/autotest.c padset); the pad connects first
  * unless the items say PLUG=0 */
 void gamepad_synth_items(const char *items){
     os_unfair_lock_lock(&g_lk);
