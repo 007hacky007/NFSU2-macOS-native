@@ -6304,6 +6304,7 @@ void metal_run_main_loop(void){
         [g_win center];
         [g_win setAcceptsMouseMovedEvents:YES];
         native_scene_attach(g_win);            /* photo and drift panels (native_scene.m) */
+        { extern void native_controls_install(NSWindow *); native_controls_install(g_win); }   /* Game Tools, quick chat (native_controls.m) */
         /* NOFOCUS=1: open in the background, DON'T take focus from the app the user is
          * working in (for automated test/measurement runs). */
         if (ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0'){
@@ -6421,6 +6422,7 @@ void metal_run_main_loop(void){
                     if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp || et == NSEventTypeFlagsChanged){
                         /* keys for another window of ours (About, a panel) */
                         if ([ev window] && [ev window] != g_win){ [NSApp sendEvent:ev]; continue; }
+                        { extern int native_controls_handle_event(NSEvent *); if (native_controls_handle_event(ev)) continue; }   /* quick chat's keys (native_controls.m) */
                         /* macOS's fullscreen shortcut fn/Globe+F: since it doesn't carry
                          * Command it went to the game as "F".  Only the key down: an F
                          * the game holds still gets its key up. */

@@ -7,6 +7,7 @@
  * Adapted from th0mk's nfsu2-web runtime/roam_bsd.c (MIT). */
 #include "roam_plat.h"
 #include "net_native.h"
+#include "native_controls.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,11 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static rc_session     *g_s;
 static roam_plat_cfg   g_cfg;
 static roam_plat_stats g_st;          /* written under g_mu */
+/* Game Tools (native_controls.m); tools that link this file without AppKit
+ * (tests/roam_fakepeer.c) have none */
+__attribute__((weak)) void native_controls_notice(const char *name, const char *what){ (void)name; (void)what; }
+__attribute__((weak)) void native_controls_set_network(int say){ (void)say; }
+__attribute__((weak)) void native_controls_forget(uint32_t id){ (void)id; }
 
 void roam_plat_lock(void){ pthread_mutex_lock(&g_mu); }
 void roam_plat_unlock(void){ pthread_mutex_unlock(&g_mu); }
@@ -41,9 +47,10 @@ int64_t roam_plat_now_us(void){
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 uint32_t roam_plat_random(void){ uint32_t r; do r = arc4random(); while (!r); return r; }
-/* no panel over the game here: a notice is a log line */
+/* a notice: a log line, and a line in Game Tools' log */
 void roam_plat_notice(const char *name, const char *what){
     fprintf(stderr, "[roam] notice: %s%s\n", name ? name : "", what);
+    native_controls_notice(name, what);
 }
 const char *roam_ip_str(uint32_t ip, char *b){
     snprintf(b, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255u, (ip >> 8) & 255u, ip & 255u); return b; }
@@ -141,6 +148,7 @@ static void io_event(void *u, int ev, int peer, const char *text);   /* roam_gam
 void roam_game_event(int ev, int peer, const char *text);
 static void io_event(void *u, int ev, int peer, const char *text){
     (void)u;
+    if (ev == RC_EV_LEAVE && g_s && peer >= 0 && peer < RC_TABLE) native_controls_forget(g_s->peer[peer].id);   /* their line goes */
     roam_game_event(ev, peer, text);
 }
 
@@ -279,20 +287,21 @@ int roam_plat_start(const roam_plat_cfg *cfg, rc_session *s){
         else close(fd);
         g_relay = NULL; g_fd = -1; return -1;
     }
-    g_thr_on = 1;
+    g_thr_on = 1; native_controls_set_network(s->conf.say);
     if (g_relay){ fprintf(stderr, "[roam] native switch port %u open\n", g_cfg.port); return 0; }
     fprintf(stderr, "[roam] UDP %s:%u open%s\n", g_cfg.test_mode ? "127.0.0.1" : "0.0.0.0", g_cfg.port,
             g_cfg.test_mode ? " (test harness: loopback only)" : g_cfg.discovery ? ", LAN discovery on" : "");
     return 0;
 }
 void roam_plat_stop(uint8_t reason){
-    if (!g_thr_on) return;
+    if (!g_thr_on){ native_controls_set_network(0); return; }
     roam_plat_lock(); rc_shutdown(g_s, reason); roam_plat_unlock();
     atomic_store(&g_stop, 1);
     pthread_join(g_thr, 0); g_thr_on = 0;
     if (g_relay) __atomic_store_n(&g_relay->want, 0, __ATOMIC_SEQ_CST);
     else close(g_fd);
     g_relay = NULL; g_fd = -1;
+    native_controls_set_network(0);
 }
 
 int roam_plat_parse_peers(const char *list, int test_mode, uint16_t defport, uint32_t *ip, uint16_t *port, int max){

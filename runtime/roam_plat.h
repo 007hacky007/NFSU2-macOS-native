@@ -57,4 +57,36 @@ void     roam_plat_get_stats(roam_plat_stats *out);
 void     roam_plat_notice(const char *name, const char *what);
 const char *roam_ip_str(uint32_t ip, char *buf);   /* buf >= 16 */
 
+/* --- Game Tools and quick chat (native_controls.m) --- */
+/* the race lobby for the panel (roam_game.c mp_panel): its state as a JSON
+ * object, "{}" for none, sent when it changes.  1: taken; 0: no panel (none
+ * sent after that); -1: not taken, again next frame.  With the session lock
+ * held */
+int      roam_plat_lobby(const char *json);
+/* solid cars as the player switched them in the panel while the game runs: 1
+ * on, 0 off, -1 not switched (NFSU2_ROAM_COLLIDE holds) */
+int      roam_plat_solid(void);
+/* the crews as the player changed them in the panel: their rc_room_hash
+ * values in the player's order (0: none) into crews, their colours into rgb
+ * (0x00RRGGBB, 0: the place's default), and a number that changes with each
+ * change (0: not changed, NFSU2_ROAM_CREW and NFSU2_ROAM_CREW_RGB hold) */
+uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]);
+/* quick chat (roam_game.c say_*): whether this platform has it (a picker and
+ * the lines over the cars), the phrase the player picked since the last call
+ * (-1: none), and a phrase said (by a friend, or by the player) as a JSON
+ * object (1 shown, -1 not).  With the session lock held */
+int      roam_plat_quickchat(void);
+int      roam_plat_say_pick(void);
+int      roam_plat_said(const char *json);
+/* where the names of the players who said something lately are this frame:
+ * ids[i] at xys[3i], xys[3i + 1] (parts of the picture from its top left
+ * corner) with the name's scale xys[3i + 2]; n = 0: none.  On the game
+ * thread, without the lock */
+void     roam_plat_say_marks(const uint32_t *ids, const float *xys, int n);
+/* the player drives in free roam this frame (quick chat may take the keys
+ * and the stick), and the panel's button pressed since the last call */
+void     roam_plat_driving(int driving);
+enum { ROAM_ACTION_NONE = 0, ROAM_ACTION_ENGAGE = 1, ROAM_ACTION_LEAVE = 2 };   /* Open / Join / Start; Leave lobby */
+int      roam_plat_action(void);
+
 #endif
