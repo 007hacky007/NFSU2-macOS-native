@@ -15,6 +15,8 @@
 //   NFSU2_ENGINE=original|hd     engine choice for this start
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
 //   NFSU2_LAUNCHER_SNAPSHOT_SETTINGS=graphics|more|...  with the above: the Settings window on that tab
+//   NFSU2_LAUNCHER_SNAPSHOT_HEIGHT=<points>  with the above: a taller Settings window, so a long tab
+//                                fits without scrolling (README pictures)
 //   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window|texpacks-busy|quickchat|counts
 //                                fake state for the snapshot (uhud: ready, with a UHUD pack added;
 //                                uhud-busy: downloading it; texpacks: two texture packs, one on;
@@ -201,6 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let t = SettingsTab(rawValue: name), SettingsTab.shown.contains(t) else {
                     print("NFSU2_LAUNCHER_SNAPSHOT_SETTINGS: one of " + SettingsTab.shown.map(\.rawValue).joined(separator: ", "))
                     exit(2)
+                }
+                if let h = env["NFSU2_LAUNCHER_SNAPSHOT_HEIGHT"].flatMap(Double.init), h >= 300, h <= 4000 {
+                    SettingsView.size.height = CGFloat(h)
                 }
                 shot = makeSettingsWindow(model: model, tab: t)
             }
