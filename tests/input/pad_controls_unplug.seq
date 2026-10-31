@@ -1,0 +1,63 @@
+# Run with NFSU2_PAD=hotplug, the synthetic pad plugged in (PLUG=1).  Pad
+# front end: View opens the quit prompt (the posted 'q'), B cancels it; the
+# left stick moves through the menus (POV 1) to Options > Controls > Joypad
+# Configuration.  Unplugged there, the pad stays on the page (no
+# DIERR_INPUTLOST) and editing one of its bindings with the keyboard does not
+# crash (the game reads its object list from when the page opened); plugged
+# back in, it binds again; once the page is left it is lost (hotplug) and
+# found again by the game's rescan.
+0:untilpad:START:MC_Background.fng:120
++200:padtap:A
++0:wait:GarageMain.fng:3000
++600:padtap:BACK
++200:shot
++5:padtap:B
++200:shot
++5:pad:LX=1
++20:pad:LX=0
++40:pad:LX=1
++20:pad:LX=0
++40:pad:LX=1
++20:pad:LX=0
++40:pad:LX=1
++20:pad:LX=0
++40:pad:LX=1
++20:pad:LX=0
++100:padtap:A
++0:wait:UI_OptionsMain.fng:600
++300:pad:LX=1
++20:pad:LX=0
++100:pad:LX=1
++20:pad:LX=0
++100:pad:LX=1
++20:pad:LX=0
++100:pad:LX=1
++20:pad:LX=0
++100:padtap:A
++0:wait:UI_Options_PC_Controller.fng:600
++300:pad:LY=-1
++20:pad:LY=0
++100:pad:LX=1
++20:pad:LX=0
++200:padtap:DDOWN
++40:padtap:DDOWN
++60:log:unplug on the Joypad page
++0:pad:PLUG=0
++120:DOWN
++60:DOWN
++60:log:edit a binding of the unplugged pad with the keyboard
++0:RETURN
++200:shot
++5:ESCAPE
++200:log:plug it back in
++0:pad:PLUG=1
++150:padtap:DDOWN
++60:padtap:A
++200:padtap:Y
++200:shot
++5:padtap:B
++200:padtap:B
++300:log:left the Controls page: unplug, then plug back in
++0:pad:PLUG=0
++120:pad:PLUG=1
++200:log:end

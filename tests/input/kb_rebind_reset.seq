@@ -1,0 +1,31 @@
+# After kb_rebind_load.seq, keyboard only and no controller (default mode):
+# there is no game pad device ([0x86ffb4] = 0) and the Controls page offers
+# only the keyboard (the header's arrows stay on Keyboard Configuration).
+# "Reset Keys To Default" (the front end's P key, "Reset to default
+# settings?" -> Yes) restores the defaults and, with the game's
+# DIDSAM_FORCESAVE, removes the user maps from the registry file.
+0:until:RETURN:GarageMain.fng:200
++300:peek:86ffb4:2
++300:RIGHT
++60:RIGHT
++60:RIGHT
++60:RIGHT
++60:RIGHT
++120:RETURN
++0:wait:UI_OptionsMain.fng:600
++300:RIGHT
++120:RIGHT
++120:RIGHT
++120:RIGHT
++120:RETURN
++0:wait:UI_Options_PC_Controller.fng:600
++300:UP
++120:RIGHT
++150:shot
++5:P
++200:LEFT
++60:RETURN
++300:shot
++5:ESCAPE
++300:ESCAPE
++300:log:end

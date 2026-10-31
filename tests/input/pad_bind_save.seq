@@ -1,0 +1,51 @@
+# Pad only (the synthetic pad, NFSU2_PAD_FAKE=PLUG=1): create a profile with
+# the default name, Options > Controls > Joypad Configuration, bind "Shift Up"
+# to Y, leave Options so the profile saves.  The pad's bindings are saved with
+# the profile, keyed by its stable guidInstance; pad_bind_load.seq checks
+# them after a restart.  [0x874fc8] = the pad's input channel's in-game table
+# (channel 1 at 0x874fb0 + 0x18), one action id per button.
+0:untilpad:START:MC_Background.fng:120
++120:padtap:DLEFT
++30:padtap:A
++300:padtap:A
++300:padtap:A
++240:padtap:DLEFT
++60:padtap:A
++400:padtap:A
++0:wait:GarageMain.fng:3000
++300:peek:874fc8:12
++400:padtap:DRIGHT
++60:padtap:DRIGHT
++60:padtap:DRIGHT
++60:padtap:DRIGHT
++60:padtap:DRIGHT
++120:padtap:A
++0:wait:UI_OptionsMain.fng:600
++300:padtap:DRIGHT
++120:padtap:DRIGHT
++120:padtap:DRIGHT
++120:padtap:DRIGHT
++120:padtap:A
++0:wait:UI_Options_PC_Controller.fng:600
++300:padtap:DUP
++120:padtap:DRIGHT
++150:padtap:DDOWN
++60:padtap:DDOWN
++60:padtap:DDOWN
++60:padtap:DDOWN
++60:padtap:DDOWN
++90:shot
++5:padtap:A
++120:padtap:Y
++200:shot
++5:peek:874fc8:12
++0:padtap:B
++300:padtap:B
++300:shot
++5:padtap:DLEFT
++60:padtap:A
++300:padtap:DLEFT
++60:padtap:A
++400:shot
++5:padtap:A
++300:log:end

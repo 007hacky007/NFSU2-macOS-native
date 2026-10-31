@@ -1,0 +1,44 @@
+# Pad only to a Quick Race (the synthetic pad, NFSU2_PAD_FAKE=PLUG=1), then
+# in the race: analog steering, the triggers as separate throttle and brake
+# axes (half and full pull), RB e-brake; the focus rule (another app in front:
+# the pad reads at rest; back in front with the trigger still pulled: at rest
+# until it is let go) and a key held through a focus loss (released).
+0:untilpad:START:MC_Background.fng:120
++200:untilpad:A:UI_QRModeSelect.fng:300
++200:untilpad:A:UI_QRTrackSelect.fng:150
++200:untilpad:A:UI_QRModeOptions.fng:150
++200:untilpad:A:UI_QRCarSelect.fng:150
++200:untilpad:A:PC_Loading.fng:150
++1500:log:race
++0:in
++0:pad:LX=-0.5
++30:in
++0:pad:LX=0;RT=0.5
++30:in
++0:pad:RT=1
++30:in
++120:shot
++5:pad:RT=0;LT=0.5
++30:in
++0:pad:LT=0;RB=1
++30:in
++0:pad:RB=0;RT=1
++60:in
++0:log:focus lost with the right trigger pulled
++0:focus:out
++10:in
++60:focus:in
++30:in
++0:log:trigger let go and pulled again
++0:pad:RT=0
++10:pad:RT=1
++30:in
++0:pad:OFF
++30:log:a key held through a focus loss
++0:down:LEFT
++30:in
++0:focus:out
++10:in
++0:focus:in
++20:up:LEFT
++30:log:end

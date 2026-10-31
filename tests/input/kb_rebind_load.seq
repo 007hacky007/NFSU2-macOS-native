@@ -1,0 +1,45 @@
+# After kb_rebind_save.seq, on the same HOME and save folder: the profile
+# loads, the keyboard bindings chosen there come back from the DirectInput
+# user maps (BuildActionMap: "N from the saved user map"), are on the
+# Controls page and drive the car in a Quick Race.
+0:until:RETURN:GarageMain.fng:200
++600:RIGHT
++60:RIGHT
++60:RIGHT
++60:RIGHT
++60:RIGHT
++120:RETURN
++0:wait:UI_OptionsMain.fng:600
++300:RIGHT
++120:RIGHT
++120:RIGHT
++120:RIGHT
++120:RETURN
++0:wait:UI_Options_PC_Controller.fng:600
++300:shot
++5:ESCAPE
++300:ESCAPE
++300:LEFT
++60:LEFT
++60:LEFT
++60:LEFT
++60:LEFT
++200:until:RETURN:UI_QRModeSelect.fng:150
++200:until:RETURN:UI_QRTrackSelect.fng:150
++200:until:RETURN:UI_QRModeOptions.fng:150
++200:until:RETURN:UI_QRCarSelect.fng:150
++200:until:RETURN:PC_Loading.fng:150
++1500:log:race
++0:in
++0:down:J
++30:in
++0:up:J
++30:down:I
++30:in
++200:shot
++5:up:I
++30:in
++0:down:DOWN
++30:in
++0:up:DOWN
++60:log:end

@@ -1,0 +1,42 @@
+# After pad_bind_save.seq, on the same HOME and save folder: the profile
+# loads and the pad's binding chosen there (Shift Up = Y: [3] = 7 in the
+# channel's in-game table) is back, and on the Controls page.  Throttle
+# bound to A in the first column takes the place of the trigger axis there
+# (the axis goes off, runtime/dinput_pad.c bind_takes_axis).  Then a pad
+# capture there is cancelled with the keyboard's Escape (the keyboard reader
+# looks the key up with GetObjectInfo(DIPH_BYOFFSET) in its action map), so
+# B afterwards leaves the page instead of being bound.
+0:untilpad:START:MC_Background.fng:120
++300:untilpad:A:GarageMain.fng:200
++300:peek:874fc8:12
++0:padtap:DRIGHT
++60:padtap:DRIGHT
++60:padtap:DRIGHT
++60:padtap:DRIGHT
++60:padtap:DRIGHT
++120:padtap:A
++0:wait:UI_OptionsMain.fng:600
++300:padtap:DRIGHT
++120:padtap:DRIGHT
++120:padtap:DRIGHT
++120:padtap:DRIGHT
++120:padtap:A
++0:wait:UI_Options_PC_Controller.fng:600
++300:padtap:DUP
++120:padtap:DRIGHT
++200:shot
++5:padtap:DDOWN
++60:padtap:DDOWN
++60:padtap:DDOWN
++90:padtap:A
++120:padtap:A
++150:shot
++5:padtap:DDOWN
++60:padtap:DDOWN
++90:padtap:A
++120:ESCAPE
++150:shot
++5:peek:874fc8:12
++0:padtap:B
++0:wait:UI_OptionsMain.fng:600
++60:log:end
