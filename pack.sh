@@ -103,8 +103,8 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 ICON_EXE="${ICON_EXE:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2/SPEED2.EXE}"
 if [ ! -x "$ROOT/.venv/bin/python" ]; then
   echo "warning: no .venv, icon not generated"
-elif [ -f "$ICON_EXE" ]; then
-  "$ROOT/.venv/bin/python" "$ROOT/tools/exeicon.py" "$ICON_EXE" "$APP/Contents/Resources/AppIcon.icns" >/dev/null
+elif [ -f "$ICON_EXE" ] && "$ROOT/.venv/bin/python" "$ROOT/tools/exeicon.py" "$ICON_EXE" "$APP/Contents/Resources/AppIcon.icns" >/dev/null; then
+  :
 else
   "$ROOT/.venv/bin/python" "$ROOT/tools/mkicon.py" "$APP/Contents/Resources/AppIcon.icns" >/dev/null
 fi
