@@ -7,10 +7,14 @@ sys.path.insert(0,'tools')
 from lift import RawLifter, Unsupported
 
 TESTS = []
-def T(name, code, setup=None, mem=None, expect=None, fmem=None, memf=None, fmemf=None):
+# calls: offsets in code of further functions the test calls (each is lifted as a
+# function of its own); retpast: offsets of callees that may return past their
+# caller (the lifter's tools/retpast.txt list); env: lifter options set while
+# the test is lifted (e.g. RETEIP=0)
+def T(name, code, setup=None, mem=None, expect=None, fmem=None, memf=None, fmemf=None, calls=(), retpast=(), env=None):
     TESTS.append(dict(name=name, code=bytes(code), setup=setup or {},
                       mem=mem or {}, expect=expect or {}, fmem=fmem or {},
-                      memf=memf or {}, fmemf=fmemf or {}))
+                      memf=memf or {}, fmemf=fmemf or {}, calls=calls, retpast=retpast, env=env or {}))
 
 def imm32(v): return list(struct.pack('<I', v & 0xffffffff))
 MOV_EAX = lambda v: [0xB8]+imm32(v)
@@ -287,7 +291,8 @@ FP_ = 0x00C71000
 def _pc(name, cw, lo, hi, base):
     T(name, [0xD9,0x2D]+a32(base) + [0xD9,0xE8] + [0xD8,0x35]+a32(base+4) + [0xDD,0x1D]+a32(base+8),
       {}, mem={base:cw}, memf={base+4:3.0}, expect={}, fmem={base+8:lo, base+12:hi})
-_pc("fdiv 1/3 at PC=24 (CW 0x007F) -> float-rounded", 0x007F, 0x60000000, 0x3FD55555, FP_)
+if os.environ['X87PC'] == '1':   # X87PC=0 lifts plain doubles (the PC field is not honoured)
+    _pc("fdiv 1/3 at PC=24 (CW 0x007F) -> float-rounded", 0x007F, 0x60000000, 0x3FD55555, FP_)
 _pc("fdiv 1/3 at PC=53 (CW 0x027F) -> double",        0x027F, 0x55555555, 0x3FD55555, FP_+0x20)
 _pc("fdiv 1/3 at PC=64 (CW 0x037F) -> double",        0x037F, 0x55555555, 0x3FD55555, FP_+0x40)
 
@@ -453,18 +458,93 @@ _nan("x87 NaN: two QNaNs, larger first",    0xFFF8000000000300, 0x7FF80000000000
 _nan("x87 NaN: QNaN beats a larger SNaN",   0x7FF7FFFFFFFFFFFF, 0x7FF8000000000001, 0x7FF8000000000001, FX+0xC0)
 _nan("x87 NaN: lone SNaN comes back quiet", 0x7FF0000000000100, 0x3FF0000000000000, 0x7FF8000000000100, FX+0xE0)
 
+# A callee that returns past its caller (tools/retpast.txt), in the shape of the
+# CRT's x87 2^x core (0x7653de): a range check (fcompp, fnstsw into the frame at
+# ebp, test 0x41, jne) and, out of range, 'pop eax' -- its own return address --
+# and a ret that goes to its caller's caller.  The test calls F (+0x12), F calls
+# H (+0x21) and adds 1 and sets ebx only when H comes back to it.  ZF, CF and
+# SF start at 1; out of range H's test leaves them 0, which the early return
+# hands on (CF and SF check the FLAGABI lift: H's own jne reads only ZF).  With
+# RETEIP=0 (a ret only pops) H still writes c->eip: F compares it.
+RP = 0x00C90000
+def _rp(name, x, rp, res, expect, env=None):
+    T(name, [0xD9,0x05]+a32(rp) + [0xE8,0x07,0,0,0] + [0xD9,0x1D]+a32(rp+8) + [0xC3]   # fld [rp]; call F; fstp [rp+8]
+      + [0xE8,0x0A,0,0,0, 0xD9,0xE8, 0xDE,0xC1, 0xBB,1,0,0,0, 0xC3]                     # F: call H; fld1; faddp; mov ebx,1
+      + [0xD9,0xC0, 0xD9,0xE1, 0xD9,0x05]+a32(rp+4) + [0xDE,0xD9]                       # H: fld st0; fabs; fld [limit]; fcompp
+      + [0x9B, 0xDD,0xBD,0x60,0xFF,0xFF,0xFF, 0xF6,0x85,0x61,0xFF,0xFF,0xFF,0x41]       # fnstsw [ebp-0xa0]; test [ebp-0x9f],0x41
+      + [0x75,0x01, 0xC3, 0x58, 0xDD,0xD8, 0xD9,0x05]+a32(rp+12) + [0xC3],              # jne; ret | pop eax; fstp st0; fld [rp+12]
+      {'ebp':rp+0x200, 'ebx':0, 'zf':1, 'cf':1, 'sf':1}, memf={rp:x, rp+4:100.0, rp+12:7.0}, expect=expect, fmemf={rp+8:res},
+      calls=(0x12, 0x21), retpast=(0x21,), env=env)
+_rp("call returning past its caller: in range", 3.0, RP, 4.0, {'ebx':1})
+_rp("call returning past its caller: out of range", 1000.0, RP+0x400, 7.0, {'ebx':0, 'zf':0, 'cf':0, 'sf':0, 'eax':0x00401017})
+_rp("call returning past its caller: in range, RETEIP=0", 3.0, RP+0x800, 4.0, {'ebx':1}, env={'RETEIP':'0'})
+_rp("call returning past its caller: out of range, RETEIP=0", 1000.0, RP+0xC00, 7.0, {'ebx':0, 'zf':0, 'cf':0, 'sf':0, 'eax':0x00401017},
+    env={'RETEIP':'0'})
+
+# pushfd / popfd round trip with the arithmetic flags and the ID bit (the
+# game's CPUID test): under LREGS they go through the locals (LR_EFLAGS_*)
+T("pushfd; popfd keeps CF ZF SF OF", [0x9C, 0x9D], {'cf':1, 'zf':1, 'sf':1, 'of':1, 'pf':0},
+  expect={'cf':1, 'zf':1, 'sf':1, 'of':1, 'pf':0})
+T("stc; pushfd; pop eax -> 0x203", [0xF9, 0x9C, 0x58], {'eax':0}, expect={'eax':0x203, 'cf':1})
+T("push 0x8c1; popfd -> CF ZF SF OF", [0x68]+imm32(0x8C1)+[0x9D], {}, expect={'cf':1, 'zf':1, 'sf':1, 'of':1, 'pf':0, 'af':0})
+
+# ---------------- switch jump tables (JTSWITCH=1 only) ----------------
+# Lifted as a C switch whose cases check the table entry in guest memory (the
+# tables are written there with mem=); without JTSWITCH the jmp is a tail call
+# through the dispatcher, which this harness does not have.
+if os.environ.get('JTSWITCH', '') == '1':
+    _B = 0x00401000
+    # cmp eax,2; ja default; jmp [eax*4+tab]; case0/1/2: mov ebx,10/20/30; default: mov ebx,99; ret; tab
+    _JT1 = ([0x3D]+imm32(2)+[0x77,0x1C, 0xFF,0x24,0x85]+imm32(_B+0x29)
+            + [0xBB]+imm32(10)+[0xEB,0x13] + [0xBB]+imm32(20)+[0xEB,0x0C] + [0xBB]+imm32(30)+[0xEB,0x05]
+            + [0xBB]+imm32(99) + [0xC3] + imm32(_B+0x0E)+imm32(_B+0x15)+imm32(_B+0x1C))
+    _JT1M = {_B+0x29:_B+0x0E, _B+0x2D:_B+0x15, _B+0x31:_B+0x1C}
+    for _v, _w in ((0, 10), (1, 20), (2, 30), (3, 99), (0xFFFFFFFF, 99)):
+        T(f"switch [eax*4] (eax={_v:#x})", _JT1, {'eax':_v, 'ebx':0}, mem=_JT1M, expect={'ebx':_w})
+    # MSVC's two-level switch: cmp eax,3; ja default; movzx ecx, byte [eax+idx]; jmp [ecx*4+tab];
+    # case0/1: mov ebx,10/20; default: mov ebx,99; ret; idx = 1,0,1,0; tab
+    _JT2 = ([0x3D]+imm32(3)+[0x77,0x1C, 0x0F,0xB6,0x88]+imm32(_B+0x29) + [0xFF,0x24,0x8D]+imm32(_B+0x2D)
+            + [0xBB]+imm32(10)+[0xEB,0x0C] + [0xBB]+imm32(20)+[0xEB,0x05] + [0xBB]+imm32(99) + [0xC3]
+            + [1,0,1,0] + imm32(_B+0x15)+imm32(_B+0x1C))
+    _JT2M = {_B+0x29:0x00010001, _B+0x2D:_B+0x15, _B+0x31:_B+0x1C}
+    for _v, _w, _x in ((0, 20, 1), (1, 10, 0), (2, 20, 1), (3, 10, 0), (4, 99, None)):
+        _e = {'ebx':_w}
+        if _x is not None: _e['ecx'] = _x
+        T(f"two-level switch (eax={_v})", _JT2, {'eax':_v, 'ebx':0, 'ecx':0x55}, mem=_JT2M, expect=_e)
+    # instructions that leave the flags and the index alone between them (sub_00468160's shape):
+    # cmp eax,1; push esi; ja default; mov ecx,esi; jmp [eax*4+tab]; case0/1: mov ebx,10/20;
+    # default: mov ebx,99; pop esi; ret; tab
+    _JT3 = ([0x3D]+imm32(1)+[0x56, 0x77,0x17, 0x8B,0xCE, 0xFF,0x24,0x85]+imm32(_B+0x26)
+            + [0xBB]+imm32(10)+[0xEB,0x0C] + [0xBB]+imm32(20)+[0xEB,0x05] + [0xBB]+imm32(99) + [0x5E, 0xC3]
+            + imm32(_B+0x11)+imm32(_B+0x18))
+    _JT3M = {_B+0x26:_B+0x11, _B+0x2A:_B+0x18}
+    for _v, _w, _c in ((0, 10, 0x1234), (1, 20, 0x1234), (2, 99, 0x77)):   # default: ja before the mov
+        T(f"switch after push/mov (eax={_v})", _JT3, {'eax':_v, 'ebx':0, 'ecx':0x77, 'esi':0x1234}, mem=_JT3M, expect={'ebx':_w, 'ecx':_c, 'esi':0x1234})
+    # a changed table entry: the switch arm sees it and leaves to the dispatcher (here a no-op stub)
+    T("switch with a patched table entry -> dispatcher", _JT1, {'eax':1, 'ebx':0}, mem={_B+0x29:_B+0x0E, _B+0x2D:0x00123456, _B+0x31:_B+0x1C}, expect={'ebx':0})
+
 # =====================  GENERATOR / RUNNER  =====================
 BASE = 0x00401000
 def build():
     fns=[]; body=[]
     for i,t in enumerate(TESTS):
         L = RawLifter(t['code'] + b'\xc3', base=BASE, comments=False)
+        L.retpast = {BASE + x for x in t['retpast']}
+        keep = {k: os.environ.get(k) for k in t['env']}; os.environ.update(t['env'])
         try:
             code,_ = L.lift(BASE)
+            more = [L.lift(BASE + x)[0] for x in t['calls']]
         except Unsupported as e:
             print(f"  !! {t['name']}: could not be lifted ({e})"); fns.append(None); continue
-        code = code.replace(f"sub_{BASE:08x}", f"test_{i}")
-        body.append(code); fns.append(f"test_{i}")
+        finally:
+            for k, v in keep.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+        names = {f"sub_{BASE:08x}": f"test_{i}", **{f"sub_{BASE + x:08x}": f"test_{i}_{x:x}" for x in t['calls']}}
+        for a, b in names.items():
+            code = code.replace(a, b); more = [s.replace(a, b) for s in more]
+        body += [f"void test_{i}_{x:x}(CPU *c);" for x in t['calls']] + more + [code]
+        fns.append(f"test_{i}")
     return fns, body
 
 REGS = ['eax','ecx','edx','ebx','esp','ebp','esi','edi']
@@ -474,11 +554,16 @@ def gen_c(fns, body):
     o=[]
     o.append('#include "cpu.h"\n#include <stdio.h>\n#include <string.h>\n#include <math.h>')
     o.append('void mem_commit(uint32_t,uint32_t);')
-    o.append('void dispatch_indirect(CPU*c,uint32_t a){(void)c;(void)a;}')
+    # an indirect call or jump runs an empty function: it returns at once (pops its return address)
+    o.append('void dispatch_indirect(CPU*c,uint32_t a){(void)a; POP32(c->eip);}')
     o.append('void unsupported_insn(CPU*c,uint32_t a,const char*m){(void)c;(void)a;(void)m;fprintf(stderr,"TRAP 0x%x %s\\n",a,m);}')
     o.append('void guest_hook(CPU*c,uint32_t a){(void)c;(void)a;}')
     o.append('void cpuid_shim(CPU*c){(void)c;} uint64_t rdtsc_shim(void){return 0;}')
+    # LREGS=1 (tools/lregs.py): the lifted bodies name the registers in locals; the harness below does not
+    lr = os.environ.get('LREGS', '') == '1'
+    if lr: o.append('#undef RG_\n#define RG_(x) _r_##x')
     o.append('\n'.join(body))
+    if lr: o.append('#undef RG_\n#define RG_(x) c->x')
     o.append('static CPU cpu; static CPU *const c=&cpu;')
     o.append('#define STK 0x00B00000u')
     o.append('static int pass=0, fail=0;')
@@ -525,6 +610,7 @@ def gen_c(fns, body):
 if __name__=='__main__':
     fns, body = build()
     src = gen_c(fns, body)
-    os.makedirs('gen', exist_ok=True)
-    open('gen/isatest.c','w').write(src)
-    print(f"gen/isatest.c written ({len(TESTS)} test)")
+    out = os.environ.get('ISATEST_OUT', 'gen/isatest.c')   # tests/isatest_variants.sh: one file per variant
+    os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
+    open(out,'w').write(src)
+    print(f"{out} written ({len(TESTS)} tests)")
