@@ -44,6 +44,7 @@ static void all_reports(void){
     { void headlights_report(void); headlights_report(); }
     { void hfr_report(void); hfr_report(); }   /* framerate.c */
     dispatch_report();
+    { void roam_game_report(void); roam_game_report(); }   /* free-roam multiplayer: statistics, goodbye to the others */
 }
 
 static void all_reports(void);
