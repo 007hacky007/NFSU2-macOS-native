@@ -518,9 +518,16 @@ static void modes_refresh(void){
         unsigned hh = hts[i], ww = (unsigned)((double)hh * vw / vh + 0.5) & ~1u;
         g_modes[i][0] = ww; g_modes[i][1] = hh;
     }
-    double dw = vw, dh = vh;
+    /* NFSU2_RENDER (display.c): the Screen row at a share of the view's pixels;
+     * a scale above 1 goes beyond NFSMAXPIX, up to 8192 a side. */
+    double display_render_factor(void);
+    double rf = display_render_factor(), up = rf > 1.0 ? rf : 1.0;
+    double dw = vw * rf / up, dh = vh * rf / up;
     const char *mp = ENVC("NFSMAXPIX"); double maxpix = (mp && *mp) ? atof(mp) : 9.0e6;
     if (maxpix > 1.0e5 && dw * dh > maxpix){ double k = sqrt(maxpix / (dw * dh)); dw *= k; dh *= k; }
+    dw *= up; dh *= up;
+    if (dw > 8192.0 || dh > 8192.0){ double k = 8192.0 / (dw > dh ? dw : dh); dw *= k; dh *= k; }
+    if (dw < 640.0 || dh < 480.0){ double k = fmax(640.0 / dw, 480.0 / dh); dw *= k; dh *= k; }
     unsigned w = (unsigned)dw & ~1u, h = (unsigned)dh & ~1u;
     g_modes[ROW_NATIVE][0] = w; g_modes[ROW_NATIVE][1] = h;
     /* The 4K row only if the screen can show it (screen row >= 2160).
@@ -1361,8 +1368,10 @@ static int ortho_full_width(const VSConst *vsk, int cx, const VtxView *vv){
     g_wide_ylo = ylo; g_wide_yhi = yhi;
     /* Bars only: full width but part of the height and on screen (measured: the
      * cinematic bars are y 0.75..1 and -1..-0.75).  A full-screen picture (splash,
-     * loading screen, y -1..1 or larger) keeps its 4:3 shape. */
-    return lo <= -0.98f && hi >= 0.98f && (yhi - ylo) < 1.9f && yhi > -1.f && ylo < 1.f;
+     * loading screen, y -1..1 or larger) keeps its 4:3 shape, and so does a movie
+     * (y -0.9..0.9: under 1.9 it was taken for a bar and stretched to the full
+     * width; display.c frames it, NFSU2_MOVIE). */
+    return lo <= -0.98f && hi >= 0.98f && (yhi - ylo) < 1.f && yhi > -1.f && ylo < 1.f;
 }
 static int hudpos_on(void){ static int v = -1; if (v < 0){ const char *e = ENVC("HUDPOS"); v = (e && *e == '1'); } return v; }
 static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const VtxView *vv){
@@ -1390,6 +1399,7 @@ static const VSConst *aspect_apply(const VSConst *vsk, const VSProg *prog, const
          * screen-sized targets get the HUD treatment. */
         if (g_cur_rt && g_cur_rt_w && g_cur_rt_h &&
             (g_cur_rt_w * 2u < g_bb_w || g_cur_rt_h * 2u < g_bb_h)) return vsk;
+        { int display_fill_target(void); if (display_fill_target()) return vsk; }   /* display.c: a quad over the whole target */
         /* HUDFIX=1: also scale the UI about the center, so circles stay circular.
          * CAUTION: fullscreen post-process quads are orthographic too; if they get
          * shrunk, bars appear at the edges. */

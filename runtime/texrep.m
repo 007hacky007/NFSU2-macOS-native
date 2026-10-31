@@ -332,7 +332,7 @@ void texrep_add_menu(NSMenu *m){
     if (!on()) return;
     g_menu_target = [TexrepMenuTarget new];
     /* Cmd-T alone: a modifier pressed before Command reaches the game */
-    NSMenuItem *it = [m addItemWithTitle:@"Doku Paketleri" action:@selector(toggle:) keyEquivalent:@"t"];
+    NSMenuItem *it = [m addItemWithTitle:@"Texture Packs" action:@selector(toggle:) keyEquivalent:@"t"];
     [it setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
     [it setTarget:g_menu_target];
     [it setState:NSControlStateValueOn];

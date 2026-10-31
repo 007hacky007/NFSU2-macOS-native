@@ -5,7 +5,7 @@
  *       detailed  also the 1% low and the longest frame of the last second,
  *                 the GPU time per frame, the engine and the display's
  *                 refresh rate, the render size and the MSAA in use (HD)
- *   Cmd-N (app menu "Kare Hizini Goster") cycles off -> on -> detailed -> off.
+ *   Cmd-N (app menu "Show Frame Rate") cycles off -> on -> detailed -> off.
  *   The choice is remembered like Cmd-F's full screen (user defaults,
  *   NFSUFpsCounter); NFSU2_FPS_COUNTER overrides it.
  *   NFSU2_FPS_COUNTER_DUMP=1   frame dumps include the counter (default: not)
@@ -357,7 +357,7 @@ void fpscounter_draw(id<MTLCommandBuffer> cb, id<MTLTexture> dst, double px_per_
 static FpsCounterMenuTarget *g_target;
 void fpscounter_add_menu(NSMenu *m){
     if (!g_target) g_target = [FpsCounterMenuTarget new];
-    NSMenuItem *it = [m addItemWithTitle:@"Kare Hizini Goster" action:@selector(cycle:) keyEquivalent:@"n"];
+    NSMenuItem *it = [m addItemWithTitle:@"Show Frame Rate" action:@selector(cycle:) keyEquivalent:@"n"];
     [it setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
     [it setTarget:g_target];
 }

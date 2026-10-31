@@ -5412,7 +5412,7 @@ void metal_early_init(void){
                      withBytes:&px bytesPerRow:4];
     }
     fprintf(stderr, "metal: device ready (%s), draw path %s\n",
-            [[g_dev name] UTF8String], g_pso ? "HAZIR" : "NONE");
+            [[g_dev name] UTF8String], g_pso ? "READY" : "NONE");
 }
 
 /* --- pipeline cache by blend state -------------------------
@@ -6096,12 +6096,31 @@ static void ks_engel(int on){
     fprintf(stderr, "app: system shortcuts %s (%d)\n", on ? "disabled (game in front)" : "re-enabled", n);
 }
 
+/* lifecycle.c: quitting and app activation are handed to the game as window
+ * messages (WM_CLOSE, WM_ACTIVATE / WM_ACTIVATEAPP), the way Windows does. */
+void lifecycle_request_quit(const char *why);
+void lifecycle_set_active(int on, const char *why);
+void lifecycle_tick(void);
+
 @interface NfsuDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate> @end
 @implementation NfsuDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)s { (void)s; return YES; }
+/* The close button is a WM_CLOSE: the window stays until the game has shut
+ * itself down (its ExitProcess ends the draw loop, win32.c guest_exit_now). */
 - (BOOL)windowShouldClose:(NSWindow *)w { (void)w;
-    fprintf(stderr, "app: window closed -> exit\n");
-    atomic_store(&g_should_quit, 1); return YES; }
+    lifecycle_request_quit("window close button");
+    return NO; }
+/* In the background the game pauses like on Windows (lifecycle.c); a
+ * minimized window too (WM_SIZE / IsIconic there, an inactive app here). */
+- (void)applicationDidBecomeActive:(NSNotification *)n { (void)n;
+    if (g_win && [g_win isMiniaturized]) return;          /* still in the Dock */
+    lifecycle_set_active(1, "app became active"); }
+- (void)applicationDidResignActive:(NSNotification *)n { (void)n;
+    lifecycle_set_active(0, "app resigned active"); }
+- (void)windowDidMiniaturize:(NSNotification *)n { (void)n;
+    lifecycle_set_active(0, "window minimized"); }
+- (void)windowDidDeminiaturize:(NSNotification *)n { (void)n;
+    if ([NSApp isActive]) lifecycle_set_active(1, "window restored"); }
 /* When the user enlarges the window or goes fullscreen the content size changes;
  * if the mouse mapping doesn't know, the cursor drifts. */
 /* On entering fullscreen measure the content area, save the preference and make
@@ -6135,15 +6154,16 @@ static void ks_engel(int on){
     atomic_store(&g_cont_w, (int)c.width);
     atomic_store(&g_cont_h, (int)c.height); }
 /* Cmd-Q: DON'T terminate directly.  Cutting the guest thread off in the middle
- * leads to a shutdown race (see sub_0050d510).  We tell the draw loop to "stop"
- * and return CANCEL; when the loop exits main() writes the report and ends.
+ * leads to a shutdown race (see sub_0050d510).  The game gets a WM_CLOSE and
+ * shuts itself down (lifecycle.c); its ExitProcess stops the draw loop, and
+ * when the loop exits main() writes the report and ends.  We return CANCEL.
  *
  * LATER was tried and is UNUSABLE: while waiting for the reply AppKit runs its
  * OWN run loop, our draw loop never returns -> shutdown hangs.  Cancel's only
  * side effect is a warning on logout; the app exits by itself right after anyway. */
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)s {
-    (void)s; fprintf(stderr, "app: quit request (Cmd-Q / Dock)\n");
-    atomic_store(&g_should_quit, 1); return NSTerminateCancel; }
+    (void)s; lifecycle_request_quit("Cmd-Q / Dock / logout");
+    return NSTerminateCancel; }
 @end
 
 #if NFS_ENHANCED
@@ -6286,18 +6306,18 @@ void metal_run_main_loop(void){
             NSMenuItem *appItem = [NSMenuItem new];
             [bar addItem:appItem];
             NSMenu *appMenu = [NSMenu new];
-            [appMenu addItemWithTitle:@"NFSU2 Hakkinda"
+            [appMenu addItemWithTitle:@"About NFSU2"
                                action:@selector(orderFrontStandardAboutPanel:)
                         keyEquivalent:@""];
             [appMenu addItem:[NSMenuItem separatorItem]];
-            [appMenu addItemWithTitle:@"Gizle" action:@selector(hide:) keyEquivalent:@"h"];
-            [appMenu addItemWithTitle:@"Kucult" action:@selector(performMiniaturize:)
+            [appMenu addItemWithTitle:@"Hide NFSU2" action:@selector(hide:) keyEquivalent:@"h"];
+            [appMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:)
                         keyEquivalent:@"m"];
-            [appMenu addItemWithTitle:@"Tam Ekran"
+            [appMenu addItemWithTitle:@"Toggle Full Screen"
                                action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
             /* macOS's standard shortcut Ctrl+Cmd+F (without a menu item it wasn't bound to
              * anything); it sits hidden in the menu. */
-            { NSMenuItem *fs2 = [appMenu addItemWithTitle:@"Tam Ekran (Ctrl+Cmd+F)"
+            { NSMenuItem *fs2 = [appMenu addItemWithTitle:@"Toggle Full Screen (Ctrl+Cmd+F)"
                                    action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
               [fs2 setKeyEquivalentModifierMask:NSEventModifierFlagControl | NSEventModifierFlagCommand];
               if (@available(macOS 13.0, *)){
@@ -6305,7 +6325,7 @@ void metal_run_main_loop(void){
             fpscounter_add_menu(appMenu);      /* Cmd-N: frame-rate counter */
             texrep_add_menu(appMenu);          /* Cmd-T, while a texture pack is in use */
             [appMenu addItem:[NSMenuItem separatorItem]];
-            [appMenu addItemWithTitle:@"NFSU2'den Cik" action:@selector(terminate:)
+            [appMenu addItemWithTitle:@"Quit NFSU2" action:@selector(terminate:)
                         keyEquivalent:@"q"];
             [appItem setSubmenu:appMenu];
             [NSApp setMainMenu:bar];
@@ -6380,7 +6400,7 @@ void metal_run_main_loop(void){
 #endif
         fprintf(stderr, "version: v%d (%s)\n", NFS_VERSION, NFS_ENHANCED ? "HD" : "normal");
         fprintf(stderr, "metal: window opened (%s), draw path %s\n",
-                [[g_dev name] UTF8String], g_pso ? "HAZIR" : "NONE");
+                [[g_dev name] UTF8String], g_pso ? "READY" : "NONE");
 
         /* QUITFRAMES=<n>: exit CLEANLY after n frames are presented.  The ALARM path
          * _exits from the signal handler; that path skips atexit (and the PGO
@@ -6392,6 +6412,7 @@ void metal_run_main_loop(void){
         while (!atomic_load(&g_should_quit)){
             if (quitat && atomic_load(&g_frames_drawn) >= quitat){
                 atomic_store(&g_should_quit, 1); break; }
+            lifecycle_tick();                  /* lifecycle.c: quit grace period */
             rt_free_pending();
             /* FSFAKE=<frame>[,...]: simulate the fullscreen transition from the GAME's point of
              * view without touching the window (view = screen size, device lost);
@@ -7386,7 +7407,7 @@ void metal_run_main_loop(void){
                                     if (dr->target && TGT_ID(dr->target) < MAXTEX &&
                                         g_tex[TGT_ID(dr->target)])
                                         tgt = g_tex[TGT_ID(dr->target)];
-                                    if (!dr->target && (long)i < scr_b) tgt = g_tex[scr_T];   /* EKRAN YONLENDIRME */
+                                    if (!dr->target && (long)i < scr_b) tgt = g_tex[scr_T];   /* SCREEN REDIRECT */
                                     unsigned tk0 = TGT_ID(dr->target)*8u + TGT_FACE(dr->target);
                                     int first_use = dr->target
                                         ? !(touched[tk0>>3] & (1u<<(tk0&7)))
@@ -7621,7 +7642,7 @@ void metal_run_main_loop(void){
                                     if (!c_ms) g_hd_msp.dz = 0;
 #endif
                                     if (g_pp_sb){ char pn[48];
-                                        if (!dr->target) snprintf(pn, sizeof pn, "EKRAN%s%s%s", tgt != dtex ? " (redirected)" : "", c_ms ? " +MSAA" : "",
+                                        if (!dr->target) snprintf(pn, sizeof pn, "SCREEN%s%s%s", tgt != dtex ? " (redirected)" : "", c_ms ? " +MSAA" : "",
 #if NFS_ENHANCED
                                                                   c_gb ? " +G-buffer" : "");
 #else
@@ -8058,7 +8079,7 @@ void metal_run_main_loop(void){
         fprintf(stderr, "metal: command buffer error: %lu frames\n", atomic_load(&g_cb_err));
         { unsigned long n = atomic_load(&g_enc_late);
           fprintf(stderr, "metal: encoding exceeded 60 ms (used to swap into the buffer being encoded): %lu times", n);
-          for (unsigned long q = 0; q < n && q < 8; q++) fprintf(stderr, "%s%ld", q ? "," : "  kareler: ", g_enc_late_f[q]);
+          for (unsigned long q = 0; q < n && q < 8; q++) fprintf(stderr, "%s%ld", q ? "," : "  frames: ", g_enc_late_f[q]);
           fprintf(stderr, "\n"); }
         fprintf(stderr, "metal: render targets released after Reset: %lu (used afterwards: texture %lu, target %lu)\n",
                 g_rt_freed, g_freed_use_smp, g_freed_use_tgt);

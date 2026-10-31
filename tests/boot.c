@@ -45,6 +45,7 @@ static void all_reports(void){
     { void hfr_report(void); hfr_report(); }   /* framerate.c */
     dispatch_report();
     { void roam_game_report(void); roam_game_report(); }   /* free-roam multiplayer: statistics, goodbye to the others */
+    { void display_report(void); display_report(); }   /* display.c: movie framing, rain drops, tints */
 }
 
 static void all_reports(void);
@@ -124,7 +125,11 @@ static void *guest_main_thread(void *unused){
         fprintf(stderr,"\n*** guest entry point RETURNED (eip=0x%08x, eax=0x%08x)\n",cpu.eip,cpu.eax);
     } else {
         fprintf(stderr,"\n*** guest terminated with exit code %d\n", g_exit_code);
+        guest_unlock();          /* ExitProcess longjmp'd out of a call holding it */
     }
+    /* The window loop has to end too: in-game "Quit Game", or the WM_CLOSE
+     * that Cmd-Q / the close button turned into (runtime/lifecycle.c). */
+    { void lifecycle_guest_exited(int); lifecycle_guest_exited(g_exit_code); }
     return 0;
 }
 
@@ -228,6 +233,12 @@ int main(int argc,char**argv){
             pthread_join(th,0);
         }
     }
+    /* Other guest threads (the memcard/save worker) may still be writing: let
+     * open save files be closed, then stop all guest code for good before the
+     * reports and the exit (runtime/lifecycle.c, win32_ext.c). */
+    { int lifecycle_drain_writes(double); int win32_freeze_guest(int);
+      lifecycle_drain_writes(5.0);
+      if (!win32_freeze_guest(2000)) fprintf(stderr,"app: a guest thread still holds the guest lock\n"); }
     alarm(0);
     fprintf(stderr,"\n  hook hits: %llu   /GS failures: %llu\n",
             (unsigned long long)g_hook_hits,(unsigned long long)g_gs_fail);
