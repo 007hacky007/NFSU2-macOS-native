@@ -1443,6 +1443,24 @@ class Lifter:
             else: raise Unsupported(m)
             return [f"{{ uint64_t _q={src}; c->xmm[{di}].f[0]=(float)(int32_t)(uint32_t)_q;"
                     f" c->xmm[{di}].f[1]=(float)(int32_t)(uint32_t)(_q>>32); }}"]
+        if m=='cvtpi2pd' and is_xm(0):
+            # two int32 (MMX register or m64) -> two doubles
+            di=XM[o[0].reg]
+            if is_mm(1): src = f"c->mm[{MM[o[1].reg]}]"
+            elif is_mem(1): src = "MR64" + self.ea(o[1].mem)
+            else: raise Unsupported(m)
+            return [f"{{ uint64_t _q={src}; c->xmm[{di}].d[0]=(double)(int32_t)(uint32_t)_q;"
+                    f" c->xmm[{di}].d[1]=(double)(int32_t)(uint32_t)(_q>>32); }}"]
+        if m in ('cvtps2pi','cvttps2pi','cvtpd2pi','cvttpd2pi') and is_mm(0):
+            # two floats / doubles -> two int32 in an MMX register (0x80000000 when out of range)
+            dm=MM[o[0].reg]; dbl = 'pd' in m
+            if is_xm(1): src = lambda k: f"c->xmm[{XM[o[1].reg]}].{'d' if dbl else 'f'}[{k}]"
+            elif is_mem(1): src = lambda k: f"{'MRF64' if dbl else 'MRF32'}({self.ea(o[1].mem, extra=(8 if dbl else 4)*k)})"
+            else: raise Unsupported(m)
+            rnd = 'trunc' if m.startswith('cvtt') else 'nearbyint'
+            return [f"{{ double _a=(double)({src(0)}), _b=(double)({src(1)});"
+                    f" c->mm[{dm}] = (uint64_t)x86_cvt_i32({rnd}(_a))"
+                    f" | ((uint64_t)x86_cvt_i32({rnd}(_b)) << 32); }}"]
         if m in ('sqrtps','rcpps','rsqrtps','maxps','minps') and is_xm(0):
             di=XM[o[0].reg]
             if m in ('sqrtps','rcpps','rsqrtps'):
