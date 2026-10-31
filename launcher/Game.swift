@@ -75,7 +75,6 @@ enum Prefs {
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
     static let allCars = "LauncherAllCars"         // both releases' cars (off: NFSU2_ALL_CARS=0)
-    static let intro = "LauncherIntro"             // NFSU2_INTRO: "skippable" | "off" | "original"
     static let language = "LauncherLanguage"      // passed to the engine as NFSU2_LANGUAGE
     static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
     static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)

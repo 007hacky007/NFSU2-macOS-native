@@ -51,7 +51,6 @@ final class LauncherModel: ObservableObject {
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     @Published var allCars: Bool { didSet { defaults.set(allCars, forKey: Prefs.allCars) } }
-    @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
     @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
     @Published var uhud: Bool { didSet { defaults.set(uhud, forKey: Prefs.uhud) } }
@@ -133,7 +132,6 @@ final class LauncherModel: ObservableObject {
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         allCars = defaults.bool(forKey: Prefs.allCars)
-        intro = defaults.string(forKey: Prefs.intro) ?? "skippable"
         discord = defaults.bool(forKey: Prefs.discord)
         garage = defaults.bool(forKey: Prefs.garage)
         uhud = defaults.bool(forKey: Prefs.uhud)
@@ -245,7 +243,6 @@ final class LauncherModel: ObservableObject {
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
         }
         if !allCars { setenv("NFSU2_ALL_CARS", "0", 0) }          // one set by hand wins
-        if intro != "skippable" { setenv("NFSU2_INTRO", intro, 0) }      // one set by hand wins
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins

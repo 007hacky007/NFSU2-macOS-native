@@ -413,19 +413,11 @@ struct MultiplayerCard: View {
                 .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 1) {
                     Text("Horn").font(.system(size: 12.5)).foregroundColor(Theme.text)
                     Text("Press N to honk at the other players in free roam and Online races. The PC game has no horn: Off (original).")
-                        .font(.system(size: 11)).foregroundColor(Theme.dim)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
                 Picker("", selection: $model.horn) {
                     ForEach(LauncherModel.Horn.allCases, id: \.self) { h in Text(h.label).tag(h) }
-                }
                 .labelsHidden().fixedSize()
-            }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
         }
     }
@@ -435,14 +427,8 @@ struct ControllerCard: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
         Card("Controller") {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 1) {
                     Text("Use a game controller").font(.system(size: 12.5)).foregroundColor(Theme.text)
                     Text("Xbox, PlayStation or MFi. Connect it before Play; buttons are set in the game's Controls menu.")
-                        .font(.system(size: 11)).foregroundColor(Theme.dim)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
                 Toggle("", isOn: $model.controller).labelsHidden().toggleStyle(SwitchToggleStyle())
             }
             HStack(alignment: .center, spacing: 10) {
