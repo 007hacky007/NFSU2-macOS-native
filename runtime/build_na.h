@@ -308,6 +308,7 @@
 #define GA_0x00836498u 0x00836498u   /* operand pair */
 #define GA_0x008364b4u 0x008364b4u   /* operand pair */
 #define GA_0x008364d4u 0x008364d4u   /* operand pair */
+#define GA_0x008364e8u 0x008364e8u   /* operand pair */
 #define GA_0x00836514u 0x00836514u   /* operand pair */
 #define GA_0x00836518u 0x00836518u   /* operand pair */
 #define GA_0x0083651cu 0x0083651cu   /* operand pair */
@@ -391,11 +392,13 @@
 #define GA_0x0086aa70u 0x0086aa70u   /* between pairs 0086a874 and 0086ad54 (delta +0x0) */
 #define GA_0x0086eaf0u 0x0086eaf0u   /* operand pair */
 #define GA_0x0086f8acu 0x0086f8acu   /* operand pair */
+#define GA_0x0086ffb4u 0x0086ffb4u   /* operand pair */
 #define GA_0x00870818u 0x00870818u   /* operand pair */
 #define GA_0x00870848u 0x00870848u   /* operand pair */
 #define GA_0x00870980u 0x00870980u   /* operand pair */
 #define GA_0x00870984u 0x00870984u   /* operand pair */
 #define GA_0x00870cc4u 0x00870cc4u   /* operand pair */
+#define GA_0x00874c40u 0x00874c40u   /* operand pair */
 #define GA_0x008763f1u 0x008763f1u   /* operand pair */
 #define GA_0x00883da0u 0x00883da0u   /* operand pair */
 #define GA_0x00883da4u 0x00883da4u   /* operand pair */
@@ -490,6 +493,10 @@
 #define GA_0x8b466cu 0x008b466cu   /* operand pair */
 #define GA_0x8ba4a4u 0x008ba4a4u   /* operand pair */
 #define GA_0x8ba4a8u 0x008ba4a8u   /* operand pair */
+#define sub_00407750 sub_00407750
+#define sub_00407750_orig sub_00407750_orig
+#define sub_00407750_m sub_00407750_m
+#define sub_00407750_orig_m sub_00407750_orig_m
 #define sub_0042cd60 sub_0042cd60
 #define sub_0042cd60_orig sub_0042cd60_orig
 #define sub_0042cd60_m sub_0042cd60_m
@@ -690,6 +697,18 @@
 #define sub_005b2620_orig sub_005b2610_orig
 #define sub_005b2620_m sub_005b2610_m
 #define sub_005b2620_orig_m sub_005b2610_orig_m
+#define sub_005b81c0 sub_005b81b0
+#define sub_005b81c0_orig sub_005b81b0_orig
+#define sub_005b81c0_m sub_005b81b0_m
+#define sub_005b81c0_orig_m sub_005b81b0_orig_m
+#define sub_005b8470 sub_005b8460
+#define sub_005b8470_orig sub_005b8460_orig
+#define sub_005b8470_m sub_005b8460_m
+#define sub_005b8470_orig_m sub_005b8460_orig_m
+#define sub_005c1730 sub_005c1720
+#define sub_005c1730_orig sub_005c1720_orig
+#define sub_005c1730_m sub_005c1720_m
+#define sub_005c1730_orig_m sub_005c1720_orig_m
 #define sub_005c7ed0 sub_005c7ec0
 #define sub_005c7ed0_orig sub_005c7ec0_orig
 #define sub_005c7ed0_m sub_005c7ec0_m
