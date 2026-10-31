@@ -460,6 +460,30 @@ keeps its own size, so the game never sees the larger textures. **Cmd-T** while
 playing switches between the packs' textures and the game's own. From the command
 line: `NFSU2_TEXPACKS=<pack>[:<pack>...]`.
 
+**Upscaled textures.** The top of the Texture Packs window makes a pack of the
+game's own textures at four times their size (two times on a Mac with less than
+16 GB of memory) from your game files, on your Mac: **Build** reads the textures
+of the game's bundles, upscales them on the GPU with Kim2091's
+[PBRify Upscaler SPAN v4](https://github.com/Kim2091/PBRify_Remix) (CC0), keeps
+each texture's colours and alpha, corrects the result until it averages back to
+the original texel for texel, and writes it in the texture's own block format
+(about 2000 textures, 1.2 GB at 4x, a few minutes). The model is not part of this
+repository: the first Build downloads it (9 MB) from its author's repository at
+the tested commit and refuses any file with another SHA-256; **Import Model…**
+takes a copy you have. No Python is needed and nothing leaves the Mac. Its switch
+is off by default (the original game); which parts it is used for (roads and
+buildings, signs, cars and garage by default), the GPU memory it may take and
+the size are in the same card, and **Collect textures while playing** keeps a copy
+of the textures the game loads from its compressed bundles (menus, cars) for the
+next Build. The engine puts the game's own mip levels under the larger ones, so
+wherever the game draws a texture at or below its own size it looks as before.
+The Texture Packs and the Upscaled HUD win over it where both change a texture.
+From the command line: `NFSU2_TEXTURES=upscaled NFSU2_TEXPACK=<folder>`, with
+`NFSU2_TEXPARTS`, `NFSU2_TEXBUDGET` (MB) and `NFSU2_TEXDUMP=<folder>`
+(runtime/texrep.m); a folder of DDS files named `<anything>_<XXH3-64 of level 0>.dds`
+works as such a pack too. `tests/upscale_pack.sh` and `tests/texture_unit.sh` test
+the builder and the engine side.
+
 The list is `launcher/texture-packs.json`, built into the app. When the window
 opens, the launcher also reads the same file from this repository's main branch
 (once per launch, over HTTPS, checked strictly) and keeps the last good copy, so a
