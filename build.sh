@@ -46,3 +46,20 @@ ls shard_*.c fntab.c stubs.c 2>/dev/null | \
     [ -z "$o" ] || printf "%s\n" "$o" | head -5
     [ $r -eq 0 ] || echo "COMPILE FAILED: $1" >&2
     exit $r' sh
+
+# server.dll (tools/gen_v2.sh -> gen/server) -> out/obj/srv, linked by both builds
+if [ -d "$ROOT/gen/server" ] && ls "$ROOT"/gen/server/shard_*.c >/dev/null 2>&1; then
+  mkdir -p "$ROOT/out/obj/srv"
+  cd "$ROOT/gen/server"
+  export OBJ=out/obj/srv
+  ls shard_*.c fntab.c 2>/dev/null | \
+    xargs -P "$J" -n 1 sh -c '
+      o=$(clang $OPT -c -I"$ROOT/runtime" -I. -Wno-unused-label -Wno-parentheses-equality \
+            -o "$ROOT/$OBJ/$(basename "$1" .c).o" "$1" 2>&1); r=$?
+      [ -z "$o" ] || printf "%s\n" "$o" | head -5
+      [ $r -eq 0 ] || echo "COMPILE FAILED: $1" >&2
+      exit $r' sh
+elif [ -f "$ROOT/gen/server/fntab.c" ]; then
+  mkdir -p "$ROOT/out/obj/srv"
+  clang $OPT -c -I"$ROOT/runtime" -o "$ROOT/out/obj/srv/fntab.o" "$ROOT/gen/server/fntab.c"
+fi

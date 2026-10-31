@@ -53,6 +53,10 @@ final class LauncherModel: ObservableObject {
     @Published var cutsceneBars: Bool { didSet { defaults.set(cutsceneBars, forKey: Prefs.cutsceneBars) } }
     /// NFSU2_FPS values; the labels are in FrameRateCard.
     static let frameRates = ["auto", "30", "60", "120", "240"]
+    @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
+    @Published var server: String { didSet { defaults.set(server, forKey: Prefs.server) } }
+    @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
+    var onlineError: String? { online ? OnlineSettings.error(server: server, name: playerName) : nil }
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -120,6 +124,9 @@ final class LauncherModel: ObservableObject {
         frameRate = LauncherModel.frameRates.contains(fr) ? fr : "auto"
         cutscenes60 = defaults.bool(forKey: Prefs.cutscenes60)
         cutsceneBars = defaults.bool(forKey: Prefs.cutsceneBars)
+        online = defaults.bool(forKey: Prefs.online)
+        server = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
+        playerName = defaults.string(forKey: Prefs.playerName) ?? ""
     }
 
     var location: GameLocation? {
@@ -176,6 +183,7 @@ final class LauncherModel: ObservableObject {
 
     func play() {
         guard case .ready(let loc) = game else { return }
+        if let err = onlineError { alert("Online play is not set up", err); return }
         let env = ProcessInfo.processInfo.environment
         // Data mods: their files must be built for this game folder first.
         let mods = activeMods
@@ -226,6 +234,16 @@ final class LauncherModel: ObservableObject {
         if frameRate != "auto" { setenv("NFSU2_FPS", frameRate, 0) }
         if cutscenes60 { setenv("NFSU2_CUTSCENES_60", "1", 0) }
         if !cutsceneBars { setenv("NFSU2_CUTSCENE_BORDERS", "off", 0) }
+        // Online: the game's LAN and Online modes through the server (runtime/
+        // net_relay.c, net_native.m).  Off: LAN on this Mac's network.  Values
+        // set by hand in the environment win.
+        if online {
+            setenv("NFSU2_NET", "online", 0)
+            setenv("NFSU2_ONLINE", "1", 0)
+            setenv("NFSU2_SERVER_URL", server, 0)
+            setenv("NFSU2_ROAM_NAME", playerName, 0)
+            setenv("NFSU2_NET_NAME", playerName, 0)
+        }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

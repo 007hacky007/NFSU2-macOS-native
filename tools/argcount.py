@@ -10,15 +10,25 @@ from lift import Lifter
 EXE=sys.argv[1]; pe=pefile.PE(EXE); IB=pe.OPTIONAL_HEADER.ImageBase; L=Lifter(EXE)
 pe.parse_data_directories()
 iat={}
-for e in pe.DIRECTORY_ENTRY_IMPORT:
+# IMPDLL=<original module>: read the import table from the unrelocated file
+# (pefile refuses the relocated analysis copy's import directory) and move
+# the IAT addresses to this image's base.
+_ipe=pefile.PE(os.environ['IMPDLL']) if os.environ.get('IMPDLL') else pe
+_idelta=IB-_ipe.OPTIONAL_HEADER.ImageBase
+for e in _ipe.DIRECTORY_ENTRY_IMPORT:
     for imp in e.imports:
-        iat[imp.address]=(e.dll.decode('latin1'), imp.name.decode('latin1') if imp.name else f"#{imp.ordinal}")
+        iat[(imp.address+_idelta)&0xffffffff]=(e.dll.decode('latin1'), imp.name.decode('latin1') if imp.name else f"#{imp.ordinal}")
 def rd32(a):
     for nm,va,vs,d in L.secs:
         if va<=a<va+len(d)-3: return struct.unpack_from('<I',d,a-va)[0]
 md=L.md
 seeds={IB+pe.OPTIONAL_HEADER.AddressOfEntryPoint}
-for a in (int(x,16) for x in open(os.environ.get('RELOCS','out/relocs.txt'))):
+# Second guest modules (gen_v2.sh, server.dll): RELOCS = the module's fixup
+# slots, IMPOUT = output file, SYMPFX = table prefix (g_<pfx>imp), STRICT=1 =
+# every import must be in KNOWN (no guessed stdcall counts for a module).
+RELOCS=os.environ.get('RELOCS','out/relocs.txt')
+SYMPFX=os.environ.get('SYMPFX',''); STRICT=os.environ.get('STRICT','')=='1'
+for a in (int(x,16) for x in open(RELOCS)):
     v=rd32(a)
     if v is not None and L.in_text(v): seeds.add(v)
 cov=bytearray(L.TSZ); q=collections.deque(seeds); seen=set(seeds)
@@ -166,6 +176,7 @@ KNOWN={
  'send':4,'recv':4,'sendto':6,'recvfrom':6,'closesocket':1,'select':5,'ioctlsocket':3,
  'setsockopt':5,'getsockopt':5,'htons':1,'ntohs':1,'htonl':1,'ntohl':1,'inet_addr':1,
  'inet_ntoa':1,'gethostbyname':1,'gethostname':2,'WSAGetLastError':0,'getsockname':3,
+ 'GetFileTime':4,
 }
 hit=miss=0; rows=[]
 for a,(dll,nm) in iat.items():
@@ -177,10 +188,13 @@ for a,(dll,nm) in iat.items():
         else: miss+=1; print(f"  MISMATCH {nm}: derived {best}, actual {KNOWN[nm]}  (distribution {dict(cnt)})")
 print(f"\n=== ARGUMENT COUNT DERIVATION ACCURACY ===")
 print(f"  across {hit+miss} known functions: {hit} correct, {miss} wrong = %{100.0*hit/max(hit+miss,1):.1f}")
-IMPOUT=os.path.join(os.environ.get('GENOUT','gen/all'),'impargs.c')
+if STRICT:
+    unk=sorted({nm for dll,nm,n,sites,a in rows if nm not in KNOWN})
+    if unk: sys.exit(f"argcount: no known stdcall argument count for {', '.join(unk)} (add them to KNOWN)")
+IMPOUT=os.environ.get('IMPOUT') or os.path.join(os.environ.get('GENOUT','gen/all'),'impargs.c')
 with open(IMPOUT,'w') as f:
     f.write('#include <stdint.h>\ntypedef struct { uint32_t iat; const char*dll; const char*name; int nargs; } ImpEnt;\n')
-    f.write(f'const uint32_t g_imp_count = {len(rows)};\nconst ImpEnt g_imp[] = {{\n')
+    f.write(f'const uint32_t g_{SYMPFX}imp_count = {len(rows)};\nconst ImpEnt g_{SYMPFX}imp[] = {{\n')
     for dll,nm,n,sites,a in sorted(rows,key=lambda r:r[4]):
         n2 = KNOWN.get(nm, n)
         f.write(f'  {{0x{a:08x}u,"{dll}","{nm}",{n2}}},\n')

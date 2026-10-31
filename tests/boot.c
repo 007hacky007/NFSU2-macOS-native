@@ -160,6 +160,8 @@ int main(int argc,char**argv){
     { extern void regional_install(void); regional_install(); }   /* both regions' cars when the folder has all four */
     { extern void language_install(void); language_install(); }   /* NFSU2_LANGUAGE: runtime/language.c */
     { extern void garage_install(void); garage_install(); }   /* the career garage's slots 6-10 and Trade Car */
+    { extern void olfilter_install(void); olfilter_install(); }   /* the Online lobby's Filter, once set, narrows its list */
+    { extern void lobbyclick_install(void); lobbyclick_install(); }   /* the lobby's list ignores a click on a dialog over it */
     if (getenv("BT")) g_bt_on = 1;
     g_report_fn = all_reports;
     com_set_trace(getenv("COMTRACE")?1:0);

@@ -22,8 +22,8 @@ final class PortableBuilder {
     private var cancelFlag = false
 
     // The engine never reads these: Windows-only plugins and scripts.
-    static let skippedGameItems: Set<String> = ["SCRIPTS", "dinput8.dll", "server.dll",
-                                                "server.cfg", "SafeMode.bat"]
+    // server.dll and its server.cfg are copied: hosting a LAN game loads them.
+    static let skippedGameItems: Set<String> = ["SCRIPTS", "dinput8.dll", "SafeMode.bat"]
     // Copied unless left out (the Make Copy dialog's checkboxes): the game plays on without them.
     struct Extra { let folder: String; let title: String; let without: String }
     static let extras = [

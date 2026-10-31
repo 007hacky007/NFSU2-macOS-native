@@ -134,6 +134,10 @@ static void guest_yield_end(void){ pthread_mutex_lock(&g_guest); g_cur_cpu = tl_
  * nothing, on a thread that isn't a guest thread. */
 int  guest_blocking_begin(void){ if (!tl_cpu) return 0; guest_yield_begin(); return 1; }
 void guest_blocking_end(void){ guest_yield_end(); }
+/* A blocking host call (winsock.c select/connect, net_relay.c) waits with
+ * the guest lock released, as a Windows thread would wait in the kernel. */
+void guest_wait_begin(void){ guest_yield_begin(); }
+void guest_wait_end(void){ guest_yield_end(); }
 /* Sleep while releasing the big lock (win32.c: the game's frame wait loop). */
 uint64_t g_sleep_late_ns, g_sleep_gil_ns, g_sleep_n;    /* diagnostics: sleep latency / lock wait */
 /* On macOS nanosleep wakes up with a timer coalescing margin: in the game a

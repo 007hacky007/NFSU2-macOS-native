@@ -301,3 +301,35 @@ void app_no_game(void){
               "You can put the game folder (the one containing SPEED2.EXE) next to the app "
               "or open the app again and choose the folder.");
 }
+
+/* winsock.c: macOS keeps the app off the local network (System Settings >
+ * Privacy & Security > Local Network): say so once, with a way there. */
+void app_local_network_notice(void){
+    const char *t = "NFSU2 cannot reach your local network";
+    const char *m = "macOS is not letting NFSU2 send anything on the local network, so the other players cannot "
+                    "see your game and you cannot see theirs.\n\nTurn on NFSU2 in System Settings > Privacy & "
+                    "Security > Local Network, then go back to the main menu and enter LAN again.";
+    if (!app_is_bundled() || getenv("NOFOCUS")){
+        fprintf(stderr, "app: Local Network notice not shown (%s): %s\n", app_is_bundled() ? "no UI in this run" : "not the app", t);
+        return;
+    }
+    fprintf(stderr, "app: Local Network notice shown: %s\n", t);
+    NSString *ts = @(t), *ms = @(m);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSAlert *a = [NSAlert new];
+        [a setMessageText:ts];
+        [a setInformativeText:ms];
+        [a addButtonWithTitle:@"Open Settings"];
+        [a addButtonWithTitle:@"Not Now"];
+        void (^done)(NSModalResponse) = ^(NSModalResponse r){
+            if (r != NSAlertFirstButtonReturn) return;
+            NSURL *u = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"];
+            if (u) [[NSWorkspace sharedWorkspace] openURL:u];
+        };
+        NSWindow *w = [NSApp mainWindow];
+        if (!w) w = [NSApp keyWindow];
+        if (!w) w = [[NSApp windows] firstObject];
+        if (w) [a beginSheetModalForWindow:w completionHandler:done];
+        else done([a runModal]);
+    });
+}
