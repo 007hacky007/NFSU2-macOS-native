@@ -45,6 +45,20 @@ func tryChecked(_ body: () throws -> Bool) -> Bool { try! body() }
         let reg = SaveEntry(path: "registry.txt", data: Data("d g_CarLodLevel=2\ns Install Dir=/tmp\nd bad name=1\nd g_Fog=-1\nd NotFirstTime=1\n".utf8))
         assert(tryChecked { try store.restore(SaveArchive.encode(entries + [reg]), gameRunning: { false }) == 0 })
         assert(tryChecked { try Data(contentsOf: registry) == Data("d g_CarLodLevel=2\nd NotFirstTime=1\n".utf8) })
+        // Magazine / DVD covers in folders of their own come back with a full restore; a damaged one is skipped.
+        var cover = Data(repeating: 0, count: 1048612)
+        cover.replaceSubrange(0..<4, with: Data("20CM".utf8))
+        for (at, value) in [(4,1048612),(8,8),(12,0x100000),(28,0x10d),(32,0x100000)] { cover.put32(at, UInt32(value)) }
+        cover.put32(16, SaveProfile.checksum(Data(cover[28..<36])))
+        cover.put32(20, SaveProfile.checksum(Data(cover[36...])))
+        cover.put32(24, SaveProfile.checksum(Data(cover[..<24])))
+        var badCover = cover; badCover[1000] ^= 1
+        let covers = [SaveEntry(path: "NFS Underground 2/TEST Magazine 1/TEST Magazine 1", data: cover),
+                      SaveEntry(path: "NFS Underground 2/TEST DVD 1/TEST DVD 1", data: badCover)]
+        assert(tryChecked { try store.restore(SaveArchive.encode(entries + covers + [reg]), gameRunning: { false }) == 1 })
+        assert(tryChecked { try store.snapshot().map { $0.path } ==
+            ["NFS Underground 2/TEST Magazine 1/TEST Magazine 1", "NFS Underground 2/TEST/TEST", "registry.txt"] })
+        assert(tryChecked { try store.profiles().map { $0.name } == ["TEST"] })
         let link = saves.appendingPathComponent("link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: registry)
         rejects { _ = try store.snapshot() }
