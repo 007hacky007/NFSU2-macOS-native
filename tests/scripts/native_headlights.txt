@@ -1,0 +1,22 @@
+# Fixed camera/world A/B for native other-car headlight shaders.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN
++0    tapuntil RETURN UI_QRModeSelect.fng 150 3000
++200  tapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  tapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  tapuntil RETURN UI_QRCarSelect.fng 150 1500
++200  tapuntil RETURN PC_Loading.fng 150 1500
++0    waitmem 0x8654a4 6 3000
++0    wzero
+15000wms photo on
++40   expect i:0x890084 == 1
++0    headlights off
++60   dump native_headlights_off
++0    headlights all
++60   dump native_headlights_all
++0    headlights self
++60   dump native_headlights_self
++0    headlights off
++60   dump native_headlights_off_again
++0    photo off
++40   quit
