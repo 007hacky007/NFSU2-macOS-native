@@ -636,7 +636,10 @@ void sub_0060fab0(CPU *c){
 void sub_005c7ed0_orig(CPU *c);
 void sub_005c7ed0(CPU *c){
     uint32_t plat = c->ecx, view = MR32(c->esp + 4u);
+    int photo_view_begin(uint32_t view); void photo_view_end(int on);   /* photo.c: photo mode's field of view and tilt */
+    int photo = photo_view_begin(view);
     sub_005c7ed0_orig(c);
+    photo_view_end(photo);
     if (view && plat && mem_is_committed(view + 0x43u) && mem_is_committed(plat + 0xbfu)){
         enh_view_setup(MR32(view + 4u), (const float *)(g_mem + plat),
                        MR32(view + 0x40u));

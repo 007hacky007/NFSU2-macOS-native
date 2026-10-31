@@ -211,6 +211,7 @@ struct GameSettings: View {
                            isOn: $model.discord)
             }
             MusicCard(model: model)
+            PhotoDriftCard(model: model)
         }
     }
 }

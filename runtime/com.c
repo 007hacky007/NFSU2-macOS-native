@@ -4508,6 +4508,7 @@ int com_call(CPU *c, uint32_t magic){
                 /* a 256-byte request = the DirectInput keyboard table */
                 if (cb == 272u && dkind == 3u){             /* DIJOYSTATE2: host game pad */
                     gamepad_fill(g_mem+p);
+                    { void native_scene_filter_pad(unsigned char *); native_scene_filter_pad(g_mem+p); }   /* photo mode's */
                     g_dikey_calls++;
                 }
                 else if (cb == 20u && metal_available()){        /* DIMOUSESTATE2 */

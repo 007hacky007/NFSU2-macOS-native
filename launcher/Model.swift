@@ -54,6 +54,8 @@ final class LauncherModel: ObservableObject {
     @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
     @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
+    @Published var photoMode: Bool { didSet { defaults.set(photoMode, forKey: Prefs.photoMode) } }
+    @Published var driftMode: Bool { didSet { defaults.set(driftMode, forKey: Prefs.driftMode) } }
     @Published var uhud: Bool { didSet { defaults.set(uhud, forKey: Prefs.uhud) } }
     @Published var uhudBusy = false
     @Published var uhudPhase = ""
@@ -147,6 +149,8 @@ final class LauncherModel: ObservableObject {
         intro = defaults.string(forKey: Prefs.intro) ?? "skippable"
         discord = defaults.bool(forKey: Prefs.discord)
         garage = defaults.bool(forKey: Prefs.garage)
+        photoMode = defaults.bool(forKey: Prefs.photoMode)
+        driftMode = defaults.bool(forKey: Prefs.driftMode)
         uhud = defaults.bool(forKey: Prefs.uhud)
         hasUHUDPack = FileManager.default.fileExists(atPath: Paths.uhudPack.path)
         modsOn = Set(defaults.stringArray(forKey: Prefs.dataMods) ?? [])
@@ -268,6 +272,8 @@ final class LauncherModel: ObservableObject {
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
+        if photoMode { setenv("NFSU2_PHOTO", "1", 0) }          // photo.c, native_scene.m; one set by hand wins
+        if driftMode { setenv("NFSU2_DRIFT", "1", 0) }          // drift.c; one set by hand wins
         // Texture Packs that are on, highest first (engine: runtime/texrep.m).  One given by
         // the caller wins; otherwise it follows the list.
         if setTexpacks || env["NFSU2_TEXPACKS"] == nil {
@@ -483,6 +489,8 @@ final class LauncherModel: ObservableObject {
         SaveManagerWindow.show(saves: Paths.saves, registry: Paths.registry,
             gameRunning: { [weak self] in self?.isPlaying ?? true })
     }
+
+    func showScreenshots() { PhotoGalleryWindow.show(folder: Paths.screenshots) }
 
     func openLogs() {
         try? FileManager.default.createDirectory(at: Paths.logs, withIntermediateDirectories: true)

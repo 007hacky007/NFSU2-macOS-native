@@ -104,6 +104,8 @@ void guest_hook(CPU *c, uint32_t ip){
     { int racenet_hook(CPU *, uint32_t); racenet_hook(c, ip); }   /* racenet.c: network races, every frame */
     { int display_hook(CPU *, uint32_t); if (display_hook(c, ip)) return; }   /* display.c */
     { int language_hook(CPU *, uint32_t); if (language_hook(c, ip)) return; }   /* language.c: subtitles; texts of ours (main loop, not consumed) */
+    { int drift_hook(CPU *, uint32_t); if (drift_hook(c, ip)) return; }   /* drift.c: drift mode in free roam */
+    { int photo_hook(CPU *, uint32_t); photo_hook(c, ip); }   /* photo.c: photo mode, every frame */
     { int roam_hook(CPU *, uint32_t); if (roam_hook(c, ip)) return; }   /* roam.c: free-roam multiplayer */
     { int hornmenu_hook(CPU *, uint32_t); if (hornmenu_hook(c, ip)) return; }   /* hornmenu.c: the Horn Volume slider */
     { int highfps_hook(CPU *, uint32_t); if (highfps_hook(c, ip)) return; }   /* highfps.c */
