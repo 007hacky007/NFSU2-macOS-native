@@ -302,6 +302,7 @@ struct FrameRateCard: View {
         switch v {
         case "auto": return "Auto (follow the screen)"
         case "120": return "120 FPS (original)"
+        case "uncapped": return "Uncapped (benchmark)"
         default: return "\(v) FPS"
         }
     }

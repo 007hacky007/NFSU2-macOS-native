@@ -123,6 +123,7 @@ struct GraphicsSettings: View {
                 }
             }
             ReflectionsCard(model: model)
+            FirstLaunchCard(model: model)
         }
     }
 }
@@ -144,7 +145,7 @@ struct ControlsSettings: View {
 struct OnlineSettingsTab: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) { MultiplayerCard(model: model) }
+        VStack(alignment: .leading, spacing: 12) { MultiplayerCard(model: model); NetTimingCard(model: model) }
     }
 }
 

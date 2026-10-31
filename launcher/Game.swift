@@ -86,7 +86,7 @@ enum Prefs {
     static let reflectSky = "LauncherReflectSky"   // NFSU2_REFLECT_SKY=1
     static let reflectLights = "LauncherReflectLights"   // NFSU2_REFLECT_LIGHTS=1
     static let reflectDetail = "LauncherReflectDetail"   // NFSU2_REFLECT_DETAIL=1
-    static let frameRate = "LauncherFrameRate"     // NFSU2_FPS: auto | 30 | 60 | 120 | 240
+    static let frameRate = "LauncherFrameRate"     // NFSU2_FPS: auto | 30 | 60 | 120 | 240 | uncapped
     static let cutscenes60 = "LauncherCutscenes60" // NFSU2_CUTSCENES_60=1
     static let cutsceneBars = "LauncherCutsceneBars" // false: NFSU2_CUTSCENE_BORDERS=off
     static let online = "LauncherOnline"           // LAN and Online through a server
@@ -97,6 +97,8 @@ enum Prefs {
     static let roamCrew = "LauncherRoamCrew"
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
+    static let seedRegistry = "LauncherSeedRegistry" // NFSU2_SEED_REGISTRY=1: highest graphics on the first launch
+    static let lanTiming = "LauncherLanTiming"     // NFSU2_LAN_TIMING: "pc" | "exact"
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -123,6 +125,8 @@ enum Prefs {
         OriginalValue(\.intro, "original"),
         OriginalValue(\.discord, false),
         OriginalValue(\.uhud, false),
+        OriginalValue(\.seedRegistry, false),
+        OriginalValue(\.lanTiming, "pc"),
     ]
 }
 
