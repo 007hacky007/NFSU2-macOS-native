@@ -21,6 +21,7 @@ ENTRIES = ('build.sh', 'link.sh', 'pack.sh', 'run.sh', 'VERSION', 'requirements.
 # Not needed to build: the Windows-side reference tool (tools/nfsref, includes a built .asi).
 EXCLUDE = ('tools/nfsref/',)
 MIN_MACOS = '11.0'
+SWIFT_TARGET = f'arm64-apple-macos{MIN_MACOS}'
 
 
 def build_sources(root):
@@ -37,10 +38,21 @@ def parse_minos(otool_output):
 
 
 def build_binary(root):
-    cmd = ['swift', 'build', '--package-path', str(root / 'builder'), '-c', 'release', '--arch', 'arm64']
-    subprocess.run(cmd, check=True)
-    shown = subprocess.run(cmd + ['--show-bin-path'], check=True, capture_output=True, text=True).stdout.strip()
-    binary = Path(shown) / 'NFSU2Builder'
+    """swiftc directly, like pack.sh's launcher: SwiftPM raises the deployment target to macOS 12,
+    and the Builder must open on macOS 11 like the game (`swift test` still uses the package)."""
+    package = root / 'builder'
+    out = package / '.build/swiftc-release'
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    common = ['swiftc', '-swift-version', '5', '-O', '-target', SWIFT_TARGET, '-parse-as-library']
+    core = sorted(str(p) for p in (package / 'Sources/BuilderCore').glob('*.swift'))
+    app = sorted(str(p) for p in (package / 'Sources/NFSU2Builder').glob('*.swift'))
+    subprocess.run(common + ['-module-name', 'BuilderCore', '-emit-module', '-emit-module-path',
+                             str(out / 'BuilderCore.swiftmodule'), '-emit-library', '-static',
+                             '-o', str(out / 'libBuilderCore.a'), *core], check=True)
+    binary = out / 'NFSU2Builder'
+    subprocess.run(common + ['-module-name', 'NFSU2Builder', '-I', str(out), '-L', str(out), '-lBuilderCore',
+                             '-o', str(binary), *app], check=True)
     minos = parse_minos(subprocess.run(['otool', '-l', str(binary)], check=True, capture_output=True,
                                        text=True).stdout)
     if minos != MIN_MACOS:
@@ -80,7 +92,12 @@ def assemble(binary, version, output, root):
             'CFBundleDisplayName': 'NFSU2 Builder', 'CFBundleExecutable': 'NFSU2Builder',
             'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': version,
             'LSMinimumSystemVersion': MIN_MACOS, 'NSHighResolutionCapable': True, 'CFBundleIconFile': 'AppIcon',
-            'LSArchitecturePriority': ['arm64'], 'NSHumanReadableCopyright':
+            'LSArchitecturePriority': ['arm64'],
+            # The game copy may be in these folders; macOS asks once and shows this text.
+            **{f'NS{place}UsageDescription': 'To read your game copy. NFSU2 Builder never changes it.'
+               for place in ('DesktopFolder', 'DocumentsFolder', 'DownloadsFolder', 'RemovableVolumes',
+                             'NetworkVolumes')},
+            'NSHumanReadableCopyright':
                 'Builds NFSU2.app from your own game copy. No game files are included.',
         }, f)
     subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)

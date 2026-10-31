@@ -105,13 +105,14 @@ struct RootView: View {
         .padding(20)
         .frame(width: 560)
         .frame(minHeight: 470, alignment: .top)
-        .background(GrowWindowToFit(content: "\(model.states)\(model.dataDetails ?? "")"))
+        .background(GrowWindowToFit(content: "\(model.states)\(model.dataDetails ?? "")\(model.phaseName)"))
     }
 }
 
-/// Grows the window when its content no longer fits, for example when a checklist message
-/// wraps after a check finishes; SwiftUI does not enlarge a window that is already open.
-/// `content` only changes when the layout may have, which makes SwiftUI call the update.
+/// Fits the window to its content: as wide as the checklist, and taller when the content no
+/// longer fits, for example when a checklist message wraps after a check finishes; SwiftUI
+/// does not resize a window that is already open. `content` only changes when the layout may
+/// have, which makes SwiftUI call the update.
 struct GrowWindowToFit: NSViewRepresentable {
     let content: String
 
@@ -120,12 +121,13 @@ struct GrowWindowToFit: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         DispatchQueue.main.async {
             guard let window = view.window, let root = window.contentView else { return }
-            let missing = root.fittingSize.height - root.frame.height
-            guard missing > 0.5 else { return }
-            var frame = window.frame
-            frame.origin.y -= missing
-            frame.size.height += missing
-            window.setFrame(frame, display: true, animate: true)
+            let fit = root.fittingSize
+            let current = window.contentRect(forFrameRect: window.frame)
+            let width = fit.width > 100 ? fit.width : current.width
+            let height = max(current.height, fit.height)
+            guard abs(width - current.width) > 0.5 || height - current.height > 0.5 else { return }
+            let target = NSRect(x: current.minX, y: current.maxY - height, width: width, height: height)
+            window.setFrame(window.frameRect(forContentRect: target), display: true, animate: true)
         }
     }
 }

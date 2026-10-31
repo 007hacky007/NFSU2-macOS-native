@@ -73,6 +73,17 @@ final class BuilderModel: ObservableObject {
 
     // MARK: - Checklist
 
+    /// Which view is showing, for window sizing.
+    var phaseName: String {
+        switch phase {
+        case .checklist: return "checklist"
+        case .building: return "building"
+        case .finished: return "finished"
+        case .failed: return "failed"
+        case .quitToInstall: return "quit"
+        }
+    }
+
     var toolsReady: Bool { states[.buildTools]?.isReady == true }
     var buildEnabled: Bool { canBuild(states) }
     /// The data needs a game folder of the Builder's own (discs, or a folder without a supported SPEED2.EXE).
@@ -82,6 +93,25 @@ final class BuilderModel: ObservableObject {
     func start() {
         refresh()
         prepare(sweep: true) { [self] _ in refreshBuildTools() }
+        if defaults.bool(forKey: "AutoBuild") { startAutoBuild() }
+    }
+
+    /// Unattended runs (`open "NFSU2 Builder.app" --args -AutoBuild YES`, used to test a release):
+    /// press Install for the build tools and then Build, once each, exactly as a player would,
+    /// with the choices saved from an earlier run.
+    private func startAutoBuild() {
+        var installed = false, built = false
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] timer in
+            guard let self = self, self.phase == .checklist, !self.shuttingDown else { return }
+            if self.states[.buildTools]?.isBlocked == true, !installed {
+                installed = true
+                self.installBuildTools()
+            } else if self.buildEnabled, !built {
+                built = true
+                timer.invalidate()
+                self.build()
+            }
+        }
     }
 
     /// Re-evaluates every row. Expensive checks (the game copy) only run again when their input changed.
