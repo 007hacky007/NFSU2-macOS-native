@@ -42,13 +42,13 @@
  *    blends the live ones, the newest weighed most; with none left the car
  *    gets fixed controls until the next state.
  *
- * Frame rates go on the horn's port (racehorn.c's HORN_PORT, whose receiver
- * hands "N2FS" messages here): "N2FS", version 1, flags (2: relayed), the
- * frames a second x 10 (u16, little-endian), the longest frame in ms (u16),
- * the frames over 50 ms (u8), 0, its race clock (u32, 1/4000 s), then the
- * name the player races under (16 bytes, as racehorn.c's).  The creator
- * passes each joiner's on to the other joiners, marked relayed.  A game of
- * an older version sends none and drops these.
+ * Frame rates go on a port of the runtime's own on the virtual LAN (FS_PORT,
+ * net_relay.c's vlan_rt_*), so the game never sees them: "N2FS", version 1,
+ * flags (2: relayed), the frames a second x 10 (u16, little-endian), the
+ * longest frame in ms (u16), the frames over 50 ms (u8), 0, its race clock
+ * (u32, 1/4000 s), then the name the player races under (16 bytes).  The
+ * creator passes each joiner's on to the other joiners, marked relayed.  A
+ * game of an older version sends none and drops these.
  *
  * The race clocks: a joiner's follows the creator's (0x5891C0, about 20
  * samples a second, each the creator's clock plus half the round trip), and
@@ -86,7 +86,8 @@
 #define CAR_POS      0x60u         /* a car: position, velocity (3 floats each) */
 #define CAR_VEL      0x70u
 #define HIT_M        80.f          /* m: a remote car farther from the player's is out of reach of a hit here */
-#define HORN_PORT    3659u         /* racehorn.c's */
+#define FS_PORT      3659u         /* the runtime's own UDP port on the virtual LAN */
+#define HOOK_MAINLOOP GA(0x00581485u)  /* GameLoop, before its second debug no-op call */
 #define PEER_MS      5000u
 #define FS_MS        2000u
 #define FS_N         (16 + NAME_N)
@@ -95,7 +96,8 @@
 #define NLINKS       16
 #define SLOW_US      50000u        /* a frame longer than this is a stall */
 
-/* net_lan.c in the browser (racehorn.c has the stand-ins for the others) */
+/* net_relay.c */
+int vlan_rt_recv(uint16_t port, uint32_t *ip_h, void *p, int cap);
 int vlan_rt_send(uint16_t port, uint32_t ip_h, const void *p, int n);
 int vlan_race_peers(uint32_t *ip_h, int max, uint32_t within_ms);
 __attribute__((weak)) int vlan_race_links(RaceLink *o, int max, int reset){ (void)o; (void)max; (void)reset; return 0; }
@@ -107,7 +109,7 @@ static uint64_t now_us(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 }
-/* the name of the player whose car this is, as racehorn.c's car_name */
+/* the name of the player whose car this is */
 static void car_name(uint32_t car, char *o){
     int i = ok(car, 0x9e0) ? (int16_t)MR16(car + 0xau) : -1;
     uint32_t pl = i >= 0 && i < 6 ? rd32(G_NETPLAYERS + 4u * (uint32_t)i) : 0;
@@ -230,9 +232,9 @@ static int relay_ok(void){
 static void send_all(const uint8_t *m, uint32_t except){
     uint32_t peers[16];
     int n = vlan_race_peers(peers, 16, PEER_MS);
-    for (int i = 0; i < n; i++) if (peers[i] != except) vlan_rt_send(HORN_PORT, peers[i], m, FS_N);
+    for (int i = 0; i < n; i++) if (peers[i] != except) vlan_rt_send(FS_PORT, peers[i], m, FS_N);
 }
-/* an N2FS from the horn's port (racehorn.c) */
+/* an N2FS that came to FS_PORT */
 void racenet_heard(uint8_t *m, int n, uint32_t from){
     if (n < FS_N || memcmp(m, "N2FS", 4) || m[4] != 1) return;
     char name[NAME_N];
@@ -311,9 +313,16 @@ static void end(uint64_t t){
     R.on = 0;
 }
 
-/* every frame, on the game thread (roam.c's main-loop hook) */
+/* what came to FS_PORT, at most 64 a frame */
+static void hear(void){
+    uint8_t m[64]; uint32_t from; int n;
+    for (int i = 0; i < 64 && (n = vlan_rt_recv(FS_PORT, &from, m, sizeof m)) >= 0; i++) racenet_heard(m, n, from);
+}
+
+/* every frame, on the game thread (racenet_hook) */
 void racenet_frame(CPU *c){
     (void)c;
+    if (rd32(G_NETMODE) & 0x208u) hear();
     uint32_t pl = rd32(G_PLAYER1), me = pl ? rd32(pl + 4u) : 0, w = rd32(G_WORLD), rc = rd32(G_RACE);
     int racing = rd32(G_FLOW) == 6u && (rd32(G_NETMODE) & 0x208u) && ok(me, 0x9e0) && ok(w, 0x80) && rd32(rc) == RC_RACING &&
                  !finished(rc, me);
@@ -373,4 +382,11 @@ void racenet_frame(CPU *c){
         send_all(m, 0);
         R.w0 = t; R.wframes = 0; R.wslow = 0; R.wlongest = 0;
     }
+}
+
+/* debug.c guest_hook: the main loop.  Returns 0, so the site stays free for
+ * other features' hooks. */
+int racenet_hook(CPU *c, uint32_t ip){
+    if (ip == HOOK_MAINLOOP) racenet_frame(c);
+    return 0;
 }

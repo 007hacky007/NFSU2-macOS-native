@@ -12,6 +12,7 @@
 #define GA_0x005031b0u 0x005031b0u   /* function 005031b0 + 0x0 */
 #define GA_0x0051cbb0u 0x0051cba0u   /* function 0051cbb0 + 0x0 */
 #define GA_0x00537990u 0x00537980u   /* function 00537990 + 0x0 */
+#define GA_0x00581485u 0x00581475u   /* function 005811d0 + 0x2b5 */
 #define GA_0x00585650u 0x00585640u   /* function 00585650 + 0x0 */
 #define GA_0x0058fd60u 0x0058fd50u   /* function 0058fd60 + 0x0 */
 #define GA_0x005BA0A7u 0x005ba097u   /* function 005ba070 + 0x37 */
