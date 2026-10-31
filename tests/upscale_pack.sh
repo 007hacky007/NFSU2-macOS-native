@@ -4,11 +4,13 @@
 #     the hash the engine computes);
 #   - a made-up game folder with one TPK (DXT1, DXT5, a P8 texture, a small one, a one-colour
 #     one, a smooth one): the scan finds them with the right hashes and sorts out the three;
-#   - Import Model... refuses a file that is not the tested release;
+#   - Import Model... refuses a file that is not the tested release, and the builder never
+#     loads such a file;
 #   - with the model (NFSU2_UPSCALE_MODEL=<4x-PBRify_UpscalerSPANV4.pth>, or the launcher's own
 #     copy): the pack of the made-up folder, then of 6 textures of the real game when
 #     NFSU2_DATA points at it; every file's 4x4 averages are the original texture again
-#     (back-projection, at least 30 dB PSNR after block compression).
+#     (back-projection, at least 30 dB PSNR after block compression); Build as the button
+#     does it (UpscaleStore), and in a folder with no game textures.
 # Needs swiftc, clang and python3 (for the fixture); no internet.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -145,6 +147,15 @@ if [ -f "$MODEL" ]; then
         pass "made-up folder: 3 textures made, the one-colour and the smooth one left out"
     else fail "made-up folder build"; echo "$out" | tail -5; fi
     v="$(run "upscale-verify:$T/game:$T/pack")" && pass "made-up folder: $(echo "$v" | tail -1)" || { fail "made-up folder verify"; echo "$v"; }
+    # the Build button's way (UpscaleStore): the model already in the store, so no download
+    mkdir -p "$T/store/Models"; cp "$MODEL" "$T/store/Models/"
+    out="$(HOME="$T/home" NFSU2_UPSCALE_SCALE=4 NFSU2_LAUNCHER_TEST="upscale-build:$T/game:$T/store" "$T/launcher" 2>&1)"
+    echo "$out" | grep -q "^pack: 3 textures" && [ -f "$T/store/Upscaled/pack.ini" ] && pass "Build (as the button): $(echo "$out" | grep '^pack:')" \
+        || { fail "Build (as the button)"; echo "$out" | tail -3; }
+    mkdir -p "$T/empty" "$T/store2/Models"; cp "$MODEL" "$T/store2/Models/"
+    out="$(HOME="$T/home" NFSU2_LAUNCHER_TEST="upscale-build:$T/empty:$T/store2" "$T/launcher" 2>&1)"
+    echo "$out" | grep -q "No texture of the game could be read" && pass "Build in a folder that is not the game's says so" \
+        || { fail "Build in an empty folder"; echo "$out" | tail -3; }
     if [ -n "${NFSU2_DATA:-}" ]; then
         G="$(dirname "$NFSU2_DATA")"
         out="$(HOME="$T/home" NFSU2_UPSCALE_MODEL="$MODEL" NFSU2_UPSCALE_SCALE=4 NFSU2_LAUNCHER_TEST="upscale:$G:$T/real:6" "$T/launcher" 2>&1)"

@@ -130,7 +130,10 @@ final class UpscaleStore: ObservableObject {
                 DispatchQueue.main.async { self.hasModel = true }
                 let b = UpscaleBuilder(game: game, out: UpscalePack.pack, collected: [UpscalePack.dump], scale: scale, model: UpscalePack.model)
                 if ProcessInfo.processInfo.environment["NFSU2_LAUNCHER_TEST"] != nil { b.log = { print($0) } }
-                _ = try b.build(progress: report, cancelled: { self.stop })
+                let sum = try b.build(progress: report, cancelled: { self.stop })
+                if sum.textures == 0 {
+                    throw UpscaleFailure(message: "No texture of the game could be read in \(game.path). Is it the game's folder?")
+                }
             } catch let e as UpscaleFailure { err = e.message }
             catch let e as UHUDPack.Failure { err = e.message }
             catch let e as ModelFailure { err = "The model cannot be used: \(e.message)." }
