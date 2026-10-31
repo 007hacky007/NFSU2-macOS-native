@@ -43,7 +43,7 @@ case "${BUILD:-eu}" in
 esac
 
 CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead carshadow sponsors tunegraph regional intro powerunits language headlights discord garage texpack reflect visual framerate module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace horn hornmenu racehorn carsfx"
-MSRC="metal audio bundle gamepad fpscounter uhud picture texrep net_native"
+MSRC="metal audio bundle gamepad fpscounter picture texrep net_native"
 FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework GameController -lz"
 SHARDS="$SOBJ/shard_*.o $SOBJ/fntab.o $SOBJ/stubs.o"
 # server.dll (tools/gen_v2.sh -> gen/server, build.sh -> out/obj/srv); a stub
