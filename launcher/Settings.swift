@@ -111,6 +111,7 @@ struct GraphicsSettings: View {
                 }
             }
             FrameRateCard(model: model)
+            DisplayCard(model: model)
             Card("Lights") {
                 SettingRow(title: "Other cars' headlights",
                            description: "Light the road as yours do. Players: the other players' cars in network races; All cars: AI racers and traffic too.") {
@@ -123,6 +124,39 @@ struct GraphicsSettings: View {
                 }
             }
             ReflectionsCard(model: model)
+        }
+    }
+}
+
+/// Resolution scale, movies, the background (DisplayOptions.swift).
+struct DisplayCard: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        Card("Display") {
+            SettingRow(title: "Resolution scale",
+                       description: "With the game's own Screen resolution: draws this share of the window's pixels. Lower is faster, higher is sharper.") {
+                Picker("", selection: $model.resolutionScale) {
+                    ForEach(DisplayOptions.scales, id: \.self) { Text(DisplayOptions.scaleLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            SettingRow(title: "Movie framing",
+                       description: "How the movies fill a wide window. Fit keeps black bars at the sides, Fill crops the top and bottom.") {
+                Picker("", selection: $model.movieFraming) {
+                    ForEach(DisplayOptions.framings, id: \.self) { Text(DisplayOptions.framingLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            SettingRow(title: "Movie subtitles",
+                       description: "The story's and the tutorials' lines under the movies, in languages whose text has them. English needs the English subtitles pack (Mods tab). Off: as in the original game.",
+                       isOn: $model.subtitles)
+            SettingRow(title: "While another app is active",
+                       description: "The game pauses like on Windows, or keeps running. LAN and online sessions always keep running so you stay connected.") {
+                Picker("", selection: $model.background) {
+                    ForEach(DisplayOptions.backgrounds, id: \.self) { Text(DisplayOptions.backgroundLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
         }
     }
 }
@@ -188,6 +222,7 @@ struct ModsSettings: View {
                 TexturePacksRow(model: model, store: model.packs)
             }
             ModsCard(model: model)
+            LanguagePacksCard(model: model, store: model.langPacks)
         }
     }
 }

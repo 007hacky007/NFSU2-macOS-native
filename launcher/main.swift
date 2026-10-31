@@ -37,6 +37,8 @@
 //   NFSU2_LAUNCHER_TEST=mods-download:<game folder>:<id>  download (checked), add, build, quit
 //   NFSU2_LAUNCHER_TEST=mods-add:<game folder>:<id>:<file>  Add File... with this file, build, quit
 //   NFSU2_MODS_STORE=<folder>    the data mods' folder (default ~/Library/Application Support/NFSU2/Mods)
+//   NFSU2_LAUNCHER_TEST=langpack:<language>:<game folder>[:<local copy>]  Download (or Import…)
+//                                a language pack into <game folder>/LANGPACKS (LanguagePacks.swift), quit
 import AppKit
 import SwiftUI
 
@@ -98,6 +100,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model.packs.game = { URL(fileURLWithPath: parts[3]) }
                 model.packs.importMod(URL(fileURLWithPath: parts[2]), for: TexturePackCatalog.pack(parts[1]), done: finish)
             default: print("bad NFSU2_LAUNCHER_TEST"); exit(2)
+            }
+            return
+        }
+        if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("langpack:") {
+            let parts = t.dropFirst("langpack:".count).split(separator: ":", maxSplits: 2).map(String.init)
+            guard parts.count >= 2 else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
+            DispatchQueue.global().async {
+                do {
+                    let game = URL(fileURLWithPath: parts[1])
+                    let s = parts.count == 3
+                        ? try LanguagePacks.importCopy(lang: parts[0], src: URL(fileURLWithPath: parts[2]), game: game)
+                        : try LanguagePacks.download(lang: parts[0], game: game) { _, _, _ in }
+                    print(s); exit(0)
+                } catch { print("failed: \((error as? LanguagePacks.Failure)?.message ?? (error as? Mega.Failure)?.message ?? "\(error)")"); exit(1) }
             }
             return
         }

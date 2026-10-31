@@ -97,6 +97,10 @@ enum Prefs {
     static let roamCrew = "LauncherRoamCrew"
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
+    static let resolutionScale = "LauncherResolutionScale" // NFSU2_RENDER: DisplayOptions.scales
+    static let movieFraming = "LauncherMovieFraming"       // NFSU2_MOVIE: fit | fill | stretch
+    static let subtitles = "LauncherMovieSubtitles"        // NFSU2_SUBTITLES=1
+    static let background = "LauncherBackground"           // NFSU2_BACKGROUND: pause | run
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -123,6 +127,10 @@ enum Prefs {
         OriginalValue(\.intro, "original"),
         OriginalValue(\.discord, false),
         OriginalValue(\.uhud, false),
+        OriginalValue(\.resolutionScale, DisplayOptions.originalScale),
+        OriginalValue(\.movieFraming, DisplayOptions.originalFraming),
+        OriginalValue(\.subtitles, false),
+        OriginalValue(\.background, DisplayOptions.originalBackground),
     ]
 }
 
