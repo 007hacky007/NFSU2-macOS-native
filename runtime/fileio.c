@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <ctype.h>
 #include <fnmatch.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -46,8 +47,9 @@ static void mkparents(const char *path){
     }
 }
 
-static int resolve_in(const char *root, const char *win, char *out, size_t outsz){
-    char rel[1024]; size_t k=0;
+/* the path inside the game folder, with '/' */
+static void rel_of(const char *win, char *rel, size_t relsz){
+    size_t k=0;
     const char *p = win;
     if (p[0] && p[1]==':') p += 2;                       /* drive letter   */
     while (*p=='\\' || *p=='/') p++;
@@ -55,8 +57,13 @@ static int resolve_in(const char *root, const char *win, char *out, size_t outsz
         p += 5; while (*p=='\\'||*p=='/') p++;           /* virtual root   */
     }
     while (p[0]=='.' && (p[1]=='\\'||p[1]=='/')) p += 2;
-    for (; *p && k<sizeof rel-1; p++) rel[k++] = (*p=='\\') ? '/' : *p;
+    for (; *p && k<relsz-1; p++) rel[k++] = (*p=='\\') ? '/' : *p;
     rel[k]=0;
+}
+
+static int resolve_in(const char *root, const char *win, char *out, size_t outsz){
+    char rel[1024];
+    rel_of(win, rel, sizeof rel);
     if (!rel[0]){ snprintf(out,outsz,"%s",root); return 1; }
 
     snprintf(out, outsz, "%s/%s", root, rel);
@@ -110,13 +117,75 @@ void fileio_set_write_root(const char *dir){
     mkparents(g_wroot); mkdir(g_wroot, 0755);
     fprintf(stderr,"file: save directory = %s\n", g_wroot);
 }
-/* Read: the write root if it exists there, otherwise the game root. */
+/* --- language pack (runtime/language.c) ---------------------------------
+ * LANGPACKS/<language> in the game folder holds the files a language plays
+ * with in place of the game folder's: a file there is read instead of the
+ * game's file of the same path (case-insensitive), as long as the save
+ * layer has no copy of its own.  Its list is read once.
+ * The European exe asks for the EA and THX logos and the story movies as
+ * "MOVIES\<name>_fr.vp6" whatever the language (sub_0051c740); a pack has
+ * them as "<name>.vp6", the name the North American exe asks for. */
+static char g_lroot[1024];
+static struct lfile { char *key, *rel; } *g_lf;     /* sorted by key: the path lower-cased */
+static int g_lnf, g_lcap;
+static int lfile_cmp(const void *a, const void *b){
+    return strcmp(((const struct lfile *)a)->key, ((const struct lfile *)b)->key);
+}
+static void lpack_walk(const char *dir, const char *rel){
+    DIR *d = opendir(dir); if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))){
+        if (e->d_name[0] == '.') continue;
+        char p[1100], r[1024]; struct stat st;
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
+        if (stat(p, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)){ lpack_walk(p, r); continue; }
+        if (!S_ISREG(st.st_mode)) continue;
+        if (g_lnf == g_lcap){
+            g_lcap = g_lcap ? 2*g_lcap : 64;
+            struct lfile *nf = realloc(g_lf, (size_t)g_lcap * sizeof *g_lf); if (!nf) break;
+            g_lf = nf;
+        }
+        g_lf[g_lnf].rel = strdup(r); g_lf[g_lnf].key = strdup(r);
+        for (char *k = g_lf[g_lnf].key; *k; k++) *k = (char)tolower((unsigned char)*k);
+        g_lnf++;
+    }
+    closedir(d);
+}
+/* -> how many files the pack has (0: none, or no such folder) */
+int fileio_set_language_pack(const char *rel){
+    if (!resolve_in(g_root, rel, g_lroot, sizeof g_lroot)) return 0;
+    lpack_walk(g_lroot, "");
+    qsort(g_lf, (size_t)g_lnf, sizeof *g_lf, lfile_cmp);
+    return g_lnf;
+}
+static const struct lfile *lpack_find(char *key){
+    struct lfile k = { key, 0 };
+    return bsearch(&k, g_lf, (size_t)g_lnf, sizeof *g_lf, lfile_cmp);
+}
+static int lpack_resolve(const char *win, char *out, size_t outsz){
+    if (!g_lnf) return 0;
+    char rel[1024]; rel_of(win, rel, sizeof rel);
+    for (char *k = rel; *k; k++) *k = (char)tolower((unsigned char)*k);
+    const struct lfile *f = lpack_find(rel);
+    size_t l = strlen(rel);
+    if (!f && l > 14 && !strncmp(rel, "movies/", 7) && !strcmp(rel + l - 7, "_fr.vp6")){
+        memcpy(rel + l - 7, ".vp6", 5);
+        f = lpack_find(rel);
+    }
+    if (!f) return 0;
+    snprintf(out, outsz, "%s/%s", g_lroot, f->rel);
+    return 1;
+}
+/* Read: the write root if it exists there, then the language pack, otherwise the game root. */
 static int resolve(const char *win, char *out, size_t outsz){
     if (g_wroot[0]){
         char w[1024];
         if (resolve_in(g_wroot, win, w, sizeof w) && strcmp(w, g_wroot) != 0){
             snprintf(out, outsz, "%s", w); return 1; }
     }
+    if (lpack_resolve(win, out, outsz)) return 1;
     return resolve_in(g_root, win, out, outsz);
 }
 /* Write: ALWAYS the write root if there is one. */

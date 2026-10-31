@@ -156,6 +156,7 @@ int main(int argc,char**argv){
     { extern void sponsors_install(void); sponsors_install(); }   /* the sponsor screens' Continue (help bar) */
     { extern void tunegraph_install(void); tunegraph_install(); }   /* the ECU and turbo graphs take a drag */
     { extern void regional_install(void); regional_install(); }   /* both regions' cars when the folder has all four */
+    { extern void language_install(void); language_install(); }   /* NFSU2_LANGUAGE: runtime/language.c */
     if (getenv("BT")) g_bt_on = 1;
     g_report_fn = all_reports;
     com_set_trace(getenv("COMTRACE")?1:0);

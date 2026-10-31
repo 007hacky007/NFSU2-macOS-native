@@ -11,6 +11,8 @@ fi
 # NFSU2_REGION=na|eu: the game's region.  Default: detected from the data's region
 #   cars (CARS/CIVIC + RSX without CORSA + PEUGOT106 = North American, e.g. US discs).
 #   See runtime/overrides.c, region_install.
+# NFSU2_LANGUAGE=english|french|german|...: the game's language and its pack
+#   (LANGPACKS/<language>).  See runtime/language.c.
 # TWO BUILDS (see link.sh):
 #   ./run.sh [mode]          original  (out/nfsu2_boot)
 #   NFSHD=1 ./run.sh [mode]  HD        (out/nfsu2_hd_boot) -- graphics improvements

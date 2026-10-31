@@ -293,6 +293,15 @@ from scripts.
 
 ![Launcher window](screenshots/selected/launcher.png)
 
+The launcher's Language row lists the languages the game folder has: its file in
+`LANGUAGES`, or a language pack in `LANGPACKS/<language>` (laid out like the game
+folder; a file there is read in place of the game's, for dubbed speech and movies
+or languages the retail files lack). The app downloads nothing. The engine takes
+it as `NFSU2_LANGUAGE` (`english`, `french`, `german`, `italian`, `spanish`,
+`dutch`, `swedish`, `danish`, `korean`, `chinese`, `japanese`, `thai`, and
+`russian`, `portuguese`, `polish`, `turkish` from a pack), which still wins when
+set by hand.
+
 `run.sh` documents the environment switches; most are diagnostics.
 
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
