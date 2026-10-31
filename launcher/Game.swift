@@ -77,6 +77,63 @@ enum Prefs {
     static let allCars = "LauncherAllCars"         // both releases' cars (off: NFSU2_ALL_CARS=0)
     static let intro = "LauncherIntro"             // NFSU2_INTRO: "skippable" | "off" | "original"
     static let language = "LauncherLanguage"      // passed to the engine as NFSU2_LANGUAGE
+    static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
+    static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
+    static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
+    static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
+    static let dataMods = "LauncherDataMods"       // ids of the turned-on data mods (DataMods.swift)
+    static let reflections = "LauncherReflections" // NFSU2_REFLECTIONS: "original" | "sharp" | "sharpest"
+    static let reflectSky = "LauncherReflectSky"   // NFSU2_REFLECT_SKY=1
+    static let reflectLights = "LauncherReflectLights"   // NFSU2_REFLECT_LIGHTS=1
+    static let reflectDetail = "LauncherReflectDetail"   // NFSU2_REFLECT_DETAIL=1
+    static let frameRate = "LauncherFrameRate"     // NFSU2_FPS: auto | 30 | 60 | 120 | 240
+    static let cutscenes60 = "LauncherCutscenes60" // NFSU2_CUTSCENES_60=1
+    static let cutsceneBars = "LauncherCutsceneBars" // false: NFSU2_CUTSCENE_BORDERS=off
+    static let online = "LauncherOnline"           // LAN and Online through a server
+    static let server = "LauncherServer"
+    static let playerName = "LauncherPlayerName"
+    static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost"
+    static let roamRoom = "LauncherRoamRoom"
+    static let roamCrew = "LauncherRoamCrew"
+    static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
+    static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
+
+    /// Each game option with its value in the original, unmodified game: Settings ›
+    /// Restore Original Game sets them all.  A new option adds its line here.  (The
+    /// game folder, full screen and showAtStartup are not game options.)
+    static let originalGame: [OriginalValue] = [
+        OriginalValue(\.engine, .original),
+        OriginalValue(\.wideHUD, false),
+        OriginalValue(\.fpsCounter, 0),
+        OriginalValue(\.frameRate, "120"),
+        OriginalValue(\.cutscenes60, false),
+        OriginalValue(\.cutsceneBars, true),
+        OriginalValue(\.headlights, "off"),
+        OriginalValue(\.reflections, .original),
+        OriginalValue(\.reflectSky, false),
+        OriginalValue(\.reflectLights, false),
+        OriginalValue(\.reflectDetail, false),
+        OriginalValue(\.picture, Array(repeating: 0, count: PictureOptions.all.count)),
+        OriginalValue(\.online, false),
+        OriginalValue(\.freeRoam, .off),
+        OriginalValue(\.hearCars, false),
+        OriginalValue(\.horn, .off),
+        OriginalValue(\.allCars, false),
+        OriginalValue(\.garage, false),
+        OriginalValue(\.intro, "original"),
+        OriginalValue(\.discord, false),
+        OriginalValue(\.uhud, false),
+    ]
+}
+
+/// An option of LauncherModel and the value that gives the original game.
+struct OriginalValue {
+    let restore: (LauncherModel) -> Void
+    let isSet: (LauncherModel) -> Bool
+    init<T: Equatable>(_ option: ReferenceWritableKeyPath<LauncherModel, T>, _ value: T) {
+        restore = { $0[keyPath: option] = value }
+        isSet = { $0[keyPath: option] == value }
+    }
 }
 
 /// The game's languages (runtime/language.c).  One is offered when the game folder
@@ -109,15 +166,6 @@ enum Languages {
                 || child(l.file, in: child("LANGUAGES", in: child(l.id, in: packs))) != nil
         }.map { $0.id }
     }
-    static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
-    static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
-    static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
-    static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
-    static let dataMods = "LauncherDataMods"       // ids of the turned-on data mods (DataMods.swift)
-    static let reflections = "LauncherReflections" // NFSU2_REFLECTIONS: "original" | "sharp" | "sharpest"
-    static let reflectSky = "LauncherReflectSky"   // NFSU2_REFLECT_SKY=1
-    static let reflectLights = "LauncherReflectLights"   // NFSU2_REFLECT_LIGHTS=1
-    static let reflectDetail = "LauncherReflectDetail"   // NFSU2_REFLECT_DETAIL=1
 }
 
 /// The "Picture" card: optional settings, each passed to the engine as an environment
@@ -141,17 +189,6 @@ enum PictureOptions {
         PictureOption(key: "LauncherSharpening", title: "Sharpening", env: "SHARPEN",
                       choices: [("Off, as on PC (original)", ""), ("Low", "50"), ("High", "100")]),
     ]
-    static let frameRate = "LauncherFrameRate"     // NFSU2_FPS: auto | 30 | 60 | 120 | 240
-    static let cutscenes60 = "LauncherCutscenes60" // NFSU2_CUTSCENES_60=1
-    static let cutsceneBars = "LauncherCutsceneBars" // false: NFSU2_CUTSCENE_BORDERS=off
-    static let online = "LauncherOnline"           // LAN and Online through a server
-    static let server = "LauncherServer"
-    static let playerName = "LauncherPlayerName"
-    static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost"
-    static let roamRoom = "LauncherRoamRoom"
-    static let roamCrew = "LauncherRoamCrew"
-    static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
-    static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
 }
 
 /* Online play goes through a relay server (th0mk's nfsu2-web server, the only

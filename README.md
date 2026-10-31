@@ -286,20 +286,23 @@ Do this after adding a `GA(...)` address or a `sub_` name to the runtime; game
 addresses written without `GA(...)` would be wrong in the North American engine.
 
 The app opens a small launcher window first (`launcher/`, built by `pack.sh`
-with `swiftc`): it finds and checks `SPEED2.EXE`, offers Original or HD graphics
-and full screen, a few optional picture settings (the PC version's colour tint,
-console gamma, edge smoothing, sharpening; all off by default, see `run.sh`),
-opens the logs folder, manages saves (**Saves…**: the career
-profiles, backups, ZIP export and import; the current saves are backed up before
-an import replaces them; tests/save_manager.sh), and **Make Copy…** builds a
-portable app with the game files inside (APFS clones, seconds on the same disk),
-so nobody needs `pack.sh --embed` or a terminal for that. Untick "Show this
-window when the app opens" to go straight into the game (hold Option to get the
-window back). `NFSU2_SKIP_LAUNCHER=1` / `NFSU2_ENGINE=original|hd` do the same
-from scripts. The Controller card turns the game controller on or off and sets its stick
-dead zone (`NFSU2_PAD` / `NFSU2_PAD_DEADZONE`, which still win when set by hand).
+with `swiftc`): it finds and checks `SPEED2.EXE`, offers full screen, opens the
+logs folder and manages saves (**Saves…**: the career profiles, backups, ZIP
+export and import; the current saves are backed up before an import replaces
+them; tests/save_manager.sh). **Settings…** (Cmd-,) holds the options on tabs:
+Graphics (Original or HD, the HUD, frame rate, headlights, reflections), Picture
+(the PC version's colour tint, console gamma, edge smoothing, sharpening; all off
+by default, see `run.sh`), Controls, Online, Game, Mods and More, where **Make
+Copy…** builds a portable app with the game files inside (APFS clones, seconds
+on the same disk), so nobody needs `pack.sh --embed` or a terminal for that.
+**Restore Original Game** sets every option back to the original, unmodified
+game. Untick "Show this window when the app opens" to go straight into the game
+(hold Option to get the window back). `NFSU2_SKIP_LAUNCHER=1` /
+`NFSU2_ENGINE=original|hd` do the same from scripts. The Controls tab turns the
+game controller on or off and sets its stick dead zone (`NFSU2_PAD` /
+`NFSU2_PAD_DEADZONE`, which still win when set by hand).
 
-The **Mods** card adds a few PC mods that change the game's own data files, each
+The **Mods** tab adds a few PC mods that change the game's own data files, each
 with a switch (off by default, which is the original game): JeansBig's
 [Detailed Map](https://nfsmods.xyz/mod/4485), XoLSt94's
 [Upscaled Freeway Signs](https://nfsmods.xyz/mod/7342) and
@@ -454,7 +457,7 @@ in the 3D menus. Method and raw numbers are in `WINE_COMPARISON.md`.
 **Is there a ready-made download?**
 Yes: the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) has `NFSU2.zip`. The app holds both
 graphics modes, Original and HD (MSAA, ray-traced reflections), chosen in its
-window; older releases had a separate `NFSU2.HD.zip`. It contains no game files:
+Settings; older releases had a separate `NFSU2.HD.zip`. It contains no game files:
 the window asks for the folder that holds your own `SPEED2.EXE`.
 The app is not notarized, so macOS blocks the first start: open System Settings ›
 Privacy & Security and click **Open Anyway** (on macOS 14 and older: right-click
@@ -462,7 +465,7 @@ the app › Open). If macOS says the app is damaged, run once in Terminal:
 `xattr -dr com.apple.quarantine /Applications/NFSU2.app`
 
 **Can I carry the game to another Mac in one piece?**
-Yes. In the app's window, **Make Copy…** creates "NFSU2 Portable.app" with the
+Yes. In the app's Settings (More tab), **Make Copy…** creates "NFSU2 Portable.app" with the
 game files inside: about 1.4 GB, plus the movies (1.1 GB) and the language packs in `LANGPACKS` if the game folder has them. Untick those when saving it for a smaller copy. It runs on its own; saves stay in
 `~/Library/Application Support/NFSU2 Saves` on each Mac. It contains the game,
 so keep it for yourself.

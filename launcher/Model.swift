@@ -141,18 +141,12 @@ final class LauncherModel: ObservableObject {
         modsOn = Set(defaults.stringArray(forKey: Prefs.dataMods) ?? [])
         let st = ProcessInfo.processInfo.environment["NFSU2_MODS_STORE"] ?? ""
         modStore = st.isEmpty ? DataMods.defaultStore : URL(fileURLWithPath: st)
-        refreshMods()
         reflections = Reflections(rawValue: defaults.string(forKey: Prefs.reflections) ?? "") ?? .original
         reflectSky = defaults.bool(forKey: Prefs.reflectSky)
         reflectLights = defaults.bool(forKey: Prefs.reflectLights)
         reflectDetail = defaults.bool(forKey: Prefs.reflectDetail)
         let d = UserDefaults.standard
         picture = PictureOptions.all.map { o in min(max(d.integer(forKey: o.key), 0), o.choices.count - 1) }
-    }
-
-    private func savePicture() {
-        for (o, i) in zip(PictureOptions.all, picture) { defaults.set(i, forKey: o.key) }
-        packs.game = { [weak self] in self?.location?.folder }
         let fr = defaults.string(forKey: Prefs.frameRate) ?? "auto"
         frameRate = LauncherModel.frameRates.contains(fr) ? fr : "auto"
         cutscenes60 = defaults.bool(forKey: Prefs.cutscenes60)
@@ -167,6 +161,12 @@ final class LauncherModel: ObservableObject {
         hearCars = defaults.bool(forKey: Prefs.hearCars)
         controller = defaults.bool(forKey: Prefs.controller)
         stickDeadzone = min(0.5, max(0, defaults.double(forKey: Prefs.stickDeadzone)))
+        packs.game = { [weak self] in self?.location?.folder }
+        refreshMods()
+    }
+
+    private func savePicture() {
+        for (o, i) in zip(PictureOptions.all, picture) { defaults.set(i, forKey: o.key) }
     }
 
     var location: GameLocation? {
@@ -528,6 +528,25 @@ final class LauncherModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Every option as in the original game (Prefs.originalGame)?
+    var isOriginalGame: Bool { Prefs.originalGame.allSatisfy { $0.isSet(self) } }
+
+    /// Settings › Restore Original Game.  Each option saves itself as it is set.
+    func restoreOriginalGame() {
+        for o in Prefs.originalGame { o.restore(self) }
+    }
+
+    func confirmRestoreOriginalGame() {
+        let a = NSAlert()
+        a.messageText = "Restore the original game?"
+        a.informativeText = "Every option in Settings goes back to the value that gives the original, unmodified game. Full screen, the game folder, the game's own settings and career saves are not changed."
+        a.addButton(withTitle: "Restore")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        restoreOriginalGame()
+        notice = "Every option is back as in the original game."
     }
 
     // MARK: portable copy
