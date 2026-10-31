@@ -18,7 +18,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `headlights_native` | other cars' headlights: modes, the pool, the Metal shaders (EU and NA) |
 | `shader_ps20` | ps_2_0 shader translation, original and HD |
 | `save_paths` | where saves go, the old folder's move, NFSU2_SAVEDIR |
-| `texpack_unit`, `texrep_native`, `texture_packs` | texture pack reading, drawing, the launcher's builder |
+| `texture_unit`, `texture_packs` | texture pack reading, drawing, the launcher's builder |
 | `game_folder_tools` | tools/writewatch.c and tools/manifest.py (the game-folder proof's tools) |
 | `net_harness` | the Winsock / Netbios HLE (240 checks with the virtual LAN hub tools/vlanhub.py), the native WebSocket relay fixtures (tests/net/native) |
 | `roam_unit` | the free-roam core (287 checks) and a loopback stand-in friend (roam_fakepeer, roam_recv) |
