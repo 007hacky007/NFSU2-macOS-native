@@ -6307,6 +6307,7 @@ void metal_run_main_loop(void){
             [appMenu addItem:[NSMenuItem separatorItem]];
             [appMenu addItemWithTitle:@"NFSU2'den Cik" action:@selector(terminate:)
                         keyEquivalent:@"q"];
+            { extern void radio_menu_install(NSMenu *); radio_menu_install(appMenu); }   /* radio_native.m: Music, above Quit */
             [appItem setSubmenu:appMenu];
             [NSApp setMainMenu:bar];
         }
