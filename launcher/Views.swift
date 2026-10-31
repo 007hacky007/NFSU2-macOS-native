@@ -197,7 +197,7 @@ struct MoreCard: View {
                     .disabled(!model.isReady)
             }
             HStack(spacing: 8) {
-                Button("Saves") { model.openSaves() }.buttonStyle(SecondaryButtonStyle())
+                Button("Saves…") { model.manageSaves() }.buttonStyle(SecondaryButtonStyle())
                 Button("Logs") { model.openLogs() }.buttonStyle(SecondaryButtonStyle())
                 Button("Reset Graphics Settings…") { model.resetGraphics() }.buttonStyle(SecondaryButtonStyle())
                 Spacer(minLength: 0)
