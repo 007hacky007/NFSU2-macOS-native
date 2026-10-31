@@ -162,7 +162,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Car loader: a read in progress finishes before part animations load (sub_0061c600) | No load hang while friends' cars load | DONE | old overrides.c | Small. NA address. Done in 96c12aa (fp/gametools); not reproduced in game (needs the scenario runner, package I). |
 | Ride texture references kept when a purge frees nothing (sub_00639f20) | No "memory access out of bounds" crash with friends' cars coming and going | DONE | old overrides.c | Small. NA address. Done in 96c12aa (fp/gametools); not reproduced in game (package I). |
 | Ride texture list capped at 0x45 (sub_00631e20) | No freeze with decal-heavy friends' cars | DONE | old overrides.c | Small. NA address. Done in 96c12aa (fp/gametools); not reproduced in game (package I). |
-| Discord Rich Presence (off by default) | Show what you are doing in Discord | BRANCH | discord-presence | Missing NFSU2_DISCORD_LARGE_IMAGE (custom image) option; tests/discord_* and tools/mock_discord.py are only in the old fork. |
+| Discord Rich Presence (off by default) | Show what you are doing in Discord | BRANCH | discord-presence | Missing NFSU2_DISCORD_LARGE_IMAGE (custom image) option; tests/discord_* and tools/mock_discord.py are only in the old fork. Gap closed in ea8b49e (fp/saves): large image option, LAN/friends/paused states, old Discord tests. |
 | Windows companion plugin interop tooling (roam_asipeer.c, NFSU2FreeRoam.asi under Unicorn, asi_* tests) | None for Mac players | SKIP | old runtime/roam_asipeer.c, tests/asi_*.c, tools/asi_check.py, build_roam_asi.sh, roam_asi_test.sh, roam_x86check.sh, roam_fingerprint.py, roam_modsites.py | Test-only; the plugin source is not in this repo. |
 | Free-roam research probes (roam.c) | None | SKIP | old runtime/roam.c (983) | Test-only probes. |
 | World map jump table for the server's cheat watch (tools/map_jumps.py) | Server-side anti-cheat data | SKIP | old tools/map_jumps.py | Server tooling. |
@@ -173,7 +173,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 |---|---|---|---|---|
 | Save manager: list careers, backup, export ZIP, import/restore with validation and pre-restore ZIP | Safe backups and transfers | UPSTREAM | upstream #15 6903fa5 (SaveArchive/SaveStore/SaveViews); branch launcher-save-manager | SaveArchive.swift is identical. |
 | Save paths: NFSU2 Saves, ~/.nfsu2_registry, NFSU2 Kayitlar migration, NFSU2_SAVEDIR/REGFILE overrides | Existing saves keep working | UPSTREAM | upstream bundle.m, fileio.c write root | tests/save_paths.m is only in the old fork. |
-| Encrypted cloud saves (Vault): 8-word keyphrase, PBKDF2/AES-GCM browser format, 256 KiB limit, manual check/send/download, keep both, ETag conflicts, optional Keychain | Move careers between Mac and browser | PORT | old launcher/VaultAPI.swift (119), VaultCrypto.swift (89), VaultPayload.swift (34), VaultViews.swift (149), VaultWords.swift (97); tests/vault.sh, vault*.swift/.mjs/.py | Medium (~490 Swift + tests). Depends on SaveStore (upstream) and the server URL (lan-play). Vault URL default /vault on the game server. |
+| Encrypted cloud saves (Vault): 8-word keyphrase, PBKDF2/AES-GCM browser format, 256 KiB limit, manual check/send/download, keep both, ETag conflicts, optional Keychain | Move careers between Mac and browser | DONE | old launcher/VaultAPI.swift (119), VaultCrypto.swift (89), VaultPayload.swift (34), VaultViews.swift (149), VaultWords.swift (97); tests/vault.sh, vault*.swift/.mjs/.py | Medium (~490 Swift + tests). Depends on SaveStore (upstream) and the server URL (lan-play). Vault URL default /vault on the game server. Done in ea8b49e (fp/saves): byte-compatible with the browser, round trip tested against a local donor server; a real https vault and the login Keychain not tested. |
 | Garage slots 6-10 and Trade Car (80% refund, text shown right) | Ten-car career garage | BRANCH | garage-slots (includes the 2c92742 "80%" fix) | - |
 | Power Units (bhp or kW) | Power in your unit | BRANCH | power-units | - |
 | Both regions' cars (Corsa, 106 in NA; Civic/RSX in EU) | More cars | BRANCH | all-region-cars (regional.c) | - |
@@ -203,10 +203,10 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Free-roam room with UTF-8 and runtime name check | See Online | BRANCH | free-roam | Narrower; see Online row. Gap closed in 96c12aa (fp/gametools). |
 | Screenshots gallery (thumbnails, preview, reveal/export, confirmed delete, symlink/hardlink/oversize rejection) | Browse your photos | DONE | old launcher/PhotoGallery.swift (273), tests/photo_gallery*.swift/.sh | Small-medium. Needs photo mode. Done in a61f744 (fp/photo-drift). |
 | Manage Saves | See Career | UPSTREAM | upstream #15 | - |
-| Cloud section in the save window | See Career | PORT | old Vault*.swift | Listed under Career. |
+| Cloud section in the save window | See Career | DONE | old Vault*.swift | Listed under Career. Done in ea8b49e (fp/saves). |
 | Make Copy keeps movies and server.dll | Portable app works fully | UPSTREAM | upstream #33 (movies); lan-play 0eb8f12 (server.dll) | Check that an imported UHUD pack outside the game folder is also copied (the old fork copied the game folder only). |
 | App icon traced from SPEED2.EXE to vectors | Sharp icon | UPSTREAM | upstream #21 c9e2bc5; branch app-icon-from-exe | - |
-| Launcher validation tests (launcher_settings, runtime_options: defaults, persistence, invalid values, stale env cleared) | Fewer broken launches | PORT | old tests/launcher_settings.*, tests/runtime_options.* | Write them against the new Settings model. |
+| Launcher validation tests (launcher_settings, runtime_options: defaults, persistence, invalid values, stale env cleared) | Fewer broken launches | DONE | old tests/launcher_settings.*, tests/runtime_options.* | Write them against the new Settings model. Done in ea8b49e (fp/saves) (tests/launcher_settings.sh). |
 
 ## Photo / drift
 
