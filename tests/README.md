@@ -51,7 +51,7 @@ tests/run_suite.sh --game <out> [scenario...]          # the scenario list in ru
 tests/input/suite.sh <engine> <SPEED2.EXE> <work>      # keyboard and pad
 tests/game_folder_untouched.sh <engine> <SPEED2.EXE> <work>   # the game folder stays as it was
 tests/display_runtime.sh, tests/photo_drift.sh, tests/shop_music.sh   # see their headers
-tests/discord_suite.sh <out> [flow gamequit customize latekill malformed absent]   # a mock Discord
+tests/discord_suite.sh <out> [eu|na|both] [race gamequit latekill malformed absent]   # a mock Discord
 tests/net/loop_run.sh, tests/net/vlan_run.sh, tests/net/lan_race.sh   # LAN play between instances
 tests/roam/plan.sh <out> 900 roam_loader_overlap.txt 47600 8 tests/roam/plan_loader.sh   # free roam: friends' car loads during part-animation reads (roamfix.c)
 tests/roam/plan.sh <out> 900 roam_carpool.txt 47600 8 tests/roam/plan_loader.sh NFSU2_ROAM_CARPOOL_KB=24000   # free roam: friends' cars in a small car pool (roamfix.c)
