@@ -85,19 +85,31 @@ final class LauncherModel: ObservableObject {
     @Published var seedRegistry: Bool { didSet { defaults.set(seedRegistry, forKey: Prefs.seedRegistry) } }   // EngineOptions.swift
     @Published var lanTiming: String { didSet { defaults.set(lanTiming, forKey: Prefs.lanTiming) } }
     @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
-    @Published var server: String { didSet { defaults.set(server, forKey: Prefs.server) } }
+    @Published var server: String {
+        didSet {
+            defaults.set(server, forKey: Prefs.server)
+            // the player counts' address follows the server until it is set by hand
+            if countsURL == PlayerCounts.address(for: oldValue) { countsURL = PlayerCounts.address(for: server) }
+            counts.clear()
+        }
+    }
+    @Published var countsURL: String { didSet { defaults.set(countsURL, forKey: Prefs.countsURL); counts.clear() } }
+    let counts = PlayerCountsCheck()     // Check Player Counts (PlayerCounts.swift): nothing asked until pressed
     @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
     @Published var freeRoam: FreeRoam { didSet { defaults.set(freeRoam.rawValue, forKey: Prefs.freeRoam) } }
     @Published var roamRoom: String { didSet { defaults.set(roamRoom, forKey: Prefs.roamRoom) } }
     @Published var roamCrew: String { didSet { defaults.set(roamCrew, forKey: Prefs.roamCrew) } }
+    @Published var quickChat: Bool { didSet { defaults.set(quickChat, forKey: Prefs.quickChat) } }       // QuickChat.swift
+    @Published var quickChatGroups: [String] { didSet { defaults.set(quickChatGroups, forKey: Prefs.quickChatGroups) } }
+    @Published var quickChatPhrases: [Int] { didSet { defaults.set(quickChatPhrases, forKey: Prefs.quickChatPhrases) } }
+    @Published var editingQuickChat = false
+    let quickChatDraft = QuickChatDraft()
     @Published var horn: Horn { didSet { defaults.set(horn.rawValue, forKey: Prefs.horn) } }
     @Published var hearCars: Bool { didSet { defaults.set(hearCars, forKey: Prefs.hearCars) } }
     var onlineError: String? {
         guard online else { return nil }
         if let e = OnlineSettings.error(server: server, name: playerName) { return e }
-        if freeRoam != .off && !(OnlineSettings.validTag(roamRoom) && OnlineSettings.validTag(roamCrew)) {
-            return "Room and crew: up to 24 letters, numbers or signs."
-        }
+        if freeRoam != .off, let e = OnlineSettings.roomError(roamRoom) ?? OnlineSettings.crewError(roamCrew) { return e }
         return nil
     }
     @Published var controller: Bool { didSet { defaults.set(controller, forKey: Prefs.controller) } }
@@ -182,11 +194,16 @@ final class LauncherModel: ObservableObject {
         subtitles = defaults.bool(forKey: Prefs.subtitles)
         background = DisplayOptions.pick(defaults.string(forKey: Prefs.background), DisplayOptions.backgrounds, DisplayOptions.originalBackground)
         online = defaults.bool(forKey: Prefs.online)
-        server = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
+        let savedServer = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
+        server = savedServer
+        countsURL = defaults.string(forKey: Prefs.countsURL) ?? PlayerCounts.address(for: savedServer)
         playerName = defaults.string(forKey: Prefs.playerName) ?? ""
         freeRoam = FreeRoam(rawValue: defaults.string(forKey: Prefs.freeRoam) ?? "") ?? .off
         roamRoom = defaults.string(forKey: Prefs.roamRoom) ?? ""
         roamCrew = defaults.string(forKey: Prefs.roamCrew) ?? ""
+        quickChat = defaults.bool(forKey: Prefs.quickChat)
+        quickChatGroups = QuickChat.groups(defaults.stringArray(forKey: Prefs.quickChatGroups))
+        quickChatPhrases = QuickChat.phraseIDs(defaults.array(forKey: Prefs.quickChatPhrases) as? [Int])
         horn = Horn(rawValue: defaults.string(forKey: Prefs.horn) ?? "") ?? .off
         hearCars = defaults.bool(forKey: Prefs.hearCars)
         controller = defaults.bool(forKey: Prefs.controller)
@@ -340,6 +357,17 @@ final class LauncherModel: ObservableObject {
             let crew = roamCrew.trimmingCharacters(in: .whitespaces)
             if !room.isEmpty { setenv("NFSU2_ROAM_ROOM", room, 0) }
             if !crew.isEmpty { setenv("NFSU2_ROAM_CREW", crew, 0) }
+            // the crews' colours as Game Tools picked them (runtime/native_controls.m)
+            if !crew.isEmpty, let rgb = defaults.string(forKey: Prefs.roamCrewColours), OnlineSettings.validColours(rgb) {
+                setenv("NFSU2_ROAM_CREW_RGB", rgb, 0)
+            }
+            // Quick chat (runtime/native_controls.m, roam_game.c say_*).  Off: 1-4 and
+            // the right stick do what they do in the original game.
+            if quickChat {
+                setenv("NFSU2_ROAM_SAY", "1", 0)
+                setenv("NFSU2_QUICKCHAT_GROUPS", quickChatGroups.joined(separator: ","), 0)
+                setenv("NFSU2_QUICKCHAT_PHRASES", quickChatPhrases.map(String.init).joined(separator: ","), 0)
+            }
             // The other players' engines, nitrous and hydraulics (runtime/carsfx.c).
             // Off: their cars sound as the game alone sounds them.
             if hearCars { setenv("NFSU2_ROAM_CARSFX", "1", 0) }

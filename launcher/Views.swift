@@ -372,6 +372,7 @@ struct MultiplayerCard: View {
                 if let err = model.onlineError {
                     Text(err).font(.system(size: 11)).foregroundColor(.orange)
                 }
+                PlayerCountsRow(model: model, counts: model.counts)     // PlayerCounts.swift
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
             VStack(alignment: .leading, spacing: 6) {
@@ -397,7 +398,7 @@ struct MultiplayerCard: View {
                     TextField("None", text: $model.roamCrew).textFieldStyle(RoundedBorderTextFieldStyle())
                 }
                 .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
-                Text("Room: only players in the same room see each other. Crew: your crew's names and arrows in its colour, at any distance.")
+                Text("Room: only players in the same room see each other. Crew: your crews' names and arrows in their colours, at any distance (up to four, by commas; Game Tools picks the colours).")
                     .font(.system(size: 11)).foregroundColor(Theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(model.freeRoam == .off ? 0.5 : 1)
@@ -412,6 +413,7 @@ struct MultiplayerCard: View {
                     Toggle("", isOn: $model.hearCars).labelsHidden().toggleStyle(SwitchToggleStyle())
                 }
                 .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
+                QuickChatRow(model: model)                                // QuickChat.swift
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
             HStack(alignment: .center) {

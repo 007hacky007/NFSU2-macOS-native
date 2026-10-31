@@ -9,7 +9,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/nfsu2_texpacks.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
-swiftc -swift-version 5 -target arm64-apple-macos11.0 -o "$T/launcher" "$ROOT"/launcher/*.swift || { echo "FAIL: launcher build"; exit 1; }
+swiftc -swift-version 5 -target arm64-apple-macos11.0 -import-objc-header "$ROOT/runtime/names.h" -o "$T/launcher" "$ROOT"/launcher/*.swift || { echo "FAIL: launcher build"; exit 1; }
 mkdir -p "$T/game/GLOBAL" "$T/plain" "$T/linked/GLOBAL" "$T/dirlink"
 echo "not the mod's" > "$T/outside.txt"
 # a 4x4 DXT1 DDS named after a game texture

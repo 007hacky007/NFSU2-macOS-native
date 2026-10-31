@@ -328,6 +328,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 22).padding(.vertical, 12)
             }
             if let j = model.job { JobOverlay(model: model, job: j) }
+            if model.editingQuickChat { QuickChatEditor(model: model, draft: model.quickChatDraft) }   // QuickChat.swift
         }
         .frame(width: SettingsView.size.width, height: SettingsView.size.height)
     }

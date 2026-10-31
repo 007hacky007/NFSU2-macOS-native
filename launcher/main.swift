@@ -15,7 +15,7 @@
 //   NFSU2_ENGINE=original|hd     engine choice for this start
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
 //   NFSU2_LAUNCHER_SNAPSHOT_SETTINGS=graphics|more|...  with the above: the Settings window on that tab
-//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window|texpacks-busy
+//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window|texpacks-busy|quickchat|counts
 //                                fake state for the snapshot (uhud: ready, with a UHUD pack added;
 //                                uhud-busy: downloading it; texpacks: two texture packs, one on;
 //                                texpacks-window: the Texture Packs window with them; texpacks-busy:
@@ -252,6 +252,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model.packs.phase["scout-ui"] = "Downloading from nfsmods.xyz… 4.6 MB of 11.7 MB"
                 model.packs.fraction["scout-ui"] = 0.4
             }
+        case "quickchat":
+            model.game = .ready(GameLocation(exe: exe, embedded: false))
+            model.editQuickChat()
+        case "counts":
+            model.game = .ready(GameLocation(exe: exe, embedded: false))
+            model.counts.result = "On this server now: 14 players, 3 in Online mode, 9 in free roam. Room \"Ostrava\": 4 in free roam. Crews: Night Owls 2."
         case "copying":
             model.job = LauncherModel.Job(phase: "Copying the game files…", done: 612_000_000, total: 1_430_000_000)
         case "mods":

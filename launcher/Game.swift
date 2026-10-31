@@ -107,7 +107,12 @@ enum Prefs {
     static let playerName = "LauncherPlayerName"
     static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost"
     static let roamRoom = "LauncherRoamRoom"
-    static let roamCrew = "LauncherRoamCrew"
+    static let roamCrew = "LauncherRoamCrew"       // also written by the engine's Game Tools panel (runtime/native_controls.m)
+    static let roamCrewColours = "LauncherRoamCrewColours"     // "rrggbb,..." for the crews in order (Game Tools)
+    static let quickChat = "LauncherQuickChat"     // NFSU2_ROAM_SAY=1 for the engine (QuickChat.swift)
+    static let quickChatGroups = "LauncherQuickChatGroups"     // [String] x 4 (also Game Tools')
+    static let quickChatPhrases = "LauncherQuickChatPhrases"   // [Int] x 16, phrase numbers (also Game Tools')
+    static let countsURL = "LauncherCountsURL"     // the player counts' address (PlayerCounts.swift)
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
     static let music = "LauncherMusic"             // "game" | "folder": EA Trax plays a music folder (Music.swift)
@@ -140,6 +145,7 @@ enum Prefs {
         OriginalValue(\.online, false),
         OriginalValue(\.freeRoam, .off),
         OriginalValue(\.hearCars, false),
+        OriginalValue(\.quickChat, false),
         OriginalValue(\.horn, .off),
         OriginalValue(\.allCars, false),
         OriginalValue(\.garage, false),
@@ -260,10 +266,51 @@ enum OnlineSettings {
         if !validName(name) { return "Enter a player name: 3-15 letters, numbers, _ or -." }
         return nil
     }
-    /* a free-roam room or crew: up to 24 printable ASCII characters (the game
-     * shows no others), empty for none */
-    static func validTag(_ text: String) -> Bool {
-        text.utf8.count <= 24 && text.utf8.allSatisfy { (32...126).contains($0) }
+    /* a free-roam room: up to 63 bytes of UTF-8 (the engine's room setting),
+     * no control characters, and not one the engine's own name rules
+     * (runtime/names.h, the same lists as the server's) turn down; empty: everyone */
+    static func roomError(_ text: String) -> String? {
+        let room = text.trimmingCharacters(in: .whitespaces)
+        if room.utf8.count > 63 || !room.utf8.allSatisfy({ $0 >= 32 && $0 != 127 }) {
+            return "Room: up to 63 bytes (fewer for accented letters), no control characters."
+        }
+        if !room.isEmpty && room.withCString({ name_blocked($0) }) != 0 {
+            return "Choose another room name: the multiplayer name rules turn this one down."
+        }
+        return nil
+    }
+    /* the crews: up to four names by commas, each up to 24 characters with no #,
+     * ; or control characters, none twice (the engine's crew hash: case and
+     * spaces do not count) and none the name rules turn down; empty: none */
+    static func crewError(_ text: String) -> String? {
+        let parts = text.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if parts.count > 4 { return "Crew: up to four crews, by commas." }
+        var seen = Set<UInt32>()
+        for p in parts {
+            if p.count > 24 || p.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 || $0 == "#" || $0 == ";" }) {
+                return "Crew: each name up to 24 characters, no #, ; or control characters."
+            }
+            if p.withCString({ name_blocked($0) }) != 0 { return "Choose another crew name: the multiplayer name rules turn \"\(p)\" down." }
+            if !seen.insert(roomHash(p)).inserted { return "Crew: \"\(p)\" is in the list twice." }
+        }
+        return nil
+    }
+    /* the crews' colours as Game Tools keeps them: rrggbb by commas */
+    static func validColours(_ text: String) -> Bool {
+        let parts = text.split(separator: ",", omittingEmptySubsequences: false)
+        return !text.isEmpty && parts.count <= 4 && parts.allSatisfy { $0.count == 6 && $0.allSatisfy { $0.isHexDigit } }
+    }
+    /* the engine's room and crew hash (runtime/roam_core.c rc_room_hash): FNV-1a
+     * of the UTF-8 without spaces, A-Z as a-z; 0: none */
+    static func roomHash(_ name: String) -> UInt32 {
+        var h: UInt32 = 0x811C_9DC5, kept = 0
+        for var b in name.utf8 {
+            if b == 0x20 || (0x09...0x0d).contains(b) { continue }
+            if (0x41...0x5a).contains(b) { b += 0x20 }
+            h = (h ^ UInt32(b)) &* 0x0100_0193; kept += 1
+        }
+        return kept == 0 ? 0 : (h == 0 ? 1 : h)
     }
 }
 
