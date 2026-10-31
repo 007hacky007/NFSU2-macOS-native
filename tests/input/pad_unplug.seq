@@ -1,0 +1,26 @@
+# Default mode (NFSU2_PAD=1), no controller at start (NFSU2_PAD_FAKE=PLUG=0):
+# no game pad device, the game's rescan stays on.  Keyboard to a Quick Race;
+# the controller plugged in mid-race is found by the rescan and drives
+# (throttle on the right trigger); unplugged, the device stays and reads at
+# rest (no input stuck, no DIERR_INPUTLOST); plugged back in, it drives again.
+# With NFSU2_PAD=hotplug the same run shows DIERR_INPUTLOST on the unplug and
+# a new device after the replug.
+0:until:RETURN:MC_Background.fng:120
++200:until:RETURN:UI_QRModeSelect.fng:300
++200:until:RETURN:UI_QRTrackSelect.fng:150
++200:until:RETURN:UI_QRModeOptions.fng:150
++200:until:RETURN:UI_QRCarSelect.fng:150
++200:until:RETURN:PC_Loading.fng:150
++1500:log:race: plug the controller in, right trigger and RB held, stick left
++0:pad:PLUG=1;RT=1;RB=1;LX=-1
++120:in
++0:log:unplug
++0:pad:PLUG=0
++5:in
++60:in
++0:log:plug back in, still held
++0:pad:PLUG=1
++120:in
++0:pad:OFF
++30:in
++0:log:end

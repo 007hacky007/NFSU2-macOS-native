@@ -47,6 +47,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "native_scene.h"
+#include "gamepad.h"
 
 void photo_input(int command, int a, int b);       /* photo.c */
 void gamepad_fill(unsigned char *dst);             /* gamepad.m: DIJOYSTATE2 */
@@ -123,8 +124,9 @@ static int padAtRest(const NativePad *s) {
     return 1;
 }
 /* The pad the game gets: nothing while photo mode is on or the window has no focus, nor afterwards until it is at
- * rest (com.c, after gamepad_fill) */
-void native_scene_filter_pad(unsigned char *d) {
+ * rest.  native_scene_filter_raw works on a DIJOYSTATE2 (tests); the game's pad (dinput_pad.c) goes through
+ * native_scene_filter_pad below. */
+void native_scene_filter_raw(unsigned char *d) {
     static unsigned epoch; static int quarantine;
     if (!photo_enabled()) return;
     unsigned next = atomic_load(&inputEpoch);
@@ -136,6 +138,21 @@ void native_scene_filter_pad(unsigned char *d) {
         memset(d, 0, 0x20); memset(d + 0x30, 0, 0x80);
         uint32_t c = 0xffffffffu; for (int i = 0; i < 4; i++) memcpy(d + 0x20 + 4 * i, &c, 4);
     }
+}
+static int padStateAtRest(const PadState *s) {
+    if (!s->connected) return 1;
+    if (s->buttons) return 0;
+    for (int i = 0; i < PAD_NAXES; i++) if (fabsf(s->axis[i]) > 0.08f) return 0;
+    return 1;
+}
+void native_scene_filter_pad(PadState *s) {            /* dinput_pad.c, before the game reads the pad */
+    static unsigned epoch; static int quarantine;
+    if (!photo_enabled()) return;
+    unsigned next = atomic_load(&inputEpoch);
+    if (next != epoch) { epoch = next; quarantine = 1; }
+    if (native_scene_active() || !atomic_load(&focused)) quarantine = 1;
+    else if (padStateAtRest(s)) quarantine = 0;
+    if (quarantine) { s->buttons = 0; memset(s->axis, 0, sizeof s->axis); }
 }
 static int pack(float x, float y) {
     int16_t a = (int16_t)lrintf(fmaxf(-1, fminf(1, x)) * 32767), b = (int16_t)lrintf(fmaxf(-1, fminf(1, y)) * 32767);

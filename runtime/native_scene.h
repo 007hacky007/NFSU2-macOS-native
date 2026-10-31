@@ -32,7 +32,7 @@ void native_scene_pump(void);                      /* main thread, every loop */
 void native_scene_guest_frame(void);               /* guest thread, every frame (photo.c) */
 int  native_scene_active(void);                    /* photo mode is on (any thread) */
 void native_scene_focus(int focused);              /* main thread */
-void native_scene_filter_pad(unsigned char *dijoystate2);   /* com.c: what the game gets of the controller */
+void native_scene_filter_raw(unsigned char *dijoystate2);   /* the same filter on a DIJOYSTATE2 (tests) */
 void native_scene_f12(void);                       /* F12: open photo mode where it can, else a screenshot */
 void native_scene_request_capture(void);           /* a screenshot of the next frame */
 int  native_scene_take_capture(void);              /* the presenter: 1 if this frame is to be saved */

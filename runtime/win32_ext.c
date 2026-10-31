@@ -460,7 +460,7 @@ static void cs_owned(pthread_mutex_t *m, uint32_t tid, int d){
 }
 
 uint32_t call_guest(CPU *c, uint32_t fn, int nargs, const uint32_t *args);
-int metal_take_char(int remove);            /* metal.m: WM_CHAR queue */
+int kbd_take_msg(int remove, uint32_t *m, uint32_t *wp, uint32_t *lp);   /* keyboard.c: key messages */
 static uint32_t g_wndproc = 0;
 static uint32_t g_hwnd    = 0x00B00001u;
 #define WMQ 32
@@ -1022,6 +1022,21 @@ int win32_reg_get_dword(const char *nm, uint32_t *out){
     return 1;
 }
 void win32_reg_put_dword(const char *nm, uint32_t v){ reg_put_dword(nm, v); }
+/* Strings, for dinput_kbd.c's DirectInput user maps (written at once) */
+int win32_reg_get_str(const char *nm, char *out, unsigned cap){
+    int i = reg_find(nm);
+    if (i < 0 || !g_reg[i].is_str) return 0;
+    snprintf(out, cap, "%s", g_reg[i].sv);
+    return 1;
+}
+void win32_reg_set_str(const char *nm, const char *v){ reg_put_string(nm, v); }
+void win32_reg_del(const char *nm){
+    int i = reg_find(nm);
+    if (i < 0) return;
+    g_reg[i] = g_reg[--g_regn];
+    reg_save();
+}
+void win32_reg_flush(void){}
 
 int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     uint32_t r = 0;
@@ -1205,11 +1220,11 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
                 MR32(pm+16)=0; MR32(pm+20)=0; MR32(pm+24)=0; }
             g_wm_sent++;
             r=1;
-        } else if ((wp = (uint32_t)metal_take_char(remove)) != 0xFFFFFFFFu){
-            /* A typed character (see metal.m char_push).  The WM_CHAR that Windows's
-             * TranslateMessage would produce; lParam: repeat=1. */
+        } else if (kbd_take_msg(remove, &m, &wp, &lp)){
+            /* A key: WM_KEYDOWN/WM_KEYUP/WM_SYS*, and the WM_CHAR that Windows's
+             * TranslateMessage would produce (runtime/keyboard_mac.m). */
             if (pm){ mem_commit(pm,28);
-                MR32(pm)=g_hwnd; MR32(pm+4)=0x0102u; MR32(pm+8)=wp; MR32(pm+12)=1u;
+                MR32(pm)=g_hwnd; MR32(pm+4)=m; MR32(pm+8)=wp; MR32(pm+12)=lp;
                 MR32(pm+16)=0; MR32(pm+20)=0; MR32(pm+24)=0; }
             g_wm_sent++;
             r=1;

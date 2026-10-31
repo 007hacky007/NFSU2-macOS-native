@@ -299,8 +299,15 @@ on the same disk), so nobody needs `pack.sh --embed` or a terminal for that.
 game. Untick "Show this window when the app opens" to go straight into the game
 (hold Option to get the window back). `NFSU2_SKIP_LAUNCHER=1` /
 `NFSU2_ENGINE=original|hd` do the same from scripts. The Controls tab turns the
-game controller on or off and sets its stick dead zone (`NFSU2_PAD` /
-`NFSU2_PAD_DEADZONE`, which still win when set by hand).
+game controller on or off and sets what happens when it is unplugged, its stick
+and trigger dead zones, the trigger buttons at full pull, the pad's menu keys
+and reading it in the background (`NFSU2_PAD`, `NFSU2_PAD_DEADZONE`,
+`NFSU2_PAD_TRIGGER_DEADZONE`, `NFSU2_PAD_TRIGGER_CLICK`, `NFSU2_PAD_FE_KEYS`,
+`NFSU2_PAD_BACKGROUND`, which still win when set by hand; runtime/gamepad.m,
+runtime/dinput_pad.c).  The keyboard follows the Mac's keyboard layout as
+Windows would (typed characters, dead keys, Option as Alt), keys can be rebound
+on the game's Controls page and the bindings are kept (runtime/keyboard_mac.m,
+runtime/dinput_kbd.c).
 
 The **Mods** tab adds a few PC mods that change the game's own data files, each
 with a switch (off by default, which is the original game): JeansBig's

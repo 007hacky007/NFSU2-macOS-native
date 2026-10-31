@@ -77,12 +77,12 @@ int main(int argc, char **argv) { @autoreleasepool {
      * photo mode until it is at rest (a trigger held for the camera is no throttle). */
     pad_rest(); pad_axis(2, -1); pad_button(0, 1);
     photo(2); native_scene_guest_frame(); assert(args[3] == 0);
-    unsigned char game[272]; memcpy(game, pad, sizeof game); native_scene_filter_pad(game);
+    unsigned char game[272]; memcpy(game, pad, sizeof game); native_scene_filter_raw(game);
     native_scene_pad_parse(game, &p); assert(!p.buttons && p.rt == 0);
-    photo(1); native_scene_guest_frame(); memcpy(game, pad, sizeof game); native_scene_filter_pad(game);
+    photo(1); native_scene_guest_frame(); memcpy(game, pad, sizeof game); native_scene_filter_raw(game);
     native_scene_pad_parse(game, &p); assert(!p.buttons && p.rt == 0);
-    pad_rest(); memcpy(game, pad, sizeof game); native_scene_filter_pad(game);
-    pad_axis(2, -1); memcpy(game, pad, sizeof game); native_scene_filter_pad(game); native_scene_pad_parse(game, &p); assert(p.rt == 1);
+    pad_rest(); memcpy(game, pad, sizeof game); native_scene_filter_raw(game);
+    pad_axis(2, -1); memcpy(game, pad, sizeof game); native_scene_filter_raw(game); native_scene_pad_parse(game, &p); assert(p.rt == 1);
     /* On, a pad at rest arms it: the left stick moves the camera, B closes. */
     photo(2); pad_rest(); native_scene_guest_frame();
     pad_axis(0, 0.5f); native_scene_guest_frame(); assert(args[3] != 0);

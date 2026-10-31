@@ -22,6 +22,7 @@
 #include "headlights.h"
 #include "texrep.h"
 #include "native_scene.h"
+#include "kbd.h"
 #include <stdatomic.h>
 #include <math.h>
 #include <string.h>
@@ -221,92 +222,11 @@ static void mouse_delta_scale(double *sx, double *sy){
     *sx = lw / vw; *sy = lh / vh;
 }
 
-/* --- keyboard state: the 256-byte table DirectInput will read --- */
-static _Atomic unsigned char g_keys[256];
-
-/* macOS virtual key code -> DirectInput DIK_* scan code */
-static unsigned char mac_to_dik(unsigned short kc){
-    switch (kc){
-    case 0x00: return 0x1E; /* A */   case 0x01: return 0x1F; /* S */
-    case 0x02: return 0x20; /* D */   case 0x03: return 0x21; /* F */
-    case 0x04: return 0x23; /* H */   case 0x05: return 0x22; /* G */
-    case 0x06: return 0x2C; /* Z */   case 0x07: return 0x2D; /* X */
-    case 0x08: return 0x2E; /* C */   case 0x09: return 0x2F; /* V */
-    case 0x0B: return 0x30; /* B */   case 0x0C: return 0x10; /* Q */
-    case 0x0D: return 0x11; /* W */   case 0x0E: return 0x12; /* E */
-    case 0x0F: return 0x13; /* R */   case 0x10: return 0x15; /* Y */
-    case 0x11: return 0x14; /* T */   case 0x1F: return 0x18; /* O */
-    case 0x20: return 0x16; /* U */   case 0x22: return 0x17; /* I */
-    case 0x23: return 0x19; /* P */   case 0x25: return 0x26; /* L */
-    case 0x26: return 0x24; /* J */   case 0x28: return 0x25; /* K */
-    case 0x2D: return 0x31; /* N */   case 0x2E: return 0x32; /* M */
-    case 0x12: return 0x02; case 0x13: return 0x03; case 0x14: return 0x04;
-    case 0x15: return 0x05; case 0x17: return 0x06; case 0x16: return 0x07;
-    case 0x1A: return 0x08; case 0x1C: return 0x09; case 0x19: return 0x0A;
-    case 0x1D: return 0x0B;                        /* 1..0 */
-    case 0x24: return 0x1C; /* Return  -> DIK_RETURN */
-    case 0x30: return 0x0F; /* Tab     */
-    case 0x31: return 0x39; /* Space   */
-    case 0x33: return 0x0E; /* Delete  -> BACK */
-    case 0x35: return 0x01; /* Escape  */
-    case 0x7B: return 0xCB; /* Left    */
-    case 0x7C: return 0xCD; /* Right   */
-    case 0x7D: return 0xD0; /* Down    */
-    case 0x7E: return 0xC8; /* Up      */
-    case 0x38: return 0x2A; /* Shift   */
-    case 0x3B: return 0x1D; /* Control */
-    default:   return 0;
-    }
-}
-/* --- typed characters -> WM_CHAR to the window procedure ------------------
- * The game takes text input (career profile name etc.) NOT from DirectInput but
- * from the WM_CHAR branch of the window procedure (0x005ccd70 -> 0x0055dbe0 ->
- * text box 0x00551280: 0x0D accept, 0x1B cancel, 0x08 delete, the rest is
- * appended).  On Windows TranslateMessage produces this; we produce it directly
- * from the character macOS decoded (keyboard layout, Shift included).
- * A single-producer (main thread) / single-consumer (PeekMessage) ring. */
-#define CHQ 128u
-static unsigned char g_chq[CHQ];
-static _Atomic unsigned g_chq_w, g_chq_r;
-static void char_push(unsigned char ch){
-    unsigned w = atomic_load(&g_chq_w), r = atomic_load(&g_chq_r);
-    if (w - r >= CHQ) return;                 /* full: drop */
-    g_chq[w % CHQ] = ch;
-    atomic_store(&g_chq_w, w + 1);
-}
-/* remove=0: just peek (PM_NOREMOVE).  -1 if empty. */
-int metal_take_char(int remove){
-    unsigned r = atomic_load(&g_chq_r);
-    if (r == atomic_load(&g_chq_w)) return -1;
-    int ch = g_chq[r % CHQ];
-    if (remove) atomic_store(&g_chq_r, r + 1);
-    return ch;
-}
-/* The character(s) a key press produces.  The game uses single-byte
- * Windows-1252: U+00A0..U+00FF are the same values; letters specific to Turkish
- * aren't in 1252 and are folded to their nearest ASCII equivalent. */
-static void char_from_event(NSEvent *ev){
-    switch ([ev keyCode]){
-    case 0x24: case 0x4C: char_push(0x0D); return;   /* Return / Enter */
-    case 0x33: char_push(0x08); return;              /* Delete -> Backspace */
-    case 0x35: char_push(0x1B); return;              /* Escape */
-    case 0x30: char_push(0x09); return;              /* Tab */
-    default: break;
-    }
-    if ([ev modifierFlags] & NSEventModifierFlagControl) return;
-    NSString *s = [ev characters];
-    for (NSUInteger i = 0; i < [s length]; i++){
-        unichar u = [s characterAtIndex:i];
-        switch (u){
-        case 0x0131: u = 'i'; break;  case 0x0130: u = 'I'; break;   /* ı İ */
-        case 0x015F: u = 's'; break;  case 0x015E: u = 'S'; break;   /* ş Ş */
-        case 0x011F: u = 'g'; break;  case 0x011E: u = 'G'; break;   /* ğ Ğ */
-        default: break;
-        }
-        if ((u >= 0x20 && u < 0x7F) || (u >= 0xA0 && u <= 0xFF))
-            char_push((unsigned char)u);
-    }
-}
+/* --- keyboard: runtime/keyboard_mac.m turns NSEvents into DirectInput key
+ * state and the window messages Windows would send (kbd.h); here only the
+ * event routing, the test hooks below and the runtime's own key taps. --- */
+int  kbdmac_handle(NSEvent *ev);
+void kbdmac_tick(void);
 /* AUTOTEXT="<frame>:<text>": "types" the text from that frame on, one letter
  * every 6 frames (diagnostic/test).  \n -> Enter (0x0D), \b -> Backspace. */
 static void autotext_tick(long f){
@@ -322,27 +242,29 @@ static void autotext_tick(long f){
             } }
     }
     if (start < 0 || pos >= n || f < start) return;
-    if ((f - start) / 6 >= pos){ char_push((unsigned char)txt[pos]); pos++; }
+    if ((f - start) / 6 >= pos){ kbd_post(0x0102u, (unsigned char)txt[pos], 1u); pos++; }   /* WM_CHAR */
 }
 
 /* Key taps from the runtime (mprace.c drives the menus of a free-roam
  * race's trip): the key is held until that frame */
 static _Atomic long g_key_tap_until[256];
 void metal_key_tap(unsigned dik, long frames){
-    if (dik < 256) atomic_store(&g_key_tap_until[dik], atomic_load(&g_frames_drawn) + (frames > 0 ? frames : 1));
+    if (dik >= 256) return;
+    atomic_store(&g_key_tap_until[dik], atomic_load(&g_frames_drawn) + (frames > 0 ? frames : 1));
+    kbd_set_key(KSRC_TAP, dik, 1);
+}
+static void key_taps_tick(void){            /* main loop: taps whose time is up */
+    long f = atomic_load(&g_frames_drawn);
+    for (unsigned i = 1; i < 256; i++){
+        long u = atomic_load(&g_key_tap_until[i]);
+        if (u && u <= f){ atomic_store(&g_key_tap_until[i], 0); kbd_set_key(KSRC_TAP, i, 0); }
+    }
 }
 /* A key held now, as the game reads it (horn.c's horn key) */
-int metal_key_down(unsigned dik){
-    return dik < 256 && (atomic_load(&g_keys[dik]) || atomic_load(&g_key_tap_until[dik]) > atomic_load(&g_frames_drawn));
-}
+int metal_key_down(unsigned dik){ return kbd_key_down(dik); }
 
-/* Guest side: fill the DirectInput keyboard state */
-void metal_fill_keyboard(unsigned char *dst, unsigned n){
-    if (n > 256) n = 256;
-    long f = atomic_load(&g_frames_drawn);
-    for (unsigned i = 0; i < n; i++)
-        dst[i] = atomic_load(&g_keys[i]) || atomic_load(&g_key_tap_until[i]) > f ? 0x80 : 0x00;
-}
+/* Guest side: the DirectInput keyboard state */
+void metal_fill_keyboard(unsigned char *dst, unsigned n){ kbd_state(dst, n); }
 
 /* Textures are created BEFORE the window opens.  So the "usable" criterion is the
  * device, not the layer; otherwise early textures silently vanished. */
@@ -6487,6 +6409,8 @@ void metal_run_main_loop(void){
             { static int cap = -2; if (cap == -2){ const char *e = ENVC("FPSCAP"); cap = e ? atoi(e) : 0; }
               if (cap > 0) usleep((useconds_t)(1000000 / cap)); }
             @autoreleasepool {
+                kbdmac_tick();                   /* synthesised keys (NFSU2_KEYSEQ, test scripts) */
+                key_taps_tick();
                 NSEvent *ev;
                 while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
                                                 untilDate:nil
@@ -6494,28 +6418,26 @@ void metal_run_main_loop(void){
                                                   dequeue:YES])){
                     NSEventType et = [ev type];
                     if (native_scene_handle_event(ev)) continue;   /* photo mode's keys and mouse */
-                    if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp){
-                        /* Cmd shortcuts must go to the menu, NOT TO THE GAME:
-                         * otherwise Cmd-Q doesn't work.  The game itself doesn't
-                         * use Cmd, no conflict. */
+                    if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp || et == NSEventTypeFlagsChanged){
+                        /* keys for another window of ours (About, a panel) */
+                        if ([ev window] && [ev window] != g_win){ [NSApp sendEvent:ev]; continue; }
                         /* macOS's fullscreen shortcut fn/Globe+F: since it doesn't carry
-                         * Command it went to the game as "F". */
-                        if ([ev keyCode] == 0x03 &&
+                         * Command it went to the game as "F".  Only the key down: an F
+                         * the game holds still gets its key up. */
+                        if (et == NSEventTypeKeyDown && [ev keyCode] == 0x03 &&
                             ([ev modifierFlags] & NSEventModifierFlagFunction)){
-                            if (et == NSEventTypeKeyDown && ![ev isARepeat])
-                                [g_win toggleFullScreen:nil];
+                            if (![ev isARepeat]) [g_win toggleFullScreen:nil];
                             continue; }
-                        if ([ev modifierFlags] & NSEventModifierFlagCommand){
-                            /* see CAPTURE SHORTCUT */
-                            if ([ev keyCode] == 0x02 && ([ev modifierFlags] & NSEventModifierFlagShift)){
-                                if (et == NSEventTypeKeyDown && ![ev isARepeat]) atomic_store(&g_dump_req, 1);
-                                continue; }
-                            [NSApp sendEvent:ev]; continue; }
-                        unsigned char dik = mac_to_dik([ev keyCode]);
-                        if (dik) atomic_store(&g_keys[dik], et == NSEventTypeKeyDown ? 1 : 0);
-                        /* While held, repeats are written too (like Windows). */
-                        if (et == NSEventTypeKeyDown) char_from_event(ev);
-                        continue;                    /* goes to the game, not the system */
+                        /* see CAPTURE SHORTCUT */
+                        if (et != NSEventTypeFlagsChanged && [ev keyCode] == 0x02 &&
+                            ([ev modifierFlags] & NSEventModifierFlagCommand) &&
+                            ([ev modifierFlags] & NSEventModifierFlagShift)){
+                            if (et == NSEventTypeKeyDown && ![ev isARepeat]) atomic_store(&g_dump_req, 1);
+                            continue; }
+                        /* The game's keys (runtime/keyboard_mac.m).  Command shortcuts
+                         * go to the menu, never to the game (Cmd-Q, Cmd-H, Cmd-M...). */
+                        if (!kbdmac_handle(ev)) [NSApp sendEvent:ev];
+                        continue;
                     }
                     /* If the mouse event is OUTSIDE the game area (title bar:
                      * close/minimize/fullscreen buttons, dragging the window,
@@ -6554,13 +6476,6 @@ void metal_run_main_loop(void){
                     if (et == NSEventTypeRightMouseUp)   { atomic_fetch_and(&g_mouse_btn, ~2u); continue; }
                     if (et == NSEventTypeScrollWheel){
                         atomic_fetch_add(&g_mouse_dz, (int)([ev deltaY] * 120.0));
-                        continue;
-                    }
-                    if (et == NSEventTypeFlagsChanged){
-                        NSEventModifierFlags f = [ev modifierFlags];
-                        atomic_store(&g_keys[0x2A], (f & NSEventModifierFlagShift)   ? 1 : 0);
-                        atomic_store(&g_keys[0x1D], (f & NSEventModifierFlagControl) ? 1 : 0);
-                        atomic_store(&g_keys[0x38], (f & NSEventModifierFlagOption)  ? 1 : 0);
                         continue;
                     }
                     [NSApp sendEvent:ev];
@@ -6623,7 +6538,7 @@ void metal_run_main_loop(void){
                     for (int q = 0; q < sqn; q++){
                         int on = (f >= sqf[q] && f < sqf[q] + sqd[q]);
                         if (on || f == sqf[q] + sqd[q])
-                            atomic_store(&g_keys[sqk[q]], on ? 1 : 0);
+                            kbd_set_key(KSRC_LEGACY, sqk[q], on);
                     }
                   }
                 }
@@ -6646,12 +6561,12 @@ void metal_run_main_loop(void){
                     if (akn){
                       long f = atomic_load(&g_frames_drawn);
                       if (akstop >= 0 && f > akstop){
-                          for (int q = 0; q < akn; q++) atomic_store(&g_keys[akk[q]], 0);
+                          for (int q = 0; q < akn; q++) kbd_set_key(KSRC_LEGACY, akk[q], 0);
                       } else {
                           int slot = (int)((f / 30) % akn);
                           int on = (f % 30) < 10;
                           for (int q = 0; q < akn; q++)
-                              atomic_store(&g_keys[akk[q]], (on && q == slot) ? 1 : 0);
+                              kbd_set_key(KSRC_LEGACY, akk[q], on && q == slot);
                       }
                     } }
                 }

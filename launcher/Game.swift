@@ -74,9 +74,15 @@ enum Prefs {
     static let gameFolder = "OyunDizini"          // name kept for existing installs
     static let fullscreen = "NFSUFullScreen"
     static let fpsCounter = "NFSUFpsCounter"      // 0 off, 1 on, 2 detailed (Cmd-N in the game)
-    // Launcher only; passed to the engine as NFSU2_PAD / NFSU2_PAD_DEADZONE.
+    // Launcher only; passed to the engine as NFSU2_PAD / NFSU2_PAD_DEADZONE and the
+    // other NFSU2_PAD_* (Controller.swift).
     static let controller = "LauncherController"
     static let stickDeadzone = "LauncherStickDeadzone"
+    static let padHotplug = "LauncherPadHotplug"           // NFSU2_PAD=hotplug
+    static let triggerDeadzone = "LauncherTriggerDeadzone" // NFSU2_PAD_TRIGGER_DEADZONE
+    static let triggerClick = "LauncherTriggerClick"       // false: NFSU2_PAD_TRIGGER_CLICK=off
+    static let padMenuKeys = "LauncherPadMenuKeys"         // false: NFSU2_PAD_FE_KEYS=0
+    static let padBackground = "LauncherPadBackground"     // NFSU2_PAD_BACKGROUND=1
     // Launcher only.
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
@@ -149,6 +155,12 @@ enum Prefs {
         OriginalValue(\.background, DisplayOptions.originalBackground),
         OriginalValue(\.photoMode, false),
         OriginalValue(\.driftMode, false),
+        OriginalValue(\.padHotplug, true),
+        OriginalValue(\.stickDeadzone, 0.0),
+        OriginalValue(\.triggerDeadzone, 0.0),
+        OriginalValue(\.triggerClick, false),
+        OriginalValue(\.padMenuKeys, false),
+        OriginalValue(\.padBackground, false),
     ]
 }
 

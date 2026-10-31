@@ -102,7 +102,14 @@ final class LauncherModel: ObservableObject {
     }
     @Published var controller: Bool { didSet { defaults.set(controller, forKey: Prefs.controller) } }
     @Published var stickDeadzone: Double { didSet { defaults.set(stickDeadzone, forKey: Prefs.stickDeadzone) } }
-    private var setPad = false           // NFSU2_PAD / NFSU2_PAD_DEADZONE were set by us
+    @Published var padHotplug: Bool { didSet { defaults.set(padHotplug, forKey: Prefs.padHotplug) } }
+    @Published var triggerDeadzone: Double { didSet { defaults.set(triggerDeadzone, forKey: Prefs.triggerDeadzone) } }
+    @Published var triggerClick: Bool { didSet { defaults.set(triggerClick, forKey: Prefs.triggerClick) } }
+    @Published var padMenuKeys: Bool { didSet { defaults.set(padMenuKeys, forKey: Prefs.padMenuKeys) } }
+    @Published var padBackground: Bool { didSet { defaults.set(padBackground, forKey: Prefs.padBackground) } }
+    private var setPad = false           // the NFSU2_PAD* variables were set by us
+    private static let padEnv = ["NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_PAD_TRIGGER_DEADZONE",
+                                 "NFSU2_PAD_TRIGGER_CLICK", "NFSU2_PAD_FE_KEYS", "NFSU2_PAD_BACKGROUND"]
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -132,7 +139,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10])
+        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -184,6 +191,11 @@ final class LauncherModel: ObservableObject {
         hearCars = defaults.bool(forKey: Prefs.hearCars)
         controller = defaults.bool(forKey: Prefs.controller)
         stickDeadzone = min(0.5, max(0, defaults.double(forKey: Prefs.stickDeadzone)))
+        padHotplug = defaults.bool(forKey: Prefs.padHotplug)
+        triggerDeadzone = min(0.5, max(0, defaults.double(forKey: Prefs.triggerDeadzone)))
+        triggerClick = defaults.bool(forKey: Prefs.triggerClick)
+        padMenuKeys = defaults.bool(forKey: Prefs.padMenuKeys)
+        padBackground = defaults.bool(forKey: Prefs.padBackground)
         packs.game = { [weak self] in self?.location?.folder }
         refreshMods()
     }
@@ -335,11 +347,15 @@ final class LauncherModel: ObservableObject {
         // Horns between players in free roam and Online races (runtime/horn.c,
         // racehorn.c).  Off: no horn, as in the original game.
         if online && horn != .off { setenv("NFSU2_HORN", horn.rawValue, 0) }
-        // Controller settings; NFSU2_PAD / NFSU2_PAD_DEADZONE set by hand still win.  Ours
+        // Controller settings (Controller.swift); NFSU2_PAD* set by hand still win.  Ours
         // are overwritten on every Play, so a change takes effect without restarting.
-        if setPad || (env["NFSU2_PAD"] == nil && env["NFSU2_PAD_DEADZONE"] == nil) {
-            setenv("NFSU2_PAD", controller ? "1" : "0", 1)
+        if setPad || LauncherModel.padEnv.allSatisfy({ env[$0] == nil }) {
+            setenv("NFSU2_PAD", !controller ? "0" : padHotplug ? "hotplug" : "1", 1)
             setenv("NFSU2_PAD_DEADZONE", String(format: "%.2f", stickDeadzone), 1)
+            setenv("NFSU2_PAD_TRIGGER_DEADZONE", String(format: "%.2f", triggerDeadzone), 1)
+            setenv("NFSU2_PAD_TRIGGER_CLICK", triggerClick ? "0.97" : "off", 1)
+            setenv("NFSU2_PAD_FE_KEYS", padMenuKeys ? "1" : "0", 1)
+            setenv("NFSU2_PAD_BACKGROUND", padBackground ? "1" : "0", 1)
             setPad = true
         }
         var e = engine
