@@ -13,7 +13,7 @@ Status key:
 
 Known bugs found while porting:
 - Leaving a hosted LAN game crashed (server.dll was unloaded while its threads still ran): fixed in fp/lanfix (GetExitCodeThread answers server.dll as Windows does, so StopServer waits). lan_cycle and lan_srvcycle are in the default suite.
-- Still to port from the old fork: real-time GetTickCount/QueryPerformanceCounter for server.dll (ping and timeout pacing while hosting).
+- server.dll reads the real clock (GetTickCount, QueryPerformanceCounter, GetSystemTimeAsFileTime) as in the old fork: merged from fp/srvclock.
 
 Cross-cutting notes that apply to every PORT row with runtime code:
 - **NA addresses only.** The old fork hard-codes SPEED2.EXE v1.2 NA addresses (overrides `sub_00xxxxxx`, `HOOK_SITE(0x...)`, guest globals). Upstream uses European addresses as canonical, maps them with `GA()` / `runtime/build_na.h` (`tools/addrmap.py`), and has `OVR`/`OVR_NA` and `HOOKS` lists in `tools/gen_v2.sh`. Each PORT runtime item needs its EU equivalents found and its hooks/overrides added to both lists. The PR branches already did this for what they cover.
