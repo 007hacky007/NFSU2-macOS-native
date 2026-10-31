@@ -194,7 +194,7 @@ void dispatch_indirect(CPU *c, uint32_t addr);
 #define S_MAIN          GA(0x0078f530u)   /* "UI_Main.fng" in the exe */
 #define S_SERVERSEL     GA(0x00790428u)   /* "UI_PC_LAN_ServerSelect.fng" */
 #define S_LANNAME       GA(0x007990a4u)   /* "UI_PC_LAN.fng" */
-#define HOOK_MAINLOOP   GA(0x00581485u)
+#define HOOK_MAINLOOP   HOOK_SITE(0x00581485u)
 /* The trip's waits are in its clock's ticks, 60 a second (clk): real time while the game runs; they were game
  * frames, which at 120 fps passed twice as fast (a player's results gone in 4 s, the room's waits halved) */
 #define STEP_FRAMES     (60 * 120)    /* ticks a phase may take before the trip gives up: out and into the LAN; the race's loading */

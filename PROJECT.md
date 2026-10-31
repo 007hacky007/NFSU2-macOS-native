@@ -761,10 +761,9 @@ enhancement code is not compiled into the original build. Package:
 # 2) v2: flag liveness + translate 23k functions to C -> gen/all/, import
 #    argument table -> gen/all/impargs.c.  All in one script; the recipe
 #    reproduces gen/all exactly (verified 2026-10-18: 131 files, 0 differences).
-# CAUTION: the OVERRIDE list in the script must be the SAME as runtime/overrides.c
-# + runtime/d3dx_hle.c, otherwise the sub_XXXX_orig symbols aren't generated and
-# the link breaks. d3dx_hle.c generates its wrappers with a macro (grep won't find
-# them); the current list is in the "Regeneration" section of D3DX_HLE.md.
+# The override list (every sub_XXXX_orig of the runtime + d3dx_hle.c's DX_WRAP
+# table) and the hook sites (every HOOK_SITE(0x...)) come from the runtime
+# sources (tools/genlists.py); link.sh stops on a gen/ older than the runtime.
 tools/gen_v2.sh <SPEED2.EXE>
 # 3) compile + link
 ./build.sh && ./link.sh          # OPT: -O3 -mcpu=apple-m1 -fno-strict-aliasing

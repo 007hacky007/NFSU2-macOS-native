@@ -13,7 +13,7 @@ the same instruction refers to address A in one build and B in the other.
   addrmap.py build  <reference.exe> <other.exe> <map.json>
   addrmap.py lookup <map.json> <address>...
   addrmap.py header <map.json> <out.h> <source>...
-        For every GA(<literal>) in the sources: #define GA_<literal> <mapped>,
+        For every GA(<literal>) (or HOOK_SITE) in the sources: #define GA_<literal> <mapped>,
         for every sub_XXXXXXXX name: #define sub_XXXXXXXX sub_YYYYYYYY (and the
         _orig/_m variants). Exits with an error if an address cannot be mapped.
   addrmap.py list   <map.json> <hex,hex,...>   function starts, mapped, same format
@@ -243,7 +243,7 @@ class Map:
         return None, f'neighbours disagree: {lo:08x}{d1:+#x}, {hi:08x}{d2:+#x}'
 
 
-GA_RE = re.compile(r'\bGA\(\s*(0x[0-9a-fA-F]+u?)\s*\)')
+GA_RE = re.compile(r'\b(?:GA|HOOK_SITE)\(\s*(0x[0-9a-fA-F]+u?)\s*\)')   # HOOK_SITE(x) is GA(x) (cpu.h)
 SUB_RE = re.compile(r'\bsub_([0-9a-f]{8})(?:_orig)?(?:_m)?\b')
 COMMENT_RE = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
 

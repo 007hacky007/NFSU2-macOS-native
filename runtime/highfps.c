@@ -59,10 +59,10 @@ extern unsigned char g_xpatch[];
 #define A_REAL_STEP    GA(0x00865194u)   /* the frame's real time step, seconds          */
 #define A_FRAME        GA(0x00870818u)   /* frame counter                                */
 #define A_NOS_LAST     GA(0x008a44ecu)   /* frame UpdateCarStreakingFlares last ran      */
-#define HOOK_PARTICLE  GA(0x005d2c27u)   /* call 0x492e10, [esp] = 1/60 step             */
-#define HOOK_NOS       GA(0x0061ad90u)   /* UpdateCarStreakingFlares: mov eax, [0x870818] */
-#define HOOK_BARS      GA(0x005cbe54u)   /* fld [esp+0xc]: letterbox bar height          */
-#define HOOK_PROJ      GA(0x005c804eu)   /* fld [esp+0x38]: view scales ready            */
+#define HOOK_PARTICLE  HOOK_SITE(0x005d2c27u)   /* call 0x492e10, [esp] = 1/60 step             */
+#define HOOK_NOS       HOOK_SITE(0x0061ad90u)   /* UpdateCarStreakingFlares: mov eax, [0x870818] */
+#define HOOK_BARS      HOOK_SITE(0x005cbe54u)   /* fld [esp+0xc]: letterbox bar height          */
+#define HOOK_PROJ      HOOK_SITE(0x005c804eu)   /* fld [esp+0x38]: view scales ready            */
 #define BAR_FULL       0.125f        /* bar height when the letterbox is in          */
 
 static struct { char sec[16], key[32], val[32]; } g_ini[48];

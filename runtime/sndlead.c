@@ -19,7 +19,7 @@
 /* Called from guest_hook (debug.c); tools/gen_v2.sh lifts the hook site. */
 int sndlead_hook(CPU *c, uint32_t ip){
     (void)c;
-    if (ip != GA(0x00726336u)) return 0;
+    if (ip != HOOK_SITE(0x00726336u)) return 0;
     MR16(GA(0x008183e4u)) = WINDOW_TICKS;
     return 1;
 }

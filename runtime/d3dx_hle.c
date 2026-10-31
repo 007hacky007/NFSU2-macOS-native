@@ -26,7 +26,8 @@
  * Details, measurements and progress log: D3DX_HLE.md.
  *
  * CAUTION: every sub_XXXX here, together with the ones in runtime/overrides.c,
- * must be in genall.py's OVERRIDE list (see D3DX_HLE.md).                */
+ * comes into genall.py's OVERRIDE list from the DX_WRAP table below
+ * (tools/genlists.py).                                                    */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>

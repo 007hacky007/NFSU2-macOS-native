@@ -119,7 +119,7 @@ void dispatch_indirect(CPU *c, uint32_t addr);
 #define G_LANG       GA(0x008383d8u)   /* the loaded texts: { hash, char * } sorted by hash */
 #define G_LANG_N     GA(0x008383d0u)   /* how many */
 #define FN_NEW       GA(0x00575630u)   /* cdecl (size): operator new */
-#define HOOK_FRAME   GA(0x00581485u)   /* GameLoop, before its second debug no-op call (roam.c's main-loop hook) */
+#define HOOK_FRAME   HOOK_SITE(0x00581485u)   /* GameLoop, before its second debug no-op call (roam.c's main-loop hook) */
 
 /* The game's text for a hash in the language it plays in: sub_004ff9d0's
  * binary search.  0 before a language is loaded, or for a hash it lacks. */
@@ -289,7 +289,7 @@ static void text_fake(void){
 /* Called from guest_hook (debug.c) BEFORE the instruction at ip runs. */
 int language_hook(CPU *c, uint32_t ip){
     if (ip == HOOK_FRAME){ text_fake(); language_texts_frame(c); return 0; }   /* roam.c's site too */
-    if (ip == GA(0x0050d388u) || ip == GA(0x00553a72u)){          /* cmp eax, 0xc */
+    if (ip == HOOK_SITE(0x0050d388u) || ip == HOOK_SITE(0x00553a72u)){          /* cmp eax, 0xc */
         static unsigned shown;
         if (subtitles_on() && text_has_lines()){
             c->eax = 0xcu;

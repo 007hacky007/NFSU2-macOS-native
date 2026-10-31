@@ -75,7 +75,7 @@ int ws_game_fov(void){
  * lifter writes the x87 region back first, so ST(0) is the live value. */
 int ws_hook(CPU *c, uint32_t ip){
     switch (ip){
-    case GA(0x005c7ffeu): {                  /* fstp [esp+1c] = P00 */
+    case HOOK_SITE(0x005c7ffeu): {                  /* fstp [esp+1c] = P00 */
         g_proj++;
         if (!ws_game_fov()) return 1;
         uint32_t view = mem_is_committed(c->ebp + 4u) ? MR32(c->ebp + 4u) : 0u;
@@ -84,13 +84,13 @@ int ws_hook(CPU *c, uint32_t ip){
             g_proj_wide++;
         }
         return 1; }
-    case GA(0x004ec35cu): {                  /* fstp [esp+24] = marker x (640 units) */
+    case HOOK_SITE(0x004ec35cu): {                  /* fstp [esp+24] = marker x (640 units) */
         g_mark++;
         if (!ws_game_fov()) return 1;
         ST(0) = 320.0 + (ST(0) - 320.0) / (double)com_aspfix();
         g_mark_moved++;
         return 1; }
-    case GA(0x005cbe54u):                    /* fld [esp+0xc] = letterbox bar height */
+    case HOOK_SITE(0x005cbe54u):                    /* fld [esp+0xc] = letterbox bar height */
         if (!borders_on() && MRF32(c->esp + 0xcu) > 0.f){ MRF32(c->esp + 0xcu) = 0.f; g_bars++; }
         return 1;
     }

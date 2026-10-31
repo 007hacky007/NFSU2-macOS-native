@@ -108,8 +108,8 @@ int host_status_slot(const char *name);                     /* native_scene.m */
 void host_status_set_n(const int *slot, const double *value, int n);
 
 #define DIK_X          0x2du         /* in none of the game's key maps (its F2 is the map) */
-#define HOOK_MAINLOOP  GA(0x00581485u)   /* GameLoop, before its second debug no-op call */
-#define HOOK_RET       GA(0x00581485u)   /* the main-loop hook's return address, as guest calls see it */
+#define HOOK_MAINLOOP  HOOK_SITE(0x00581485u)   /* GameLoop, before its second debug no-op call */
+#define HOOK_RET       HOOK_SITE(0x00581485u)   /* the main-loop hook's return address, as guest calls see it */
 #define G_FLOW         GA(0x008654a4u)   /* 6: in the world */
 #define G_GAMEMODE     GA(0x00850078u)   /* 1 career, 8 Online, 0x200 LAN */
 #define G_RACE         GA(0x00890118u)   /* the race coordinator: +0 state (4 racing, 6 paused), +0x24 racers, +0xBD0 the racers */
@@ -339,11 +339,11 @@ static void drift_frame(CPU *c){
  * switch, while it is ours: no drift event (free roam's songs, at their volume). */
 int drift_hook(CPU *c, uint32_t ip){
     if (ip == HOOK_MAINLOOP){ if (drift_enabled()) drift_frame(c); return 0; }
-    if (ip == GA(0x00482279u)){                  /* the music manager: test al, al (0x401910, a drift event?) */
+    if (ip == HOOK_SITE(0x00482279u)){                  /* the music manager: test al, al (0x401910, a drift event?) */
         if (D.on && !MR8(G_DRIFTRACE)) c->eax &= ~0xffu;
         return 1;
     }
-    if (ip == GA(0x00471b95u)){                  /* the in-game mix: test eax, eax (eax = [0x890104]) */
+    if (ip == HOOK_SITE(0x00471b95u)){                  /* the in-game mix: test eax, eax (eax = [0x890104]) */
         if (D.on && !MR8(G_DRIFTRACE)) c->eax = 0;
         return 1;
     }

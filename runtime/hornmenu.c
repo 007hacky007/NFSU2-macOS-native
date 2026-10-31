@@ -281,8 +281,8 @@ static void add(CPU *c, uint32_t scr, uint32_t fn_add){
 /* debug.c guest_hook (tools/gen_v2.sh HOOKS) */
 int hornmenu_hook(CPU *c, uint32_t ip){
     switch (ip){
-    case GA(0x004b7102u): if (horn_on()) add(c, c->esi, FN_ADD); return 1;          /* Options > Audio: after Engine Volume, before Audio Mode */
-    case GA(0x004c36a3u): if (horn_on()) add(c, c->esi, FN_ADD_PAUSE); return 1;    /* the pause menu's: after Engine Volume */
+    case HOOK_SITE(0x004b7102u): if (horn_on()) add(c, c->esi, FN_ADD); return 1;          /* Options > Audio: after Engine Volume, before Audio Mode */
+    case HOOK_SITE(0x004c36a3u): if (horn_on()) add(c, c->esi, FN_ADD_PAUSE); return 1;    /* the pause menu's: after Engine Volume */
     }
     return 0;
 }

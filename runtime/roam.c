@@ -34,8 +34,8 @@ void roam_texts_frame(CPU *c);
 void racehorn_frame(CPU *c);                  /* racehorn.c: horns in network races (NFSU2_HORN) */
 void hornmenu_frame(CPU *c);                  /* hornmenu.c: the Horn Volume slider (NFSU2_HORN) */
 
-#define HOOK_MAINLOOP   GA(0x00581485u)   /* GameLoop, before its second debug no-op call */
-#define HOOK_HUD        GA(0x006005f0u)   /* Player::Update (0x6005A0), behind its call of the HUD update (0x4EC5A0) */
+#define HOOK_MAINLOOP   HOOK_SITE(0x00581485u)   /* GameLoop, before its second debug no-op call */
+#define HOOK_HUD        HOOK_SITE(0x006005f0u)   /* Player::Update (0x6005A0), behind its call of the HUD update (0x4EC5A0) */
 
 static int roam_on(void){
     static int on = -1;
@@ -57,7 +57,7 @@ int roam_hook(CPU *c, uint32_t ip){
     return 0;
 }
 
-/* ---- overrides (tools/gen_v2.sh OVR, OVR_NA) ----------------------------------- */
+/* ---- overrides (the sub_X_orig names: tools/genlists.py) ---------------------- */
 /* Car::SetPhysicsMode (thiscall mode, ret 4): a friend's car is not woken
  * into physics when a car comes near it (roam_game_inert) */
 void sub_005f46b0_orig(CPU *c);

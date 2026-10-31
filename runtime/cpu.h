@@ -20,6 +20,11 @@ extern uint8_t *g_mem;
 #ifndef GA
 #define GA(x) (x)
 #endif
+/* HOOK_SITE(0x...): GA() for an instruction a hook function (debug.c
+ * guest_hook) runs before.  tools/genlists.py collects them: the lift calls
+ * guest_hook at exactly these addresses (tools/gen_v2.sh), and link.sh stops
+ * on a lift that lacks one. */
+#define HOOK_SITE(x) GA(x)
 
 #define MR8(a)   (*(uint8_t  *)(g_mem + (uint32_t)(a)))
 #define MR16(a)  (*(uint16_t *)(g_mem + (uint32_t)(a)))
@@ -50,6 +55,26 @@ typedef struct CPU {
     union { uint8_t b[16]; float f[4]; double d[2]; uint32_t u32[4]; uint64_t u64[2]; } xmm[8];
 } CPU;
 
+/* ---- registers and flags in locals (tools/lregs.py, LREGS) ------------
+ * A shard lifted with LREGS=1 defines NFSU2_LREGS: its functions keep the
+ * general registers and the six arithmetic flags in locals (_r_eax ...
+ * _r_of) and store them to the CPU struct only around calls, returns, tail
+ * jumps and the helpers that take the CPU (the stores are written out by
+ * tools/lregs.py, which knows what changed).  RG_() names them in the macros
+ * below; everywhere else they are the struct's fields.  LR_FG / LR_FF reload
+ * the registers / flags from the struct after a call. */
+#ifdef NFSU2_LREGS
+#define RG_(x) _r_##x
+#else
+#define RG_(x) c->x
+#endif
+#define LR_ENTER uint32_t _r_eax = c->eax, _r_ecx = c->ecx, _r_edx = c->edx, _r_ebx = c->ebx, \
+    _r_esp = c->esp, _r_ebp = c->ebp, _r_esi = c->esi, _r_edi = c->edi, \
+    _r_cf = c->cf, _r_pf = c->pf, _r_af = c->af, _r_zf = c->zf, _r_sf = c->sf, _r_of = c->of
+#define LR_FG do{ _r_eax = c->eax; _r_ecx = c->ecx; _r_edx = c->edx; _r_ebx = c->ebx; \
+    _r_esp = c->esp; _r_ebp = c->ebp; _r_esi = c->esi; _r_edi = c->edi; }while(0)
+#define LR_FF do{ _r_cf = c->cf; _r_pf = c->pf; _r_af = c->af; _r_zf = c->zf; _r_sf = c->sf; _r_of = c->of; }while(0)
+
 /* ---- flag helpers ----------------------------------------------------- */
 static inline uint32_t parity8(uint32_t v){ v&=0xff; v^=v>>4; v^=v>>2; v^=v>>1; return (~v)&1; }
 
@@ -70,66 +95,66 @@ static inline uint32_t parity8(uint32_t v){ v&=0xff; v^=v>>4; v^=v>>2; v^=v>>1; 
 #define F_ALL 0x3Fu
 
 #define SETZSP_M(res,bits,M) do{ \
-    if((M)&F_ZF) c->zf = ((uint##bits##_t)(res)==0); \
-    if((M)&F_SF) c->sf = (((uint##bits##_t)(res))>>((bits)-1))&1; \
-    if((M)&F_PF) c->pf = parity8((uint32_t)(res)); }while(0)
+    if((M)&F_ZF) RG_(zf) = ((uint##bits##_t)(res)==0); \
+    if((M)&F_SF) RG_(sf) = (((uint##bits##_t)(res))>>((bits)-1))&1; \
+    if((M)&F_PF) RG_(pf) = parity8((uint32_t)(res)); }while(0)
 #define SETZSP(res,bits) SETZSP_M(res,bits,F_ALL)
 
 /* ADD */
 #define FLAGS_ADD_M(a,b,res,bits,M) do{ SETZSP_M(res,bits,M); \
-    if((M)&F_CF) c->cf = ((uint##bits##_t)(res) < (uint##bits##_t)(a)); \
-    if((M)&F_AF) c->af = ((((a)^(b)^(res))>>4)&1); \
-    if((M)&F_OF) c->of = ((~((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
+    if((M)&F_CF) RG_(cf) = ((uint##bits##_t)(res) < (uint##bits##_t)(a)); \
+    if((M)&F_AF) RG_(af) = ((((a)^(b)^(res))>>4)&1); \
+    if((M)&F_OF) RG_(of) = ((~((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
 #define FLAGS_ADD(a,b,res,bits) FLAGS_ADD_M(a,b,res,bits,F_ALL)
 /* SUB / CMP */
 #define FLAGS_SUB_M(a,b,res,bits,M) do{ SETZSP_M(res,bits,M); \
-    if((M)&F_CF) c->cf = ((uint##bits##_t)(a) < (uint##bits##_t)(b)); \
-    if((M)&F_AF) c->af = ((((a)^(b)^(res))>>4)&1); \
-    if((M)&F_OF) c->of = ((((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
+    if((M)&F_CF) RG_(cf) = ((uint##bits##_t)(a) < (uint##bits##_t)(b)); \
+    if((M)&F_AF) RG_(af) = ((((a)^(b)^(res))>>4)&1); \
+    if((M)&F_OF) RG_(of) = ((((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
 #define FLAGS_SUB(a,b,res,bits) FLAGS_SUB_M(a,b,res,bits,F_ALL)
 /* ADC/SBB: with a carry-in of 1 the result can EQUAL the input; in that case
  * the (res<a) test missed the carry (example: sbb eax,eax  CF=1 -> CF=1). */
 #define FLAGS_ADC_M(a,b,cin,res,bits,M) do{ SETZSP_M(res,bits,M); \
-    if((M)&F_CF) c->cf = (cin) ? ((uint##bits##_t)(res) <= (uint##bits##_t)(a)) \
+    if((M)&F_CF) RG_(cf) = (cin) ? ((uint##bits##_t)(res) <= (uint##bits##_t)(a)) \
                                : ((uint##bits##_t)(res) <  (uint##bits##_t)(a)); \
-    if((M)&F_AF) c->af = ((((a)^(b)^(res))>>4)&1); \
-    if((M)&F_OF) c->of = ((~((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
+    if((M)&F_AF) RG_(af) = ((((a)^(b)^(res))>>4)&1); \
+    if((M)&F_OF) RG_(of) = ((~((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
 #define FLAGS_ADC(a,b,cin,res,bits) FLAGS_ADC_M(a,b,cin,res,bits,F_ALL)
 #define FLAGS_SBB_M(a,b,cin,res,bits,M) do{ SETZSP_M(res,bits,M); \
-    if((M)&F_CF) c->cf = (cin) ? ((uint##bits##_t)(a) <= (uint##bits##_t)(b)) \
+    if((M)&F_CF) RG_(cf) = (cin) ? ((uint##bits##_t)(a) <= (uint##bits##_t)(b)) \
                                : ((uint##bits##_t)(a) <  (uint##bits##_t)(b)); \
-    if((M)&F_AF) c->af = ((((a)^(b)^(res))>>4)&1); \
-    if((M)&F_OF) c->of = ((((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
+    if((M)&F_AF) RG_(af) = ((((a)^(b)^(res))>>4)&1); \
+    if((M)&F_OF) RG_(of) = ((((a)^(b)) & ((a)^(res)))>>((bits)-1))&1; }while(0)
 #define FLAGS_SBB(a,b,cin,res,bits) FLAGS_SBB_M(a,b,cin,res,bits,F_ALL)
 /* logical: CF=OF=0 */
 #define FLAGS_LOG_M(res,bits,M) do{ SETZSP_M(res,bits,M); \
-    if((M)&F_CF) c->cf=0; if((M)&F_OF) c->of=0; if((M)&F_AF) c->af=0; }while(0)
+    if((M)&F_CF) RG_(cf)=0; if((M)&F_OF) RG_(of)=0; if((M)&F_AF) RG_(af)=0; }while(0)
 #define FLAGS_LOG(res,bits) FLAGS_LOG_M(res,bits,F_ALL)
 
 /* ---- stack ------------------------------------------------------------ */
 /* CRITICAL: the operand may depend on esp (example: push [esp+8], push esp).
  * x86 semantics: PUSH first reads the value, then decrements esp.        */
-#define PUSH32(v) do{ uint32_t _pv = (uint32_t)(v); c->esp -= 4; MR32(c->esp) = _pv; }while(0)
+#define PUSH32(v) do{ uint32_t _pv = (uint32_t)(v); RG_(esp) -= 4; MR32(RG_(esp)) = _pv; }while(0)
 /* POP: esp is incremented first, the destination address is computed with the NEW esp (pop [esp+N]). */
-#define POP32(d)  do{ uint32_t _qv = MR32(c->esp); c->esp += 4; (d) = _qv; }while(0)
+#define POP32(d)  do{ uint32_t _qv = MR32(RG_(esp)); RG_(esp) += 4; (d) = _qv; }while(0)
 
 /* ---- conditions ------------------------------------------------------- */
-#define CC_O   (c->of)
-#define CC_NO  (!c->of)
-#define CC_B   (c->cf)
-#define CC_AE  (!c->cf)
-#define CC_E   (c->zf)
-#define CC_NE  (!c->zf)
-#define CC_BE  (c->cf||c->zf)
-#define CC_A   (!c->cf&&!c->zf)
-#define CC_S   (c->sf)
-#define CC_NS  (!c->sf)
-#define CC_P   (c->pf)
-#define CC_NP  (!c->pf)
-#define CC_L   (c->sf!=c->of)
-#define CC_GE  (c->sf==c->of)
-#define CC_LE  (c->zf||(c->sf!=c->of))
-#define CC_G   (!c->zf&&(c->sf==c->of))
+#define CC_O   (RG_(of))
+#define CC_NO  (!RG_(of))
+#define CC_B   (RG_(cf))
+#define CC_AE  (!RG_(cf))
+#define CC_E   (RG_(zf))
+#define CC_NE  (!RG_(zf))
+#define CC_BE  (RG_(cf)||RG_(zf))
+#define CC_A   (!RG_(cf)&&!RG_(zf))
+#define CC_S   (RG_(sf))
+#define CC_NS  (!RG_(sf))
+#define CC_P   (RG_(pf))
+#define CC_NP  (!RG_(pf))
+#define CC_L   (RG_(sf)!=RG_(of))
+#define CC_GE  (RG_(sf)==RG_(of))
+#define CC_LE  (RG_(zf)||(RG_(sf)!=RG_(of)))
+#define CC_G   (!RG_(zf)&&(RG_(sf)==RG_(of)))
 
 
 /* ---- x87 FPU stack ----------------------------------------------------
@@ -193,8 +218,8 @@ static inline void fcompare_bl(struct CPU *c, double a, double b){
 }
 /* fcomi / fucomi: write EFLAGS directly */
 #define FCOMI(a,b) do{ double _x=(a),_y=(b); \
-    if(_x!=_x||_y!=_y){ c->zf=1;c->pf=1;c->cf=1; } \
-    else { c->pf=0; c->zf=(_x==_y); c->cf=(_x<_y); } c->of=c->sf=c->af=0; }while(0)
+    if(_x!=_x||_y!=_y){ RG_(zf)=1;RG_(pf)=1;RG_(cf)=1; } \
+    else { RG_(pf)=0; RG_(zf)=(_x==_y); RG_(cf)=(_x<_y); } RG_(of)=RG_(sf)=RG_(af)=0; }while(0)
 
 /* ---- EFLAGS packing/unpacking (pushfd/popfd/sahf) --------------------- */
 /* AC (bit 18) and ID (bit 21) are not kept in CPU: they only matter to the
@@ -212,6 +237,12 @@ static inline void eflags_set(struct CPU *c, uint32_t f){
     c->zf=(f>>6)&1u; c->sf=(f>>7)&1u; c->df=(f>>10)&1u; c->of=(f>>11)&1u;
     g_eflags_hi = f & EFLAGS_HI_MASK;
 }
+/* pushfd / popfd on the LREGS locals (tools/lregs.py) */
+#define LR_EFLAGS_GET() (0x00000202u | g_eflags_hi | (_r_cf&1u) | ((_r_pf&1u)<<2) | ((_r_af&1u)<<4) \
+    | ((_r_zf&1u)<<6) | ((_r_sf&1u)<<7) | ((c->df&1u)<<10) | ((_r_of&1u)<<11))
+#define LR_EFLAGS_SET(f) do{ uint32_t _ef = (f); _r_cf = _ef&1u; _r_pf = (_ef>>2)&1u; _r_af = (_ef>>4)&1u; \
+    _r_zf = (_ef>>6)&1u; _r_sf = (_ef>>7)&1u; c->df = (_ef>>10)&1u; _r_of = (_ef>>11)&1u; \
+    g_eflags_hi = _ef & EFLAGS_HI_MASK; }while(0)
 
 /* ---- string instructions ---------------------------------------------- */
 #define DFSTEP(n) (c->df ? -(int32_t)(n) : (int32_t)(n))
@@ -400,6 +431,45 @@ static inline uint64_t x86_cvt_i64(double v){
         return 0x8000000000000000ull;
     return (uint64_t)(int64_t)v;
 }
+
+/* The CRT's _ftol2 (sub_0075bed4 in both builds): ST(0) -> int64 in edx:eax,
+ * truncated toward zero, ST(0) popped, with the lifted body's ecx, flags and
+ * x87 slots; only its scratch stores below the caller's esp (its own frame)
+ * are not made.  A lift with FTOL2INL=1 (tools/lift.py, X87PC=1) puts
+ * FTOL2_INL at the game's call sites instead of a call: ~11,000 calls a race
+ * frame, whose ecx and flags the callers never read (with LREGS clang then
+ * drops them).  tests/main_all.c checks it against the lifted body.
+ * (Ported from th0mk's nfsu2-web runtime/cpu.h, MIT.) */
+#define FTOL2_BODY(c) do { \
+    uint32_t _fT = (uint32_t)(c)->top & 7u; \
+    double _fv = (c)->st[_fT]; \
+    uint64_t _fq = x86_cvt_i64(x87_round((c)->fcw, _fv));        /* fld st(0); fst m32; fistp m64 */ \
+    double _frq = (double)(int64_t)_fq;                           /* fild m64 */ \
+    (c)->st[(_fT - 1u) & 7u] = _frq; \
+    uint32_t _flo = (uint32_t)_fq, _fhi = (uint32_t)(_fq >> 32); \
+    float _ffv = (float)_fv; uint32_t _fedx; memcpy(&_fedx, &_ffv, 4); \
+    RG_(eax) = _flo; \
+    if (_flo == 0u) _fedx = _fhi; \
+    if (_flo == 0u && (_fhi & 0x7fffffffu) == 0u){                /* 0 or integer indefinite: both popped */ \
+        RG_(edx) = _fhi; FLAGS_LOG_M(0u, 32, 0x3fu); (c)->top = (int32_t)((_fT + 1u) & 7u); \
+    } else { \
+        double _fd = X87R(x87_r2(_fv, _frq, _fv - _frq));        /* fsubp: ST(1) = v - r, pop */ \
+        (c)->st[_fT] = _fd; \
+        float _ffd = (float)_fd; uint32_t _fecx; memcpy(&_fecx, &_ffd, 4);   /* fstp m32 */ \
+        (c)->top = (int32_t)((_fT + 1u) & 7u); \
+        if (_fedx >> 31) _fecx ^= 0x80000000u;                     /* negative: +1 when rounded down */ \
+        uint32_t _fe2 = _fecx + 0x7fffffffu, _fcf = _fe2 < _fecx; \
+        RG_(ecx) = _fe2; \
+        if (_fedx >> 31){ \
+            uint32_t _fa = _flo + _fcf, _fc2 = _fcf ? _fa <= _flo : _fa < _flo; RG_(eax) = _fa; \
+            uint32_t _fr = _fhi + _fc2; FLAGS_ADC_M(_fhi, 0u, _fc2, _fr, 32, 0x3fu); RG_(edx) = _fr; \
+        } else { \
+            uint32_t _fa = _flo - _fcf, _fc2 = _fcf ? _flo <= 0u : 0u; RG_(eax) = _fa; \
+            uint32_t _fr = _fhi - _fc2; FLAGS_SBB_M(_fhi, 0u, _fc2, _fr, 32, 0x3fu); RG_(edx) = _fr; \
+        } \
+    } } while (0)
+/* at a call site (after PUSH32 of the return address): the body, then its ret */
+#define FTOL2_INL(c) do { FTOL2_BODY(c); RG_(esp) += 4u; } while (0)
 
 /* ---- 80-bit extended floating point (x87 tbyte) <-> double ------------ */
 static inline void f80_store(uint8_t *p, double v){

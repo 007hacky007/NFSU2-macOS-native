@@ -253,8 +253,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # 1) relocation table, cross-function flag liveness, lifting every function
 #    to C, import argument table -> gen/all/   (~1 min on an M1 Pro)
-#    The script holds the OVERRIDE list (functions that runtime/overrides.c and
-#    runtime/d3dx_hle.c replace); it must match them or the link fails.
+#    The override and hook lists come from the runtime sources
+#    (tools/genlists.py); after a runtime change that adds one, run it again.
 tools/gen_v2.sh "$EXE"
 
 # 2) compile the shards, then build the runtime and link   (~1.5 min)
