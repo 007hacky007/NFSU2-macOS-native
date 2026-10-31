@@ -353,8 +353,8 @@ void sub_00526980(CPU *c){ swap_in(); sub_00526980_orig(c); swap_out(); }
 void sub_0053fec0_orig(CPU *c);
 void sub_0053fec0(CPU *c){ swap_in(); sub_0053fec0_orig(c); swap_out(); }
 
-/* a car record by handle: the table's, then ours */
-static uint32_t garage_find(uint32_t db, uint32_t h){
+/* a car record by handle: the table's, then ours (discord.c too) */
+uint32_t garage_find(uint32_t db, uint32_t h){
     if (!h) return 0;
     for (uint32_t i = 0; i < TABLE_N; i++){ uint32_t r = MR32(db + C_TABLE + 4u * i); if (r && MR32(r + R_HANDLE) == h) return r; }
     return xfind(db, h);
