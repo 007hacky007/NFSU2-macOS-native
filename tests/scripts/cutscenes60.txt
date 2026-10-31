@@ -1,0 +1,17 @@
+# Compare NFSU2_CUTSCENES_60=0/1 with NFSU2_FPS=120 and NFSU2_HFR_TRACE.
+# Both runs must finish the intro, resume gameplay and accept driving input.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN
++0    tapuntil RETURN UI_QRModeSelect.fng 150 3000
++200  tapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  tapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  tapuntil RETURN UI_QRCarSelect.fng 150 1500
++200  tapuntil RETURN PC_Loading.fng 150 1500
++0    waitmem 0x8654a4 6 3000
++0    wzero
+7000wms down UP
+12000wms up UP
++0    expect i:0x8654a4 == 6
++0    expect f:0x865558 < 0.01
++0    dump cutscene_complete
++0    quit

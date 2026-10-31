@@ -166,6 +166,14 @@ out/nfsu2_boot            ~35 MB arm64 Mach-O
   matrices, no GPU command buffer errors, no missing mip levels, the race was
   actually reached, and in the HD build that ray tracing and the separate
   G-buffer pass ran.  Settings are restored and saves go to a temporary folder.
+- **Unit suites:** `tests/run_suite.sh` runs every test that needs no game
+  files (Win32 HLE, heap, watchdog, keyboard and pad, the Winsock harness and
+  the WebSocket relay fixtures on loopback only, the free-roam core, headlights,
+  shaders, save paths, texture packs, launcher models) and prints a summary.
+- **Scripted scenarios:** `tests/run_suite.sh --game <outdir>` plays scripted
+  runs of the real game (runtime/autotest.c, `tests/scripts/`) on either game
+  version, plus the keyboard and pad suite, the game-folder-untouched proof,
+  Discord, LAN and free-roam runs; `tests/README.md` lists them.
 
 ## Performance
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # tests/input/run.sh <engine> <SPEED2.EXE> <scenario.seq> <home> <log> [VAR=value...]
 # One silent game run (as tools/check.sh runs it) driven by a scenario of
-# runtime/inputseq.m (NFSU2_INPUT_SEQ, one step per line, '#' comments).  HOME
+# runtime/autotest.c (NFSU2_INPUT_SEQ, one step per line, '#' comments).  HOME
 # is the given folder (its .nfsu2_registry is the game's settings and the
 # keyboard user maps) and saves go to <home>/saves, so a second scenario can
 # go on from the first.  Shots (the scenario's "shot") land in

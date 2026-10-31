@@ -588,6 +588,7 @@ void dipad_fe_log(CPU *c){
     if (fr != g_batch_frame){ g_nbatch = 0; g_batch_frame = fr; }
     if (g_nbatch < 8) snprintf(g_batch[g_nbatch++], 64, "%.63s", nm);
     snprintf(g_screen, sizeof g_screen, "%.63s", nm);
+    { void autotest_note_screen(const char *); autotest_note_screen(nm); }   /* the test runner's own record */
 }
 /* name is the top package, the current screen or one initialised with it */
 int dipad_fe_is(const char *name){
@@ -596,9 +597,9 @@ int dipad_fe_is(const char *name){
     for (int i = 0; i < g_nbatch; i++) if (!strcasecmp(g_batch[i], name)) return 1;
     return 0;
 }
-/* for logs (tests: runtime/inputseq.m) */
+/* for logs (tests: runtime/autotest.c) */
 const char *dipad_fe_top(void){ return g_screen[0] ? g_screen : fe_top(); }
-/* a dword of guest memory, 0 when not committed (tests: runtime/inputseq.m) */
+/* a dword of guest memory, 0 when not committed (tests: runtime/autotest.c) */
 uint32_t dipad_peek32(uint32_t a){ return mem_is_committed(a + 3u) ? MR32(a) : 0u; }
 static int on_controls_page(void){
     if (!mem_is_committed(G_FLOW + 3u) || MR32(G_FLOW) != 3u) return 0;

@@ -1,6 +1,6 @@
 #!/bin/bash
 # tests/input/suite.sh <engine> <SPEED2.EXE> <work dir>
-# The keyboard and game pad scenarios (tests/input/*.seq, runtime/inputseq.m)
+# The keyboard and game pad scenarios (tests/input/*.seq, NFSU2_INPUT_SEQ of runtime/autotest.c)
 # in silent game runs, each checked against its log.  The same scenarios run
 # on the European and the North American SPEED2.EXE (their engines:
 # out/nfsu2_boot, out/nfsu2_na_boot).  A physical controller is not needed:
@@ -26,7 +26,7 @@ run(){     # scenario, home, log, VAR=value...
     check "run completed" "$l" "^  unsupported instructions"
     nocheck "every wait reached its screen" "$l" "TIMEOUT"
 }
-IN='\[seq\] frame [0-9]+: in: '
+IN='\] f=[0-9]+ in: '
 
 rm -rf "$WK/kb"; L="$WK/kb_rebind_save.log"
 run kb_rebind_save "$WK/kb" "$L" NFSU2_KEYLAYOUT=com.apple.keylayout.German NFSU2_KEY_LOG=1 DIMAP=1 NFSU2_PAD_FAKE=LX=0 QUITFRAMES=12000
@@ -66,7 +66,7 @@ L="$WK/pad_bind_load.log"
 run pad_bind_load "$WK/pad" "$L" NFSU2_PAD_FAKE=PLUG=1 NFSU2_PAD_LOG=1 QUITFRAMES=5500
 check "after a restart Shift Up is still Y" "$L" "peek 0x00874fc8: 00000000 00000009 00000008 00000007"
 check "Throttle on A in the first column: the trigger axis goes off" "$L" "\[pad\] throttle bound to a button: its axis is off"
-check "keyboard Escape cancels a pad capture (B then leaves the page)" "$L" "UI_OptionsMain.fng is up"
+check "keyboard Escape cancels a pad capture (B then leaves the page)" "$L" "waitfng UI_OptionsMain.fng satisfied"
 check "nothing bound by the cancelled capture (A = throttle, B unchanged)" "$L" "peek 0x00874fc8: 00000001 00000009 00000008 00000007"
 
 rm -rf "$WK/race"; L="$WK/pad_race.log"
@@ -91,7 +91,7 @@ run pad_controls_unplug "$WK/ctl" "$L" NFSU2_PAD=hotplug NFSU2_PAD_FAKE=PLUG=1 N
 check "View opens the quit prompt (posted Q)" "$L" "front end: keystroke 0x51"
 check "lost once the Controls page is left (DIERR_INPUTLOST)" "$L" "\[pad\] unplugged: DIERR_INPUTLOST"
 check "the rescan finds it again" "$L" "CreateDevice -> 0x[0-9a-f]+ \(Fake Pad\)"
-if LC_ALL=C sed -n '/log:unplug on the Joypad page/,/log:left the Controls page/p' "$L" | grep -a -q "DIERR_INPUTLOST"
+if LC_ALL=C sed -n '/LOG unplug on the Joypad page/,/LOG left the Controls page/p' "$L" | grep -a -q "DIERR_INPUTLOST"
 then printf "  FAIL  kept while the Controls page is open\n"; FAILED=1; else printf "  PASS  kept while the Controls page is open\n"; fi
 
 for m in 1 hotplug; do
@@ -99,7 +99,7 @@ for m in 1 hotplug; do
     run pad_unplug "$WK/unp" "$L" NFSU2_PAD=$m NFSU2_PAD_FAKE=PLUG=0 NFSU2_PAD_LOG=1 QUITFRAMES=4500
     check "NFSU2_PAD=$m: plugged in mid-race, the rescan creates the device" "$L" "CreateDevice -> 0x[0-9a-f]+ \(Fake Pad\)"
     check "NFSU2_PAD=$m: it drives (stick, trigger, RB)" "$L" "${IN}steer \+1\.00 throttle 1\.00 brake 0\.00 e-brake 1\.00"
-    v=$(LC_ALL=C sed -n '/log:unplug/,/log:plug back in/p' "$L" | grep -a -c -E "${IN}steer -0\.00 throttle 0\.00 brake 0\.00 e-brake 0\.00")
+    v=$(LC_ALL=C sed -n '/LOG unplug$/,/LOG plug back in/p' "$L" | grep -a -c -E "${IN}steer -0\.00 throttle 0\.00 brake 0\.00 e-brake 0\.00")
     if [ "$v" = 2 ]; then printf "  PASS  NFSU2_PAD=%s: unplugged, nothing stuck\n" $m; else printf "  FAIL  NFSU2_PAD=%s: unplugged, nothing stuck\n" $m; FAILED=1; fi
     if [ $m = hotplug ]; then check "hotplug: DIERR_INPUTLOST on the unplug" "$L" "unplugged: DIERR_INPUTLOST"
     else nocheck "default: the device stays (no DIERR_INPUTLOST)" "$L" "DIERR_INPUTLOST"; fi

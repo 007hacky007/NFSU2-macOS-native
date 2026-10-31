@@ -1,0 +1,23 @@
+# Quick Race in the European game's Vauxhall Corsa (runtime/regional.c), from
+# a game folder with both regions' cars.  Good: the player's car in the race
+# is car type 7, CORSA (its physics info, [[car +0x10] +0x10], starts with the
+# type).  EUCARS_RIGHT = how many cars right of the first one the Corsa is in
+# Quick Race's list: 6 with the European SPEED2.EXE (the list has it 7th), 7
+# with the North American one (8th, after the 106); tests/run_suite.sh sets it.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN                                   # "No" profile
++0    tapuntil RETURN UI_QRModeSelect.fng 150 3000 # main menu -> Quick Race
++200  tapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  tapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  tapuntil RETURN UI_QRCarSelect.fng 150 1500
++400  loop ${EUCARS_RIGHT}
++0    tap RIGHT             # the next car
++120  endloop
++0    dump car_chosen
++200  tap RETURN            # this car
++300  tap RETURN            # transmission: Auto
++300  tap RETURN
++0    log waiting for GameFlow state 6 (race)
++0    waitmem 0x8654a4 6 6000
++60   expect i:[[$P]+0x10]+0x10 == 7
++60   quit

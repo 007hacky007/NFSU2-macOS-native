@@ -62,8 +62,13 @@ static void dump_init(void){
  * can't produce (e.g. the end of a career race). */
 static _Atomic int g_dump_req;
 static long g_dump_req_f = -1;
+/* metal_request_dump (the test runner's "dump", runtime/autotest.c): the next
+ * frame as PNG only, to DUMPDIR (else the Cmd+Shift+D folder) */
+static _Atomic int g_dump_png_req;
+static long g_dump_png_f = -1;
+void metal_request_dump(void){ atomic_store(&g_dump_png_req, 1); }
 static int dump_wanted(long f){
-    if (f == g_dump_req_f) return 1;
+    if (f == g_dump_req_f || f == g_dump_png_f) return 1;
     for (int i = 0; i < g_dump_n; i++) if (g_dump_want[i] == (int)f) return 1;
     return 0;
 }
@@ -6722,7 +6727,14 @@ void metal_run_main_loop(void){
                                 else snprintf(g_dump_dir, sizeof g_dump_dir, "%s/Library/Logs/NFSU2", h ? h : "/tmp"); }
                             fprintf(stderr, "capture: frame %ld (Cmd+Shift+D) -> %s\n", fno_pre, g_dump_dir);
                         }
+                        if (atomic_exchange(&g_dump_png_req, 0)){
+                            g_dump_png_f = fno_pre;
+                            if (!g_dump_n){ const char *dd = ENVC("DUMPDIR"), *h = getenv("HOME");
+                                if (dd && *dd) snprintf(g_dump_dir, sizeof g_dump_dir, "%s", dd);
+                                else snprintf(g_dump_dir, sizeof g_dump_dir, "%s/Library/Logs/NFSU2", h ? h : "/tmp"); }
+                        }
                         int  dumpnow = (g_dump_n || g_dump_req_f == fno_pre) && dump_wanted(fno_pre);
+                        int  pngnow = dumpnow || g_dump_png_f == fno_pre;   /* the PNG alone */
                         /* GLYPHDUMP: screen box + UV of every quad.
                          * Goal: decode the TEXT the game writes and read its state. */
                         if (ENVC("GLYPHDUMP") && dumpnow && rb >= 0){
@@ -7856,7 +7868,7 @@ void metal_run_main_loop(void){
                             fpscounter_draw(cb, dtex, fc_ppp, fc_bw, fc_bh); fc_px = 0; }
                         /* Take a readable copy BEFORE present: reading back from a presented
                          * drawable's texture isn't reliable. */
-                        if (dumpnow){
+                        if (pngnow){
                             /* recreate if the size changed (fullscreen transition) */
                             if (g_capture && (g_capture.width != dtex.width ||
                                               g_capture.height != dtex.height)) g_capture = nil;
@@ -7959,7 +7971,7 @@ void metal_run_main_loop(void){
                                     pl_nd, pl_nv, pl_nv/3u);
                               prev = now;
                               if ((fno % 240) == 0) fflush(fp); } }
-                        if (dumpnow){
+                        if (pngnow){
                             [cb waitUntilCompleted];
                             if (g_capture) dump_texture(g_capture, fno_pre);
                             { const char *dt = ENVC("DUMPTEX");   /* comma-separated list */
