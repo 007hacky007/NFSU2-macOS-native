@@ -63,6 +63,7 @@ struct TexturePackManagerView: View {
                 }
                 ScrollView {
                     VStack(spacing: 12) {
+                        UpscaledPackCard(model: model, store: model.upscaled)
                         if !store.installed.isEmpty || !importing.isEmpty {
                             Card("On this Mac · where two change the same texture, the higher one wins") {
                                 ForEach(store.installed) { p in InstalledPackRow(store: store, pack: p) }
@@ -95,7 +96,7 @@ struct TexturePackManagerView: View {
                         }
                     }
                 }
-                Text("Download: the release tested with this port, from the author's page (checked by SHA-256). Details: the pack's page on its site. The Upscaled HUD switch comes after these packs. Cmd-T in the game shows the original textures.")
+                Text("Download: the release tested with this port, from the author's page (checked by SHA-256). Details: the pack's page on its site. The Upscaled HUD switch comes after these packs, the upscaled textures after both. Cmd-T in the game shows the original textures.")
                     .font(.system(size: 10.5)).foregroundColor(Theme.dim).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 20).padding(.vertical, 16)
@@ -216,9 +217,9 @@ struct TexturePacksRow: View {
     @ObservedObject var model: LauncherModel
     @ObservedObject var store: TexturePackStore
     private var text: String {
-        let on = store.installed.filter { $0.enabled }
-        if on.isEmpty { return "Community texture mods for roads, sky and menus. None on: the original game." }
-        return "On: " + on.map { $0.name }.joined(separator: ", ")
+        let on = store.installed.filter { $0.enabled }.map { $0.name } + (model.upscaledTextures && model.upscaled.info != nil ? ["Upscaled textures"] : [])
+        if on.isEmpty { return "Upscaled textures and community texture mods. None on: the original game." }
+        return "On: " + on.joined(separator: ", ")
     }
     var body: some View {
         HStack(alignment: .center) {

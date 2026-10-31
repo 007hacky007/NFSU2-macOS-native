@@ -68,6 +68,8 @@ final class LauncherModel: ObservableObject {
     /// PictureOptions.all[i] -> chosen index (0 = the original game).
     @Published var picture: [Int] { didSet { savePicture() } }
     let packs = TexturePackStore()       // Texture Packs (TexturePacks.swift)
+    let upscaled = UpscaleStore()        // the upscaled texture pack (UpscaleStore.swift)
+    @Published var upscaledTextures: Bool { didSet { defaults.set(upscaledTextures, forKey: Prefs.upscaled) } }
     let langPacks = LanguagePackStore()  // Settings › Mods › Languages (LanguagePackViews.swift)
     private var setTexpacks = false      // NFSU2_TEXPACKS was set by us
     @Published var frameRate: String { didSet { defaults.set(frameRate, forKey: Prefs.frameRate) } }
@@ -178,6 +180,7 @@ final class LauncherModel: ObservableObject {
         photoMode = defaults.bool(forKey: Prefs.photoMode)
         driftMode = defaults.bool(forKey: Prefs.driftMode)
         uhud = defaults.bool(forKey: Prefs.uhud)
+        upscaledTextures = defaults.bool(forKey: Prefs.upscaled)
         hasUHUDPack = FileManager.default.fileExists(atPath: Paths.uhudPack.path)
         modsOn = Set(defaults.stringArray(forKey: Prefs.dataMods) ?? [])
         let st = ProcessInfo.processInfo.environment["NFSU2_MODS_STORE"] ?? ""
@@ -323,6 +326,7 @@ final class LauncherModel: ObservableObject {
             if !on.isEmpty { setenv("NFSU2_TEXPACKS", on.joined(separator: ":"), 1); setTexpacks = true }
             else if setTexpacks { unsetenv("NFSU2_TEXPACKS"); setTexpacks = false }
         }
+        upscaled.environment(on: upscaledTextures)       // the upscaled texture pack (texrep.m)
         if uhud && hasUHUDPack {
             setenv("NFSU2_UHUD", "on", 0)
             setenv("NFSU2_UHUD_PACK", Paths.uhudPack.path, 0)

@@ -541,6 +541,7 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
                            audio_time(), bn, len, (long)got,
                            (double)(now_ns_io() - _rd0)/1e6);
                }
+               if (got > 0){ void texrep_note_read(const char *); texrep_note_read(f->path); }   /* texrep.m */
                g_file_read++; g_bytes_read += (uint64_t)got; r=1; }
     }
     else if (!strcmp(n,"GetOverlappedResult")){

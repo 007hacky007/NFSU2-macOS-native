@@ -378,6 +378,7 @@ static void obj_release(uint32_t o, uint32_t iface, uint32_t from){
     if (iface == IF_VB || iface == IF_IB){
         if (mem_is_committed(o+11)){ gbuf_free(MR32(o+8)); MR32(o+8)=0; }
     } else if (iface == IF_TEX && mem_is_committed(o+67)){
+        texrep_released(MR32(o+28));                 /* texrep.m: its pack texture goes with it */
         for (uint32_t q=32; q<64; q+=4){ gbuf_free(MR32(o+q)); MR32(o+q)=0; }
         if (mem_is_committed(o+143) && MR32(o+140)==0xC0BEC0BEu)
             for (uint32_t q=104; q<136; q+=4){ gbuf_free(MR32(o+q)); MR32(o+q)=0; }
@@ -3574,7 +3575,7 @@ int com_call(CPU *c, uint32_t magic){
                      * the TextureInfo in esi) creates its textures from one of these two
                      * calls; the TextureInfo has the texture's name hash at +0x24. */
                     uint32_t nm = (c->eip == GA(0x005CE2EAu) || c->eip == GA(0x005CE30Eu)) ? MR32(c->esi + 0x24) : 0;
-                    texrep_created(tid, w, h, fmt, usage, pool, nm);
+                    texrep_created(tid, w, h, mlev, fmt, usage, pool, nm);
                 }
                 if (!tid){ g_tex_fail++;
                     static uint32_t bad[16]; static int nb=0; int seen=0;
@@ -3943,8 +3944,8 @@ int com_call(CPU *c, uint32_t magic){
                                             : visual_tex_upload(self, g_mem+buf, w, h, fmt, pitch, vtmp, sizeof vtmp);
                     metal_upload_texture(mid, level, src, pitch, w, h, fmt);
                 }
-                if (iface==IF_TEX && !is_cube2 && level==0)
-                    texrep_uploaded(mid, g_mem+buf, metal_level_pitch(w,0,fmt), metal_level_rows(h,0,fmt));
+                if (iface==IF_TEX && !is_cube2)
+                    texrep_uploaded(mid, level, g_mem+buf, metal_level_pitch(w,level,fmt), metal_level_rows(h,level,fmt));
                 else if (iface==IF_SURF) texrep_surface_written(mid);   /* the car skin composite */
             }
             if (ENVC("LOCKLOG") && w==640 && h==480){
@@ -4631,6 +4632,7 @@ void com_report(void){
     { void gamepad_report(void); gamepad_report(); }   /* gamepad.m */
     { void xpatch_report(void); xpatch_report(); }
     { void highfps_report(void); highfps_report(); }   /* LOCAL PATCH: highfps.c */
+    texrep_report();                                    /* texrep.m: the upscaled texture pack */
     if (g_aspfix != 1.f)
         { fprintf(stderr,"  widescreen       : aspfix %.4f, %lu perspective / %lu orthographic draws\n",
                   g_aspfix, g_asp_persp, g_asp_ortho);
