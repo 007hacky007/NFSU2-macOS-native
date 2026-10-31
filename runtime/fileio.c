@@ -26,11 +26,22 @@ uint64_t g_file_open=0, g_file_fail=0, g_file_read=0, g_bytes_read=0;
 uint64_t g_overlapped_reads=0;
 static int g_empty_next = 0;
 
+/* Data mods (NFSU2_MODS=<folder>): a folder with changed copies of game files, at
+ * the same paths as in the game folder (the launcher builds it, launcher/DataMods.swift).
+ * Reads look there before the game folder; nothing is ever written there.  Not set:
+ * only the game's own files.                                          */
+static char g_mroot[1024] = "";
+
 void fileio_set_root(const char *exe_path){
     strncpy(g_root, exe_path, sizeof g_root - 1);
     char *slash = strrchr(g_root, '/');
     if (slash) *slash = 0; else strcpy(g_root, ".");
     fprintf(stderr,"file: game root directory = %s\n", g_root);
+    const char *m = getenv("NFSU2_MODS"); struct stat st;
+    if (m && *m && stat(m, &st) == 0 && S_ISDIR(st.st_mode)){
+        snprintf(g_mroot, sizeof g_mroot, "%s", m);
+        fprintf(stderr,"file: mod files = %s\n", g_mroot);
+    }
 }
 
 /* Convert a Windows path to a real path.
@@ -183,7 +194,7 @@ static int lpack_resolve(const char *win, char *out, size_t outsz){
     snprintf(out, outsz, "%s/%s", g_lroot, f->rel);
     return 1;
 }
-/* Read: the write root if it exists there, then the language pack, otherwise the game root. */
+/* Read: the write root if it exists there, then the language pack, then the mod files, otherwise the game root. */
 static int resolve(const char *win, char *out, size_t outsz){
     if (g_wroot[0]){
         char w[1024];
@@ -191,6 +202,17 @@ static int resolve(const char *win, char *out, size_t outsz){
             snprintf(out, outsz, "%s", w); return 1; }
     }
     if (lpack_resolve(win, out, outsz)) return 1;
+    if (g_mroot[0]){
+        char w[1024]; struct stat st;
+        if (resolve_in(g_mroot, win, w, sizeof w) && stat(w, &st) == 0 && S_ISREG(st.st_mode)){
+            /* the first open of each file is logged */
+            static uint32_t seen[512]; static int nseen = 0;
+            uint32_t hsh = 2166136261u; for (const char *q = w; *q; q++) hsh = (hsh ^ (uint8_t)*q) * 16777619u;
+            int known = 0; for (int i = 0; i < nseen; i++) if (seen[i] == hsh){ known = 1; break; }
+            if (!known && nseen < 512){ seen[nseen++] = hsh;
+                fprintf(stderr, "  [file] mod: %s\n", w + strlen(g_mroot) + 1); }
+            snprintf(out, outsz, "%s", w); return 1; }
+    }
     return resolve_in(g_root, win, out, outsz);
 }
 /* Write: ALWAYS the write root if there is one. */

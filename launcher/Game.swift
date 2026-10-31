@@ -110,6 +110,7 @@ enum Languages {
     static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
     static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
     static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
+    static let dataMods = "LauncherDataMods"       // ids of the turned-on data mods (DataMods.swift)
 }
 
 enum Locator {
