@@ -140,6 +140,16 @@ struct GraphicsCard: View {
                 Spacer(minLength: 8)
                 Toggle("", isOn: $model.fullscreen).labelsHidden().toggleStyle(SwitchToggleStyle())
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("HUD at the screen edges").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("On wide screens the minimap moves to the left and the gauges to the right. Off: the HUD stays in the 4:3 middle.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $model.wideHUD).labelsHidden().toggleStyle(SwitchToggleStyle())
+            }
         }
     }
 }
@@ -151,7 +161,7 @@ struct MoreCard: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Portable copy").font(.system(size: 12.5, weight: .medium)).foregroundColor(Theme.text)
-                    Text("One app with the game inside (about 1.4 GB), for another Mac or a USB drive.")
+                    Text("One app with the game inside, for another Mac or a USB drive. Movies and language packs can be left out to make it smaller.")
                         .font(.system(size: 11)).foregroundColor(Theme.dim)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -67,6 +67,7 @@ enum Prefs {
     // Launcher only.
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
+    static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
 }
 
 enum Locator {
