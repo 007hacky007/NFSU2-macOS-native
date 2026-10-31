@@ -8,6 +8,7 @@ Status key:
 - BRANCH: one of our PR branches covers it (gaps noted).
 - PORT: only in the old fork; needs porting.
 - SKIP?: plausibly not wanted natively; listed so you can decide.
+- SKIP: decided not to port (the reason is in the row). Decided 2026-10-31: browser-only bits, dev/test tooling and the advanced settings.ini stay out; controller rumble is ported.
 
 Cross-cutting notes that apply to every PORT row with runtime code:
 - **NA addresses only.** The old fork hard-codes SPEED2.EXE v1.2 NA addresses (overrides `sub_00xxxxxx`, `HOOK_SITE(0x...)`, guest globals). Upstream uses European addresses as canonical, maps them with `GA()` / `runtime/build_na.h` (`tools/addrmap.py`), and has `OVR`/`OVR_NA` and `HOOKS` lists in `tools/gen_v2.sh`. Each PORT runtime item needs its EU equivalents found and its hooks/overrides added to both lists. The PR branches already did this for what they cover.
@@ -32,7 +33,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | FTOL2INL (CRT _ftol2 inlined) | Speed (the hottest lifted function) | PORT | old tools/lift.py, runtime/cpu.h FTOL2_INL | Optional. |
 | NOCLOSURE / generated-closure handling in genall | Lifter robustness (missing callees pulled in) | PORT | old tools/genall.py | Small; check against upstream LIFT_MISSING. |
 | Override and hook lists derived from the runtime sources (gen.sh + tools/genstamp.sh, gen/all/stamp.txt) | A built game never lacks an override or hook (no list drift) | PORT | old gen.sh, tools/genstamp.sh | Build tooling. Upstream keeps hand-written OVR/OVR_NA/HOOKS in tools/gen_v2.sh. |
-| Content-hash object cache in build.sh (FULL=1 forces) | Faster rebuilds for developers | SKIP? | old build.sh | Developer convenience only. |
+| Content-hash object cache in build.sh (FULL=1 forces) | Faster rebuilds for developers | SKIP | old build.sh | Developer convenience only. |
 | Guest heap: TLSF heaps, VA manager (VirtualAlloc reserve/commit/decommit/release, VirtualQuery, VirtualProtect), real HeapCreate heaps, NFSU2_HEAPCHECK canaries/stats | Long careers do not run out of memory; heap corruption is caught | UPSTREAM | upstream gheap.c + #7 733a3e4 (free lists, coalescing, quarantine, buffer heap reuse); old runtime/heap.c (1008) | Upstream is narrower: one bump-style arena with free lists. It has no VA region manager, VirtualQuery or VirtualProtect, and HeapCreate returns a fixed handle. It has no HEAPCHECK trailer canaries or per-site stats, and no heap_stress test. Port heap.c only if long-session problems show up. |
 | server.dll heaps (modheap.c) | Hosting LAN games many times does not exhaust memory | BRANCH | lan-play (runtime/modheap.c) | - |
 | Second guest module loader (server.dll lifted at 0x00A00000, SHA-256 pinned) | LAN hosting through EA's own server works | BRANCH | lan-play (module.c, module.h, tools/prepare_module.py, gen_v2.sh); fork-next 536f632 | module.c has 64 more lines in the old fork. The extras are host start/stop cycle tests and srvoracle hooks. |
@@ -54,9 +55,9 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | rdtsc/QPC tied to a 3 GHz clock; CPU MHz registry value | The first run detects the right graphics level; movies do not spin | UPSTREAM | upstream dispatch.c rdtsc_shim, c0806af, win32_ext.c repair | - |
 | GPU reported as GeForce 6800 | The game picks its full effect path | UPSTREAM | upstream com.c (0x10DE/0x0040) | Old fork adds NFSU2_GPU_VENDOR/DEVICE overrides (test only). |
 | Dispatch: direct function table, generated-code execution (genexec) | Speed; game-generated x86 runs | UPSTREAM | upstream dispatch.c, genexec.c, xpatch.c (#9) | Equivalent. |
-| wasm-only native fast paths (_ftol2, shadow hull qsort, shrot, mmul, xform/frustum cull) | Speed in the browser only; the Mac keeps the lifted bodies | SKIP? | old overrides.c `#ifdef __wasm__` blocks | Browser-only. |
-| Web build plumbing (runtime/web/*.h, compat headers, WGSL shader paths, NFSU2_GUEST_OBJ/MEMCHECK/STACKPROBE) | None natively | SKIP? | old runtime/web/* | Some headers are native dependencies of PORT items: radio_proto.h (music folder), ticketlock.h (fair GIL), status_proto.h/host_abi.h (photo/drift status), photo_icon.h. lan-play already brought lan_vfd.h/net_proto.h. |
-| Licence notice of nfsu2-web packaged in the app (third_party/nfsu2-web-LICENSE) | Legal compliance for MIT code | PORT | old third_party/nfsu2-web-LICENSE, pack.sh line 97 | Tiny. preview-old credits nfsu2-web in file headers and the README but ships no notice file. |
+| wasm-only native fast paths (_ftol2, shadow hull qsort, shrot, mmul, xform/frustum cull) | Speed in the browser only; the Mac keeps the lifted bodies | SKIP | old overrides.c `#ifdef __wasm__` blocks | Browser-only. |
+| Web build plumbing (runtime/web/*.h, compat headers, WGSL shader paths, NFSU2_GUEST_OBJ/MEMCHECK/STACKPROBE) | None natively | SKIP | old runtime/web/* | Some headers are native dependencies of PORT items: radio_proto.h (music folder), ticketlock.h (fair GIL), status_proto.h/host_abi.h (photo/drift status), photo_icon.h. lan-play already brought lan_vfd.h/net_proto.h. |
+| Licence notice of nfsu2-web packaged in the app (third_party/nfsu2-web-LICENSE) | Legal compliance for MIT code | SKIP | old third_party/nfsu2-web-LICENSE, pack.sh line 97 | Decided: nfsu2-web (MIT) is credited in the README and in the ported files' headers; no licence file is added. |
 
 ## Graphics / display
 
@@ -79,8 +80,8 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | UHUD (LunicAura106's Upscaled HUD) .pak with original guest dimensions | Sharp menus and HUD | BRANCH | uhud (one-click download/build, UHUDPack.swift), texture-packs (generic NTXP import) | Better than old: no manual tools/texpacks.py step. |
 | DDS replacement packs + AI upscaled texture pack (tools/texpack: scan, upscale with PBRify SPAN, back-project, BC encode, stacked mips, categories, GPU budget, texture dump) | Sharper world/car/sign textures from your own files | PORT | old runtime/texrep.m DDS path (NFSU2_TEXTURES/TEXPACK/TEXPARTS/TEXBUDGET/TEXDUMP), runtime/xxhash.h, tools/texpack/* (968-line builder, hashed venv, model download) | Large. Settings.ini only in the old fork (no launcher control). texture-packs' texrep.m (339 lines) handles TexMod/TexWizard/NTXP, not this. Per the player-ease rule the launcher would have to build the pack itself (0.8 GB PyTorch venv), so this may be better left out. |
 | English app menu titles (Hide, Minimise, Full Screen, Quit) | Readable menu for English players | PORT | old metal.m app menu | Tiny. Upstream menus are Turkish ("Gizle", "Kucult", "Tam Ekran", "NFSU2'den Cik"). |
-| Frame dumps (NFSU2_DUMP_FRAMES/DIR/SCALE) for scripted runs | None (test aid) | SKIP? | old metal.m, autotest.c | Test tooling; only needed with the scripted scenarios. |
-| Phone touch button sizing (menusize.c, NFSU2_MENU_SCALE) | Bigger help-bar buttons on phones | SKIP? | old runtime/menusize.c | Browser/phone only. |
+| Frame dumps (NFSU2_DUMP_FRAMES/DIR/SCALE) for scripted runs | None (test aid) | SKIP | old metal.m, autotest.c | Test tooling; only needed with the scripted scenarios. |
+| Phone touch button sizing (menusize.c, NFSU2_MENU_SCALE) | Bigger help-bar buttons on phones | SKIP | old runtime/menusize.c | Browser/phone only. |
 
 ## Input
 
@@ -97,8 +98,8 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Pad: hotplug mode (NFSU2_PAD=hotplug, real DIERR_INPUTLOST + the game's 32-frame rescan) vs stay-present default | Choose PC-faithful hotplug or never lose the pad | PORT | old dinput_pad.c, launcher Controller picker on/off/hotplug | Upstream launcher has on/off only. |
 | Pad: left stick as POV 1 for menus; A/B/View post Enter/Esc/Q in menus (NFSU2_PAD_FE_KEYS) | Menus fully drivable with a pad | PORT | old dinput_pad.c fe_keys | Small within the pad port. |
 | Pad: keep reading in background (NFSU2_PAD_BACKGROUND), controller quarantine on focus change | No stuck input after Cmd-Tab | PORT | old gamepad.m, native_scene.m | Part of the pad/lifecycle port. |
-| Force feedback mixer (DirectInput effects -> two motor levels) | Rumble (browser only today; Mac gamepad.m has no motor output) | SKIP? | old dinput_pad.c ff_mix, NFSU2_FF | Native rumble was backlog item 3 in web-parity.md and never done. |
-| Steering wheel as a driving device | Wheel steering in the browser | SKIP? | old dinput_pad.c wheel profile | Browser-only (web/src/input/wheel.ts). Backlog item 8. |
+| Force feedback mixer (DirectInput effects -> two motor levels) | Rumble (browser only today; Mac gamepad.m has no motor output) | PORT | old dinput_pad.c ff_mix, NFSU2_FF | Decided: port it, and drive the Mac controller's motors natively (GameController haptics), which the old fork never did. Package K. |
+| Steering wheel as a driving device | Wheel steering in the browser | SKIP | old dinput_pad.c wheel profile | Browser-only (web/src/input/wheel.ts). Backlog item 8. |
 | Tuning graphs: drag the dots with the mouse | ECU/turbo tuning by mouse | UPSTREAM | upstream 44cf882; branch tuning-graph-drag | - |
 | Sponsor screens take a click to continue | Career not stuck on the sponsor choice | UPSTREAM | upstream 3391943; branch sponsor-continue | - |
 | Lobby dialog click does not also click the game list | Join goes to the selected game | BRANCH | lan-play (lobbyclick.c) | - |
@@ -116,8 +117,8 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Music controls: Pause/Resume, Next, Shuffle, switch back to the game soundtrack (Game Tools, Cmd+Shift+M) | Control your music in game | PORT | old native_controls.m music section, radio_native.m | Depends on the music folder and Game Tools rows. |
 | Horns (8 kinds), horn key, horn volume slider in Options > Audio | Honk at other players | BRANCH | player-horns (horn.c, hornmenu.c, racehorn.c) | - |
 | Friends' engines, nitrous and hydraulics heard | Hear other players' cars | BRANCH | player-horns (carsfx.c) | - |
-| Muted test runs (NFSU2_MUTE) | None (test aid) | SKIP? | old audio.m | Test tooling. |
-| Smaller music files (tools/musicpack.py, ADPCM -> EALayer3) | Smaller download in the browser | SKIP? | old tools/musicpack.py | Web hosting only. |
+| Muted test runs (NFSU2_MUTE) | None (test aid) | SKIP | old audio.m | Test tooling. |
+| Smaller music files (tools/musicpack.py, ADPCM -> EALayer3) | Smaller download in the browser | SKIP | old tools/musicpack.py | Web hosting only. |
 
 ## Movies
 
@@ -129,7 +130,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | FMV framing fit/fill/stretch | See Graphics | PORT | old widescreen.c | Listed under Graphics. |
 | 60 FPS race intros and cutscenes (NFSU2_CUTSCENES_60) | Smoother cutscenes | BRANCH | frame-rate (framerate.c + launcher); upstream highfps.c intro60 (ini HighFPSCutscenes) | fork-next 60c03ae reconciles the two. |
 | Portable copies keep the movies | Movies in a Make Copy app | UPSTREAM | upstream #33 47e1cd3; branch portable-movies | - |
-| AV1 movies (movie.c, tools/movies_av1.py) | Smaller movie download in the browser | SKIP? | old runtime/movie.c, tools/movies_av1.py | On the Mac the decoder stubs return -1. Browser only. |
+| AV1 movies (movie.c, tools/movies_av1.py) | Smaller movie download in the browser | SKIP | old runtime/movie.c, tools/movies_av1.py | On the Mac the decoder stubs return -1. Browser only. |
 
 ## Online / multiplayer
 
@@ -161,9 +162,9 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Ride texture references kept when a purge frees nothing (sub_00639f20) | No "memory access out of bounds" crash with friends' cars coming and going | PORT | old overrides.c | Small. NA address. |
 | Ride texture list capped at 0x45 (sub_00631e20) | No freeze with decal-heavy friends' cars | PORT | old overrides.c | Small. NA address. |
 | Discord Rich Presence (off by default) | Show what you are doing in Discord | BRANCH | discord-presence | Missing NFSU2_DISCORD_LARGE_IMAGE (custom image) option; tests/discord_* and tools/mock_discord.py are only in the old fork. |
-| Windows companion plugin interop tooling (roam_asipeer.c, NFSU2FreeRoam.asi under Unicorn, asi_* tests) | None for Mac players | SKIP? | old runtime/roam_asipeer.c, tests/asi_*.c, tools/asi_check.py, build_roam_asi.sh, roam_asi_test.sh, roam_x86check.sh, roam_fingerprint.py, roam_modsites.py | Test-only; the plugin source is not in this repo. |
-| Free-roam research probes (roam.c) | None | SKIP? | old runtime/roam.c (983) | Test-only probes. |
-| World map jump table for the server's cheat watch (tools/map_jumps.py) | Server-side anti-cheat data | SKIP? | old tools/map_jumps.py | Server tooling. |
+| Windows companion plugin interop tooling (roam_asipeer.c, NFSU2FreeRoam.asi under Unicorn, asi_* tests) | None for Mac players | SKIP | old runtime/roam_asipeer.c, tests/asi_*.c, tools/asi_check.py, build_roam_asi.sh, roam_asi_test.sh, roam_x86check.sh, roam_fingerprint.py, roam_modsites.py | Test-only; the plugin source is not in this repo. |
+| Free-roam research probes (roam.c) | None | SKIP | old runtime/roam.c (983) | Test-only probes. |
+| World map jump table for the server's cheat watch (tools/map_jumps.py) | Server-side anti-cheat data | SKIP | old tools/map_jumps.py | Server tooling. |
 
 ## Career / saves
 
@@ -180,9 +181,9 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Language choice (16 languages, LANGPACKS, Thai/CJK font pool fix) | Play in your language | BRANCH | language-choice (language.c 125 lines vs old 307) | Gaps: movie subtitles (Movies table), the injected own texts table (used by sms.c and the roam race questions; free-roam has its own roam_add_text), and accented-letter handling for Polish/Turkish packs. |
 | Language pack builder (tools/langpacks.py: Multi13, PT-BR, PL, TR, English subtitles) | Get the extra languages | PORT | old tools/langpacks.py (386) | Per the player-ease rule the launcher should fetch and build these with pinned SHA-256 instead of a script. Medium. |
 | Registry seeded with the highest graphics settings on first launch (app/registry-defaults.txt, NFSU2_SEED_REGISTRY) | Best graphics without the first-run hardware check | PORT | old app/registry-defaults.txt, bundle.m app_seed_registry | Small. Upstream repairs the first-run detection instead (PortSettingsRepaired); decide whether you still want the seed. |
-| Advanced settings file (settings.ini mapped to env with typed validation, template on first run) | Power users can set any option without the launcher | SKIP? | old runtime/bundle.m g_keys/k_template (~300 lines) | Upstream and the launcher pass env directly; the Settings window replaces most of it. |
-| In-game SMS from us (sms.c, after 2 hours of play) | A message on the game's phone | SKIP? | old runtime/sms.c | Triggered by the browser page (IEV_SMS); natively only NFSU2_SMS for tests. |
-| Career test aids (career.c bot, race wins, teleports) | None | SKIP? | old runtime/career.c (1143), tools/career_report.py, career_segments.sh | Test-only. |
+| Advanced settings file (settings.ini mapped to env with typed validation, template on first run) | Power users can set any option without the launcher | SKIP | old runtime/bundle.m g_keys/k_template (~300 lines) | Upstream and the launcher pass env directly; the Settings window replaces most of it. |
+| In-game SMS from us (sms.c, after 2 hours of play) | A message on the game's phone | SKIP | old runtime/sms.c | Triggered by the browser page (IEV_SMS); natively only NFSU2_SMS for tests. |
+| Career test aids (career.c bot, race wins, teleports) | None | SKIP | old runtime/career.c (1143), tools/career_report.py, career_segments.sh | Test-only. |
 
 ## Launcher
 
@@ -215,7 +216,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Screenshot gallery in the launcher | See Launcher | PORT | old launcher/PhotoGallery.swift | Listed under Launcher. |
 | Drift mode in free roam (X toggles the game's drift handling, drift camera, scoring) | Drift anywhere in the city | PORT | old runtime/drift.c (358) | Small-medium. NA addresses (0x89E7D9, 0x890104, overrides 0x56ddd0/0x4c85d0/0x4ac120). No free-roam dependency (career free roam). |
 | Drift HUD overlay: points, multiplier and next-level progress, best, total, banked/lost feedback, hidden in photo mode | See your drift score | PORT | old native_scene.m drift snapshot, tests/native_scene_test.m | Needs drift.c and native_scene. |
-| Drift fidelity test helpers (drifttest.c NFSU2_FIXED_DT, tools/drift_*.py, tests/checks/driftscore.sh) | None | SKIP? | old runtime/drifttest.c, tools/drift_accrual.py, drift_compare.py | Test-only. |
+| Drift fidelity test helpers (drifttest.c NFSU2_FIXED_DT, tools/drift_*.py, tests/checks/driftscore.sh) | None | SKIP | old runtime/drifttest.c, tools/drift_accrual.py, drift_compare.py | Test-only. |
 
 ## Tools / tests
 
@@ -223,21 +224,21 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 |---|---|---|---|---|
 | ISA tests (610 checks incl. LREGS/X87PC/JTSWITCH variants) | Guards instruction semantics | PORT | old tools/isatest.py (598 lines vs 525 in preview-old), tools/fuzzisa.py | Port the extra cases that cover branch features (x87-precision, SSE2, retpast). |
 | Function/runtime checks (65: heap API, _ftol2, shadow hull, etc.) | Guards lifted code and runtime pieces | PORT | old tests/main_all.c (682 vs 83 upstream) | Some sections test wasm-only paths (skip those). Heap section only if heap.c is ported. |
-| Heap stress (concurrency, realloc, VirtualAlloc edges, planted bugs) | Guards memory | SKIP? | old tests/heap_stress.c | Only useful with heap.c; upstream gheap.c would need its own test. |
+| Heap stress (concurrency, realloc, VirtualAlloc edges, planted bugs) | Guards memory | SKIP | old tests/heap_stress.c | Only useful with heap.c; upstream gheap.c would need its own test. |
 | Object table unit test | Guards waits and handles | PORT | old tests/objtable_unit.c, tests/windows_waits.sh | Guards upstream #14 too. |
 | Watchdog unit test | Guards watchdog | PORT | old tests/watchdog_unit.c | With watchdog.c. |
 | Winsock HLE harness (240 checks) + loopback sandbox | Guards LAN/online semantics | PORT | old tests/net_harness.c, tests/net/loopback-only.sb, tests/net/*.sh | lan-play brought the code without tests. |
 | Native WebSocket relay fixtures (relay, resume, queue, two-client, idle, burst, exit) | Guards online transport | PORT | old tests/net/native/loopback.py, relay.c, switch.c, transport.m | Should go with lan-play. |
 | Free-roam core tests (287 roam checks), fake peer, viewer peer | Guards free-roam protocol | PORT | old tests/roam_unit.c, roam_fakepeer.c, roam_recv.c, tests/roam/*.sh | Should go with free-roam. |
-| Free-roam cross-platform x86 oracle / PE self-test / crowd (wasm) | Guards bit-identical Windows plugin interop | SKIP? | old tests/roam_x86_oracle.c, roam_selftest.c, roam_pe_selftest.c, roam_crowd.c | Needs Unicorn / Windows build / browser. |
-| Differential oracles under Unicorn (oracle.c, net_oracle.c, srvoracle.c) | None (developer verification) | SKIP? | old runtime/oracle.c (601), tests/net_oracle.c, srvoracle.c/.sh | Needs a Unicorn build. |
+| Free-roam cross-platform x86 oracle / PE self-test / crowd (wasm) | Guards bit-identical Windows plugin interop | SKIP | old tests/roam_x86_oracle.c, roam_selftest.c, roam_pe_selftest.c, roam_crowd.c | Needs Unicorn / Windows build / browser. |
+| Differential oracles under Unicorn (oracle.c, net_oracle.c, srvoracle.c) | None (developer verification) | SKIP | old runtime/oracle.c (601), tests/net_oracle.c, srvoracle.c/.sh | Needs a Unicorn build. |
 | Scripted scenario runner (autotest.c: NFSU2_INPUT_SCRIPT, QUIT_FRAMES, STATUS_EVERY, FNG_LOG, CAR_TRACE) + tools/autorun.sh, apptest.sh, tests/run_suite.sh + 323 scripts | Guards real behaviour end to end (keyboard rebinds, pad, heap soaks, LAN races, free roam, garage, discord...) | PORT | old runtime/autotest.c (1155), tools/autorun.sh, apptest.sh, tests/run_suite.sh, tests/scripts/*.txt | Large. Scripts hold NA addresses (waitmem etc.) and need EU variants. Upstream has only AUTOSEQ/AUTOKEY hooks. |
-| Soak/test generators and analysers (gen_soak.py, gen_lan_race.py, lan_trace.py, roam_compare.py, roam_multi/plan/solo.sh, hfr_compare.py, contact_sheet.py, career_report.py) | None directly | SKIP? | old tools/* | Useful only together with autotest.c. |
+| Soak/test generators and analysers (gen_soak.py, gen_lan_race.py, lan_trace.py, roam_compare.py, roam_multi/plan/solo.sh, hfr_compare.py, contact_sheet.py, career_report.py) | None directly | SKIP | old tools/* | Useful only together with autotest.c. |
 | Game-folder untouched proof (tools/manifest.py, tools/writewatch.c) | Guards "game data is read-only" | PORT | old tools/manifest.py, tools/writewatch.c | Small, cheap guard. |
 | vlanhub.py virtual LAN hub | Lets several local instances race (tests) | PORT | old tools/vlanhub.py (841) | Pairs with lan-play's net_vlan.c; without it that backend has no hub. |
 | Native feature tests: gamepad harness, native controls, quick chat, native scene, photo gallery, headlights, radio, texpack, texrep, shader ps20, save paths, discord, vault | Guard the matching features | PORT | old tests/gamepad_harness.m, native_controls*.m/.sh, native_quickchat_test.m, native_scene*.m/.sh, photo_gallery*, headlights_*, radio_*, texpack_unit.c, texrep_native_unit.m, shader_ps20.c, save_paths.m, discord_*, vault* | Port each with its feature. headlights, discord, shader ps20 and save paths guard code already in the new base. |
-| Web test seeds and horn preview (tests/web/*, horn_render.c) | None natively | SKIP? | old tests/web, tests/horn_render.c | Browser only. |
-| Photo icon generator (tools/photoicon.py, photo_icon.svg) | Pause-menu photo icon texture | SKIP? | old tools/photoicon.py | Only needed if the photo port draws the icon natively. |
+| Web test seeds and horn preview (tests/web/*, horn_render.c) | None natively | SKIP | old tests/web, tests/horn_render.c | Browser only. |
+| Photo icon generator (tools/photoicon.py, photo_icon.svg) | Pause-menu photo icon texture | SKIP | old tools/photoicon.py | Only needed if the photo port draws the icon natively. |
 
 ## Not features (for completeness)
 
@@ -254,9 +255,10 @@ Every PORT row above belongs to one package. Packages are ported on their own br
 | B. Music | Local music folder through EA Trax, launcher music folder chooser, music controls in the app menu, radio tests, music after shops (guest_noyield) |
 | C. Display, lifecycle and language | Resolution scale, FMV framing, lens rain drops, rain tint quads, English app menu titles, Cmd-Q as WM_CLOSE with save drain, activation and background pause/run, movie subtitles, language-choice gaps (own texts table, accented letters), language and subtitle packs fetched by the launcher, launcher display options |
 | D. Input | Mac keyboard layouts, buffered key events, keyboard rebinding, saved bindings, Mac key names, pad triggers / GUID / bindings / hotplug / menu keys / background, launcher controller hotplug and trigger dead zone, gamepad and keyboard tests |
-| E. Engine fixes | Kernel object reuse, fair GIL, stall watchdog, JDLZ decompressor, car part memo, D3DX stage 9 and refcount fix, save-overlay cache, Win32 HLE refinements, audio device changes, positional sound fix, car lot fix, Performance Shop fix, registry seed, guest heap gaps vs gheap.c, frame-rate gaps (uncapped, LAN timing, online frame cap), nfsu2-web notice in the app, object table and watchdog tests |
+| E. Engine fixes | Kernel object reuse, fair GIL, stall watchdog, JDLZ decompressor, car part memo, D3DX stage 9 and refcount fix, save-overlay cache, Win32 HLE refinements, audio device changes, positional sound fix, car lot fix, Performance Shop fix, registry seed, guest heap gaps vs gheap.c, frame-rate gaps (uncapped, LAN timing, online frame cap), object table and watchdog tests |
 | F. Game Tools and multiplayer extras | Game Tools panel, quick chat and groups, chat bubbles, live solid/ghost and four crews, room names in UTF-8 with the runtime check, world map 1024 nodes, car loader hang, ride texture fixes, player and crew counts, music section of the panel (after B) |
 | G. Compiler | LREGS, JTSWITCH, INLINE lists, FTOL2INL, NOCLOSURE, override/hook lists derived from the sources, ISA and function/runtime test additions |
 | H. Saves and services | Encrypted cloud saves, Discord custom large image, launcher validation tests |
 | I. Test infrastructure | Scripted scenario runner (EU and NA), Winsock harness, relay fixtures, free-roam core tests, vlanhub, game-folder untouched proof, remaining native feature tests |
+| K. Controller rumble | Force feedback mixer and native controller motors (after D) |
 | J. Texture packs from DDS / AI upscale | DDS replacement packs and the tools/texpack builder, done by the launcher in one click |
