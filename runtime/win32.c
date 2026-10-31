@@ -345,6 +345,7 @@ int win32_call(CPU *c, uint32_t idx){
     stat_[idx].calls++; g_win32_calls++;
     guest_fair_yield();          /* give the other guest threads a turn */
     POP32(c->eip);                      /* take the return address */
+    { extern uint32_t g_gheap_site; g_gheap_site = c->eip; }   /* gheap.c: NFSU2_HEAPCHECK's call sites */
     int handled = 1;
     const char *n = e->name;
     uint32_t r = 0;
@@ -437,15 +438,15 @@ int win32_call(CPU *c, uint32_t idx){
                     (lp>=HEAP_BASE+HDR&&lp<HEAP_MAX)?MR32(lp-HDR):0xDEAD0000u,
                     (lp>=HEAP_BASE+HDR&&lp<HEAP_MAX)?MR32(lp-HDR+4):0xDEAD0000u, r); }
     }
-    else if (!strcmp(n,"VirtualAlloc"))          r = galloc(ARG(c,1), 1);
+    else if (!strcmp(n,"VirtualAlloc")){ uint32_t gheap_va_alloc(uint32_t,uint32_t,uint32_t,uint32_t); r = gheap_va_alloc(ARG(c,0), ARG(c,1), ARG(c,2), ARG(c,3)); }   /* gheap.c regions */
     else if (!strcmp(n,"GlobalAlloc"))            r = galloc(ARG(c,1), ARG(c,0)&0x40u);
     else if (!strcmp(n,"LocalAlloc"))             r = galloc(ARG(c,1), ARG(c,0)&0x40u);
     else if (!strcmp(n,"GlobalFree")||!strcmp(n,"LocalFree")){ gheap_free(ARG(c,0), n); r = 0; }
     else if (!strcmp(n,"GlobalLock")||!strcmp(n,"LocalLock")) r = ARG(c,0);
     else if (!strcmp(n,"GlobalUnlock"))           r = 1;
-    else if (!strcmp(n,"VirtualFree")){          /* (addr, size, type): only MEM_RELEASE frees */
-        if (ARG(c,2) & 0x8000u) gheap_free(ARG(c,0), n);
-        r = 1; }
+    else if (!strcmp(n,"VirtualFree")){ int gheap_va_free(uint32_t,uint32_t,uint32_t); r = (uint32_t)gheap_va_free(ARG(c,0), ARG(c,1), ARG(c,2)); }   /* (addr, size, type) */
+    else if (!strcmp(n,"VirtualQuery")){ uint32_t gheap_va_query(uint32_t,uint32_t,uint32_t); r = gheap_va_query(ARG(c,0), ARG(c,1), ARG(c,2)); }
+    else if (!strcmp(n,"VirtualProtect")){ int gheap_va_protect(uint32_t,uint32_t,uint32_t,uint32_t); r = (uint32_t)gheap_va_protect(ARG(c,0), ARG(c,1), ARG(c,2), ARG(c,3)); }
     else if (!strcmp(n,"GetCommandLineA"))       r = g_cmdline;
     else if (!strcmp(n,"GetEnvironmentStrings")||!strcmp(n,"GetEnvironmentStringsW")){
         uint32_t p=galloc(8,1); r=p; }
@@ -489,7 +490,8 @@ int win32_call(CPU *c, uint32_t idx){
     else if (!strcmp(n,"QueryPerformanceFrequency")){ uint32_t p=ARG(c,0); if(p){MR32(p)=1000000;MR32(p+4)=0;} r=1; }
     else if (!strcmp(n,"SetUnhandledExceptionFilter")) r = 0;
     else if (!strcmp(n,"UnhandledExceptionFilter"))    r = 0;
-    else if (!strcmp(n,"IsProcessorFeaturePresent"))   r = 1;
+    else if (!strcmp(n,"IsProcessorFeaturePresent")){ uint32_t hle_processor_feature(CPU *, uint32_t); r = hle_processor_feature(c, ARG(c,0)); }   /* hlefix.c */
+    else if (!strcmp(n,"RaiseException")){ uint32_t hle_raise_exception(CPU *); r = hle_raise_exception(c); }   /* hlefix.c: stops the game */
     else if (!strcmp(n,"GetModuleFileNameA")){ uint32_t p=ARG(c,1),sz=ARG(c,2);
         const char*s="C:\\\\NFSU2\\\\SPEED2.EXE";
         char ms[64]; if (module_file_name(ARG(c,0), ms, sizeof ms)) s = ms;   /* server.dll: C:\NFSU2\server.dll */
@@ -650,6 +652,7 @@ void win32_init(void){
     /* fill the IAT with magic addresses (a lifted module's when it is loaded, module.c) */
     for (uint32_t i=0;i<g_imp_count;i++) MR32(g_imp[i].iat) = IMP_MAGIC + i;
     com_init();
+    { void watchdog_start(void); watchdog_start(); }   /* NFSU2_WATCHDOG: watchdog.c */
     /* addresses to be read later for diagnosing the CRT heap mode */
     fprintf(stderr,"win32: %u imports bound to the IAT, heap 0x%08x\n", g_imp_count, HEAP_BASE);
     if (g_srv_imp_count) fprintf(stderr,"win32: server.dll lifted into this build (%u imports, bound when it is loaded)\n", g_srv_imp_count);
@@ -665,6 +668,7 @@ void win32_report(void){
     /* the most called unimplemented ones */
     fprintf(stderr,"  guest threads : %llu started, %llu terminated\n",
             (unsigned long long)win32_ext_threads(),(unsigned long long)win32_ext_threads_exited());
+    { void win32_obj_report(void); win32_obj_report(); }   /* win32_ext.c: kernel objects, threads, guest lock */
     fileio_report();
     module_report(); modheap_report();
     winsock_report();

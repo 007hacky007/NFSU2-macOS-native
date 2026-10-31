@@ -6345,7 +6345,7 @@ void metal_run_main_loop(void){
         g_layer.opaque = YES;
         /* NOVSYNC=1: turn off vsync.  For MEASUREMENT only -- with it off the image
          * tears, 1:1 fidelity breaks. */
-        if (ENVC("NOVSYNC")) g_layer.displaySyncEnabled = NO;
+        { int hfr_uncapped(void); if (ENVC("NOVSYNC") || hfr_uncapped()) g_layer.displaySyncEnabled = NO; }   /* NFSU2_FPS=uncapped */
 
         /* The green button goes fullscreen.  The drawing surface stays at the size the
          * game requested; it is scaled up KEEPING the aspect ratio, otherwise a 5:4
@@ -6567,7 +6567,7 @@ void metal_run_main_loop(void){
                  * frames (default 8).  The length was needed: without driving the car
                  * we can't see the headlights hit the surface. */
                 autotext_tick(atomic_load(&g_frames_drawn));
-                { enum { SQMAX = 64 };
+                { enum { SQMAX = 1024 };   /* long scripted sessions (engine fixes: heap soak) */
                   static int sqinit = 0; static long sqf[SQMAX], sqd[SQMAX];
                   static unsigned char sqk[SQMAX]; static int sqn = 0;
                   if (!sqinit){ sqinit = 1;

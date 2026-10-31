@@ -77,6 +77,8 @@ void dispatch_indirect(CPU *c, uint32_t addr){
     /* EFXSTAT: inventory of D3DX effect vtable calls (d3dx_hle.c) */
     { extern int g_efx_stat; extern void efx_stat_note(CPU *c, uint32_t addr);
       if (g_efx_stat && addr - 0x650000u < 0x40000u) efx_stat_note(c, addr); }
+    { extern uint32_t g_efx_lo, g_efx_span; void d3dx_efx_call(uint32_t);   /* d3dx_hle.c Stage 9: an effect method moves the epoch */
+      if (addr - g_efx_lo <= g_efx_span) d3dx_efx_call(addr); }
     uint32_t off = addr - TEXT_BASE;
     if (off < TEXT_SIZE){
         uint32_t k = g_idx[off];

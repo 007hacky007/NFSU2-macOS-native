@@ -138,6 +138,47 @@ void fileio_set_write_root(const char *dir){
     mkparents(g_wroot); mkdir(g_wroot, 0755);
     fprintf(stderr,"file: save directory = %s\n", g_wroot);
 }
+/* The save layer holds what the game wrote (its profile folder) and the
+ * runtime's own files, yet every read looked there first: a case-insensitive
+ * walk of the write root for each open (the stat of every component, and a
+ * listing of a folder for each one that does not match as it is spelled).
+ * A race streams its track by opening TRACKS\STREAM*.BUN again and again,
+ * from the game thread too.  So whether the write root has a folder of the
+ * game root (TRACKS, CARS, ...; the runtime makes none of those there) is
+ * remembered until the next write-side operation (resolve_w).  Ported from
+ * th0mk's nfsu2-web runtime/fileio.c (MIT), where each of those steps was a
+ * round trip to the browser's file storage. */
+static unsigned g_ov_gen = 1;
+#define OVC_N 64
+static struct { char name[64]; unsigned gen; signed char game_dir, in_ov; } g_ovc[OVC_N];
+static int g_ovc_n;
+static uint64_t g_ovc_skips;
+static int overlay_cannot_have(const char *win){
+    char rel[1024]; rel_of(win, rel, sizeof rel);
+    char *sl = strchr(rel, '/');
+    if (!sl) return 0;                                   /* a file at the top: always looked up */
+    *sl = 0;
+    if (!rel[0] || strlen(rel) >= sizeof g_ovc[0].name) return 0;
+    int i;
+    for (i = 0; i < g_ovc_n && strcasecmp(g_ovc[i].name, rel); i++) {}
+    if (i == g_ovc_n){
+        if (g_ovc_n == OVC_N) return 0;
+        snprintf(g_ovc[i].name, sizeof g_ovc[i].name, "%s", rel);
+        char p[1100]; struct stat st;
+        snprintf(p, sizeof p, "%s/%s", g_root, rel);
+        g_ovc[i].game_dir = stat(p, &st) == 0 && S_ISDIR(st.st_mode);   /* the game folder never changes */
+        g_ovc[i].gen = 0; g_ovc_n++;
+    }
+    if (!g_ovc[i].game_dir) return 0;
+    if (g_ovc[i].gen != g_ov_gen){
+        char w[1100];
+        g_ovc[i].in_ov = (signed char)resolve_in(g_wroot, rel, w, sizeof w);
+        g_ovc[i].gen = g_ov_gen;
+    }
+    if (g_ovc[i].in_ov) return 0;
+    g_ovc_skips++;
+    return 1;
+}
 /* --- language pack (runtime/language.c) ---------------------------------
  * LANGPACKS/<language> in the game folder holds the files a language plays
  * with in place of the game folder's: a file there is read instead of the
@@ -201,7 +242,7 @@ static int lpack_resolve(const char *win, char *out, size_t outsz){
 }
 /* Read: the write root if it exists there, then the language pack, then the mod files, otherwise the game root. */
 static int resolve(const char *win, char *out, size_t outsz){
-    if (g_wroot[0]){
+    if (g_wroot[0] && !overlay_cannot_have(win)){
         char w[1024];
         if (resolve_in(g_wroot, win, w, sizeof w) && strcmp(w, g_wroot) != 0){
             snprintf(out, outsz, "%s", w); return 1; }
@@ -222,6 +263,7 @@ static int resolve(const char *win, char *out, size_t outsz){
 }
 /* Write: ALWAYS the write root if there is one. */
 static int resolve_w(const char *win, char *out, size_t outsz){
+    g_ov_gen++;                              /* the save layer may change: forget what it lacked */
     return resolve_in(g_wroot[0] ? g_wroot : g_root, win, out, outsz);
 }
 static int copy_file(const char *a, const char *b){
@@ -627,7 +669,7 @@ void fileio_report(void){
     if (g_overlapped_reads)
         fprintf(stderr,"  file: %llu asynchronous (overlapped) reads\n",
                 (unsigned long long)g_overlapped_reads);
-    fprintf(stderr,"  file: %llu opened, %llu could not be opened, %llu reads, %.1f MB\n",
+    fprintf(stderr,"  file: %llu opened, %llu could not be opened, %llu reads, %.1f MB; %llu save layer lookups skipped\n",
             (unsigned long long)g_file_open,(unsigned long long)g_file_fail,
-            (unsigned long long)g_file_read,(double)g_bytes_read/1048576.0);
+            (unsigned long long)g_file_read,(double)g_bytes_read/1048576.0,(unsigned long long)g_ovc_skips);
 }

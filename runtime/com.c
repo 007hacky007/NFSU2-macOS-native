@@ -3038,6 +3038,7 @@ int com_call(CPU *c, uint32_t magic){
               if (sa >= 0 && (long)g_present_no == sa){ fprintf(stderr, "STALL: present %ld, %u ms\n", sa, sms); usleep(sms * 1000u); } }
             { extern void guest_cpu_mark(void); guest_cpu_mark(); }
             { extern void discord_on_present(void); discord_on_present(); }   /* Discord presence: samples, never blocks */
+            { void watchdog_on_present(void), gamefix_on_present(CPU *); watchdog_on_present(); gamefix_on_present(c); }   /* watchdog.c, gamefix.c */
             /* FETICK: the front-end tick [0x8651a8] should increase at 60 Hz, but the game's
              * frame-delta measurement always gives 1/1800 s, so the tick never
              * increases -> animations and timed screen transitions freeze.

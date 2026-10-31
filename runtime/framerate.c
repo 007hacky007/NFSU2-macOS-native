@@ -16,14 +16,18 @@
  * 30 fps (SetFrameRate 0x576cc0, called at 0x435fa3).
  *
  * Options (read once):
- *   NFSU2_FPS = auto | 30 | 60 | 120 | 240 | off
+ *   NFSU2_FPS = auto | 30 | 60 | 120 | 240 | uncapped | off
  *       auto (default): the screen's maximum refresh rate mapped to the
  *       nearest supported rate (>= 239 Hz -> 240, >= 119 Hz -> 120, up to
  *       31 Hz -> 30, otherwise 60).
  *       30: for a Mac that cannot hold 60: steady frames at half the rate,
  *       the game otherwise as at 60 (the fixes below).
+ *       uncapped: no pacer, the newest frame replaces one not shown yet,
+ *       the screen's vsync off.  For benchmarks: dt follows the machine,
+ *       so the physics substep varies.
  *       off: the game's own limiter at 1/120 s and the screen's vsync, no
  *       fix: the timing of this port before this file.
+ *       Aliases: native = auto, vanilla = game = off, max = uncapped.
  *       PACE60=1 (the old 60 Hz limiter) is NFSU2_FPS=60 when NFSU2_FPS is
  *       not set.
  *   NFSU2_CUTSCENES_60 = 1     race intros and other NIS scenes at 60 instead
@@ -36,6 +40,11 @@
  *       only act above 60).
  *       With auto the set follows the rate when the window moves to a screen
  *       with another refresh rate.
+ *   NFSU2_LAN_TIMING = pc | exact
+ *       pc (default): in a network race (World::IsOnline) the ticks and
+ *       timer fixes are off, so the clocks run as on an unmodified Windows
+ *       PC at the same frame rate, and 240 plays at 120, the fastest such
+ *       a PC runs; exact: the fix set as above.
  *   NFSU2_NOS_TRAIL_LEN = x    NOS / streak trail length factor (default 1)
  *   NFSU2_HFR_LOG = 1 | 2      one [hfr] line per second of racing (2: of
  *                              every frame, menus too)
@@ -81,6 +90,7 @@ enum { FX_TICKS = 1, FX_TIMER = 2, FX_PARTICLES = 4, FX_TRAIL = 8, FX_AUDIO = 16
 static const char *const g_fx_name[FX_N] = { "ticks", "timer", "particles", "trail", "audio", "rtf", "rain", "spinners" };
 
 #define M_OFF      (-1)
+#define M_UNCAPPED (-2)
 #define M_AUTO     (-3)
 
 /* ---- game addresses (European v1.2) ------------------------------------- */
@@ -111,6 +121,9 @@ static const char *const g_fx_name[FX_N] = { "ticks", "timer", "particles", "tra
 #define A_SND_ON      GA(0x007faaa8u)
 #define A_SND_PAUSE   GA(0x0082b8dcu)
 #define A_PART_SYS    GA(0x00835860u)   /* the effect system eDisplayFrame steps */
+#define A_ONLINE      GA(0x0089cf69u)   /* World+0x21 (byte): online session */
+#define A_NET_CLIENT  GA(0x008669f4u)   /* client race state, > 0 in a network race */
+#define A_NET_HOST    GA(0x00866a14u)   /* host race state, > 0 in a network race */
 
 #define TICK_HZ   3600              /* tick base with the ticks fix */
 #define TICK_MAX  180               /* 50 ms, the game's largest dt */
@@ -123,6 +136,7 @@ static double g_trail_len = 1.0;
 static int    g_log = 0;
 static int    g_resolved = 0;
 static int    g_cutscenes60;
+static int    g_lan_pc = 1;         /* NFSU2_LAN_TIMING: 1 = pc, 0 = exact */
 static double g_rt_carry = 0, g_wt_carry = 0;   /* timer fix: RealTimer / WorldTimer fractions */
 
 static uint64_t mono_ns(void){ return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
@@ -145,24 +159,26 @@ static void parse_mode(void){
         g_mode = p && *p && *p != '0' ? 60 : M_AUTO;
         return;
     }
-    if (!strcasecmp(e, "auto")) g_mode = M_AUTO;
-    else if (!strcasecmp(e, "off")) g_mode = M_OFF;
+    if (!strcasecmp(e, "auto") || !strcasecmp(e, "native")) g_mode = M_AUTO;
+    else if (!strcasecmp(e, "off") || !strcasecmp(e, "vanilla") || !strcasecmp(e, "game")) g_mode = M_OFF;
+    else if (!strcasecmp(e, "uncapped") || !strcasecmp(e, "max")) g_mode = M_UNCAPPED;
     else {
         int v = atoi(e);
         if (v == 30 || v == 60 || v == 120 || v == 240) g_mode = v;
-        else { fprintf(stderr, "[hfr] NFSU2_FPS=%s not supported (auto|30|60|120|240|off): auto\n", e);
+        else { fprintf(stderr, "[hfr] NFSU2_FPS=%s not supported (auto|30|60|120|240|uncapped|off): auto\n", e);
                g_mode = M_AUTO; }
     }
 }
 /* the mode's own rate (before the game's 30 fps requests); 120 = the game's
- * own limit when off */
+ * own limit when off, 0 = uncapped */
 static int mode_rate(void){
+    if (g_mode == M_UNCAPPED) return 0;
     if (g_mode == M_AUTO) return rate_for_hz(display_hz());
     if (g_mode == M_OFF) return 120;
     return g_mode;
 }
 static const char *mode_name(void){
-    return g_mode == M_OFF ? "off" : g_mode == M_AUTO ? "auto" : "fixed";
+    return g_mode == M_OFF ? "off" : g_mode == M_UNCAPPED ? "uncapped" : g_mode == M_AUTO ? "auto" : "fixed";
 }
 /* the fix set for a mode rate above 60 when def = FX_ALL, for 60 when
  * def = 0, for 30 when def = FX_30 */
@@ -192,7 +208,7 @@ static void fix_str(int f, char *out, size_t n){
         size_t l = strlen(out); snprintf(out + l, n - l, "%s%s", l ? "," : "", g_fx_name[i]); }
     if (!out[0]) snprintf(out, n, "none");
 }
-static int fix_for_rate(int r){ return r > 60 ? g_fix_hi : r <= 30 ? g_fix_30 : g_fix_lo; }
+static int fix_for_rate(int r){ return r > 60 || r == 0 ? g_fix_hi : r <= 30 ? g_fix_30 : g_fix_lo; }
 
 /* Tick base 1/3600 s: 30, 60, 120 and 240 fps are 120, 60, 30 and 15 whole
  * ticks, so every supported rate gets dt = exactly 1/rate and the car
@@ -219,6 +235,10 @@ static void resolve_once(void){
     { const char *e = getenv("NFSU2_NOS_TRAIL_LEN"); if (e && *e) g_trail_len = atof(e);
       if (!(g_trail_len > 0.05 && g_trail_len < 20.0)) g_trail_len = 1.0; }
     { const char *e = getenv("NFSU2_HFR_LOG"); g_log = e && *e ? atoi(e) : 0; }
+    { const char *e = getenv("NFSU2_LAN_TIMING");
+      if (e && *e){
+          if (!strcasecmp(e, "exact")) g_lan_pc = 0;
+          else if (strcasecmp(e, "pc")) fprintf(stderr, "[hfr] NFSU2_LAN_TIMING=%s is not pc|exact: pc\n", e); } }
     char fs[96]; fix_str(g_fix, fs, sizeof fs);
     fprintf(stderr, "[hfr] mode %s, display %d Hz, rate %d, fixes: %s, 60 FPS cutscenes: %s\n",
             mode_name(), display_hz(), mode_rate(), fs, g_cutscenes60 ? "on" : "off");
@@ -231,14 +251,22 @@ static void resolve(void){
 }
 
 int hfr_mode_off(void){ resolve(); return g_mode == M_OFF; }
+int hfr_uncapped(void){ resolve(); return g_mode == M_UNCAPPED; }
 
 /* ---- the current rate ---------------------------------------------------
  * The game's own request in [0x865558]: 1/120 by default (= the mode's
  * rate), 1/30 in NIS scenes.  Requests only lower the rate: the default
  * 1/120 must not cap 240. */
+/* A network race on the game's own clocks (NFSU2_LAN_TIMING=pc) runs at
+ * most 120: no unmodified PC gets past its limiter's 1/120, and 1/240 is 7.5
+ * ticks of 1/1800 s, which the game's quantiser makes 8 a frame (measured at
+ * 240: simulation 1.06 x the wall clock, a 240 host ran a LAN race about 7 %
+ * fast for every player). */
+static int net_race(void);
 static _Atomic int g_rate_now = 0;
 static int content_rate(void){
     int m = mode_rate();
+    if (m > 120 && g_lan_pc && net_race()) m = 120;
     float cap = MRF32(A_CAP);
     if (cap > 0.f && cap != MRF32(A_CAP_DEF)){
         int req = (int)lround(1.0 / (double)cap);
@@ -261,6 +289,7 @@ int hfr_rate_now(void){ return atomic_load(&g_rate_now); }
  * screen, 120 on a 60 Hz one): the game keeps its rate, the screen shows
  * what it can. */
 int hfr_mailbox(void){
+    if (g_mode == M_UNCAPPED) return 1;
     int r = atomic_load(&g_rate_now), hz = display_hz();
     return r > 0 && hz > 0 && r > hz + 1;
 }
@@ -282,6 +311,7 @@ double hfr_present_min_duration(void){
  * caps at 250 fps; at 240 frames often come in under 4 ms and game time
  * would run fast. */
 uint64_t hfr_vclock_floor_us(void){
+    if (g_mode == M_UNCAPPED) return 500u;
     if (g_mode != M_OFF && atomic_load(&g_rate_now) > 200) return 1000u;
     return 4000u;
 }
@@ -315,6 +345,11 @@ uint64_t hfr_paced_sleep_us(void){ return g_sleep_all_ns / 1000u; }
  * drawable) still holds back a frame the screen cannot take yet; then the
  * pacer finds it late and gives it two slots. */
 static int64_t g_last_slot = 0;     /* start of the previous frame's slot, ns */
+/* how late the pacer's sleeps wake (win32_ext.c sleep_precise_ns: a kevent
+ * timer with NOTE_CRITICAL); the exit report.  nfsu2-web halves its sleeps
+ * and spins the rest (NFSU2_PACE_HALVE / NFSU2_PACE_SPIN) because a browser's
+ * timer can be 1 to 15 ms coarse; the Mac's is not, so this only measures. */
+static uint64_t g_ps_n, g_ps_late_ns, g_ps_max_ns, g_ps_late_h[4];   /* < 0.1, 0.5, 1 ms, more */
 static int pace(int rate, uint64_t *slept, uint64_t *missed){
     int64_t now = (int64_t)mono_ns();
     *slept = 0; *missed = 0;
@@ -327,6 +362,9 @@ static int pace(int rate, uint64_t *slept, uint64_t *missed){
     if (now < target){
         guest_sleep_ns((long)(target - now));
         *slept = (uint64_t)(target - now);
+        { int64_t late = (int64_t)mono_ns() - target; if (late < 0) late = 0;
+          g_ps_n++; g_ps_late_ns += (uint64_t)late; if ((uint64_t)late > g_ps_max_ns) g_ps_max_ns = (uint64_t)late;
+          g_ps_late_h[late < 100000 ? 0 : late < 500000 ? 1 : late < 1000000 ? 2 : 3]++; }
         g_last_slot = target;
         return 1;
     }
@@ -418,19 +456,61 @@ static void frame_open(uint64_t now, int slots){
     g_f.rtf0 = MR32(A_RTF); g_f.wtf0 = MR32(A_WTF);
 }
 
+static double g_tick_acc = 0;          /* the ticks fix: fraction of a tick carried */
+/* A network race: the World constructor's test for the 30 fps cap
+ * (0x5FF662) and World::IsOnline (0x5F0100). */
+static int net_race(void){
+    return MR8(A_ONLINE) || (int32_t)MR32(A_NET_CLIENT) > 0 || (int32_t)MR32(A_NET_HOST) > 0;
+}
+/* The World constructor (thiscall, returns this) asks a network race for 30
+ * fps (0x5FF68C: SetFrameRate [0x7A5734]), and only the race intro's NIS end
+ * (0x437A00) sets the default 1/120 again.  A race without an intro ran at
+ * 30 to the finish, and six cars get none: measured online at auto 120, two
+ * cars ran 30 for the intro and then 120, six cars 30 throughout.  The
+ * request is undone in every mode, off included: the intro still runs at 30
+ * (its own request, 0x435FA3), the race at the mode's rate. */
+void sub_005ff4a0_orig(CPU *c);
+void sub_005ff4a0(CPU *c){
+    float cap = MRF32(A_CAP);
+    sub_005ff4a0_orig(c);
+    if (MRF32(A_CAP) != cap){
+        static int shown = 0;
+        if (shown++ < 4) fprintf(stderr, "[hfr] the World constructor asked for %.0f fps (a network race): undone\n",
+                                 MRF32(A_CAP) > 0.f ? 1.0 / MRF32(A_CAP) : 0.0);
+        MRF32(A_CAP) = cap;
+    }
+}
 /* The fix set follows the mode's rate at a frame boundary: auto changes the
  * rate when the window moves to a screen with another refresh rate, and a
  * game that started on a 60 Hz screen needs the fixes once it runs at 120
  * (and is the original again back at 60). */
+/* Network races (NFSU2_LAN_TIMING=pc, the default) run without ticks and
+ * timer.  Every client slaves its WorldTimer to the race host's (0x5891C0,
+ * 0x601A70), so how much car physics a machine simulates per race second is
+ * its own world dt per WorldTimer unit.  An unmodified PC advances WorldTimer
+ * by round(dt x 4000) with no carry: 1.0046 per unit of world dt at 60 fps,
+ * 0.9950 at the limiter-bound 1/120; the timer fix makes it 1.0000, which
+ * matches no PC.  Without the two fixes the Mac runs the game's own quantiser
+ * and timers at its frame rate, as a PC at that rate does (equal frame rates:
+ * equal race; unequal ones: the game's own difference, as between two PCs).
+ * The other fixes only change effects, sound and trails. */
 static void fixes_follow_rate(void){
-    static int first = 1;
+    static int first = 1, net_prev = 0;
     int r = mode_rate(), fx = fix_for_rate(r);
-    if (!first && fx != g_fix){
+    int net = g_lan_pc && net_race();
+    if (net) fx &= ~(FX_TICKS | FX_TIMER);
+    if (!first && net != net_prev){
+        char a[96], b[96]; fix_str(g_fix, a, sizeof a); fix_str(fx, b, sizeof b);
+        fprintf(stderr, "[hfr] network race %s: rate %d, fixes %s -> %s%s\n", net ? "begins" : "over",
+                net && r > 120 ? 120 : r, a, b,
+                net ? " (the game's own clocks, as on an unmodified PC at this rate)" : "");
+    } else if (!first && fx != g_fix){
         char a[96], b[96]; fix_str(g_fix, a, sizeof a); fix_str(fx, b, sizeof b);
         fprintf(stderr, "[hfr] display %d Hz: rate %d, fixes %s -> %s\n", display_hz(), r, a, b);
     }
+    net_prev = net;
     if (!first && fx == g_fix) return;
-    if (first || ((fx ^ g_fix) & FX_TICKS)) set_tick_base(fx & FX_TICKS);
+    if (first || ((fx ^ g_fix) & FX_TICKS)){ set_tick_base(fx & FX_TICKS); g_tick_acc = 0; }
     if ((fx ^ g_fix) & FX_TIMER){ g_rt_carry = 0; g_wt_carry = 0; }
     g_fix = fx; first = 0;
 }
@@ -453,7 +533,6 @@ static void fixes_follow_rate(void){
 void sub_0057eae0_orig(CPU *c);
 uint64_t spin_slept_us(void);           /* win32.c: SPINSLEEP sleep inside the game's limiter */
 static void fe_spinners(void);
-static double g_tick_acc = 0;
 void sub_0057eae0(CPU *c){
     resolve();
     if (g_mode == M_OFF){
@@ -472,16 +551,19 @@ void sub_0057eae0(CPU *c){
     uint64_t t_in = mono_ns();
     if (g_f.t) g_f.work = t_in - g_f.t;
 
-    int rate = content_rate();
+    int rate = g_mode == M_UNCAPPED ? 0 : content_rate();
     int prev = atomic_exchange(&g_rate_now, rate);
-    if (prev && prev != rate){
+    if (prev && rate && prev != rate){
         long metal_frames(void);
         fprintf(stderr, "[hfr] rate %d -> %d at frame %ld (%s)\n", prev, rate, metal_frames(),
                 rate < mode_rate() ? "the game asks for it: a cutscene" : "the chosen rate");
     }
     uint64_t slept = 0, missed = 0;
-    int slots = pace(rate, &slept, &missed);
-    double frame_s = (double)slots / rate;
+    int slots = 1; double frame_s;
+    if (rate > 0){
+        slots = pace(rate, &slept, &missed);
+        frame_s = (double)slots / rate;
+    } else frame_s = g_f.t ? (t_in - g_f.t) / 1e9 : 1.0 / 120;   /* uncapped: the frame's own time */
     g_sleep_all_ns += slept;
     uint64_t now = mono_ns();
     frame_close(now, slept, missed);
@@ -501,7 +583,7 @@ void sub_0057eae0(CPU *c){
         sub_0057eae0_orig(c);
         MRF32(A_CARRY) = 0.f;
     } else {
-        double p = 1.0 / rate;
+        double p = rate > 0 ? 1.0 / rate : 0.0;
         MRF32(c->esp + 4u) = (float)frame_s;
         MRF32(A_CAP) = (float)(p < frame_s ? p : frame_s);
         sub_0057eae0_orig(c);
@@ -810,6 +892,10 @@ void hfr_report(void){
     fprintf(stderr, "  mode %s, display %d Hz, rate %d, fixes %s, 60 FPS cutscenes %s\n",
             mode_name(), display_hz(), mode_rate(), fs, g_cutscenes60 ? "on" : "off");
     if (g_tot.frames) stat_line(g_log == 2 ? "all" : "race", &g_tot);
+    if (g_ps_n) fprintf(stderr, "  pacer sleeps: %llu, woke late by %.1f us on average (worst %.2f ms); < 0.1 ms %llu, < 0.5 ms %llu, < 1 ms %llu, more %llu\n",
+                        (unsigned long long)g_ps_n, g_ps_late_ns / 1e3 / (double)g_ps_n, g_ps_max_ns / 1e6,
+                        (unsigned long long)g_ps_late_h[0], (unsigned long long)g_ps_late_h[1],
+                        (unsigned long long)g_ps_late_h[2], (unsigned long long)g_ps_late_h[3]);
 }
 
 /* highfps.c (upstream, PR #10) fixes the tick, the particle step and the NOS trail

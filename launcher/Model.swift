@@ -73,7 +73,9 @@ final class LauncherModel: ObservableObject {
     @Published var music: String { didSet { defaults.set(music, forKey: Prefs.music) } }             // Music.swift
     @Published var musicFolder: String { didSet { defaults.set(musicFolder, forKey: Prefs.musicFolder) } }
     /// NFSU2_FPS values; the labels are in FrameRateCard.
-    static let frameRates = ["auto", "30", "60", "120", "240"]
+    static let frameRates = ["auto", "30", "60", "120", "240", "uncapped"]
+    @Published var seedRegistry: Bool { didSet { defaults.set(seedRegistry, forKey: Prefs.seedRegistry) } }   // EngineOptions.swift
+    @Published var lanTiming: String { didSet { defaults.set(lanTiming, forKey: Prefs.lanTiming) } }
     @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
     @Published var server: String { didSet { defaults.set(server, forKey: Prefs.server) } }
     @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
@@ -153,6 +155,8 @@ final class LauncherModel: ObservableObject {
         let fr = defaults.string(forKey: Prefs.frameRate) ?? "auto"
         frameRate = LauncherModel.frameRates.contains(fr) ? fr : "auto"
         cutscenes60 = defaults.bool(forKey: Prefs.cutscenes60)
+        seedRegistry = defaults.bool(forKey: Prefs.seedRegistry)
+        lanTiming = defaults.string(forKey: Prefs.lanTiming) == "exact" ? "exact" : "pc"
         cutsceneBars = defaults.bool(forKey: Prefs.cutsceneBars)
         music = defaults.string(forKey: Prefs.music) == "folder" ? "folder" : "game"
         musicFolder = defaults.string(forKey: Prefs.musicFolder) ?? ""
@@ -280,6 +284,8 @@ final class LauncherModel: ObservableObject {
         if cutscenes60 { setenv("NFSU2_CUTSCENES_60", "1", 0) }
         if !cutsceneBars { setenv("NFSU2_CUTSCENE_BORDERS", "off", 0) }
         applyMusic()                // a music folder through EA Trax (Music.swift)
+        if seedRegistry { setenv("NFSU2_SEED_REGISTRY", "1", 0) }        // runtime/regseed.c
+        if lanTiming != "pc" { setenv("NFSU2_LAN_TIMING", lanTiming, 0) }   // framerate.c
         // Online: the game's LAN and Online modes through the server (runtime/
         // net_relay.c, net_native.m).  Off: LAN on this Mac's network.  Values
         // set by hand in the environment win.
