@@ -284,12 +284,15 @@ addresses written without `GA(...)` would be wrong in the North American engine.
 
 The app opens a small launcher window first (`launcher/`, built by `pack.sh`
 with `swiftc`): it finds and checks `SPEED2.EXE`, offers Original or HD graphics
-and full screen, opens the saves and logs folders, and **Make Copy…** builds a
+and full screen, opens the logs folder, manages saves (**Saves…**: the career
+profiles, backups, ZIP export and import; the current saves are backed up before
+an import replaces them; tests/save_manager.sh), and **Make Copy…** builds a
 portable app with the game files inside (APFS clones, seconds on the same disk),
 so nobody needs `pack.sh --embed` or a terminal for that. Untick "Show this
 window when the app opens" to go straight into the game (hold Option to get the
 window back). `NFSU2_SKIP_LAUNCHER=1` / `NFSU2_ENGINE=original|hd` do the same
-from scripts.
+from scripts. The Controller card turns the game controller on or off and sets its stick
+dead zone (`NFSU2_PAD` / `NFSU2_PAD_DEADZONE`, which still win when set by hand).
 
 ![Launcher window](screenshots/selected/launcher.png)
 
@@ -331,7 +334,7 @@ the app › Open). If macOS says the app is damaged, run once in Terminal:
 
 **Can I carry the game to another Mac in one piece?**
 Yes. In the app's window, **Make Copy…** creates "NFSU2 Portable.app" with the
-game files inside (about 1.4 GB). It runs on its own; saves stay in
+game files inside: about 1.4 GB, plus the movies (1.1 GB) and the language packs in `LANGPACKS` if the game folder has them. Untick those when saving it for a smaller copy. It runs on its own; saves stay in
 `~/Library/Application Support/NFSU2 Saves` on each Mac. It contains the game,
 so keep it for yourself.
 

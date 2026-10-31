@@ -386,6 +386,9 @@ typedef struct { unsigned first, count, tex, target, clear_argb, is_clear;
                  unsigned cuvok; float cuv[4];
                  /* UV SCALE: the corrected oT sets (also in K.pad1) and the difference (VS buffer 3) */
                  unsigned uvbm; float uvb[2];
+                 /* HUD ANCHORING: the 4:3 clip rectangle of a HUD draw (com.c) and the
+                  * x shift planned for it (VS buffer 3 .z) */
+                 unsigned hudok; float hud[4]; float xsh;
                  /* ORDERED TEXTURE UPLOADS: into tex's up_level / up_face, from the frame's
                   * upload area (rawoff), up_w x up_h, rows up_pitch bytes */
                  unsigned is_up, up_level, up_face, up_w, up_h, up_pitch; } MDraw;
@@ -4532,6 +4535,73 @@ static long scr_redirect_plan(int rb, id<MTLTexture> scr, unsigned *outT){
 #endif
 }
 
+/* ---- HUD ANCHORING (HUDPOS=1) ---------------------------------------------
+ * The game lays its HUD out for 640x480; on a wider screen HUDFIX squeezes it
+ * into the centered 4:3 area (round gauges stay round).  With HUDPOS the
+ * elements on the left go to the left edge and the ones on the right to the
+ * right edge, still unstretched.  com.c hands over each HUD draw's 4:3 clip
+ * rectangle (only while the world is loaded); before a frame is encoded the
+ * draws are joined into elements (below) and each element is moved as one
+ * piece, so a text, a gauge, a panel or the mirror never splits. */
+static int g_nhud_ok = 0; static float g_nhud[4];
+void metal_set_next_hud(float x0, float x1, float y0, float y1){
+    g_nhud[0] = x0; g_nhud[1] = x1; g_nhud[2] = y0; g_nhud[3] = y1; g_nhud_ok = 1;
+}
+static _Atomic unsigned long long g_hud_moved = 0, g_hud_kept = 0;
+/* Elements are the connected pieces of the frame's HUD: draws whose rectangles
+ * overlap or touch (a song box with its frame pieces and text, a gauge with its
+ * needle and digits, the mirror with its frame, a 9-piece panel with its
+ * contents) form one element, found with a union-find over the frame's HUD
+ * draws.  An element crossing the middle stays; one on the left goes to the
+ * left edge, one on the right to the right edge.  If elements chain across
+ * the middle the result is the old centered layout, never a split element. */
+#define HUD_MAXN 1536
+static int hud_find(int *par, int x){ while (par[x] != x){ par[x] = par[par[x]]; x = par[x]; } return x; }
+static void hud_anchor_plan(int rb){
+    unsigned n = g_dn[rb]; MDraw *D = g_dbuf[rb];
+    float asp = atomic_load(&g_ui_asp) / 10000.0f;
+    for (unsigned i = 0; i < n; i++) D[i].xsh = 0.f;
+    if (!(asp < 0.999f)) return;
+    float sh = 1.f - asp;                       /* the 4:3 edge -> the screen edge */
+    static unsigned idx[HUD_MAXN]; static int par[HUD_MAXN]; static float bb[HUD_MAXN][4];
+    int m = 0;
+    for (unsigned i = 0; i < n; i++){
+        const MDraw *d = &D[i];
+        if (!d->hudok || d->target || d->is_clear || d->is_blit || d->is_up || d->vsid <= 0) continue;
+        if (m == HUD_MAXN) return;              /* unusual frame: leave it centered */
+        idx[m] = i; par[m] = m; m++;
+    }
+    if (!m) return;
+    const float tol = 0.02f;                    /* touching = within 1/100 of the 4:3 width */
+    for (int a = 0; a < m; a++){
+        const float *ra = D[idx[a]].hud;
+        for (int b = a + 1; b < m; b++){
+            const float *rb2 = D[idx[b]].hud;
+            if (ra[0] <= rb2[1] + tol && rb2[0] <= ra[1] + tol &&
+                ra[2] <= rb2[3] + tol && rb2[2] <= ra[3] + tol){
+                int x = hud_find(par, a), y = hud_find(par, b);
+                if (x != y) par[y] = x; }
+        }
+    }
+    for (int a = 0; a < m; a++){ bb[a][0] = bb[a][2] = 1e30f; bb[a][1] = bb[a][3] = -1e30f; }
+    for (int a = 0; a < m; a++){
+        int r = hud_find(par, a); const float *q = D[idx[a]].hud;
+        if (q[0] < bb[r][0]) bb[r][0] = q[0]; if (q[1] > bb[r][1]) bb[r][1] = q[1];
+        if (q[2] < bb[r][2]) bb[r][2] = q[2]; if (q[3] > bb[r][3]) bb[r][3] = q[3];
+    }
+    unsigned long long moved = 0, kept = 0;
+    for (int a = 0; a < m; a++){
+        int r = hud_find(par, a);
+        float x0 = bb[r][0], x1 = bb[r][1], c = (x0 + x1) * 0.5f, sx = 0.f;
+        if (!(x0 < -0.15f && x1 > 0.15f)){      /* not crossing the middle */
+            if (c < -0.25f) sx = -sh; else if (c > 0.25f) sx = sh;
+        }
+        D[idx[a]].xsh = sx;
+        if (sx != 0.f) moved++; else kept++;
+    }
+    atomic_fetch_add(&g_hud_moved, moved); atomic_fetch_add(&g_hud_kept, kept);
+}
+
 static MDraw *raw_rec(int b, unsigned stride, unsigned tex, int vsid,
                       const float *kdata, unsigned nk, unsigned uvbm, const float *uvb){
     unsigned ksz = 16u + nk * 16u;
@@ -4578,6 +4648,7 @@ static MDraw *raw_rec(int b, unsigned stride, unsigned tex, int vsid,
     memcpy(D->proj, g_cur_proj, sizeof D->proj);
     D->vsid = vsid; D->koff = koff; D->ksz = ksz;
     if (uvbm && uvb){ D->uvbm = uvbm; D->uvb[0] = uvb[0]; D->uvb[1] = uvb[1]; }
+    if (g_nhud_ok){ D->hudok = 1; memcpy(D->hud, g_nhud, sizeof D->hud); g_nhud_ok = 0; }
     return D;
 }
 int metal_draw_raw(const void *src, unsigned nverts, unsigned stride,
@@ -4838,7 +4909,20 @@ void metal_present(void){
     pthread_mutex_lock(&g_qlock);
     /* If the previous frame hasn't been put on screen yet, WAIT.  If we don't, the
      * guest writes over the next frame and the screen is blank at intervals
-     * (the "goes black and comes back" bug the user saw).               */
+     * (the "goes black and comes back" bug the user saw).
+     * The wait lasts until the main thread gets a drawable, i.e. up to vsync: 13 ms
+     * of a 16.7 ms frame in the menus.  It used to hold the big guest lock, so the
+     * game's other threads hardly ran; the music stream thread wrote 20-50% of what
+     * played and the menu music came in fragments (fine when minimised: no frames).
+     * The lock is given up for the wait and taken back after g_qlock is released,
+     * so the two are never waited for in opposite orders. */
+    int yielded = 0;
+    if (g_ready >= 0){
+        pthread_mutex_unlock(&g_qlock);
+        int guest_blocking_begin(void);
+        yielded = guest_blocking_begin();
+        pthread_mutex_lock(&g_qlock);
+    }
     int dropped = 0;
     if (g_ready >= 0){
         struct timespec ts, _w0; clock_gettime(CLOCK_MONOTONIC,&_w0);
@@ -4892,6 +4976,7 @@ void metal_present(void){
     atomic_store(&g_frame_pending, 1);
     pthread_cond_signal(&g_rcond);      /* let the main thread take it right away */
     pthread_mutex_unlock(&g_qlock);
+    if (yielded){ void guest_blocking_end(void); guest_blocking_end(); }
 }
 
 long metal_frames_dropped(void){ return atomic_load(&g_frames_dropped); }
@@ -5383,7 +5468,7 @@ static void fb_encode_ctrl(id<MTLCommandBuffer> cb, int rb, unsigned s, unsigned
           for (int q = 1; q < 4; q++){
               unsigned tt = ts[q];
               [enc setFragmentTexture:(tt && tt < MAXTEX && g_tex[tt]) ? g_tex[tt] : g_white atIndex:(NSUInteger)q]; } }
-        { float u4[4] = { dr->uvbm ? dr->uvb[0] : 0.f, dr->uvbm ? dr->uvb[1] : 0.f, 0, 0 };
+        { float u4[4] = { dr->uvbm ? dr->uvb[0] : 0.f, dr->uvbm ? dr->uvb[1] : 0.f, dr->xsh, 0 };
           [enc setVertexBytes:u4 length:sizeof u4 atIndex:3]; }
         [enc setVertexBuffer:g_mtlrvb offset:dr->rawoff atIndex:1];
         [enc setVertexBuffer:g_mtlkb  offset:dr->koff   atIndex:2];
@@ -5429,7 +5514,7 @@ static void fb_encode(id<MTLCommandBuffer> cb, int rb, unsigned s, unsigned e,
           for (int q = 0; q < 4; q++){
               unsigned tt = ts[q];
               [enc setFragmentTexture:(tt && tt < MAXTEX && g_tex[tt]) ? g_tex[tt] : g_white atIndex:(NSUInteger)q]; } }
-        { float u4[4] = { dr->uvbm ? dr->uvb[0] : 0.f, dr->uvbm ? dr->uvb[1] : 0.f, 0, 0 };
+        { float u4[4] = { dr->uvbm ? dr->uvb[0] : 0.f, dr->uvbm ? dr->uvb[1] : 0.f, dr->xsh, 0 };
           [enc setVertexBytes:u4 length:sizeof u4 atIndex:3]; }
         [enc setVertexBuffer:g_mtlrvb offset:dr->rawoff atIndex:1];
         [enc setVertexBuffer:g_mtlkb  offset:dr->koff   atIndex:2];
@@ -5512,6 +5597,15 @@ static void dump_one_texture(unsigned id_, long frame){
                 for (NSUInteger q = 0; q < w*h; q++){ unsigned a = px[q*4+3]; sa += a; if (a < amin) amin = a; if (a > amax) amax = a; }
                 fprintf(stderr, "metal: texture %u (%lux%lu) RAW dump, alpha mean %.1f min %u max %u\n", id_,
                         (unsigned long)w, (unsigned long)h, sa/(double)(w*h), amin, amax);
+                /* DUMPALPHA=1: also write the alpha channel as a grey picture (frame 95000+id) */
+                if (ENVC("DUMPALPHA")){
+                    for (NSUInteger q = 0; q < w*h; q++){ uint8_t a = px[q*4+3]; px[q*4] = px[q*4+1] = px[q*4+2] = a; px[q*4+3] = 255; }
+                    MTLTextureDescriptor *ad = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                     width:w height:h mipmapped:NO];
+                    ad.storageMode = MTLStorageModeShared;
+                    id<MTLTexture> at = [g_dev newTextureWithDescriptor:ad];
+                    if (at){ [at replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:px bytesPerRow:w*4];
+                             dump_texture(at, 95000 + (long)id_); } }
                 free(px); }
             dump_texture(shd, tg);
             return;
@@ -5925,7 +6019,7 @@ static void hd_gpass(id<MTLCommandBuffer> cb, int rb, unsigned upto, unsigned zi
                            indexType:(dr->ix_isz == 4u) ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
                          indexBuffer:pl indexBufferOffset:dr->ix_ib instanceCount:1 baseVertex:dr->ix_base baseInstance:0];
         } else if (dr->vsid > 0){
-            float u4[4] = { dr->uvbm ? dr->uvb[0] : 0.f, dr->uvbm ? dr->uvb[1] : 0.f, 0, 0 };
+            float u4[4] = { dr->uvbm ? dr->uvb[0] : 0.f, dr->uvbm ? dr->uvb[1] : 0.f, dr->xsh, 0 };
             [e setVertexBytes:u4 length:sizeof u4 atIndex:3];
             [e setVertexBuffer:g_mtlrvb offset:dr->rawoff atIndex:1];
             [e setVertexBuffer:g_mtlkb offset:dr->koff atIndex:2];
@@ -6384,7 +6478,7 @@ void metal_run_main_loop(void){
                         unsigned c_tex[4] = {~0u,~0u,~0u,~0u};
                         unsigned c_bcol = ~0u;
                         unsigned c_cull = ~0u;
-                        float c_uvb[2] = {0.f, 0.f};    /* UV difference bound in VS buffer 3 */
+                        float c_uvb[3] = {0.f, 0.f, 0.f};    /* UV difference (.xy) + HUD shift (.z) bound in VS buffer 3 */
                         unsigned c_depth = ~0u;
                         int c_zon = 0;                  /* the pass has a real Z surface */
                         int c_ms = 0;                   /* (HD) the pass is multisampled */
@@ -6396,6 +6490,7 @@ void metal_run_main_loop(void){
                         if (rb >= 0) pass_reorder(rb);  /* defer the intermediate pass splitting the scene (see PASS MERGING) */
                         /* see SCREEN REDIRECTION: screen records up to scr_b are drawn into scr_T */
                         unsigned scr_T = 0; int scr_after = 0;
+                        if (rb >= 0) hud_anchor_plan(rb);
                         long scr_b = rb >= 0 ? scr_redirect_plan(rb, dtex, &scr_T) : -1;
                         /* see POST-PROCESS CHAIN: fbrole[i] 1 = chain start, 2 = continuation */
                         static uint8_t fbrole[MAXD];
@@ -7297,7 +7392,7 @@ void metal_run_main_loop(void){
                                     [enc setFragmentSamplerState:g_samp atIndex:0];
                                     { float z4[4] = {0, 0, 0, 0};          /* UV SCALE: VS buffer 3 */
                                       [enc setVertexBytes:z4 length:sizeof z4 atIndex:3];
-                                      c_uvb[0] = c_uvb[1] = 0.f; }
+                                      c_uvb[0] = c_uvb[1] = c_uvb[2] = 0.f; }
                                     /* new encoder = all state reset */
                                     c_pso = nil; c_bcol = ~0u; c_depth = ~0u; c_fp_valid = 0;
                                     c_cull = ~0u;
@@ -7439,6 +7534,10 @@ void metal_run_main_loop(void){
                                       [enc setFragmentTexture:txn atIndex:(NSUInteger)q4];
                                   } }
                                 atomic_fetch_add(&g_draw_n, 1ull);
+                                if (dr->vsid > 0 && dr->xsh != c_uvb[2]){   /* HUD ANCHORING */
+                                    float u4[4] = { dr->uvbm ? dr->uvb[0] : c_uvb[0], dr->uvbm ? dr->uvb[1] : c_uvb[1], dr->xsh, 0 };
+                                    [enc setVertexBytes:u4 length:sizeof u4 atIndex:3];
+                                    c_uvb[0] = u4[0]; c_uvb[1] = u4[1]; c_uvb[2] = dr->xsh; }
                                 if (dr->vsid > 0 && dr->ix_isz){
                                     id<MTLBuffer> pl = g_pool_fr[rb];
                                     [enc setVertexBuffer:pl offset:dr->rawoff atIndex:1];
@@ -7449,7 +7548,7 @@ void metal_run_main_loop(void){
                                                  instanceCount:1 baseVertex:dr->ix_base baseInstance:0];
                                 } else if (dr->vsid > 0){
                                     if (dr->uvbm && (dr->uvb[0] != c_uvb[0] || dr->uvb[1] != c_uvb[1])){
-                                        float u4[4] = { dr->uvb[0], dr->uvb[1], 0, 0 };
+                                        float u4[4] = { dr->uvb[0], dr->uvb[1], c_uvb[2], 0 };
                                         [enc setVertexBytes:u4 length:sizeof u4 atIndex:3];
                                         c_uvb[0] = dr->uvb[0]; c_uvb[1] = dr->uvb[1]; }
                                     [enc setVertexBuffer:g_mtlrvb offset:dr->rawoff atIndex:1];
@@ -7658,6 +7757,9 @@ void metal_run_main_loop(void){
           fprintf(stderr, "\n"); }
         fprintf(stderr, "metal: render targets released after Reset: %lu (used afterwards: texture %lu, target %lu)\n",
                 g_rt_freed, g_freed_use_smp, g_freed_use_tgt);
+        if (atomic_load(&g_hud_moved) || atomic_load(&g_hud_kept))
+            fprintf(stderr, "metal: HUD anchoring: %llu draws moved to the edges, %llu kept\n",
+                    atomic_load(&g_hud_moved), atomic_load(&g_hud_kept));
         fprintf(stderr, "metal: Z surface: %llu passes without Z, %llu passes size mismatch (scratch)\n",
                 (unsigned long long)g_z_null, (unsigned long long)g_z_mismatch);
         { unsigned long long tb = 0; unsigned live = 0;

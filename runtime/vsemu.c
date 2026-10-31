@@ -1470,6 +1470,8 @@ int vs_to_msl(const VSProg *p, int id, const int decl[16][2], char *out, size_t 
      * coordinate stays a pure interpolant in the pixel shader. */
     /* UV SCALE (metal.m): K.pad1 = the oT sets to correct, UVB.xy = the difference */
     VEMIT("  for (int q = 0; q < 4; q++) if ((K.pad1 >> q) & 1u) oT[q].xy += UVB.xy;\n");
+    /* HUD ANCHORING (metal.m): UVB.z = the x shift of this HUD draw, in clip units */
+    VEMIT("  O.pos.x += UVB.z * O.pos.w;\n");
     VEMIT("  O.uv0 = oT[(K.tsel      ) & 3u]; O.uv1 = oT[(K.tsel >>  8) & 3u];\n");
     VEMIT("  O.uv2 = oT[(K.tsel >> 16) & 3u]; O.uv3 = oT[(K.tsel >> 24) & 3u];\n");
     VEMIT("  O.fog = oFog.x;\n");
