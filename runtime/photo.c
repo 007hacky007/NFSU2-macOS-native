@@ -57,7 +57,9 @@
  *    INGAME_ICON_VOIP_ON (0x69CD72D1), which nothing in the PC game draws.
  *    A still camera is drawn there instead: a texture pack of one entry
  *    (NTXP, runtime/texpack.h) made at start from photo_icon.h and added to
- *    NFSU2_TEXPACKS, so texrep.m draws it as any pack's texture.  The items'
+ *    NFSU2_TEXPACKS, so texrep.m draws it as any pack's texture.  The file is
+ *    written to the user's own temporary folder (confstr
+ *    _CS_DARWIN_USER_TEMP_DIR, 0700) through mkstemp and a rename.  The items'
  *    action (0x4C26B0, called through the vtable only) on Photo Mode's
  *    Accept asks for photo mode, then does what the menu's Resume does (free
  *    roam 0x4C2510, a race 0x4C24C0).  Photo mode opens once the game runs
@@ -86,6 +88,8 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 void dispatch_indirect(CPU *c, uint32_t addr);
 void dispatch_patch(uint32_t a, void (*f)(CPU *));
@@ -673,23 +677,32 @@ static int icon_pack(const char *path){
         put32(b + 24, levels); put32(b + 28, data_at); put32(b + 32, (uint32_t)(px * 4)); put32(b + 36, names_at);
     }
     memcpy(f + names_at, name, sizeof name);
-    char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.%d", path, (int)getpid());
-    FILE *o = fopen(tmp, "wb");
-    int good = o && fwrite(f, 1, total, o) == total;
-    if (o && fclose(o)) good = 0;
+    /* a new file of our own (mkstemp: O_CREAT | O_EXCL, 0600) in the same folder, then renamed over the old one */
+    char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.XXXXXX", path);
+    int fd = mkstemp(tmp), good = fd >= 0;
+    for (size_t at = 0; good && at < total; ){
+        ssize_t w = write(fd, f + at, total - at);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) good = 0; else at += (size_t)w;
+    }
+    if (fd >= 0 && close(fd)) good = 0;
     free(f);
     if (good && rename(tmp, path)) good = 0;
-    if (!good) unlink(tmp);
+    if (!good && fd >= 0) unlink(tmp);
     return good;
 }
 
 /* tests/boot.c: the pause menu icon's pack, before texrep.m opens the packs */
 void photo_install(void){
     if (!photo_enabled()) return;
-    const char *td = getenv("TMPDIR");
-    char path[1024];
-    snprintf(path, sizeof path, "%s/nfsu2-photo-icon-%d.ntxp", td && *td == '/' ? td : "/tmp", (int)getuid());
-    for (char *p = path + 1; *p; p++) if (p[0] == '/' && p[-1] == '/') memmove(p, p + 1, strlen(p));
+    /* the user's own temporary folder (/var/folders/.../T/: theirs alone, 0700), never a shared /tmp */
+    char dir[1024], path[1100]; struct stat st;
+    size_t n0 = confstr(_CS_DARWIN_USER_TEMP_DIR, dir, sizeof dir);
+    if (!n0 || n0 > sizeof dir || dir[0] != '/' || lstat(dir, &st) || !S_ISDIR(st.st_mode) || st.st_uid != getuid() ||
+        (st.st_mode & 077)){
+        fprintf(stderr, "[photo] no private temporary folder: the pause menu's Photo Mode has no icon\n"); return;
+    }
+    snprintf(path, sizeof path, "%s%snfsu2-photo-icon.ntxp", dir, dir[strlen(dir) - 1] == '/' ? "" : "/");
     if (!icon_pack(path)){ fprintf(stderr, "[photo] the pause menu's icon could not be written (%s)\n", path); return; }
     const char *was = getenv("NFSU2_TEXPACKS");
     size_t n = (was ? strlen(was) : 0) + strlen(path) + 2;
