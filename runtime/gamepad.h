@@ -47,4 +47,13 @@ void gamepad_synth_button(int b, int down);
 void gamepad_synth_axis(int a, float v);
 int  gamepad_button_by_name(const char *nm);   /* "A", "LB", "START", "DUP", ... or -1 */
 int  gamepad_axis_by_name(const char *nm);     /* "LX" .. "RT" or -1 */
+
+/* Rumble (runtime/rumble.m; dinput_ff.c mixes the game's force-feedback
+ * effects into it): the two motor levels, 0..1 (strong = the low-frequency
+ * motor), every time the game polls the pad (any thread).  The motors stop
+ * by themselves when the updates stop, the app loses the focus, the
+ * controller goes away or the app quits. */
+void gamepad_rumble(float strong, float weak);
+/* 1 while the controller driving the pad has motors we can drive */
+int  gamepad_rumble_ok(void);
 #endif

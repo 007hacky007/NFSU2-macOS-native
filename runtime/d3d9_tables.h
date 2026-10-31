@@ -117,6 +117,12 @@ static const Method M_DIDEV[] = {
  {"SendDeviceData",5},{"EnumEffectsInFile",5},{"WriteEffectToFile",5},
  {"BuildActionMap",4},{"SetActionMap",4},{"GetImageInfo",2},
 };
+/* the pad's force-feedback effects (dinput_ff.c) */
+static const Method M_DIEFF[] = {
+ {"QueryInterface",3},{"AddRef",1},{"Release",1},
+ {"Initialize",4},{"GetEffectGuid",2},{"GetParameters",3},{"SetParameters",3},
+ {"Start",3},{"Stop",1},{"GetEffectStatus",2},{"Download",1},{"Unload",1},{"Escape",2},
+};
 /* --- DirectSound --- */
 static const Method M_DS[] = {
  {"QueryInterface",3},{"AddRef",1},{"Release",1},

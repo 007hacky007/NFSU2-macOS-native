@@ -57,6 +57,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include "gamepad.h"
+#include "rumble.h"
 
 __attribute__((weak)) long metal_frames(void);   /* metal.m (absent in the harness) */
 
@@ -151,6 +152,7 @@ static void pick_active(void){
         gp.valueChangedHandler = ^(GCExtendedGamepad *p, GCControllerElement *el){ (void)el; snap(p, gen); };
         dispatch_async(g_q, ^{ snap(gp, gen); });
     }
+    rumble_controller(best);                    /* its motors (runtime/rumble.m) */
     fprintf(stderr, "[pad] player 1 controller: %s (%s)\n", best ? g_real.name : "none",
             best ? (best.productCategory.UTF8String ?: "?") : "-");
 }
