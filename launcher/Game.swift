@@ -101,6 +101,7 @@ enum Prefs {
     static let musicFolder = "LauncherMusicFolder"
     static let seedRegistry = "LauncherSeedRegistry" // NFSU2_SEED_REGISTRY=1: highest graphics on the first launch
     static let lanTiming = "LauncherLanTiming"     // NFSU2_LAN_TIMING: "pc" | "exact"
+    static let discordImage = "LauncherDiscordImage" // NFSU2_DISCORD_LARGE_IMAGE (DiscordImage.swift)
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -130,6 +131,7 @@ enum Prefs {
         OriginalValue(\.music, "game"),
         OriginalValue(\.seedRegistry, false),
         OriginalValue(\.lanTiming, "pc"),
+        OriginalValue(\.discordImage, ""),
     ]
 }
 

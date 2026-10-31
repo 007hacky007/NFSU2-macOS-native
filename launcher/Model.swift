@@ -76,6 +76,7 @@ final class LauncherModel: ObservableObject {
     static let frameRates = ["auto", "30", "60", "120", "240", "uncapped"]
     @Published var seedRegistry: Bool { didSet { defaults.set(seedRegistry, forKey: Prefs.seedRegistry) } }   // EngineOptions.swift
     @Published var lanTiming: String { didSet { defaults.set(lanTiming, forKey: Prefs.lanTiming) } }
+    @Published var discordImage: String { didSet { defaults.set(discordImage, forKey: Prefs.discordImage) } }   // DiscordImage.swift
     @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
     @Published var server: String { didSet { defaults.set(server, forKey: Prefs.server) } }
     @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
@@ -108,6 +109,8 @@ final class LauncherModel: ObservableObject {
     private var modsPending = false, playAfterMods = false
 
     private let defaults = UserDefaults.standard
+    /// tests/launcher_settings.swift: play() hands the engine's path here instead of starting it.
+    static var testSpawn: ((String) -> Void)?
     private var builder: PortableBuilder?
     private var engineWatch: DispatchSourceProcess?
     var isPlaying: Bool { engineWatch != nil }
@@ -157,6 +160,8 @@ final class LauncherModel: ObservableObject {
         cutscenes60 = defaults.bool(forKey: Prefs.cutscenes60)
         seedRegistry = defaults.bool(forKey: Prefs.seedRegistry)
         lanTiming = defaults.string(forKey: Prefs.lanTiming) == "exact" ? "exact" : "pc"
+        let di = defaults.string(forKey: Prefs.discordImage) ?? ""
+        discordImage = DiscordImage.valid(di) ? di : ""
         cutsceneBars = defaults.bool(forKey: Prefs.cutsceneBars)
         music = defaults.string(forKey: Prefs.music) == "folder" ? "folder" : "game"
         musicFolder = defaults.string(forKey: Prefs.musicFolder) ?? ""
@@ -257,6 +262,7 @@ final class LauncherModel: ObservableObject {
         if intro != "skippable" { setenv("BOOTMOVIES", intro, 0) }       // one set by hand wins
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
+        if discord && !discordImage.isEmpty && DiscordImage.valid(discordImage) { setenv("NFSU2_DISCORD_LARGE_IMAGE", discordImage, 0) }
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
         // Texture Packs that are on, highest first (engine: runtime/texrep.m).  One given by
         // the caller wins; otherwise it follows the list.
@@ -324,6 +330,7 @@ final class LauncherModel: ObservableObject {
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
         setenv("NFSU2_LANGUAGE", language, 0)      // NFSU2_LANGUAGE set by hand still wins
+        if let t = LauncherModel.testSpawn { t(path); return }      // tests/launcher_settings.swift: no engine
         // A child process, not exec(): macOS attributes the child's file access to
         // this launcher (the "responsible" process), so folder permissions the
         // player granted here (Downloads, Documents...) are not asked for again.
@@ -464,7 +471,7 @@ final class LauncherModel: ObservableObject {
     // MARK: tools
 
     func manageSaves() {
-        SaveManagerWindow.show(saves: Paths.saves, registry: Paths.registry,
+        SaveManagerWindow.show(saves: Paths.saves, registry: Paths.registry, server: server,
             gameRunning: { [weak self] in self?.isPlaying ?? true })
     }
 
