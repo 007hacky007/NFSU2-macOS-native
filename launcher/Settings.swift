@@ -261,7 +261,7 @@ final class SettingsSelection: ObservableObject {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 560, height: 470)
+    static var size = CGSize(width: 560, height: 470)   // taller only for a snapshot (main.swift)
     @ObservedObject var model: LauncherModel
     @ObservedObject private var selection: SettingsSelection
     private var tab: SettingsTab { selection.tab }
