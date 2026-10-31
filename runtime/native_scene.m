@@ -280,8 +280,9 @@ int native_scene_encode_capture(id<MTLCommandBuffer> command, id<MTLTexture> sou
                 toTexture:copy destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     [blit endEncoding]; notice(@"Saving the photo...");
     [command addCompletedHandler:^(id<MTLCommandBuffer> finished) {
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ @autoreleasepool {
-            BOOL saved = NO; char where[2048] = "";
+        /* user-initiated: off the game's threads, but not left to wait behind background work */
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ @autoreleasepool {
+            BOOL saved = NO; char where[2048] = ""; double t0 = now();
             if (finished.status == MTLCommandBufferStatusCompleted) {
                 size_t stride = copy.width * 4, bytes = stride * copy.height; void *pixels = malloc(bytes);
                 if (pixels) {
@@ -290,8 +291,8 @@ int native_scene_encode_capture(id<MTLCommandBuffer> command, id<MTLTexture> sou
                 }
             }
             notice(saved ? @"Photo saved to Screenshots." : @"The photo could not be saved. Check the Screenshots folder.");
-            fprintf(stderr, "[photo] screenshot %s%s%s (%lux%lu)\n", saved ? "saved" : "failed", saved ? ": " : "", where,
-                    (unsigned long)copy.width, (unsigned long)copy.height);
+            fprintf(stderr, "[photo] screenshot %s%s%s (%lux%lu, %.0f ms)\n", saved ? "saved" : "failed", saved ? ": " : "", where,
+                    (unsigned long)copy.width, (unsigned long)copy.height, (now() - t0) * 1000);
             atomic_store(&captureBusy, 0);
         } });
     }];

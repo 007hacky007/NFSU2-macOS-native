@@ -33,7 +33,7 @@ clock(){ grep -a "state $2:" "$1" | sed -E 's/.*clock ([0-9]+).*/\1/'; }
 PS="4400:state before;4400:f12;4440:state on;4440:drag 0.3 0.05;4440:dolly 3;4500:state still;4505:free"
 PS="$PS;4505:move 0 1;4535:move 0 0;4545:capture;4560:fov 40;4560:roll 15;4620:off;4650:state off;4710:state later"
 PS="$PS;5130:state pausemenu;5200:state frompause;5260:off;5340:f12"
-run photo - NFSU2_PHOTO=1 NFSU2_TEXPACKS_LOG=1 QUITFRAMES=5800 DUMPFRAME=4380,4500,4540,4600,5100,5200 \
+run photo - NFSU2_PHOTO=1 NFSU2_TEXPACKS_LOG=1 QUITFRAMES=6400 DUMPFRAME=4380,4500,4540,4600,5100,5200 \
     "AUTOSEQ=1000:0x1C,1350:0x1C,1750:0x1C,1950:0x1C,2150:0x1C,2350:0x1C,2550:0x1C,2750:0x1C,2950:0x1C,4760:0x01,4900:0xCD,4940:0xCD,4980:0xCD,5020:0xCD,5140:0x1C,5320:0x01" \
     "NFSU2_PHOTO_SCRIPT=$PS"
 P="$T/photo/log.txt"
