@@ -118,6 +118,40 @@ enum LanguagePacks {
 
     static func find(_ root: URL, _ rel: String) -> URL? { UHUDPack.find(root, rel) }
 
+    /// A path inside a pack or a temporary folder, from a name an archive gives:
+    /// "\\" taken as "/", then refused with an empty, "." or ".." part or a leading "/".
+    static func safeRel(_ name: String) throws -> String {
+        let rel = name.replacingOccurrences(of: "\\", with: "/")
+        let parts = rel.split(separator: "/", omittingEmptySubsequences: false)
+        guard !rel.isEmpty, !rel.hasPrefix("/"), !parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            throw Failure(message: "a file name that points outside its folder (\(name))")
+        }
+        return rel
+    }
+    /// root/rel, refused unless it stays inside root (symbolic links followed).
+    static func inside(_ root: URL, _ rel: String) throws -> URL {
+        let dst = root.appendingPathComponent(try safeRel(rel))
+        func real(_ u: URL) -> String? {
+            guard let c = realpath(u.path, nil) else { return nil }
+            defer { free(c) }
+            return String(cString: c)
+        }
+        // (standardizedFileURL would drop "/private" from paths that exist only)
+        let d = dst.path, rs = root.path
+        guard let r = real(root) else { throw Failure(message: "the pack's folder is not there") }
+        // the deepest folder of dst that exists, links followed (realpath), must be root or below it
+        var probe = dst.deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: probe.path) && probe.path.count > rs.count { probe.deleteLastPathComponent() }
+        let p = real(probe) ?? ""
+        guard (p == r || p.hasPrefix(r + "/")), d.hasPrefix(rs + "/") else {
+            throw Failure(message: "a file name that points outside its folder (\(rel))")
+        }
+        if let a = try? FileManager.default.destinationOfSymbolicLink(atPath: d), !a.isEmpty {
+            throw Failure(message: "\(rel) is a link in the pack's folder")
+        }
+        return dst
+    }
+
     /// rel spelled as the game folder spells it, as far as it has it
     static func gameName(_ game: URL, _ rel: String) -> String {
         var out: [String] = [], cur = game
@@ -142,9 +176,11 @@ enum LanguagePacks {
                   (a[.size] as? NSNumber)?.intValue == data.count else { return false }
             return (try? Data(contentsOf: g, options: .alwaysMapped)) == data
         }
-        func add(_ data: Data, _ rel: String) throws {
+        func add(_ data: Data, _ name: String) throws {
+            let rel = try safeRel(name)
             if sameAsGame(rel, data) { return }
-            let dst = root.appendingPathComponent(gameName(game, rel))
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let dst = try inside(root, gameName(game, rel))
             if (try? Data(contentsOf: dst, options: .alwaysMapped)) != data {
                 try FileManager.default.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: dst)
@@ -173,22 +209,23 @@ enum LanguagePacks {
 
     /// EA's .viv (BIG4/BIGF): (name, offset, size) of its files
     static func vivEntries(_ d: Data) throws -> [(String, Int, Int)] {
-        let b = [UInt8](d.prefix(16))
-        guard b.count == 16, b[0] == 0x42, b[1] == 0x49, b[2] == 0x47 else { throw Failure(message: "not a .viv archive") }
-        func be(_ o: Int) -> Int {
-            d.withUnsafeBytes { (p: UnsafeRawBufferPointer) -> Int in
-                let b0 = Int(p[o]) << 24, b1 = Int(p[o + 1]) << 16, b2 = Int(p[o + 2]) << 8
-                return b0 | b1 | b2 | Int(p[o + 3])
-            }
+        let b = [UInt8](d)
+        guard b.count >= 16, b[0] == 0x42, b[1] == 0x49, b[2] == 0x47 else { throw Failure(message: "not a .viv archive") }
+        func be(_ o: Int) throws -> Int {
+            guard o >= 0, o + 4 <= b.count else { throw Failure(message: "damaged .viv archive") }
+            let b0 = Int(b[o]) << 24, b1 = Int(b[o + 1]) << 16, b2 = Int(b[o + 2]) << 8
+            return b0 | b1 | b2 | Int(b[o + 3])
         }
-        let n = be(8), hdr = be(12)
+        let n = try be(8), hdr = try be(12)
+        guard hdr >= 16, hdr <= b.count, n >= 0, n <= hdr / 9 else { throw Failure(message: "damaged .viv archive") }
         var out: [(String, Int, Int)] = [], q = 16
         for _ in 0..<n {
-            guard q + 8 < hdr else { throw Failure(message: "damaged .viv archive") }
-            let off = be(q), size = be(q + 4); q += 8
+            guard q + 8 <= hdr else { throw Failure(message: "damaged .viv archive") }
+            let off = try be(q), size = try be(q + 4); q += 8
             var e = q
-            while e < hdr && d[d.startIndex + e] != 0 { e += 1 }
-            out.append((String(decoding: d[(d.startIndex + q)..<(d.startIndex + e)], as: UTF8.self), off, size))
+            while e < hdr && b[e] != 0 { e += 1 }
+            guard e < hdr, off >= 0, size >= 0, off <= b.count, size <= b.count - off else { throw Failure(message: "damaged .viv archive") }
+            out.append((String(decoding: b[q..<e], as: UTF8.self), off, size))
             q = e + 1
         }
         return out
@@ -232,7 +269,7 @@ enum LanguagePacks {
             let files = try unpack(dubURL) { $0 == viv || $0.hasPrefix(movies) }
             guard let v = files[viv] else { throw Failure(message: "\(dubURL.lastPathComponent) has no \(viv): not the mod's \(lang) dub") }
             for (name, off, size) in try vivEntries(v) where name.lowercased().hasPrefix("speech/ug2_speech") {
-                guard off + size <= v.count else { throw Failure(message: "damaged \(viv)") }
+                guard off >= 0, size >= 0, off <= v.count, size <= v.count - off else { throw Failure(message: "damaged \(viv)") }
                 try p.add(v.subdata(in: (v.startIndex + off)..<(v.startIndex + off + size)), name)
             }
             let movieFiles = files.keys.filter { $0.hasPrefix(movies) && $0.count > movies.count }.sorted()
@@ -354,9 +391,7 @@ enum LanguagePacks {
                 try data.withUnsafeBytes { b in
                     let entries = try RarArchive.list(b)
                     try RarArchive.extract(b, entries: entries) { e in
-                        let parts = e.name.split(separator: "/").map(String.init)
-                        guard !parts.contains(".."), !e.name.hasPrefix("/") else { return nil }
-                        let f = t.appendingPathComponent(e.name)
+                        let f = try inside(t, e.name)
                         try fm.createDirectory(at: f.deletingLastPathComponent(), withIntermediateDirectories: true)
                         fm.createFile(atPath: f.path, contents: nil)
                         let h = try FileHandle(forWritingTo: f)
@@ -366,6 +401,9 @@ enum LanguagePacks {
             } catch let e as RarArchive.Failure {
                 try? fm.removeItem(at: t)
                 throw Failure(message: "\(src.lastPathComponent) could not be unpacked (\(e.message)). Unpack it yourself and choose the folder.")
+            } catch {
+                try? fm.removeItem(at: t)
+                throw error
             }
             return (t, t)
         }
@@ -496,6 +534,8 @@ enum LanguagePacks {
         return try astrumFiles(try Data(contentsOf: e))
     }
 
+    static func formatBytesPlain(_ n: Int64) -> String { String(format: "%.1f MB", Double(n) / 1_048_576) }
+
     // MARK: download
 
     static func sha256(_ url: URL) throws -> String {
@@ -550,7 +590,12 @@ enum LanguagePacks {
     /// Import: a local copy of what the language needs (an archive or folder).
     /// Multi 13: a folder with the archives (or the archives' files extracted), or one archive.
     static func importCopy(lang: String, src: URL, game: URL) throws -> String {
-        if lang == "english" { return try buildSubtitles(mod: src, game: game) }
+        if lang == "english" {
+            if !UHUDPack.isDirectory(src), try sha256(src) != subtitles.sha256 {
+                throw Failure(message: "\(src.lastPathComponent) is not the release this was made for (\(subtitles.name)). Choose it as downloaded, or the folder it was unpacked to.")
+            }
+            return try buildSubtitles(mod: src, game: game)
+        }
         if pages[lang] != nil { return try buildTranslation(lang: lang, src: src, game: game) }
         // Multi 13: the pinned archives in a folder, or a single archive
         var core: URL? = nil, dub: URL? = nil
@@ -561,6 +606,13 @@ enum LanguagePacks {
             let n = u.lastPathComponent.lowercased()
             if n.contains("multi13core") { core = u }
             if let d = dubs[lang], n.contains("multi13\(d.dir.lowercased())dub") { dub = u }
+        }
+        // checked as a download is: only the release this was made with
+        for (u, a) in [(core, LanguagePacks.core), (dub, dubs[lang]?.archive ?? LanguagePacks.core)] {
+            guard let u = u else { continue }
+            guard try sha256(u) == a.sha256 else {
+                throw Failure(message: "\(u.lastPathComponent) is not the release this was made for (\(a.name), \(formatBytesPlain(a.size))).")
+            }
         }
         return try buildMulti13(lang: lang, game: game, core: core, dub: dub)
     }

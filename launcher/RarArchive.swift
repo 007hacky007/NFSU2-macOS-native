@@ -27,7 +27,8 @@ enum RarArchive {
         let encrypted: Bool
     }
 
-    /// The archive's files, in their order.
+    /// The archive's files, in their order.  A malformed archive throws: every read
+    /// stays inside its header, and every header inside the archive.
     static func list(_ bytes: UnsafeRawBufferPointer) throws -> [Entry] {
         let sig: [UInt8] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
         guard bytes.count >= 8, Array(bytes[0..<8]) == sig else {
@@ -37,45 +38,48 @@ enum RarArchive {
         var pos = 8
         while pos + 7 <= bytes.count {
             var p = pos + 4                                   // header CRC32
-            let headerSize = Int(try vint(bytes, &p))
+            let headerSize = try int(try vint(bytes, &p, end: bytes.count))
             let headerStart = p
-            guard headerSize > 0, headerStart + headerSize <= bytes.count else { throw Failure(message: "damaged header") }
-            let type = try vint(bytes, &p)
-            let flags = try vint(bytes, &p)
+            guard headerSize > 0, headerSize <= bytes.count - headerStart else { throw Failure(message: "damaged header") }
+            let hend = headerStart + headerSize               // reads stay below this
+            let type = try vint(bytes, &p, end: hend)
+            let flags = try vint(bytes, &p, end: hend)
             var extraSize = 0, dataSize = 0
-            if flags & 1 != 0 { extraSize = Int(try vint(bytes, &p)) }
-            if flags & 2 != 0 { dataSize = Int(try vint(bytes, &p)) }
-            let dataStart = headerStart + headerSize
-            guard dataSize >= 0, dataStart + dataSize <= bytes.count else { throw Failure(message: "the archive is cut short") }
+            if flags & 1 != 0 { extraSize = try int(try vint(bytes, &p, end: hend)) }
+            if flags & 2 != 0 { dataSize = try int(try vint(bytes, &p, end: hend)) }
+            guard extraSize <= headerSize else { throw Failure(message: "damaged header") }
+            let dataStart = hend
+            guard dataSize <= bytes.count - dataStart else { throw Failure(message: "the archive is cut short") }
             switch type {
             case 1:                                           // main archive header
-                let aflags = try vint(bytes, &p)
+                let aflags = try vint(bytes, &p, end: hend)
                 if aflags & 1 != 0 { throw Failure(message: "a multi-volume archive") }
             case 4:
                 throw Failure(message: "an encrypted archive")
             case 2:                                           // file
-                let fflags = try vint(bytes, &p)
-                let size = try vint(bytes, &p)
-                _ = try vint(bytes, &p)                       // attributes
-                if fflags & 2 != 0 { p += 4 }                 // mtime
+                let fflags = try vint(bytes, &p, end: hend)
+                let size = try vint(bytes, &p, end: hend)
+                _ = try vint(bytes, &p, end: hend)            // attributes
+                if fflags & 2 != 0 { _ = try u32(bytes, &p, end: hend) }   // mtime
                 var crc: UInt32? = nil
-                if fflags & 4 != 0 { crc = u32(bytes, p); p += 4 }
-                let ci = try vint(bytes, &p)
-                _ = try vint(bytes, &p)                       // host OS
-                let nameLen = Int(try vint(bytes, &p))
-                guard p + nameLen <= headerStart + headerSize else { throw Failure(message: "damaged file header") }
+                if fflags & 4 != 0 { crc = try u32(bytes, &p, end: hend) }
+                let ci = try vint(bytes, &p, end: hend)
+                _ = try vint(bytes, &p, end: hend)            // host OS
+                let nameLen = try int(try vint(bytes, &p, end: hend))
+                guard nameLen <= hend - p else { throw Failure(message: "damaged file header") }
                 let name = String(decoding: UnsafeRawBufferPointer(rebasing: bytes[p..<(p + nameLen)]), as: UTF8.self)
                 p += nameLen
                 // the extra area: an encryption record (type 1) means a password
                 var encrypted = false
                 if extraSize > 0 {
-                    var e = headerStart + headerSize - extraSize
-                    let end = headerStart + headerSize
-                    while e < end {
-                        let recSize = Int(try vint(bytes, &e)), recStart = e
-                        let recType = try vint(bytes, &e)
+                    var e = hend - extraSize
+                    guard e >= p else { throw Failure(message: "damaged file header") }
+                    while e < hend {
+                        let recSize = try int(try vint(bytes, &e, end: hend)), recStart = e
+                        guard recSize > 0, recSize <= hend - recStart else { throw Failure(message: "damaged file header") }
+                        let recType = try vint(bytes, &e, end: recStart + recSize)
                         if recType == 1 { encrypted = true }
-                        e = recStart + recSize
+                        e = recStart + recSize                 // always moves on
                     }
                 }
                 let algo = Int(ci & 0x3f)
@@ -111,6 +115,9 @@ enum RarArchive {
                 crc.update(b)
                 try write?(b)
             }
+            guard e.dataOffset >= 0, e.packedSize >= 0, e.dataOffset <= bytes.count, e.packedSize <= bytes.count - e.dataOffset else {
+                throw Failure(message: "\(e.name) lies outside the archive")
+            }
             let packed = UnsafeRawBufferPointer(rebasing: bytes[e.dataOffset..<(e.dataOffset + e.packedSize)])
             var produced: UInt64 = 0
             if e.method == 0 {
@@ -128,9 +135,12 @@ enum RarArchive {
 
     // MARK: helpers
 
-    static func vint(_ b: UnsafeRawBufferPointer, _ p: inout Int) throws -> UInt64 {
+    /// a variable-length number at p, below end
+    static func vint(_ b: UnsafeRawBufferPointer, _ p: inout Int, end: Int) throws -> UInt64 {
         var v: UInt64 = 0, shift: UInt64 = 0
-        while p < b.count {
+        let stop = min(end, b.count)
+        guard p >= 0 else { throw Failure(message: "damaged header") }
+        while p < stop {
             let x = b[p]; p += 1
             v |= UInt64(x & 0x7f) << shift
             if x & 0x80 == 0 { return v }
@@ -139,8 +149,16 @@ enum RarArchive {
         }
         throw Failure(message: "damaged header")
     }
-    static func u32(_ b: UnsafeRawBufferPointer, _ p: Int) -> UInt32 {
-        UInt32(b[p]) | UInt32(b[p + 1]) << 8 | UInt32(b[p + 2]) << 16 | UInt32(b[p + 3]) << 24
+    static func u32(_ b: UnsafeRawBufferPointer, _ p: inout Int, end: Int) throws -> UInt32 {
+        guard p >= 0, p + 4 <= min(end, b.count) else { throw Failure(message: "damaged header") }
+        let v = UInt32(b[p]) | UInt32(b[p + 1]) << 8 | UInt32(b[p + 2]) << 16 | UInt32(b[p + 3]) << 24
+        p += 4
+        return v
+    }
+    /// a size or offset that fits an Int
+    static func int(_ v: UInt64) throws -> Int {
+        guard v <= UInt64(Int32.max) * 64 else { throw Failure(message: "damaged header") }
+        return Int(v)
     }
 
     struct CRC32 {
@@ -202,7 +220,7 @@ enum RarArchive {
         init(window dictionary: UInt64) throws {
             var s = 1 << 23
             while UInt64(s) < dictionary { s <<= 1 }
-            guard s <= 1 << 32 else { throw Failure(message: "a dictionary too large for this Mac") }
+            guard s <= 1 << 30 else { throw Failure(message: "a dictionary larger than 1 GB") }
             size = s; mask = s - 1
             window = UnsafeMutablePointer<UInt8>.allocate(capacity: s)
             window.initialize(repeating: 0, count: s)
@@ -401,6 +419,7 @@ enum RarArchive {
                     continue
                 }
                 if addr >= inp.count { throw Failure(message: "damaged data (cut short)") }
+                if pos - fileStart > want { throw Failure(message: "damaged data (more than the file's size)") }
                 if pos - written >= flushEvery { try flush(pos) }
                 let slot = try decode(0)
                 if slot < 256 {
