@@ -13,7 +13,7 @@ struct UpscaledPackCard: View {
         if let i = store.info {
             return "\(i.textures) textures · \(formatBytes(i.bytes)) · \(i.scale)x · made \(i.built)"
         }
-        return "Not made yet. Build makes it from your game files on this Mac (a few minutes; nothing leaves your Mac)."
+        return "Not made yet. Build makes it from your game files on this Mac (5 to 10 minutes; nothing leaves your Mac)."
             + (store.hasModel ? "" : " The first time it downloads the upscaling model (9 MB, CC0) from its author's GitHub.")
     }
 

@@ -467,9 +467,9 @@ of the game's bundles, upscales them on the GPU with Kim2091's
 [PBRify Upscaler SPAN v4](https://github.com/Kim2091/PBRify_Remix) (CC0), keeps
 each texture's colours and alpha, corrects the result until it averages back to
 the original texel for texel, and writes it in the texture's own block format
-(about 2000 textures, 1.2 GB at 4x, a few minutes). The model is not part of this
-repository: the first Build downloads it (9 MB) from its author's repository at
-the tested commit and refuses any file with another SHA-256; **Import Model…**
+(about 2000 textures, 1.2 GB at 4x; 5 to 10 minutes on an M1 Pro). The model is
+not part of this repository: the first Build downloads it (9 MB) from its author's
+repository at the tested commit and refuses any file with another SHA-256; **Import Model…**
 takes a copy you have. No Python is needed and nothing leaves the Mac. Its switch
 is off by default (the original game); which parts it is used for (roads and
 buildings, signs, cars and garage by default), the GPU memory it may take and
