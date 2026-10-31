@@ -35,6 +35,11 @@ fi
 #   your Discord profile shows what you are doing in the game.  Only the Discord app's
 #   local socket is used.  NFSU2_DISCORD_DETAIL=minimal: only that you are playing.
 #   Details: runtime/discord.c
+# Reflections (both builds, off by default; the launcher sets them, runtime/reflect.c):
+#   NFSU2_REFLECTIONS=sharp|sharpest (original build: larger reflection targets),
+#   NFSU2_REFLECT_SKY=1 (sky in the road reflection and the mirror),
+#   NFSU2_REFLECT_LIGHTS=1 (car lights in the road reflection),
+#   NFSU2_REFLECT_DETAIL=1 (full detail models in reflections, car cube map far plane 10 km)
 # In game, Cmd+Shift+D: a PNG of that frame + the draw list (~/Library/Logs/NFSU2/
 #   or the PERFLOG directory).  Measurement recording while playing: tools/session.sh [hd].
 # In game, Cmd-N: the frame-rate counter, off -> on -> detailed (remembered);

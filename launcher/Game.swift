@@ -111,6 +111,10 @@ enum Languages {
     static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
     static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
     static let dataMods = "LauncherDataMods"       // ids of the turned-on data mods (DataMods.swift)
+    static let reflections = "LauncherReflections" // NFSU2_REFLECTIONS: "original" | "sharp" | "sharpest"
+    static let reflectSky = "LauncherReflectSky"   // NFSU2_REFLECT_SKY=1
+    static let reflectLights = "LauncherReflectLights"   // NFSU2_REFLECT_LIGHTS=1
+    static let reflectDetail = "LauncherReflectDetail"   // NFSU2_REFLECT_DETAIL=1
 }
 
 enum Locator {
