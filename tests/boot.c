@@ -155,6 +155,7 @@ int main(int argc,char**argv){
     { extern void carshadow_install(void); carshadow_install(); }   /* a car's shadow 1.5 cm above the road, not 4: off its wheels */
     { extern void sponsors_install(void); sponsors_install(); }   /* the sponsor screens' Continue (help bar) */
     { extern void tunegraph_install(void); tunegraph_install(); }   /* the ECU and turbo graphs take a drag */
+    { extern void regional_install(void); regional_install(); }   /* both regions' cars when the folder has all four */
     if (getenv("BT")) g_bt_on = 1;
     g_report_fn = all_reports;
     com_set_trace(getenv("COMTRACE")?1:0);
