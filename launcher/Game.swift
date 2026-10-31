@@ -125,6 +125,7 @@ enum Prefs {
     static let background = "LauncherBackground"           // NFSU2_BACKGROUND: pause | run
     static let photoMode = "LauncherPhotoMode"     // NFSU2_PHOTO=1: photo mode and F12 screenshots
     static let driftMode = "LauncherDriftMode"     // NFSU2_DRIFT=1: drift mode in free roam (X)
+    static let discordImage = "LauncherDiscordImage" // NFSU2_DISCORD_LARGE_IMAGE (DiscordImage.swift)
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -167,6 +168,7 @@ enum Prefs {
         OriginalValue(\.triggerClick, false),
         OriginalValue(\.padMenuKeys, false),
         OriginalValue(\.padBackground, false),
+        OriginalValue(\.discordImage, ""),
     ]
 }
 

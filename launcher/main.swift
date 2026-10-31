@@ -20,6 +20,8 @@
 //                                uhud-busy: downloading it; texpacks: two texture packs, one on;
 //                                texpacks-window: the Texture Packs window with them; texpacks-busy:
 //                                the same, one downloading)
+//                                saves | saves-setup | saves-cloud: the save window, cloud saves off |
+//                                being linked | linked and checked
 //   NFSU2_LAUNCHER_TEST=portable:<game folder>:<destination.app>   build a portable copy, quit
 //                                (NFSU2_LAUNCHER_TEST_LEAVE_OUT=MOVIES,LANGPACKS: without those)
 //   NFSU2_LAUNCHER_TEST=uhud:<mod .7z or folder>:<game folder>:<pack>   make a UHUD pack, quit
@@ -171,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let tw = TexturePackWindow.make(store: model.packs, model: model)
             w.setContentSize(TexturePackWindow.size); w.contentView = tw.contentView
         }
+        if let s = env["NFSU2_LAUNCHER_STATE"], s.hasPrefix("saves") { fakeSaves(w, cloud: s) }
         w.center()
         w.delegate = self
         window = w
@@ -272,6 +275,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.job = j
         default: break
         }
+    }
+
+    /// The save window's look for a snapshot, with two made-up careers.
+    private func fakeSaves(_ w: NSWindow, cloud: String) {
+        let sw = SaveManagerWindow.make(saves: Paths.saves, registry: Paths.registry, server: model.server, gameRunning: { false }) { saves, vault in
+            saves.profiles = [SaveProfile(name: "TALHA", modified: Date(timeIntervalSince1970: 1_793_400_000), bytes: 54966),
+                              SaveProfile(name: "DRIFTER", modified: Date(timeIntervalSince1970: 1_792_900_000), bytes: 54966)]
+            if cloud == "saves-cloud" { vault.fakeChecked(["DRIFTER", "TALHA"]) }
+            if cloud == "saves-setup" { vault.setup = true; vault.phrase = "nfsu2-xyz-acid-acorn-acre-acts-afar-affix-aged-agent" }
+        }
+        w.appearance = NSAppearance(named: .aqua); w.titlebarAppearsTransparent = false; w.backgroundColor = .windowBackgroundColor
+        w.setContentSize(sw.contentRect(forFrameRect: sw.frame).size); w.contentView = sw.contentView
     }
 
     private func buildMenu() {

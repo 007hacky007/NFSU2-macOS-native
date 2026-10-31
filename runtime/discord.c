@@ -37,11 +37,20 @@
  *   NFSU2_DISCORD_DETAIL=full|minimal
  *                              minimal: only "Playing" plus the elapsed time;
  *                              no race, car, track or profile details
+ *   NFSU2_DISCORD_LARGE_IMAGE=<asset key or https URL>
+ *                              optional large image (an asset key only works
+ *                              with your own application id); unset: none,
+ *                              Discord shows the application's icon if any
  *   NFSU2_DISCORD_LOG=0..3     0: connect/disconnect and refusals only;
- *                              1: also every presence shown and the sampler's
- *                              cost at exit; 2: also every frame (never the
- *                              READY payload, which holds the user's Discord
- *                              name); 3: also the raw game state every 2 s
+ *                              1: also every presence shown, frame pacing every
+ *                              5 s and the sampler's cost at exit; 2: also every
+ *                              frame (never the READY payload, which holds the
+ *                              user's Discord name); 3: also the raw game state
+ *                              every 2 s
+ * A test or diagnostic run without NFSU2_DISCORD_IPC never looks for the
+ * Discord app, even with NFSU2_DISCORD=1: a frame limit (QUITFRAMES), key
+ * sequence (AUTOSEQ), headless run (no WINDOW), background test window
+ * (NOFOCUS) or time limit (ALARM not 0; boot.c's default is 20 s).
  *
  * Game state: see ds_sample() below for the guest addresses and the
  * situation -> text table.
@@ -71,15 +80,45 @@
 #define DS_DEFAULT_APP_ID "1442720706248052796"  /* Discord: "Need for Speed: Underground 2" */
 #define DS_TXT        512      /* bytes per text field (UTF-8, <= 128 characters) */
 #define DS_MAXCHARS   128      /* Discord's limit for details/state */
+/* Timings; tests/discord_unit.c compiles this file with shorter ones. */
+#ifndef DS_SAMPLE_HZ
 #define DS_SAMPLE_HZ  4        /* game-state samples per second (game thread) */
+#endif
+#ifndef DS_SETTLE_MS
 #define DS_SETTLE_MS  1000     /* a new first line must hold this long before it is shown */
+#endif
+#ifndef DS_RATE_N
 #define DS_RATE_N     4        /* at most this many SET_ACTIVITY ... */
+#endif
+#ifndef DS_RATE_WIN
 #define DS_RATE_WIN   20.0     /* ... per this many seconds (Discord: 5 per 20 s) */
+#endif
+#ifndef DS_MINOR_GAP
 #define DS_MINOR_GAP  15.0     /* a change of the second line only (lap, points) at most this often */
+#endif
+#ifndef DS_READY_TMO
 #define DS_READY_TMO  5.0      /* handshake -> READY */
+#endif
+#ifndef DS_RETRY_MIN
 #define DS_RETRY_MIN  2.0      /* reconnect backoff, doubling up to DS_RETRY_MAX */
+#endif
+#ifndef DS_RETRY_MAX
 #define DS_RETRY_MAX  20.0
+#endif
+#ifndef DS_QUIT_WAIT_MS
 #define DS_QUIT_WAIT_MS 600    /* discord_shutdown waits at most this long */
+#endif
+#ifndef DS_UNPARK_S
+#define DS_UNPARK_S   2.0      /* after a background park: wait this long for a fresh sample */
+#endif
+/* The app parked the game in the background (told inactive, frozen in
+ * GetMessage, so no Present and no samples; watchdog.c has a weak "never"
+ * until the app's lifecycle code provides it).  tests/discord_unit.c supplies
+ * its own. */
+#ifndef DS_PARKED
+int lifecycle_game_parked(void);
+#define DS_PARKED() lifecycle_game_parked()
+#endif
 #define DS_MAXFRAME   65536    /* larger frames are treated as garbage */
 
 /* ---- options --------------------------------------------------------- */
@@ -88,6 +127,7 @@ static int  g_minimal;
 static int  g_log;
 static char g_app_id[32];
 static char g_ipc_path[PATH_MAX];      /* NFSU2_DISCORD_IPC override */
+static char g_large_image[300];        /* NFSU2_DISCORD_LARGE_IMAGE */
 
 static void dlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void dlog(const char *fmt, ...){
@@ -112,7 +152,7 @@ static int env_bool(const char *v, int def){
  * at once, within the rate limit; a change of the second line alone (lap,
  * position, points) at most every DS_MINOR_GAP s. */
 enum { PH_NONE, PH_BOOT, PH_TITLE, PH_MENUS, PH_CUSTOM, PH_CARLOT, PH_RESULTS, PH_LOADING, PH_MOVIE,
-       PH_GRID, PH_RACE, PH_PAUSED, PH_FINISHED, PH_ROAM, PH_FREERUN };
+       PH_GRID, PH_RACE, PH_PAUSED, PH_FINISHED, PH_ROAM, PH_FREERUN, PH_LAN };
 typedef struct {
     int     active;                    /* 0: no activity (cleared) */
     int     phase;                     /* PH_* */
@@ -140,6 +180,13 @@ static int pres_same(const Presence *a, const Presence *b){
 /* Same situation, at most the second line differs. */
 static int pres_same_major(const Presence *a, const Presence *b){
     return a->active == b->active && a->start == b->start && a->phase == b->phase && !strcmp(a->details, b->details);
+}
+/* While the game is parked in the background a race or free roam shows
+ * "Paused", as the pause menu does (the timer stays as it is and the race
+ * clock re-anchors it after the resume). */
+static void pres_parked(Presence *p){
+    if (p->active && (p->phase == PH_GRID || p->phase == PH_RACE || p->phase == PH_ROAM || p->phase == PH_FREERUN)){
+        p->phase = PH_PAUSED; snprintf(p->state, sizeof p->state, "Paused"); }
 }
 
 /* ---- text helpers ------------------------------------------------------ */
@@ -481,6 +528,12 @@ static int send_activity(Conn *c, const Presence *p){
         if (p->details[0] && json_str(t, sizeof t, p->details)){ jcat(j, sizeof j, &o, "%s\"details\":%s", sep, t); sep = ","; }
         if (p->state[0] && json_str(t, sizeof t, p->state)){ jcat(j, sizeof j, &o, "%s\"state\":%s", sep, t); sep = ","; }
         if (p->start > 0){ jcat(j, sizeof j, &o, "%s\"timestamps\":{\"start\":%lld}", sep, (long long)p->start); sep = ","; }
+        if (g_large_image[0]){
+            char li[sizeof g_large_image * 6 + 8];
+            if (json_str(li, sizeof li, g_large_image)){
+                jcat(j, sizeof j, &o, "%s\"assets\":{\"large_image\":%s,\"large_text\":\"Need for Speed Underground 2\"}", sep, li);
+                sep = ","; }
+        }
         jcat(j, sizeof j, &o, "%s\"instance\":false}", sep);
     }
     jcat(j, sizeof j, &o, "},\"nonce\":\"%u\"}", ++c->nonce);
@@ -501,6 +554,7 @@ static void *ipc_main(void *arg){
     double next_try = 0, backoff = DS_RETRY_MIN;
     double sends[DS_RATE_N] = { 0 }; int si = 0;   /* ring of the last send times */
     double last_send = -1e9;
+    int was_parked = 0; unsigned park_seq = 0; double unpark_t = 0;
 
     while (!atomic_load(&g_stop)){
         double now = mono_s();
@@ -508,6 +562,16 @@ static void *ipc_main(void *arg){
         pthread_mutex_lock(&g_mu);
         if (g_pub_seq != seen_seq){ want = g_pub; seen_seq = g_pub_seq; }
         pthread_mutex_unlock(&g_mu);
+        /* parked in the background: no new samples come, so the last one is
+         * shown as paused, and after the resume until the game has sampled
+         * again (its race timer re-anchored), at most DS_UNPARK_S */
+        int parked = DS_PARKED() != 0;
+        if (parked && !was_parked) park_seq = seen_seq;
+        if (!parked && was_parked) unpark_t = now;
+        was_parked = parked;
+        if (unpark_t && (seen_seq != park_seq || now - unpark_t >= DS_UNPARK_S)) unpark_t = 0;
+        Presence eff = want;
+        if (parked || unpark_t) pres_parked(&eff);
 
         if (c->fd < 0 && now >= next_try){
             if (conn_open(c) == 0) have_sent = 0;
@@ -523,24 +587,25 @@ static void *ipc_main(void *arg){
         double wait = DS_RETRY_MAX;
         if (c->fd >= 0 && c->ready){
             backoff = DS_RETRY_MIN;
-            int differs = !have_sent ? want.active : !pres_same(&want, &sent);
+            int differs = !have_sent ? eff.active : !pres_same(&eff, &sent);
             if (differs){
-                int major = !have_sent || !pres_same_major(&want, &sent);
+                int major = !have_sent || !pres_same_major(&eff, &sent);
                 double oldest = sends[si];                 /* the send DS_RATE_N ago */
                 double t_ok = oldest + DS_RATE_WIN;        /* rate window */
                 if (!major && last_send + DS_MINOR_GAP > t_ok) t_ok = last_send + DS_MINOR_GAP;
                 if (now >= t_ok){
-                    if (send_activity(c, &want) != 0){
+                    if (send_activity(c, &eff) != 0){
                         conn_close(c, "send failed");
                         next_try = now + DS_RETRY_MIN;
                         continue;
                     }
-                    sent = want; have_sent = 1;
+                    sent = eff; have_sent = 1;
                     sends[si] = now; si = (si + 1) % DS_RATE_N; last_send = now;
                 } else wait = t_ok - now;
             }
         } else if (c->fd >= 0) wait = c->hs_deadline - now;
         else wait = next_try - now;
+        if (unpark_t && wait > unpark_t + DS_UNPARK_S - now) wait = unpark_t + DS_UNPARK_S - now;
         if (wait < 0.01) wait = 0.01;
         if (wait > DS_RETRY_MAX) wait = DS_RETRY_MAX;
 
@@ -597,10 +662,26 @@ static void ds_atexit(void){
              g_cost_n, g_cost_total / g_cost_n * 1e6, g_cost_max * 1e6);
 }
 
+/* Why this run is a test or diagnostic run rather than someone playing, or
+ * NULL.  Only a windowed run without a time limit, frame limit, key sequence
+ * or test window is a play session (the app sets WINDOW=1 and ALARM=0,
+ * bundle.m). */
+static const char *automated_run(void){
+    static const char *const scripted[] = { "QUITFRAMES", "AUTOSEQ", "NFSU2_INPUT_SCRIPT", "NFSU2_QUIT_FRAMES", 0 };
+    const char *v;
+    for (int i = 0; scripted[i]; i++) if ((v = getenv(scripted[i])) && *v) return scripted[i];
+    if (!getenv("WINDOW")) return "headless";                       /* boot.c: no WINDOW, no window */
+    if ((v = getenv("NOFOCUS")) && *v && *v != '0') return "NOFOCUS"; /* background test window */
+    v = getenv("ALARM");
+    if (!v || atoi(v) != 0) return "a time limit (ALARM)";          /* boot.c: 20 s when unset */
+    return 0;
+}
+
 static void ds_init(void){
-    g_on = env_bool(getenv("NFSU2_DISCORD"), 0);
+    const char *on = getenv("NFSU2_DISCORD");
+    g_on = env_bool(on, 0);
     const char *lg = getenv("NFSU2_DISCORD_LOG"); g_log = lg ? atoi(lg) : 0;
-    if (!g_on) return;
+    if (!g_on){ if (g_log) dlog("off (NFSU2_DISCORD)"); return; }
     const char *id = getenv("NFSU2_DISCORD_APP_ID");
     if (id && *id){
         int ok = strlen(id) < sizeof g_app_id;
@@ -613,6 +694,21 @@ static void ds_init(void){
         if (strlen(ipc) >= DS_SUN){ dlog("NFSU2_DISCORD_IPC is longer than a Unix socket path allows (%d); Discord presence off", DS_SUN - 1);
                                      g_on = 0; return; }
         snprintf(g_ipc_path, sizeof g_ipc_path, "%s", ipc);
+    }
+    const char *why = g_ipc_path[0] ? 0 : automated_run();
+    if (why){
+        /* A test or diagnostic run must never reach the real Discord app. */
+        dlog("off: automated run (%s) without NFSU2_DISCORD_IPC", why);
+        g_on = 0; return;
+    }
+    const char *li = getenv("NFSU2_DISCORD_LARGE_IMAGE");
+    if (li && *li){
+        /* an asset key or a URL: printable ASCII (a URL percent-encodes the rest) */
+        int ok = strlen(li) < sizeof g_large_image;
+        for (const char *q = li; *q && ok; q++) if (*q <= ' ' || *q > '~') ok = 0;
+        if (ok) snprintf(g_large_image, sizeof g_large_image, "%s", li);
+        else dlog("NFSU2_DISCORD_LARGE_IMAGE is not an asset key or URL (printable ASCII, < %d bytes); no image",
+                  (int)sizeof g_large_image);
     }
     const char *det = getenv("NFSU2_DISCORD_DETAIL");
     g_minimal = det && !strcasecmp(det, "minimal");
@@ -633,8 +729,8 @@ static void ds_init(void){
     pthread_detach(g_thr);
     atomic_store(&g_started, 1);
     atexit(ds_atexit);
-    dlog("on: app id %s, detail %s%s%s", g_app_id, g_minimal ? "minimal" : "full",
-         g_ipc_path[0] ? ", socket " : "", g_ipc_path);
+    dlog("on: app id %s, detail %s%s%s%s", g_app_id, g_minimal ? "minimal" : "full",
+         g_large_image[0] ? ", large image" : "", g_ipc_path[0] ? ", socket " : "", g_ipc_path);
 }
 
 /* Called from Present on the game thread (guest lock held). */
@@ -644,6 +740,20 @@ void discord_on_present(void){
     g_frame++;
     static double next_t, cand_since; static Presence cand, shown; static int have_shown;
     double t0 = mono_s();
+    if (g_log >= 1){
+        /* frame pacing as the game thread sees it (Present to Present), so a
+         * test can show the IPC thread never stalls a frame */
+        static double last, win0, wmax, wsum; static long wn;
+        if (last > 0){ double f = t0 - last; wsum += f; wn++; if (f > wmax) wmax = f; }
+        last = t0;
+        if (win0 == 0) win0 = t0;
+        if (t0 - win0 >= 5.0){
+            struct timespec rt; clock_gettime(CLOCK_REALTIME, &rt);
+            if (wn) dlog("frames: wall=%.3f n=%ld avg=%.2fms max=%.2fms", rt.tv_sec + rt.tv_nsec / 1e9, wn,
+                         wsum / wn * 1e3, wmax * 1e3);
+            win0 = t0; wmax = wsum = 0; wn = 0;
+        }
+    }
     if (t0 < next_t) return;
     next_t = t0 + 1.0 / DS_SAMPLE_HZ;
 
@@ -670,6 +780,13 @@ void discord_on_present(void){
     }
     double dt = mono_s() - t0;
     g_cost_total += dt; g_cost_n++; if (dt > g_cost_max) g_cost_max = dt;
+}
+
+/* The app's lifecycle code, when the game is told it is active or inactive
+ * (parked in the background): the IPC thread re-checks what to show.  Any
+ * thread. */
+void discord_lifecycle_changed(void){
+    if (atomic_load(&g_started)) wake_ipc();
 }
 
 /* Clean quit: clear the activity and close (bounded wait, never hangs). */
@@ -717,6 +834,12 @@ void discord_fe_log(CPU *c){
 }
 static const char *fe_screen(void){ return g_fe_screen[0] ? g_fe_screen : 0; }
 static const char *fe_screen_batch(int i){ return i >= 0 && i < g_fe_nbatch ? g_fe_batch[i] : 0; }
+/* tests/discord_unit.c puts its own screens in */
+#ifndef DS_FE_TOP
+#define DS_FE_TOP()      fe_top()
+#define DS_FE_SCREEN()   fe_screen()
+#define DS_FE_BATCH(i)   fe_screen_batch(i)
+#endif
 
 /* A plausible package name ("....fng") at guest address p, or 0. */
 static const char *fng_str(uint32_t p){
@@ -782,6 +905,15 @@ static const char *fe_top(void){
                                     /*   written and hold whatever the memory held before */
 #define   RS_ENTRY       0x30u      /*   6 x 0x1f0 racer entries: +0 car, +9 laps done (int8), +0xa position, */
 #define   RS_ENTRY_SZ    0x1f0u     /*   +0x140 drift points per lap (float), +0x190 banked total */
+/* A network race: World::IsOnline (0x5f0100 (0x5f00f0)), as framerate.c
+ * tests it: World+0x21 online flag, client / host race state > 0. */
+#define G_NET_ONLINE   GA(0x0089cf69u)
+#define G_NET_CLIENT   GA(0x008669f4u)
+#define G_NET_HOST     GA(0x00866a14u)
+int winsock_session_active(void);               /* winsock.c: a LAN session is open (the game's WSAStartup
+                                                   on its LAN screens up to the last WSACleanup) */
+int roam_game_friends(void);                    /* roam_game.c: free-roam friends connected (0 = off) */
+uint32_t garage_find(uint32_t db, uint32_t h);  /* garage.c: the table's car record, then slots 6-10 */
 
 static int committed_range(uint32_t a, uint32_t n){
     if (!n) return 1;
@@ -909,13 +1041,8 @@ static void fe_car(int career, char *out, size_t osz){
     out[0] = 0;
     uint32_t h = R32(career ? G_FE_CAR_CAR : G_FE_CAR_QR);
     if (!h || !committed_range(G_FE_CARS + 0x9bd8u, 0x5bu * 4u)) return;
-    for (uint32_t i = 0; i < 0x5bu; i++){
-        uint32_t r = MR32(G_FE_CARS + 0x9bd8u + 4u * i);
-        if (!r || R32(r + 8) != h) continue;
-        int t = fe_record_type(r);
-        if (t >= 0) car_type_name((uint32_t)t, out, osz);
-        return;
-    }
+    uint32_t r = garage_find(G_FE_CARS, h);
+    if (r){ int t = fe_record_type(r); if (t >= 0) car_type_name((uint32_t)t, out, osz); }
 }
 static const char *ordinal(int n){
     static char b[16];
@@ -964,10 +1091,22 @@ static const char *const k_carlot[]  = { "UI_CareerCarLot.fng", "UI_CareerCarSel
 static const char *const k_pause[]   = { "UI_Pause.fng", "UI_PauseOptions.fng", "UI_PauseOptionsMain.fng", 0 };
 static const char *const k_post[]    = { "UI_PostRace*", "UI_PostraceWorldMap.fng", 0 };
 static const char *const k_loading[] = { "PC_Loading.fng", "HUD_World_Loading.fng", 0 };
+/* LAN play: the server list, the LAN main menu, the lobby, the car choice and
+ * the game room.  The game shares the UI_OL* / PC_OL_* screens with EA Online
+ * (the main menu's Online item: UI_OLISPConnect, UI_OLEALogin, ...), so they
+ * count as LAN only after the LAN branch (a UI_PC_LAN* screen) was entered
+ * from the main menu (g_lan_flow). */
+static const char *const k_lan_pc[]  = { "UI_PC_LAN*", 0 };
+static const char *const k_lan[]     = { "UI_PC_LAN*", "UI_OL*", "PC_OL_*", 0 };
+static const char *const k_lan_room[] = { "PC_OL_GameRoom.fng", 0 };
+static const char *const k_lan_find[] = { "UI_PC_LAN_ServerSelect.fng", 0 };
+static const char *const k_lan_car[]  = { "UI_OLCarSelect.fng", 0 };
+static const char *const k_qr_setup[] = { "UI_QRModeSelect.fng", "UI_QRTrackSelect.fng", "UI_QRModeOptions.fng", 0 };
 
 static char  g_screen[64];         /* last front-end screen that is not an overlay */
 static char  g_screen_raw[64];     /* last screen event seen (any package) */
 static int   g_past_boot;          /* the main menu (or the world) has been reached */
+static int   g_lan_flow;           /* a UI_PC_LAN* screen since the last main menu */
 static int64_t g_event_start;      /* race timer origin (Unix s), 0: not in a race */
 static uint32_t g_event_track;
 
@@ -1053,8 +1192,8 @@ static void ds_sample(Presence *p){
     if (g_minimal){ p->phase = PH_NONE; return; }   /* "Playing" + elapsed time only */
 
     uint32_t flow = R32(G_FLOW);
-    const char *top = fe_top();
-    const char *scr = fe_screen();
+    const char *top = DS_FE_TOP();
+    const char *scr = DS_FE_SCREEN();
     if (scr && strcmp(scr, g_screen_raw)){            /* a new screen event */
         snprintf(g_screen_raw, sizeof g_screen_raw, "%s", scr);
         /* GarageMain.fng is the garage backdrop the game initialises in the
@@ -1062,7 +1201,7 @@ static void ds_sample(Presence *p){
          * GarageMain, Chyron_FE at the car lot; UI_Main, GarageMain on the
          * way back to the main menu): that other screen is the one shown */
         const char *pick = 0, *b;
-        for (int i = 0; (b = fe_screen_batch(i)); i++)
+        for (int i = 0; (b = DS_FE_BATCH(i)); i++)
             if (!pkg_overlay(b) && strcasecmp(b, "GarageMain.fng")) pick = b;
         if (!pick && !pkg_overlay(scr)) pick = scr;
         if (pick) snprintf(g_screen, sizeof g_screen, "%s", pick);
@@ -1070,6 +1209,10 @@ static void ds_sample(Presence *p){
     const char *cur = g_screen[0] ? g_screen : top;
     if (flow == 6 || pkg_in(cur, (const char *const[]){ "UI_Main.fng", "GarageMain.fng", "MC_Main.fng", 0 }))
         g_past_boot = 1;
+    if (pkg_in(cur, k_lan_pc)) g_lan_flow = 1;
+    else if (!winsock_session_active() && pkg_in(cur, (const char *const[]){ "UI_Main.fng", "MC_Main.fng", 0 }))
+        g_lan_flow = 0;
+    int lan = g_lan_flow && (winsock_session_active() || pkg_in(cur, k_lan));
 
     char *d = p->details, *st = p->state;
     const size_t dz = sizeof p->details, sz = sizeof p->state;
@@ -1096,7 +1239,7 @@ static void ds_sample(Presence *p){
         if (career) snprintf(st, sz, "Career");
         else if (kind && track % 1000){
             track_name(track, R32(rp + R_REVERSE) == 1, tname, sizeof tname);
-            snprintf(st, sz, "%s%s%s", race_type(rp), tname[0] ? " - " : "", tname);
+            snprintf(st, sz, "%s%s%s%s", lan ? "LAN race - " : "", race_type(rp), tname[0] ? " - " : "", tname);
         }
         /* a new track: the next race gets its own timer.  Not for PC_Loading
          * on top while the world runs (flow 6): the game shows it for a few
@@ -1105,8 +1248,11 @@ static void ds_sample(Presence *p){
         if (flow != 6) g_event_start = 0;
         return;
     }
+    int netrace = R8(G_NET_ONLINE) || (int32_t)R32(G_NET_CLIENT) > 0 || (int32_t)R32(G_NET_HOST) > 0;
     if (flow == 6){
-        int paused = pkg_in(top, k_pause);
+        /* a network race does not pause: its pause menu ("Quit to LAN Main
+         * Menu") leaves the race running underneath */
+        int paused = !netrace && pkg_in(top, k_pause);
         if (kind == 0 || track % 1000 == 0){                    /* free roam */
             g_event_start = 0;
             if (nis_playing()){ p->phase = PH_MOVIE; snprintf(d, dz, "Watching a cutscene"); return; }
@@ -1116,7 +1262,11 @@ static void ds_sample(Presence *p){
                 uint8_t raw[16]; gstr(G_PROFILE, raw, sizeof raw);
                 char prof[64]; guest_to_utf8(prof, sizeof prof, raw, sizeof raw);
                 char rawz[17]; memcpy(rawz, raw, 16); rawz[16] = 0;
+                /* free-roam multiplayer (roam_game.c): with friends
+                 * connected, that is what the second line says */
+                int friends = paused ? 0 : roam_game_friends();
                 if (paused) snprintf(st, sz, "Paused");
+                else if (friends > 0) snprintf(st, sz, "Free roam with %d friend%s", friends, friends == 1 ? "" : "s");
                 else if (prof[0] && !no_profile(rawz)) snprintf(st, sz, "Free roaming as %s", prof);
                 else snprintf(st, sz, "Free roaming");
             } else {
@@ -1129,7 +1279,7 @@ static void ds_sample(Presence *p){
         /* a race */
         track_name(track, R32(rp + R_REVERSE) == 1, tname, sizeof tname);
         const char *rt = race_type(rp);
-        snprintf(d, dz, "%s%s%s%s", career ? "Career " : "", rt, tname[0] ? " - " : "", tname);
+        snprintf(d, dz, "%s%s%s%s", netrace ? "LAN race - " : career ? "Career " : "", rt, tname[0] ? " - " : "", tname);
         RacerView v = player_status();
         int64_t now = (int64_t)time(0);
         if (g_event_start == 0 || track != g_event_track){
@@ -1172,6 +1322,16 @@ static void ds_sample(Presence *p){
     }
     /* front end */
     g_event_start = 0;
+    if (lan){
+        p->phase = PH_LAN;
+        snprintf(d, dz, "LAN lobby");
+        if (pkg_in(cur, k_lan_room)) snprintf(st, sz, "In a game room");
+        else if (pkg_in(cur, k_lan_find)) snprintf(st, sz, "Looking for games");
+        else if (pkg_in(cur, k_lan_car)) snprintf(st, sz, "Choosing a car");
+        else if (pkg_in(cur, k_qr_setup)) snprintf(st, sz, "Creating a game");
+        else if (pkg_in(cur, k_post)) snprintf(st, sz, "Race results");
+        return;
+    }
     if (pkg_in(cur, k_custom)){
         p->phase = PH_CUSTOM;
         snprintf(d, dz, "Customizing");
@@ -1188,7 +1348,7 @@ static void ds_sample(Presence *p){
 
 /* Debug: the raw inputs of the classification (NFSU2_DISCORD_LOG=3). */
 static void ds_trace_raw(void){
-    const char *top = fe_top(), *scr = fe_screen();
+    const char *top = DS_FE_TOP(), *scr = DS_FE_SCREEN();
     RacerView v = player_status();
     char car[128]; player_car(car, sizeof car);
     char fcar[128]; fe_car(R32(G_FE_MODE) == 1, fcar, sizeof fcar);

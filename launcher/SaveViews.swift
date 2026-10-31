@@ -49,6 +49,7 @@ final class SaveManagerModel: ObservableObject {
 
 struct SaveManagerView: View {
     @ObservedObject var model: SaveManagerModel
+    @ObservedObject var vault: VaultModel          // cloud saves (VaultViews.swift)
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Saved careers").font(.title2)
@@ -71,18 +72,28 @@ struct SaveManagerView: View {
             }
             Text(model.status.isEmpty ? "Quit the game before backing up or replacing saves." : model.status)
                 .font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(20).frame(minWidth: 640, minHeight: 330)
+            Divider()
+            VaultView(model: vault)
+        }.padding(20).frame(minWidth: 700, minHeight: 470)
     }
 }
 
 enum SaveManagerWindow {
     private static var window: NSWindow?
-    static func show(saves: URL, registry: URL, gameRunning: @escaping () -> Bool) {
+    static func show(saves: URL, registry: URL, server: String, gameRunning: @escaping () -> Bool) {
         if let existing = window, existing.isVisible { existing.makeKeyAndOrderFront(nil); return }
-        let model = SaveManagerModel(saves: saves, registry: registry, gameRunning: gameRunning)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 380), styleMask: [.titled,.closable,.resizable], backing: .buffered, defer: false)
-        window.title = "NFSU2 Saves"; window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SaveManagerView(model: model))
+        let window = make(saves: saves, registry: registry, server: server, gameRunning: gameRunning)
         window.center(); window.makeKeyAndOrderFront(nil); self.window = window
+    }
+    /// server: the game server of Settings, Online (the cloud's default vault is on it).
+    static func make(saves: URL, registry: URL, server: String, gameRunning: @escaping () -> Bool,
+                     fake: ((SaveManagerModel, VaultModel) -> Void)? = nil) -> NSWindow {
+        let model = SaveManagerModel(saves: saves, registry: registry, gameRunning: gameRunning)
+        let vault = VaultModel(saves: model, server: server)
+        fake?(model, vault)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 520), styleMask: [.titled,.closable,.resizable], backing: .buffered, defer: false)
+        window.title = "NFSU2 Saves"; window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: SaveManagerView(model: model, vault: vault))
+        return window
     }
 }

@@ -235,6 +235,7 @@ void lifecycle_pump(void){
             win32_post_message(WM_ACTIVATEAPP, 0u, 0u);
             win32_post_message(WM_KILLFOCUS, 0u, 0u);
         }
+        { void discord_lifecycle_changed(void); discord_lifecycle_changed(); }   /* discord.c: "Paused" while parked */
     }
     if (atomic_load(&g_quit_req)){
         double t = mono_s();

@@ -5688,3 +5688,14 @@ uint32_t roam_game_pool(uint32_t name, uint32_t count){
     }
     return count;
 }
+/* discord.c (the Discord presence): friends connected now, i.e. established
+ * and not lost; 0 while free-roam multiplayer is off.  Takes the session
+ * lock, so any thread may ask. */
+int roam_game_friends(void){
+    if (!O.on || !g_net_ok) return 0;
+    int n = 0;
+    roam_plat_lock();
+    for (int i = 0; i < RC_TABLE; i++) if (g_s.peer[i].state == RC_PS_EST && !g_s.peer[i].lost) n++;
+    roam_plat_unlock();
+    return n;
+}

@@ -111,7 +111,10 @@ struct SaveStore {
         }.sorted { $0.modified > $1.modified }
     }
     func backup(label: String = "backup") throws -> URL {
-        let data = try SaveArchive.encode(snapshot())
+        try keepArchive(SaveArchive.encode(snapshot()), label: label)
+    }
+    /// A ZIP into the backups folder (the cloud's copy too, VaultViews.swift).
+    func keepArchive(_ data: Data, label: String) throws -> URL {
         try safeExisting(backups)
         try fm.createDirectory(at: backups, withIntermediateDirectories: true)
         let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
@@ -167,12 +170,16 @@ struct SaveStore {
         return (kept, entries.count - kept.count)
     }
     /// Returns how many archive entries were skipped (see validated).
+    /// cloud (VaultViews.swift): the archive's profiles replace all of this Mac's
+    /// (other files, covers and the game's settings stay).
     @discardableResult
-    func restore(_ data: Data, gameRunning: () -> Bool) throws -> Int {
+    func restore(_ data: Data, gameRunning: () -> Bool, cloud: Bool = false) throws -> Int {
         guard !gameRunning() else { throw SaveError("Quit the game before importing or restoring saves.") }
-        let (imported, skipped) = try Self.validated(data)
+        var (imported, skipped) = try Self.validated(data)
+        if cloud { imported.removeAll { $0.path == "registry.txt" } }
         let previous = try snapshot()
-        let names = Set(imported.compactMap { Self.profileName($0.path)?.lowercased() })
+        var names = Set(imported.compactMap { Self.profileName($0.path)?.lowercased() })
+        if cloud { names.formUnion(previous.compactMap { Self.profileName($0.path)?.lowercased() }) }
         let fullBackup = imported.contains { $0.path == "registry.txt" }
         var next = fullBackup ? [] : previous.filter { entry in
             let k = Self.key(entry.path)
