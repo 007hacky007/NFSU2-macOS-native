@@ -253,6 +253,58 @@ Since the game is at its 120 fps limit, the gain doesn't show in fps. Where it
 shows is the time the game thread spends asleep, and watts (see
 `tools/session.sh`, powermetrics).
 
+## 7. Optional lift options (2026-10-31)
+
+Four options from th0mk's nfsu2-web (MIT) rebased onto v2 (FLAGABI, X87OPT,
+RETEIP=0, MEMARG, xpatch).  All are **off by default**; `tools/gen_v2.sh` passes
+them through (`JTSWITCH=1 LREGS=1 FTOL2INL=1 INLINE_LIST=1 tools/gen_v2.sh <exe>`)
+and records them in `gen/<build>/lists.txt`.
+
+- **JTSWITCH** (`tools/lift.py`): a switch's `jmp [r*4 + table]` (also MSVC's
+  two-level form through a byte table) becomes a C `switch` inside the function;
+  each arm checks the table entry in guest memory, anything else still goes to
+  the dispatcher.  477 tables; 3821 case entries reached only through them stop
+  being functions (23279 -> 19458 functions, 137.5 -> 98.9 MB of C).
+- **LREGS** (`tools/lregs.py`): the general registers and the six flags are C
+  locals of each function, stored to the CPU struct only at calls, returns, tail
+  jumps, hooks and traps, and only what may have changed (a forward dataflow over
+  the labels, the xpatch resume labels included).  `cpu.h` `RG_()` names them in
+  the flag, stack and condition macros.
+- **FTOL2INL**: the 1725 direct calls of the CRT's `_ftol2` (0x75BED4 in both
+  builds) become `cpu.h` `FTOL2_INL`; needs X87PC=1 (the lift checks the bytes).
+- **INLINE_LIST**: the 110 functions of `tools/inline_hot.txt` (European
+  addresses, mapped for the North American build) are inlined at their direct
+  call sites (109: 0x5D6580 holds a hook).  With MEMARG the copies take `_mb`
+  too.  The list was picked in the browser build; `tools/inline_pick.py` makes
+  one from a native `COVERAGE=1` + `COVREPORT` run.
+
+**Correctness:** `tests/isatest_variants.sh` (644 ISA checks, 682 with the
+JTSWITCH switch cases; 9 option mixes), `tools/fuzzisa.py` 2000 random
+instructions plain and with LREGS (all match real x86), `tests/main_all.sh` (46
+checks on both builds, `FTOL2_BODY` against the lifted `_ftol2` on 36000
+inputs), and `tools/check.sh` on all four engines with each option and with all
+four: all passed.
+
+**Measurement:** quick race (check.sh's route), `NFSU2_FPS=60 CPUWIN=5200,6900`,
+game thread, 4 interleaved runs per build on a shared, loaded machine, median.
+Race content varies between runs (draws 745-838 a frame), so a few percent
+either way is noise.
+
+| option | EU instr/frame | EU cycles/frame | NA instr/frame | NA cycles/frame |
+|---|---|---|---|---|
+| none (v2) | 36.74 M | 12.86 M | 37.78 M | 12.95 M |
+| JTSWITCH | -2.5% | -3.7% | +1.8% | +0.6% |
+| LREGS | **-7.5%** | **-6.8%** | **-9.8%** | **-7.1%** |
+| FTOL2INL | -2.0% | -2.6% | -1.6% | +3.1% |
+| INLINE_LIST | -4.5% | -7.4% | +0.1% | +0.3% |
+| all four | **-9.6%** | **-10.9%** | **-10.6%** | **-10.6%** |
+
+`[hfr] race work=` (wall time of a frame's work): 4.39 -> 3.94 ms (EU), 4.55 ->
+4.12 ms (NA) with all four.  The frame rate is the same (the pacer holds it):
+the gain is game-thread time asleep.  LREGS is the one option with a clear gain
+on both builds; JTSWITCH, FTOL2INL and this INLINE_LIST are within the noise.
+They stay off until a longer soak (a career) has run with them.
+
 ## Next candidates
 
 - **Call model:** `c->esp` and the general registers are written to memory and
