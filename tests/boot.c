@@ -43,6 +43,7 @@ static void all_reports(void){
     { void metal_budget_report(void); metal_budget_report(); }
     { void headlights_report(void); headlights_report(); }
     { void hfr_report(void); hfr_report(); }   /* framerate.c */
+    { void gamefix_report(void); gamefix_report(); }   /* gamefix.c */
     dispatch_report();
     { void roam_game_report(void); roam_game_report(); }   /* free-roam multiplayer: statistics, goodbye to the others */
 }
@@ -161,6 +162,7 @@ int main(int argc,char**argv){
     { extern void garage_install(void); garage_install(); }   /* the career garage's slots 6-10 and Trade Car */
     { extern void olfilter_install(void); olfilter_install(); }   /* the Online lobby's Filter, once set, narrows its list */
     { extern void lobbyclick_install(void); lobbyclick_install(); }   /* the lobby's list ignores a click on a dialog over it */
+    { extern void d3dx_hle_install(void); d3dx_hle_install(); }   /* d3dx_hle.c: Stage 9's effect methods */
     if (getenv("BT")) g_bt_on = 1;
     g_report_fn = all_reports;
     com_set_trace(getenv("COMTRACE")?1:0);

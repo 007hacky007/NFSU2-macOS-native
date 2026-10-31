@@ -9,7 +9,9 @@
  * have different rates/channels (nearest-neighbor resampling). */
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AudioUnit.h>
+#import <CoreAudio/CoreAudio.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -92,7 +94,7 @@ static AudioQueueRef        g_q;
 static AudioQueueBufferRef  g_qb[NBUF];
 static AudioUnit            g_au;            /* low-latency path */
 static int g_audio_on = 0;
-static int g_backend = 0;                    /* 1 = AudioUnit, 2 = AudioQueue */
+static int g_backend = 0;                    /* 1 = AudioUnit, 2 = AudioQueue, 3 = silent clock */
 static unsigned g_au_slice = 0;              /* frames per callback */
 static uint64_t g_mixed_frames = 0, g_active_peak = 0;
 static uint64_t g_replay = 0, g_reissue = 0, g_starved = 0, g_worst_gap_us = 0;
@@ -478,8 +480,11 @@ static void mix_into(int16_t *out, unsigned frames){
     }
     horn_mix(acc, frames, OUT_RATE);              /* horns between players over the game's sound (NFSU2_HORN) */
     carsfx_mix(acc, frames, OUT_RATE);            /* ...and friends' engines, nitrous and hydraulics (NFSU2_ROAM_CARSFX) */
+    static int test_mute = -1;                 /* NFSU2_MUTE=1 (test aid): mixed as always, zeros out */
+    if (test_mute < 0){ const char *e = getenv("NFSU2_MUTE"); test_mute = e && *e && *e != '0';
+                        if (test_mute) fprintf(stderr, "sound: NFSU2_MUTE: the output is silent\n"); }
     for (unsigned k = 0; k < frames * OUT_CH; k++){
-        float v = acc[k];
+        float v = test_mute ? 0.f : acc[k];
         if (v >  1.f) v =  1.f;
         if (v < -1.f) v = -1.f;
         out[k] = (int16_t)(v * 32767.f);
@@ -559,6 +564,142 @@ fail:
     AudioComponentInstanceDispose(g_au); g_au = NULL; return 0;
 }
 
+/* ---- default output device changes --------------------------------------
+ * The AudioUnit is the default output unit, which follows the system's
+ * default device by itself, but not always: when headphones or AirPods come
+ * or go the unit may stop, or keep running on a device that is gone.  A
+ * listener on the default output device checks the unit 300 ms after each
+ * change: still running is fine, stopped is started again, and one that
+ * cannot start is rebuilt on the current default device.  If that fails (no
+ * device at all), the mixer runs on a silent clock so the game's sound
+ * buffers keep moving, and the next device change tries the unit again.
+ * (Ported from th0mk's nfsu2-web runtime/audio.m, MIT.)
+ *   NFSU2_AUDIO_FAIL_REBUILD=<n> (test aid): the next n rebuilds fail, as
+ *                                with no output device
+ *   NFSU2_AUDIO_RESET_AT=<s>[,<s>...] (test aid): s seconds after the start,
+ *                                the rebuild path runs as for a device change */
+#define AUDIO_ELEM_MAIN 0                         /* kAudioObjectPropertyElementMain (macOS 12) */
+static AudioStreamBasicDescription g_fmt;
+static dispatch_queue_t g_audio_q;
+static uint64_t g_dev_changes = 0, g_au_restarts = 0, g_au_rebuilds = 0;
+static void log_default_device(const char *why){
+    AudioObjectPropertyAddress a = { kAudioHardwarePropertyDefaultOutputDevice,
+                                     kAudioObjectPropertyScopeGlobal, AUDIO_ELEM_MAIN };
+    AudioDeviceID dev = 0; UInt32 sz = sizeof dev;
+    char name[128] = "?";
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, NULL, &sz, &dev) == noErr && dev){
+        CFStringRef cs = NULL; sz = sizeof cs;
+        AudioObjectPropertyAddress na = { kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
+                                          AUDIO_ELEM_MAIN };
+        if (AudioObjectGetPropertyData(dev, &na, 0, NULL, &sz, &cs) == noErr && cs){
+            CFStringGetCString(cs, name, sizeof name, kCFStringEncodingUTF8); CFRelease(cs); }
+    }
+    fprintf(stderr, "sound: default output device: \"%s\" (id %u, %s)\n", name, (unsigned)dev, why);
+}
+static int null_out_start(const char *why);
+static void null_out_stop(void);
+static int g_null_for_au;                         /* the silent clock stands in for the unit */
+static int g_fail_rebuilds = -1;
+static int au_start_rebuild(void){
+    if (g_fail_rebuilds < 0){ const char *e = getenv("NFSU2_AUDIO_FAIL_REBUILD"); g_fail_rebuilds = e ? atoi(e) : 0; }
+    if (g_fail_rebuilds > 0){ g_fail_rebuilds--; fprintf(stderr, "sound: rebuild made to fail (NFSU2_AUDIO_FAIL_REBUILD)\n"); return 0; }
+    return au_start(&g_fmt);
+}
+static void au_rebuild(void){
+    if (g_au){ AudioOutputUnitStop(g_au); AudioUnitUninitialize(g_au);
+               AudioComponentInstanceDispose(g_au); g_au = NULL; }
+    g_au_rebuilds++;
+    if (au_start_rebuild()) fprintf(stderr, "sound: output unit rebuilt on the current default device\n");
+    else {
+        fprintf(stderr, "sound: the output unit could not be rebuilt\n");
+        if (null_out_start("no output device")) g_null_for_au = 1;
+        else g_audio_on = 0;
+    }
+}
+static void au_check(int rebuild){
+    if (g_backend == 3 && g_null_for_au){
+        /* the silent clock stopped first so only one of them mixes */
+        null_out_stop();
+        g_au_rebuilds++;
+        if (au_start_rebuild()){
+            g_backend = 1; g_null_for_au = 0;
+            fprintf(stderr, "sound: output unit back on the current default device\n");
+        } else if (!null_out_start("still no output device")) g_audio_on = 0;
+        return;
+    }
+    if (g_backend != 1) return;
+    UInt32 run = 0, sz = sizeof run;
+    if (!rebuild && g_au &&
+        AudioUnitGetProperty(g_au, kAudioOutputUnitProperty_IsRunning, kAudioUnitScope_Global, 0, &run, &sz) == noErr && run)
+        return;
+    if (!rebuild && g_au && AudioOutputUnitStart(g_au) == noErr){
+        g_au_restarts++; fprintf(stderr, "sound: output unit had stopped, started again\n"); return; }
+    au_rebuild();
+}
+void audio_device_changed(const char *why){
+    int rebuild = !strncmp(why, "autotest", 8);
+    g_dev_changes++;
+    if (!g_audio_q) return;
+    dispatch_async(g_audio_q, ^{ log_default_device(why); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), g_audio_q, ^{ au_check(rebuild); });
+}
+static void watch_default_device(void){
+    g_audio_q = dispatch_queue_create("nfsu2.audio.device", DISPATCH_QUEUE_SERIAL);
+    AudioObjectPropertyAddress a = { kAudioHardwarePropertyDefaultOutputDevice,
+                                     kAudioObjectPropertyScopeGlobal, AUDIO_ELEM_MAIN };
+    AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &a, g_audio_q,
+        ^(UInt32 n, const AudioObjectPropertyAddress *ad){ (void)n; (void)ad;
+            audio_device_changed("device change"); });
+    log_default_device("at start");
+    for (const char *e = getenv("NFSU2_AUDIO_RESET_AT"); e && *e; e = strchr(e, ',') ? strchr(e, ',') + 1 : 0){
+        double sec = atof(e);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(sec * 1e9)), g_audio_q, ^{
+            fprintf(stderr, "sound: NFSU2_AUDIO_RESET_AT: the device change path, as after a change\n");
+            audio_device_changed("autotest reset"); });
+    }
+}
+/* the silent clock: the mixer at the output rate, its samples dropped */
+#define NULL_SLICE 512u
+static atomic_int g_null_stop, g_null_live;
+static void *null_out_main(void *ud){
+    (void)ud;
+    static int16_t out[NULL_SLICE * OUT_CH];
+    const uint64_t slice_ns = (uint64_t)NULL_SLICE * 1000000000ull / (uint64_t)OUT_RATE;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t due = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    while (!atomic_load(&g_null_stop)){
+        mix_into(out, NULL_SLICE);
+        if (g_au_slice < NULL_SLICE) g_au_slice = NULL_SLICE;
+        due += slice_ns;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+        if (now > due + 100000000ull) due = now;
+        else if (due > now){
+            struct timespec d = { (time_t)((due - now) / 1000000000ull), (long)((due - now) % 1000000000ull) };
+            nanosleep(&d, NULL);
+        }
+    }
+    atomic_store(&g_null_live, 0);
+    return NULL;
+}
+static int null_out_start(const char *why){
+    pthread_t t;
+    atomic_store(&g_null_stop, 0); atomic_store(&g_null_live, 1);
+    if (pthread_create(&t, NULL, null_out_main, NULL) != 0){
+        atomic_store(&g_null_live, 0);
+        fprintf(stderr, "sound: no output (%s), and the silent clock could not start\n", why); return 0; }
+    pthread_detach(t);
+    g_backend = 3; g_audio_on = 1;
+    fprintf(stderr, "sound: no output (%s): the mixer runs on a silent clock\n", why);
+    return 1;
+}
+static void null_out_stop(void){
+    atomic_store(&g_null_stop, 1);
+    for (int i = 0; atomic_load(&g_null_live); i++){
+        if (i == 1000) fprintf(stderr, "sound: the silent clock is slow to stop (over a second)\n");
+        struct timespec d = { 0, 1000000L }; nanosleep(&d, NULL); }
+}
+
 void audio_init(void){
     if (g_audio_on) return;
     { const char *e = getenv("NOSOUND"); if (e && *e && *e != '0') return; }
@@ -581,13 +722,14 @@ void audio_init(void){
     /* SNDBACKEND=queue goes back to the old (high-latency) path. */
     { const char *e = getenv("SNDBACKEND");
       if (!(e && *e == 'q') && au_start(&f)){
-          g_backend = 1; g_audio_on = 1;
+          g_backend = 1; g_audio_on = 1; g_fmt = f;
+          watch_default_device();
           fprintf(stderr, "sound: CoreAudio output opened (AudioUnit, %d Hz, %d channels)\n",
                   OUT_RATE, OUT_CH);
           return;
       } }
     if (AudioQueueNewOutput(&f, cb, NULL, NULL, NULL, 0, &g_q) != noErr){
-        fprintf(stderr, "sound: could not open AudioQueue\n"); return;
+        fprintf(stderr, "sound: could not open AudioQueue\n"); null_out_start("no AudioQueue"); return;
     }
     for (int i = 0; i < NBUF; i++){
         if (AudioQueueAllocateBuffer(g_q, FRAMES*OUT_CH*sizeof(int16_t), &g_qb[i]) != noErr)
@@ -598,7 +740,7 @@ void audio_init(void){
     }
     AudioQueueSetParameter(g_q, kAudioQueueParam_Volume, 1.0f);
     if (AudioQueueStart(g_q, NULL) != noErr){
-        fprintf(stderr, "sound: could not start AudioQueue\n"); return;
+        fprintf(stderr, "sound: could not start AudioQueue\n"); null_out_start("AudioQueue does not start"); return;
     }
     g_audio_on = 1; g_backend = 2;
     fprintf(stderr, "sound: CoreAudio output opened (AudioQueue, %d Hz, %d channels)\n",
@@ -639,10 +781,13 @@ void audio_report(void){
       fprintf(stderr, "  sound cursor overrun: %llu callbacks where playback passed the writer\n",
               (unsigned long long)ov); }
     fprintf(stderr, "  sound output path : %s, callback %u frames (%.1f ms queue latency)\n",
-            g_backend == 1 ? "AudioUnit" : g_backend == 2 ? "AudioQueue" : "none",
-            g_backend == 1 ? g_au_slice : (unsigned)(FRAMES*NBUF),
-            (g_backend == 1 ? (double)g_au_slice : (double)(FRAMES*NBUF))
+            g_backend == 1 ? "AudioUnit" : g_backend == 2 ? "AudioQueue" : g_backend == 3 ? "silent clock" : "none",
+            g_backend != 2 ? g_au_slice : (unsigned)(FRAMES*NBUF),
+            (g_backend != 2 ? (double)g_au_slice : (double)(FRAMES*NBUF))
                 * 1000.0 / (double)OUT_RATE);
+    fprintf(stderr, "  sound devices     : %llu default output changes, %llu unit restarts, %llu rebuilds\n",
+            (unsigned long long)g_dev_changes, (unsigned long long)g_au_restarts,
+            (unsigned long long)g_au_rebuilds);
     fprintf(stderr, "  sound dropouts    : %llu starvations, longest callback interval %.1f ms"
             " (buffer %.1f ms)\n",
             (unsigned long long)g_starved, g_worst_gap_us/1000.0,
