@@ -46,6 +46,8 @@ final class LauncherModel: ObservableObject {
     @Published var reflectDetail: Bool { didSet { defaults.set(reflectDetail, forKey: Prefs.reflectDetail) } }
     /// PictureOptions.all[i] -> chosen index (0 = the original game).
     @Published var picture: [Int] { didSet { savePicture() } }
+    let packs = TexturePackStore()       // Texture Packs (TexturePacks.swift)
+    private var setTexpacks = false      // NFSU2_TEXPACKS was set by us
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -108,6 +110,7 @@ final class LauncherModel: ObservableObject {
 
     private func savePicture() {
         for (o, i) in zip(PictureOptions.all, picture) { defaults.set(i, forKey: o.key) }
+        packs.game = { [weak self] in self?.location?.folder }
     }
 
     var location: GameLocation? {
@@ -189,6 +192,13 @@ final class LauncherModel: ObservableObject {
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
+        // Texture Packs that are on, highest first (engine: runtime/texrep.m).  One given by
+        // the caller wins; otherwise it follows the list.
+        if setTexpacks || env["NFSU2_TEXPACKS"] == nil {
+            let on = packs.enabledPaths
+            if !on.isEmpty { setenv("NFSU2_TEXPACKS", on.joined(separator: ":"), 1); setTexpacks = true }
+            else if setTexpacks { unsetenv("NFSU2_TEXPACKS"); setTexpacks = false }
+        }
         if uhud && hasUHUDPack {
             setenv("NFSU2_UHUD", "on", 0)
             setenv("NFSU2_UHUD_PACK", Paths.uhudPack.path, 0)

@@ -1,6 +1,6 @@
 // The UHUD texture pack: LunicAura106's "Upscaled HUD" mod (nfsmods.xyz/mod/4319),
 // the menus, HUD, fonts, icons and logos redrawn at four times their size, made
-// into one file the engine reads (runtime/uhud.m).  After th0mk's nfsu2-web
+// into one file the engine reads (runtime/texrep.m).  After th0mk's nfsu2-web
 // tools/texpacks.py, which writes the same file.
 //
 // The mod is not part of this app.  The launcher's Download button fetches its
@@ -45,13 +45,17 @@ enum UHUDPack {
         return try make(mod: file, game: game, to: dest)
     }
 
-    /// One download into a temporary .7z, waiting for it (call it off the main thread).
+    /// One download into a temporary file, waiting for it (call it off the main thread).
+    /// host and hint: for the message when it fails (TexturePacks.swift uses it too).
     final class Downloader: NSObject, URLSessionDownloadDelegate {
         private let progress: (Int64) -> Void
+        private let host: String, hint: String
         private let done = DispatchSemaphore(value: 0)
         private var file: URL?
         private var failure: Error?
-        init(progress: @escaping (Int64) -> Void) { self.progress = progress }
+        init(progress: @escaping (Int64) -> Void, host: String = "nfsmods.xyz", hint: String = "use Add File…") {
+            self.progress = progress; self.host = host; self.hint = hint
+        }
 
         func fetch(_ url: URL) throws -> URL {
             let cfg = URLSessionConfiguration.ephemeral
@@ -61,7 +65,7 @@ enum UHUDPack {
             done.wait()
             s.finishTasksAndInvalidate()
             if let f = file { return f }
-            throw Failure(message: "The mod could not be downloaded (\((failure as? Failure)?.message ?? failure?.localizedDescription ?? "no answer from nfsmods.xyz")). Try again later, or download it from its page and use Add File….")
+            throw Failure(message: "The mod could not be downloaded (\((failure as? Failure)?.message ?? failure?.localizedDescription ?? "no answer from \(host)")). Try again later, or download it from its page and \(hint).")
         }
         func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64,
                         totalBytesWritten: Int64, totalBytesExpectedToWrite _: Int64) {
@@ -72,7 +76,8 @@ enum UHUDPack {
                 failure = Failure(message: "HTTP \((downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0)"); return
             }
             // the system removes location when this returns
-            let f = FileManager.default.temporaryDirectory.appendingPathComponent("nfsu2-uhud-\(UUID().uuidString).7z")
+            let ext = downloadTask.originalRequest?.url?.pathExtension ?? ""
+            let f = FileManager.default.temporaryDirectory.appendingPathComponent("nfsu2-download-\(UUID().uuidString)" + (ext.isEmpty ? "" : "." + ext))
             do { try FileManager.default.moveItem(at: location, to: f); file = f } catch { failure = error }
         }
         func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

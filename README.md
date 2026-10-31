@@ -348,7 +348,37 @@ leaves the game folder as it is; the switch that then appears turns the mod on
 (off is the original game). While
 playing, **Cmd-T** switches between the mod's textures and the game's own. From
 the command line: `NFSU2_UHUD=on`, with the pack in `NFSU2_UHUD_PACK` or in the
-game folder's `TEXPACKS/uhud.pak` (runtime/uhud.m).
+game folder's `TEXPACKS/uhud.pak` (runtime/texrep.m).
+
+**Texture packs.** The launcher's Texture Packs window (**Manage…** in the
+Graphics card) handles the community's texture mods: TexMod packs (`.tpf`),
+TexWizard packs, mods that replace the game's texture files, and DDS or PNG files
+named after the game's textures. None of them is part of this repository.
+**Import Texture Pack…** takes any of them, as downloaded (`.zip`, `.7z`, `.rar`,
+`.tpf` or a folder). The window also lists 38 popular packs (nfsmods.xyz's most
+viewed NFSU2 texture and interface mods, and large packs hosted elsewhere) with a
+search and categories; **Details** opens a pack's page. The 27 releases that were
+tested with this port on both game versions have **Download**, which fetches that
+release from the author's page and checks it by SHA-256; the others are
+downloaded on their page and imported. The launcher makes one pack file per mod
+in `~/Library/Application Support/NFSU2/TexturePacks/` and leaves the game folder
+as it is; a mod with a symbolic link in it is refused. Each pack has its own
+switch; where two change the same texture, the higher one in the list wins, and
+the Upscaled HUD comes after all of them. With no pack on, the game looks as in
+the original. The engine draws a pack's texture in place of the game's own, which
+keeps its own size, so the game never sees the larger textures. **Cmd-T** while
+playing switches between the packs' textures and the game's own. From the command
+line: `NFSU2_TEXPACKS=<pack>[:<pack>...]`.
+
+The list is `launcher/texture-packs.json`, built into the app. When the window
+opens, the launcher also reads the same file from this repository's main branch
+(once per launch, over HTTPS, checked strictly) and keeps the last good copy, so a
+pack whose author uploads a new file is fixed by a one-line change to that file,
+with no new app release; a download is always checked against the list's SHA-256.
+`tools/check_texpacks.py [--full]` says which downloads still serve the tested
+file. `tests/texture_packs.sh` checks that mods with links are refused, that the
+list falls back to the app's own copy when the fetched one is missing or invalid,
+and that Download refuses any other file.
 
 ## FAQ
 

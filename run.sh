@@ -51,7 +51,9 @@ fi
 # In game, Cmd-N: the frame-rate counter, off -> on -> detailed (remembered);
 #   NFSU2_FPS_COUNTER=off|on|detailed sets it for one run (runtime/fpscounter.m).
 # NFSU2_UHUD=on: the Upscaled HUD mod's menus and HUD (NFSU2_UHUD_PACK=<uhud.pak>, otherwise
-#   TEXPACKS/uhud.pak in the game folder; the launcher makes it); Cmd-T switches (runtime/uhud.m).
+#   TEXPACKS/uhud.pak in the game folder; the launcher makes it); Cmd-T switches (runtime/texrep.m).
+# NFSU2_TEXPACKS=<pack>[:<pack>...]: the launcher's Texture Packs, the first one wins where two
+#   change the same texture (UHUD comes after them); NFSU2_TEXPACKS_LOG=1 one line per texture.
 MODE="${1:-window}"
 case "$MODE" in
   hd)      NFSHD=1; MODE=window ;;

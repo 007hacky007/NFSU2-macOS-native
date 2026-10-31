@@ -95,6 +95,8 @@ else
   cp "$BIN" "$APP/Contents/MacOS/NFSU2"     # old layout: the engine is the executable
 fi
 chmod +x "$APP/Contents/MacOS/"*
+# the Texture Packs window's list (launcher/TexturePackCatalog.swift)
+cp "$ROOT/launcher/texture-packs.json" "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # --- icon ---

@@ -195,6 +195,7 @@ struct GraphicsCard: View {
                 .fixedSize()
             }
             UHUDRow(model: model)
+            TexturePacksRow(model: model, store: model.packs)
         }
     }
 }
@@ -539,6 +540,6 @@ struct LauncherView: View {
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
         }
-        .frame(width: 560, height: 1244)
+        .frame(width: 560, height: 1286)
     }
 }

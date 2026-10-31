@@ -52,6 +52,8 @@
 #define GA_0x005BA11Du 0x005ba10du   /* function 005ba070 + 0xad */
 #define GA_0x005BA1DDu 0x005ba1cdu   /* function 005ba1b0 + 0x2d */
 #define GA_0x005BA559u 0x005ba549u   /* function 005ba4c0 + 0x99 */
+#define GA_0x005CE2EAu 0x005ce2dau   /* function 005ce180 + 0x16a */
+#define GA_0x005CE30Eu 0x005ce2feu   /* function 005ce180 + 0x18e */
 #define GA_0x005c6766u 0x005c6756u   /* function 005c6530 + 0x236 */
 #define GA_0x005c7ffeu 0x005c7feeu   /* function 005c7ed0 + 0x12e */
 #define GA_0x005cab69u 0x005cab59u   /* function 005caae0 + 0x89 */
