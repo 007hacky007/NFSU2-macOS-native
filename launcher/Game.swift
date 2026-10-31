@@ -104,6 +104,7 @@ enum Languages {
                 || child(l.file, in: child("LANGUAGES", in: child(l.id, in: packs))) != nil
         }.map { $0.id }
     }
+    static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
 }
 
 enum Locator {

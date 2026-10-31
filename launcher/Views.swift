@@ -178,6 +178,22 @@ struct GraphicsCard: View {
                 .labelsHidden()
                 .fixedSize()
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Other cars' headlights").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Light the road as yours do. Players: the other players' cars in network races; All cars: AI racers and traffic too.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Picker("", selection: $model.headlights) {
+                    Text("Players").tag("players")
+                    Text("All cars").tag("all")
+                    Text("Off (original)").tag("off")
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
         }
     }
 }

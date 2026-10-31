@@ -26,6 +26,7 @@ final class LauncherModel: ObservableObject {
     private var engineForced = false     // NFSU2_ENGINE: this start only, not saved
     @Published var fullscreen: Bool { didSet { defaults.set(fullscreen, forKey: Prefs.fullscreen) } }
     @Published var fpsCounter: Int { didSet { defaults.set(fpsCounter, forKey: Prefs.fpsCounter) } }
+    @Published var headlights: String { didSet { defaults.set(headlights, forKey: Prefs.headlights) } }
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
@@ -61,6 +62,7 @@ final class LauncherModel: ObservableObject {
         language = defaults.string(forKey: Prefs.language) ?? "english"
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         fpsCounter = min(max(defaults.integer(forKey: Prefs.fpsCounter), 0), 2)
+        headlights = defaults.string(forKey: Prefs.headlights) ?? "players"
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         allCars = defaults.bool(forKey: Prefs.allCars)
@@ -135,6 +137,7 @@ final class LauncherModel: ObservableObject {
         }
         if !allCars { setenv("NFSU2_ALL_CARS", "0", 0) }          // one set by hand wins
         if intro != "skippable" { setenv("NFSU2_INTRO", intro, 0) }      // one set by hand wins
+        if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path
