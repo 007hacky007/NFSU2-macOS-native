@@ -289,7 +289,8 @@ portable app with the game files inside (APFS clones, seconds on the same disk),
 so nobody needs `pack.sh --embed` or a terminal for that. Untick "Show this
 window when the app opens" to go straight into the game (hold Option to get the
 window back). `NFSU2_SKIP_LAUNCHER=1` / `NFSU2_ENGINE=original|hd` do the same
-from scripts.
+from scripts. The Controller card turns the game controller on or off and sets its stick
+dead zone (`NFSU2_PAD` / `NFSU2_PAD_DEADZONE`, which still win when set by hand).
 
 ![Launcher window](screenshots/selected/launcher.png)
 
