@@ -150,6 +150,22 @@ struct GraphicsCard: View {
                 Spacer(minLength: 8)
                 Toggle("", isOn: $model.wideHUD).labelsHidden().toggleStyle(SwitchToggleStyle())
             }
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Frame-rate counter").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    Text("Cmd-N switches while playing.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                }
+                Spacer(minLength: 8)
+                Picker("", selection: $model.fpsCounter) {
+                    Text("Off").tag(0)
+                    Text("On").tag(1)
+                    Text("Detailed").tag(2)
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .labelsHidden()
+                .fixedSize()
+            }
         }
     }
 }

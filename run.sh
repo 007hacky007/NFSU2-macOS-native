@@ -25,6 +25,8 @@ fi
 #   Details: runtime/enhance.c, runtime/metal.m (sections of the same name)
 # In game, Cmd+Shift+D: a PNG of that frame + the draw list (~/Library/Logs/NFSU2/
 #   or the PERFLOG directory).  Measurement recording while playing: tools/session.sh [hd].
+# In game, Cmd-N: the frame-rate counter, off -> on -> detailed (remembered);
+#   NFSU2_FPS_COUNTER=off|on|detailed sets it for one run (runtime/fpscounter.m).
 MODE="${1:-window}"
 case "$MODE" in
   hd)      NFSHD=1; MODE=window ;;
