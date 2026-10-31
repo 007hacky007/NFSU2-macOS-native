@@ -83,8 +83,8 @@ watchdog:watchdog_loading.txt:no Present for:ALARM=400
 fespinners:fe_spinners.txt:LOG SPINDONE:
 cutscenes60:cutscenes60.txt:[expect] PASS:NFSU2_CUTSCENES_60=1 NFSU2_FPS=120
 heapreset:heap_resetloop.txt:[status] after_reset_8:
-padrace:pad_quickrace.txt:$FLOW:
-padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:
+padrace:pad_quickrace.txt:$FLOW:NFSU2_PAD_FAKE=PLUG=1
+padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:NFSU2_PAD_FAKE=PLUG=1
 kbprofile:kb_profile.txt:LOG Cmd-Q now:
 kbfocus:kb_focus_mouse.txt:$FLOW:
 wscameras:ws_cameras.txt:$FLOW:

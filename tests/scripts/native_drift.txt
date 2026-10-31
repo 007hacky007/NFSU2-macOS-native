@@ -1,4 +1,5 @@
 # New synthetic career -> free roam -> native drift HUD -> normal handling.
+# Run with NFSU2_DRIFT=1 (drift mode is off unless the launcher turns it on).
 0     tapuntil RETURN MC_Background.fng 120 4000
 +120  tap LEFT
 +30   tap RETURN

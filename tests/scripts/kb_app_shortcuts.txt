@@ -6,10 +6,11 @@
 # reason no app shortcut uses Shift, Control or Option: they are the game's
 # gear and nitrous keys), the T never does.  Run with NFSU2_KEY_LOG=1 (every
 # message the game gets is logged as "[key]   -> ..."), NFSU2_FPS_COUNTER_LOG=1
-# and a texture pack in use (NFSU2_TEXTURES=upscaled, NFSU2_TEXPACK=<pack>)
-# so the toggle's menu item exists.  The name field keeps letters and digits
+# and a texture pack in use (NFSU2_TEXPACKS=<pack.ntxp>) so the toggle's
+# menu item exists (without one Cmd-T is still a Command key: the game never
+# sees the T).  The name field keeps letters and digits
 # (7 at most): "Ab", the shortcuts, "cd" must give "Abcd" with no N or T in
-# it.  ${TEXKEY} = the toggle's key (T).
+# it.  TEXKEY=T: the toggle's key (an environment variable of the run).
 0     nstapuntil RETURN MC_Background.fng 120 4000  # title -> "create a new profile?"
 +120  nstap LEFT                                    # "Yes"
 +30   nstap RETURN

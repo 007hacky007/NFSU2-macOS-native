@@ -73,3 +73,10 @@ career_cover*, career_lot_badstock, dyno_units, career_outrun) need
 hosts again (`lan_host_short.txt`); on this branch the game faults in
 server.dll's threads after leaving (the module is unloaded while they run),
 so it is not in the default list.
+
+Some scripts need a variable of the feature they test (their headers say
+which): NFSU2_PHOTO=1 (photo_mode, native_photo, native_headlights),
+NFSU2_DRIFT=1 (native_drift), TEXKEY=T (kb_app_shortcuts), NFSU2_HORN=1 (the
+horn ones).  The pad scripts take the synthetic controller; with a real one
+connected to the Mac, run them with NFSU2_PAD_FAKE=PLUG=1 so the real one does
+not take over.
