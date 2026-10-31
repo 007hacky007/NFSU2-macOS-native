@@ -134,6 +134,30 @@ class BuilderCliTests(unittest.TestCase):
         self.assertEqual((game / 'SPEED2.EXE').read_bytes(), b'other supported exe')
         self.assertEqual(sorted(p.name for p in game.parent.iterdir()), ['NFSU2'])
 
+    def test_unverified_files_keep_their_quarantine(self):
+        source = self.tmp / 'Downloaded Game'
+        (source / 'GLOBAL').mkdir(parents=True)
+        (source / 'GLOBAL/GLOBALB.LZC').write_text('global')
+        (source / 'Tool.app/Contents/MacOS').mkdir(parents=True)
+        (source / 'Tool.app/Contents/MacOS/Tool').write_text('#!/bin/sh\n')
+        flag = '0081;00000000;Browser;'
+        for extra in ('GLOBAL/GLOBALB.LZC', 'Tool.app/Contents/MacOS/Tool'):
+            subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', flag, str(source / extra)], check=True)
+        exe = self.tmp / 'SPEED2.EXE'
+        exe.write_bytes(b'supported exe')
+        subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', flag, str(exe)], check=True)
+        game = self.tmp / 'Games/NFSU2'
+        with contextlib.redirect_stdout(io.StringIO()):
+            builder_cli.prepare_game(game, exe, [source])
+
+        def quarantine(path):
+            return subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)],
+                                  capture_output=True, text=True).stdout.strip()
+        self.assertEqual(quarantine(game / 'Tool.app/Contents/MacOS/Tool'), flag)
+        self.assertEqual(quarantine(game / 'GLOBAL/GLOBALB.LZC'), flag)
+        self.assertEqual(quarantine(game / 'SPEED2.EXE'), '', 'only the verified SPEED2.EXE is cleared')
+        self.assertEqual(quarantine(source / 'Tool.app/Contents/MacOS/Tool'), flag)
+
     def test_prepare_game_refuses_a_folder_it_did_not_make(self):
         game = self.tmp / 'Games/NFSU2'
         game.mkdir(parents=True)

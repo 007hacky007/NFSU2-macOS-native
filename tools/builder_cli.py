@@ -114,8 +114,11 @@ def copy_tree(source, target):
             raise BuildError(f'could not copy {name} from the game folder: {result.stderr.strip()}')
 
 
-def remove_quarantine(folder):
-    subprocess.run(['/usr/bin/xattr', '-dr', 'com.apple.quarantine', str(folder)], capture_output=True)
+def remove_quarantine(path):
+    """Only for what the Builder verified or produced itself: the SPEED2.EXE that matched a
+    supported checksum and the built NFSU2.app. Copied game data keeps its attributes (the
+    game only reads it, and quarantine does not stop reading)."""
+    subprocess.run(['/usr/bin/xattr', '-dr', 'com.apple.quarantine', str(path)], capture_output=True)
 
 
 def prepare_game(game, exe, data):
@@ -157,7 +160,7 @@ def prepare_game(game, exe, data):
         shutil.copyfile(exe, work / 'SPEED2.EXE')
         if sha256(work / 'SPEED2.EXE') != exe_sha:
             raise BuildError('SPEED2.EXE did not copy correctly')
-        remove_quarantine(work)
+        remove_quarantine(work / 'SPEED2.EXE')   # verified against the supported checksums
         (work / MARKER).write_text(json.dumps(record, indent=2) + '\n')
         trash = None
         if game.exists():
