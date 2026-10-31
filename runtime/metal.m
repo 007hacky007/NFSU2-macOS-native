@@ -1148,6 +1148,7 @@ static id<MTLTexture> g_tex[MAXTEX];
 static unsigned       g_texn = 1;            /* 0 = "no texture" (white) */
 _Static_assert(MAXTEX == TEXREP_MAXTEX, "texrep.h TEXREP_MAXTEX");
 id<MTLDevice> metal_device(void){ return g_dev; }    /* texrep.m's loader */
+id<MTLTexture> metal_tex_object(unsigned id_){ return id_ < MAXTEX ? g_tex[id_] : nil; }   /* texrep.m, main thread */
 /* --- releasing render targets on Reset --------------------------------
  * In D3D9 the game must release ALL D3DPOOL_DEFAULT resources (render targets
  * included) before Reset, otherwise Reset fails.  We never released the Metal
@@ -4189,6 +4190,8 @@ static id<MTLSamplerState> samp_for(unsigned k){
     { static float lmx = -1.f;
       if (lmx < 0.f){ const char *e = ENVC("LODMAX"); lmx = e ? (float)atof(e) : 1e9f; }
       if (lmx < 1e8f) sd.lodMaxClamp = lmx; }
+    /* bits 15-17: texrep.m's LOD clamp for replaced textures (texrep_skey_slow) */
+    if ((k >> 15) & 7u) sd.lodMaxClamp = fminf(sd.lodMaxClamp, (float)((k >> 15) & 7u));
     { static int noan = -1;
       if (noan < 0){ const char *e = ENVC("NOANISO"); noan = (e && *e && *e!='0'); }
       sd.maxAnisotropy = (!noan && (mn==3u || mg==3u)) ? an : 1; }
@@ -6612,7 +6615,7 @@ void metal_run_main_loop(void){
                       + (unsigned long long)_d1.tv_nsec - (unsigned long long)_d0.tv_nsec);
                     if (dtex){
                         struct timespec _e0; clock_gettime(CLOCK_MONOTONIC,&_e0);
-                        texrep_main_frame();            /* the texture packs' textures (texrep.m) */
+                        texrep_main_frame(g_queue);     /* the texture packs' textures (texrep.m) */
                         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
                         pp_begin(atomic_load(&g_frames_drawn) + 1);
                         int ab_count = 0;
@@ -7694,7 +7697,8 @@ void metal_run_main_loop(void){
                                                      blue:(float)(dr->bcol&0xFFu)/255.f
                                                     alpha:(float)((dr->bcol>>24)&0xFFu)/255.f]; }
                                 for (int si = 0; si < 4; si++){
-                                    unsigned sk = dr->smp[si];
+                                    unsigned sk = texrep_skey(si == 0 ? dr->tex : si == 1 ? dr->tex1 : si == 2 ? dr->tex2 : dr->tex3,
+                                                              dr->smp[si]);
                                     /* mip filter LINEAR (bits 4-5 = 2): a level() read
                                      * is ignored on a sampler without mips. */
                                     if (hd_blur) sk = (sk & ~0x30u) | 0x20u;
