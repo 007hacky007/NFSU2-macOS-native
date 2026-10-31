@@ -97,6 +97,7 @@ void guest_hook(CPU *c, uint32_t ip){
     { int sndlead_hook(CPU *, uint32_t); if (sndlead_hook(c, ip)) return; }   /* sndlead.c */
     { int racenet_hook(CPU *, uint32_t); racenet_hook(c, ip); }   /* racenet.c: network races, every frame */
     { int roam_hook(CPU *, uint32_t); if (roam_hook(c, ip)) return; }   /* roam.c: free-roam multiplayer */
+    { int hornmenu_hook(CPU *, uint32_t); if (hornmenu_hook(c, ip)) return; }   /* hornmenu.c: the Horn Volume slider */
     if (ip == GA(0x0065ae35u)){
         uint32_t a1=MR32(c->esp+4u), a2=MR32(c->esp+8u), a3=MR32(c->esp+12u);
         if (!g_rec_esp0) g_rec_esp0 = c->esp;

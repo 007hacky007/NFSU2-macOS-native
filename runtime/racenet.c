@@ -62,6 +62,7 @@
  * Ported from th0mk's nfsu2-web (MIT). */
 #include "cpu.h"
 #include "racenet.h"
+#include "horn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -313,7 +314,8 @@ static void end(uint64_t t){
     R.on = 0;
 }
 
-/* what came to FS_PORT, at most 64 a frame */
+/* what came to FS_PORT, at most 64 a frame.  The horns share the port: while
+ * they are on, racehorn.c reads it and hands the N2FS here. */
 static void hear(void){
     uint8_t m[64]; uint32_t from; int n;
     for (int i = 0; i < 64 && (n = vlan_rt_recv(FS_PORT, &from, m, sizeof m)) >= 0; i++) racenet_heard(m, n, from);
@@ -322,7 +324,7 @@ static void hear(void){
 /* every frame, on the game thread (racenet_hook) */
 void racenet_frame(CPU *c){
     (void)c;
-    if (rd32(G_NETMODE) & 0x208u) hear();
+    if ((rd32(G_NETMODE) & 0x208u) && !horn_on()) hear();
     uint32_t pl = rd32(G_PLAYER1), me = pl ? rd32(pl + 4u) : 0, w = rd32(G_WORLD), rc = rd32(G_RACE);
     int racing = rd32(G_FLOW) == 6u && (rd32(G_NETMODE) & 0x208u) && ok(me, 0x9e0) && ok(w, 0x80) && rd32(rc) == RC_RACING &&
                  !finished(rc, me);

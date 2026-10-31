@@ -605,6 +605,15 @@ static void reg_put_string(const char *nm, const char *v){
                 snprintf(g_reg[i].name, 64, "%s", nm); }
     g_reg[i].is_str = 1; snprintf(g_reg[i].sv, 128, "%s", v); reg_save();
 }
+/* A DWORD value of our own (hornmenu.c's HornVolume): read, and set with
+ * the file written at once. */
+int win32_reg_get_dword(const char *nm, uint32_t *out){
+    int i = reg_find(nm);
+    if (i < 0 || g_reg[i].is_str) return 0;
+    *out = g_reg[i].dw;
+    return 1;
+}
+void win32_reg_put_dword(const char *nm, uint32_t v){ reg_put_dword(nm, v); }
 
 int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     uint32_t r = 0;

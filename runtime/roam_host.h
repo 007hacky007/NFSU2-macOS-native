@@ -21,12 +21,23 @@
  *                           (in the game's language)
  *   RH_FE_NODES             the most objects FEng draws of one package (its
  *                           level sorter's nodes)
+ *   rh_horn_on()            horns are on (horn.h's horn_on)
+ *   rh_horn_held()          1 while the horn key is held (horn.h's horn_held)
+ *   rh_horn_mine()          the player's horn (horn.h's horn_mine), -1: none
+ *   rh_horn_name(kind)      a horn's name (horn.h's horn_name)
+ *   rh_horn_begin/rh_horn_sound/rh_horn_end
+ *                           a frame of horns (horn.h's horn_begin, ...)
+ *   rh_carsfx_begin/rh_carsfx_car/rh_carsfx_end
+ *                           a frame of friends' engines, nitrous and hydraulics
+ *                           (carsfx.h's carsfx_begin, ...)
  *
  * Ported from th0mk's nfsu2-web runtime/roam_host.h (MIT).
  */
 #ifndef ROAM_HOST_H
 #define ROAM_HOST_H
 #include "cpu.h"
+#include "horn.h"
+#include "carsfx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +59,16 @@ int  roam_no_profile(const char *name);      /* roam.c */
 #define rh_heap_mb()     0u
 #define rh_hud_marker(x, y) roam_hud_marker((x), (y))
 #define rh_no_profile(n) roam_no_profile(n)
+#define rh_horn_on()     horn_on()
+#define rh_horn_held()   horn_held()
+#define rh_horn_mine()   horn_mine()
+#define rh_horn_name(k)  horn_name(k)
+#define rh_horn_begin(pos, fwd, vel)   horn_begin((pos), (fwd), (vel))
+#define rh_horn_sound(who, name, kind, p, v) horn_sound((who), (name), (kind), (p), (v))
+#define rh_horn_end()    horn_end()
+#define rh_carsfx_begin(pos, fwd, vel)    carsfx_begin((pos), (fwd), (vel))
+#define rh_carsfx_car(who, name, p, v, st) carsfx_car((who), (name), (p), (v), (st))
+#define rh_carsfx_end()  carsfx_end()
 typedef FILE rh_file;
 #define rh_fopen(p)      fopen((p), "w")
 #define rh_fprintf       fprintf

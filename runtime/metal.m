@@ -327,6 +327,10 @@ static _Atomic long g_key_tap_until[256];
 void metal_key_tap(unsigned dik, long frames){
     if (dik < 256) atomic_store(&g_key_tap_until[dik], atomic_load(&g_frames_drawn) + (frames > 0 ? frames : 1));
 }
+/* A key held now, as the game reads it (horn.c's horn key) */
+int metal_key_down(unsigned dik){
+    return dik < 256 && (atomic_load(&g_keys[dik]) || atomic_load(&g_key_tap_until[dik]) > atomic_load(&g_frames_drawn));
+}
 
 /* Guest side: fill the DirectInput keyboard state */
 void metal_fill_keyboard(unsigned char *dst, unsigned n){
