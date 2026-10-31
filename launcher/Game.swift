@@ -125,6 +125,11 @@ enum Prefs {
     static let background = "LauncherBackground"           // NFSU2_BACKGROUND: pause | run
     static let photoMode = "LauncherPhotoMode"     // NFSU2_PHOTO=1: photo mode and F12 screenshots
     static let driftMode = "LauncherDriftMode"     // NFSU2_DRIFT=1: drift mode in free roam (X)
+    static let upscaled = "LauncherUpscaledTextures"       // NFSU2_TEXTURES=upscaled (UpscaleStore.swift)
+    static let upscaledParts = "LauncherUpscaledParts"     // NFSU2_TEXPARTS
+    static let upscaledBudget = "LauncherUpscaledBudget"   // NFSU2_TEXBUDGET (MB, 0: automatic)
+    static let upscaledScale = "LauncherUpscaledScale"     // the pack's scale: 0 automatic, 2, 4
+    static let upscaledCollect = "LauncherUpscaledCollect" // NFSU2_TEXDUMP: collect textures for the next build
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
@@ -152,6 +157,7 @@ enum Prefs {
         OriginalValue(\.intro, "original"),
         OriginalValue(\.discord, false),
         OriginalValue(\.uhud, false),
+        OriginalValue(\.upscaledTextures, false),
         OriginalValue(\.music, "game"),
         OriginalValue(\.seedRegistry, false),
         OriginalValue(\.lanTiming, "pc"),

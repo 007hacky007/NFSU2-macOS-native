@@ -19,7 +19,8 @@
 //                                fake state for the snapshot (uhud: ready, with a UHUD pack added;
 //                                uhud-busy: downloading it; texpacks: two texture packs, one on;
 //                                texpacks-window: the Texture Packs window with them; texpacks-busy:
-//                                the same, one downloading)
+//                                the same, one downloading; upscaled-window: the window with the
+//                                upscaled texture pack made and on; upscaled-busy: it being made)
 //   NFSU2_LAUNCHER_TEST=portable:<game folder>:<destination.app>   build a portable copy, quit
 //                                (NFSU2_LAUNCHER_TEST_LEAVE_OUT=MOVIES,LANGPACKS: without those)
 //   NFSU2_LAUNCHER_TEST=uhud:<mod .7z or folder>:<game folder>:<pack>   make a UHUD pack, quit
@@ -30,6 +31,15 @@
 //                                Application Support/NFSU2/TexturePacks, quit
 //   NFSU2_LAUNCHER_TEST=texpack-catalog:<store>   load and fetch the texture pack list, say which one is used
 //   NFSU2_LAUNCHER_TEST=texpack-import:<catalog id or ->:<mod>:<game folder>:<store>   Import… the same way
+//   NFSU2_LAUNCHER_TEST=upscale:<game folder>:<pack folder>[:<n>[:<hash,hash...>]]   build the
+//                                upscaled texture pack (UpscaleBuilder.swift) with the model in
+//                                NFSU2_UPSCALE_MODEL (or the launcher's), at most n textures, quit
+//   NFSU2_LAUNCHER_TEST=upscale-build:<game folder>:<store>   Build as the button does (model
+//                                fetched from its page when missing), into <store>, quit
+//   NFSU2_LAUNCHER_TEST=upscale-import:<model file>:<store>   Import Model… with this file, quit
+//   NFSU2_LAUNCHER_TEST=upscale-scan:<game folder>   the textures the builder finds, quit
+//   NFSU2_LAUNCHER_TEST=upscale-verify:<game folder>:<pack>   each pack file's averages against
+//                                the game's texture (PSNR), quit
 //   NFSU2_LAUNCHER_TEST=play     window off screen, press Play after a second (tests the
 //                                normal path: window open -> Play -> engine)
 //   NFSU2_LAUNCHER_TEST=mods:<game folder>:<id,id...>   build the data mods' files for
@@ -103,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
+        if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("upscale"), runUpscaleTest(t) { return }
         if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("langpack:") {
             let parts = t.dropFirst("langpack:".count).split(separator: ":", maxSplits: 2).map(String.init)
             guard parts.count >= 2 else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
@@ -167,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(calibratedRed: 0.067, green: 0.071, blue: 0.082, alpha: 1)
         w.contentView = NSHostingView(rootView: LauncherView(model: model) { [weak self] in self?.showSettings(nil) })
-        if ["texpacks-window", "texpacks-busy"].contains(env["NFSU2_LAUNCHER_STATE"] ?? "") {
+        if ["texpacks-window", "texpacks-busy", "upscaled-window", "upscaled-busy"].contains(env["NFSU2_LAUNCHER_STATE"] ?? "") {
             let tw = TexturePackWindow.make(store: model.packs, model: model)
             w.setContentSize(TexturePackWindow.size); w.contentView = tw.contentView
         }
@@ -240,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.uhudBusy = true
             model.uhudPhase = "Downloading the mod from nfsmods.xyz… 1.2 MB of 2.8 MB"
-        case "texpacks", "texpacks-window", "texpacks-busy":
+        case "texpacks", "texpacks-window", "texpacks-busy", "upscaled-window", "upscaled-busy":
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.packs.fake([
                 InstalledPack(id: "remastered-ug2", name: "Remastered Underground 2", author: "instanity", file: "remastered-ug2.ntxp",
@@ -248,6 +259,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 InstalledPack(id: "retextured", name: "RETextured v2.0", author: "Dragozool", file: "retextured.ntxp",
                               enabled: false, textures: 205, bytes: 191_036_416, source: "Imported from nfsu2retex20.zip"),
             ])
+            if s == "upscaled-window" {
+                model.upscaled.fake(info: UpscaleStore.Info(textures: 1994, bytes: 1_194_328_064, scale: 4, built: "2026-10-31"))
+                model.upscaledTextures = true
+            } else if s == "upscaled-busy" {
+                model.upscaled.fake(info: nil, phase: "Upscaling 812 of 2369… about 4 min left", fraction: 0.34)
+            }
             if s == "texpacks-busy" {
                 model.packs.phase["scout-ui"] = "Downloading from nfsmods.xyz… 4.6 MB of 11.7 MB"
                 model.packs.fraction["scout-ui"] = 0.4
