@@ -124,7 +124,10 @@ void vclock_tick(void){
       uint64_t step = fstep;
       if (m && rb && now > rb){
           step = now - rb;
-          if (step < 4000ull)  step = 4000ull;    /* above 250 fps: clamp */
+          /* above 250 fps: clamp.  4 ms up to 120 fps, less at 240 (framerate.c),
+           * where frames often come in under 4 ms */
+          { uint64_t hfr_vclock_floor_us(void); uint64_t fl = hfr_vclock_floor_us();
+            if (step < fl) step = fl; }
           if (step > 50000ull) step = 50000ull;   /* huge dt -> catch-up loop */
       }
       atomic_fetch_add(&g_vclock_base, step + cr); }

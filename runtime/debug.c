@@ -100,6 +100,7 @@ void guest_hook(CPU *c, uint32_t ip){
     { int garage_hook(CPU *, uint32_t); if (garage_hook(c, ip)) return; }   /* garage.c */
     { int refl_hook(CPU *, uint32_t); if (refl_hook(c, ip)) return; }   /* reflect.c */
     { int visual_hook(CPU *, uint32_t); if (visual_hook(c, ip)) return; }   /* visual.c */
+    { int hfr_hook(CPU *, uint32_t); if (hfr_hook(c, ip)) return; }   /* framerate.c */
     if (ip == GA(0x0065ae35u)){
         uint32_t a1=MR32(c->esp+4u), a2=MR32(c->esp+8u), a3=MR32(c->esp+12u);
         if (!g_rec_esp0) g_rec_esp0 = c->esp;

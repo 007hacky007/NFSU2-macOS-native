@@ -48,6 +48,11 @@ final class LauncherModel: ObservableObject {
     @Published var picture: [Int] { didSet { savePicture() } }
     let packs = TexturePackStore()       // Texture Packs (TexturePacks.swift)
     private var setTexpacks = false      // NFSU2_TEXPACKS was set by us
+    @Published var frameRate: String { didSet { defaults.set(frameRate, forKey: Prefs.frameRate) } }
+    @Published var cutscenes60: Bool { didSet { defaults.set(cutscenes60, forKey: Prefs.cutscenes60) } }
+    @Published var cutsceneBars: Bool { didSet { defaults.set(cutsceneBars, forKey: Prefs.cutsceneBars) } }
+    /// NFSU2_FPS values; the labels are in FrameRateCard.
+    static let frameRates = ["auto", "30", "60", "120", "240"]
     @Published var job: Job? = nil
     @Published var notice: String? = nil
     // Data mods (DataMods.swift): which are turned on, what each one's row says while
@@ -77,7 +82,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true])
+        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -111,6 +116,10 @@ final class LauncherModel: ObservableObject {
     private func savePicture() {
         for (o, i) in zip(PictureOptions.all, picture) { defaults.set(i, forKey: o.key) }
         packs.game = { [weak self] in self?.location?.folder }
+        let fr = defaults.string(forKey: Prefs.frameRate) ?? "auto"
+        frameRate = LauncherModel.frameRates.contains(fr) ? fr : "auto"
+        cutscenes60 = defaults.bool(forKey: Prefs.cutscenes60)
+        cutsceneBars = defaults.bool(forKey: Prefs.cutsceneBars)
     }
 
     var location: GameLocation? {
@@ -212,6 +221,11 @@ final class LauncherModel: ObservableObject {
         for (o, i) in zip(PictureOptions.all, picture) where i > 0 {
             setenv(o.env, o.choices[i].value, 0)
         }
+        // Frame rate and cutscenes (engine: runtime/framerate.c, wsfov.c).  A variable
+        // set by hand still wins (overwrite 0); the defaults need none.
+        if frameRate != "auto" { setenv("NFSU2_FPS", frameRate, 0) }
+        if cutscenes60 { setenv("NFSU2_CUTSCENES_60", "1", 0) }
+        if !cutsceneBars { setenv("NFSU2_CUTSCENE_BORDERS", "off", 0) }
         var e = engine
         if !hasEngine(e) { e = (e == .hd) ? .original : .hd }
         let path = Paths.engine(loc.build, hd: e == .hd).path

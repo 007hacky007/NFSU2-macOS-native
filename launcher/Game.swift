@@ -138,6 +138,9 @@ enum PictureOptions {
         PictureOption(key: "LauncherSharpening", title: "Sharpening", env: "SHARPEN",
                       choices: [("Off, as on PC (original)", ""), ("Low", "50"), ("High", "100")]),
     ]
+    static let frameRate = "LauncherFrameRate"     // NFSU2_FPS: auto | 30 | 60 | 120 | 240
+    static let cutscenes60 = "LauncherCutscenes60" // NFSU2_CUTSCENES_60=1
+    static let cutsceneBars = "LauncherCutsceneBars" // false: NFSU2_CUTSCENE_BORDERS=off
 }
 
 enum Locator {
