@@ -4,6 +4,11 @@ https://github.com/user-attachments/assets/f58f98bd-ca90-48fa-9a7d-5d056cf0cbbb
 
 # Need for Speed: Underground 2 on Mac — native Apple Silicon port, no Wine
 
+> **This is a fork** of [TalhaMudo/NFSU2Recomp](https://github.com/TalhaMudo/NFSU2Recomp):
+> upstream's main plus features upstream does not have. They are all optional and
+> off (as in the original game) unless noted; see [This fork](#this-fork) for the
+> list. Upstream's Releases page linked below has upstream's builds, without them.
+
 **Play *Need for Speed: Underground 2* (NFSU2, 2004) natively on Apple Silicon
 Macs (M1 and later): no Wine, no CrossOver, no emulator, no virtual machine.**
 
@@ -22,6 +27,36 @@ time. On an M1 Pro, races run at **119 fps** (the display's limit), against
 > on first launch you point it at your own installation.
 
 ![Race, native ARM64 build](screenshots/selected/27_20260924_current-race.jpg)
+
+## This fork
+
+This fork follows upstream's main and adds what upstream is missing or declined.
+Both game versions (European and North American v1.2) are supported, as upstream
+does. Each optional feature has a control in the launcher, which says what the
+original game does; Settings > Restore Original Game turns them all back.
+`docs/fork-tracker.md` lists every feature with its state, so nothing is
+dropped silently.
+
+| Area | Added in this fork |
+|---|---|
+| Online and LAN | LAN play on the real network and hosting through the game's own `server.dll`; Online through a WebSocket relay with queue and resume; player and crew counts; better online races (every track, 6 players) |
+| Free roam with friends | Other players in career free roam, races started from free roam, rooms, up to four colored crews, solid or ghost cars, quick chat with bubbles, a Game Tools panel (Cmd+Shift+M) for the free-roam race lobby, horns, friends' engines heard |
+| Input | Mac keyboard as Windows delivers it (layouts, dead keys, Option as Alt), rebinding that works and is saved, separate trigger axes, pad bindings that persist, menus driven by the pad, hotplug choice, controller rumble |
+| Graphics | Resolution scale (50 to 200%), movie framing (fit, fill, stretch), other cars' headlights, FPS counter, rain fixes on wide screens, UHUD menus and HUD, and an upscaled texture pack the launcher builds from your own game files |
+| Audio and music | Your own music folder through EA Trax with playback controls, sound follows new headphones, music no longer stops after shops |
+| Movies | Subtitles (also in English), 60 FPS race intros and cutscenes |
+| Career and saves | Ten-car garage with Trade Car, power in bhp or kW, both regions' cars, 16 languages with a language pack builder, encrypted cloud saves compatible with the browser version, crash fixes for the car lot and the Performance Shop |
+| Photo and drift | Photo mode with a free camera, PNG screenshots and a gallery in the launcher; drift mode in free roam with a score overlay |
+| Engine | Fairer thread scheduling, a reusable guest heap and virtual memory, quitting through the game's own shutdown (saves are never cut), pause when you switch apps, faster loading and car screens, a stall watchdog |
+| Compiler and tests | x87 precision control, full 128-bit SSE2, override and hook lists derived from the runtime, optional lift options (`LREGS`, `JTSWITCH`, `INLINE_LIST`, `FTOL2INL`, see `LIFTER_EFFICIENCY.md`), more ISA and runtime checks for both builds |
+
+There is no prebuilt app of this fork yet; build it as described in
+[Build and run](#build-and-run).
+
+Parts of the runtime and tools are ported from th0mk's
+[nfsu2-web](https://github.com/th0mk/nfsu2-web) (MIT License, Copyright (c)
+2026 th0mk; portions copyright (c) 2026 Talha Müderrisoğlu). Files that come
+from it say so in their header.
 
 ## Status
 
