@@ -4,6 +4,7 @@ What the old fork (NA-only, main at 2c92742, runtime from th0mk's nfsu2-web cc3b
 Nothing is dropped silently: an item leaves PORT only when it is merged here, and SKIP? items wait for a decision.
 
 Status key:
+- DONE: ported and merged here (the note names the merge).
 - UPSTREAM: upstream/main already does it (narrower versions are flagged).
 - BRANCH: one of our PR branches covers it (gaps noted).
 - PORT: only in the old fork; needs porting.
@@ -41,7 +42,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Thread stacks recycled, TerminateThread really ends a thread | Long sessions keep their stack slots | UPSTREAM | upstream #7 | Old fork also has NFSU2_THREAD_EXIT=windows (opt-in real exit codes). See the HLE refinements row. |
 | Kernel object table reuse (obj_reclaim, closed handles reused) | Handles do not run out in very long sessions | PORT | old runtime/win32_ext.c (obj_reclaim, g_free), tests/objtable_unit.c | Small-medium. Check upstream's object table size and leak behaviour first. |
 | Fair GIL: ticket lock + 2 ms keep window (NFSU2_GIL_KEEP_MS) | Loader and sound threads are not starved: fewer hitches and stalls | PORT | old runtime/win32_ext.c (gil_acquire, ticket_*), runtime/web/ticketlock.h (82) | Medium, with risk (core scheduling). Measured: loader waits went from p99 262 ms to near the old hand-over. |
-| guest_noyield: music event tick keeps the GIL | Fixes music staying silent after entering a shop | PORT | old overrides.c sub_0073b900 + win32_ext.c guest_noyield | Small. NA 0x73b900 -> EU address needed. Listed under Audio as well. |
+| guest_noyield: music event tick keeps the GIL | Fixes music staying silent after entering a shop | DONE | old overrides.c sub_0073b900 + win32_ext.c guest_noyield | Small. NA 0x73b900 -> EU address needed. Listed under Audio as well. Done in 3491b42 (fp/music); the bug does not show with fork-next's plain mutex, it matters with a fair GIL. |
 | Precise pacer sleep with halving (NFSU2_PACE_HALVE, NFSU2_PACE_SPIN) | Steadier frame pacing | BRANCH | frame-rate (framerate.c); old win32_ext.c sleep_precise_ns | The halving and probe logic in win32_ext.c are not in preview-old. Upstream has a simpler sleep_precise. |
 | Stall watchdog (NFSU2_WATCHDOG, per-thread state report) | A hang can be diagnosed from the log | PORT | old runtime/watchdog.c (156), win32.c hooks, bundle.m key, tests/watchdog_unit.c | Small. Upstream's "watchdog" is only the system-shortcut re-enabler. |
 | Lifecycle: Cmd-Q/close/Dock quit as WM_CLOSE through the game's own shutdown, a second request or a grace timeout (NFSU2_QUIT_GRACE) forces exit, waits for save files still being written | Quitting never cuts a save in half | PORT | old runtime/lifecycle.c (248), metal.m delegate | Upstream sets g_should_quit and ends the draw loop (no WM_CLOSE, no write drain). Medium. Same work as the display-options "Cmd-Q as WM_CLOSE" item. |
@@ -111,10 +112,10 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | CoreAudio low-latency AudioUnit output, SetFrequency, DuplicateSoundBuffer | Sound with no extra latency | UPSTREAM | upstream audio.m | - |
 | Follow default output device changes (headphones, AirPods), rebuild the unit, silent clock fallback | Sound moves to new headphones without restarting | PORT | old runtime/audio.m "default output device changes" section, NFSU2_AUDIO_FAIL_REBUILD | Small-medium. |
 | Sound catch-up window after loads | Sound back in sync within seconds after a load | UPSTREAM | upstream #23 d2eaaa3 (sndlead.c) | - |
-| Music stays playing after entering a shop (event tick keeps the GIL) | Fixes music staying silent after shops until restart | PORT | old overrides.c sub_0073b900 + guest_noyield | Small. NA address -> EU. Same row as in Engine. |
+| Music stays playing after entering a shop (event tick keeps the GIL) | Fixes music staying silent after shops until restart | DONE | old overrides.c sub_0073b900 + guest_noyield | Small. NA address -> EU. Same row as in Engine. Done in 3491b42 (fp/music), see the Engine row. |
 | Positional sound source removal recounts requests (sub_00483e40) | No crash when many cars use every voice and a jump frees them | PORT | old overrides.c sub_00483e40 | Small. Triggered mostly with 32 friends' cars (free roam), but it is a general game bug. NA address. |
-| Local music folder through EA Trax (radio.c + radio_native.m): system decoders, resampling, tags on the plaque, skips unsupported tracks | Play your own music in the game | PORT | old runtime/radio.c (480), radio_native.m (328), radio_native.h, web/radio_proto.h, audio.m mixer hooks, launcher Music folder | Medium (~900 lines). NA addresses in radio.c. Needs the launcher control (Settings window). |
-| Music controls: Pause/Resume, Next, Shuffle, switch back to the game soundtrack (Game Tools, Cmd+Shift+M) | Control your music in game | PORT | old native_controls.m music section, radio_native.m | Depends on the music folder and Game Tools rows. |
+| Local music folder through EA Trax (radio.c + radio_native.m): system decoders, resampling, tags on the plaque, skips unsupported tracks | Play your own music in the game | DONE | old runtime/radio.c (480), radio_native.m (328), radio_native.h, web/radio_proto.h, audio.m mixer hooks, launcher Music folder | Medium (~900 lines). NA addresses in radio.c. Needs the launcher control (Settings window). Done in 3491b42 (fp/music): EU and NA; also fixes swapped left/right channels. |
+| Music controls: Pause/Resume, Next, Shuffle, switch back to the game soundtrack (Game Tools, Cmd+Shift+M) | Control your music in game | DONE | old native_controls.m music section, radio_native.m | Depends on the music folder and Game Tools rows. Done in 3491b42 (fp/music) as an app menu; the Game Tools panel section comes with package F. |
 | Horns (8 kinds), horn key, horn volume slider in Options > Audio | Honk at other players | BRANCH | player-horns (horn.c, hornmenu.c, racehorn.c) | - |
 | Friends' engines, nitrous and hydraulics heard | Hear other players' cars | BRANCH | player-horns (carsfx.c) | - |
 | Muted test runs (NFSU2_MUTE) | None (test aid) | SKIP | old audio.m | Test tooling. |
@@ -197,7 +198,7 @@ Cross-cutting notes that apply to every PORT row with runtime code:
 | Language picker with installed-language detection | Choose a language | BRANCH | language-choice | - |
 | Frame rate (auto/30/60/120/240) and 60 FPS cutscenes | Choose smoothness | BRANCH | frame-rate | - |
 | Controller on/off/hotplug, stick and trigger dead zones | Tune your pad | UPSTREAM | upstream #16 (on/off, stick dead zone); branch launcher-controller | Narrower: hotplug mode and trigger dead zone are PORT (they need the old pad runtime). |
-| Music: game soundtrack / music folder chooser | Use your music | PORT | old launcher/RuntimeOptions.swift, RuntimeViews.swift | Needs the music folder runtime. |
+| Music: game soundtrack / music folder chooser | Use your music | DONE | old launcher/RuntimeOptions.swift, RuntimeViews.swift | Needs the music folder runtime. Done in 3491b42 (fp/music): Music card on the Game tab. |
 | Display and gameplay: resolution scale, race HUD, movie subtitles, movie framing, cutscene bars, other cars' headlights, while another app is active | One place for display options | PORT | old launcher/RuntimeOptions.swift (126), RuntimeViews.swift (102), tests/runtime_options.* | Partly covered: HUD (upstream), cutscene bars (frame-rate), headlights (other-headlights). Still to port: resolution scale, subtitles, movie framing, background. |
 | Free-roam room with UTF-8 and runtime name check | See Online | BRANCH | free-roam | Narrower; see Online row. |
 | Screenshots gallery (thumbnails, preview, reveal/export, confirmed delete, symlink/hardlink/oversize rejection) | Browse your photos | PORT | old launcher/PhotoGallery.swift (273), tests/photo_gallery*.swift/.sh | Small-medium. Needs photo mode. |
