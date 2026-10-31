@@ -28,6 +28,10 @@ fi
 # NFSU2_HEADLIGHTS: other cars' headlights light the road like the player's own
 #   (runtime/headlights.c).  players (default: the other players' cars in an online
 #   or LAN race) | all (AI racers and traffic too) | off.
+# NFSU2_DISCORD=1: Discord Rich Presence (off by default): while the Discord app runs,
+#   your Discord profile shows what you are doing in the game.  Only the Discord app's
+#   local socket is used.  NFSU2_DISCORD_DETAIL=minimal: only that you are playing.
+#   Details: runtime/discord.c
 # In game, Cmd+Shift+D: a PNG of that frame + the draw list (~/Library/Logs/NFSU2/
 #   or the PERFLOG directory).  Measurement recording while playing: tools/session.sh [hd].
 # In game, Cmd-N: the frame-rate counter, off -> on -> detailed (remembered);

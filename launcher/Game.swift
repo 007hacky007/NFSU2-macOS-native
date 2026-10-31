@@ -105,6 +105,7 @@ enum Languages {
         }.map { $0.id }
     }
     static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
+    static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
 }
 
 enum Locator {
