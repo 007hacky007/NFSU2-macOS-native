@@ -176,7 +176,7 @@ if [ "$EMBED" = 1 ]; then
   find "$GAME" -type f -size +1c -exec sh -c '
     for f; do
       case "$(od -An -tx1 -N4 "$f" | tr -d " \n")" in
-        2321*|feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca)
+        2321*|feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca|cafebabf|bfbafeca)
           echo "left out of the app (macOS code): $f"; rm -f "$f" ;;
       esac
     done' sh {} +

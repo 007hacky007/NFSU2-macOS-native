@@ -340,6 +340,7 @@ class EmbeddedBuildTests(unittest.TestCase):
         (folder / 'readme.dat').write_text('#!/bin/sh\necho hi\n')        # a script under a game-like name
         (folder / 'GLOBAL/tool.JAR').write_text('PK jar')
         (folder / 'Open.terminal').write_text('<plist/>')
+        (folder / 'MOVIES/fat64.bin').write_bytes(bytes.fromhex('cafebabf') + bytes(12))  # 64-bit universal binary head
         (folder / 'MOVIES/intro.vp6').chmod(0o755)
         quarantine = '0081;00000000;Test;'
         for f in (folder / 'GLOBAL/GLOBALB.LZC', self.root / 'out/nfsu2_launcher'):
@@ -351,7 +352,8 @@ class EmbeddedBuildTests(unittest.TestCase):
         self.assertEqual(sorted(tree(game)), ['GLOBAL/GLOBALB.LZC', 'MOVIES/intro.vp6', 'SCRIPTS/mod.asi', 'SPEED2.EXE',
                                               'dinput8.dll', 'server.dll'])
         self.assertFalse((game / 'Helper').exists())
-        for name in ('readme.txt', 'Tool.app', 'Helper', 'run.command', 'readme.dat', 'tool.JAR', 'Open.terminal'):
+        for name in ('readme.txt', 'Tool.app', 'Helper', 'run.command', 'readme.dat', 'tool.JAR', 'Open.terminal',
+                     'fat64.bin'):
             self.assertIn(f'/{name}\n', self.pack_log, f'{name} is named in the build log')
         executable = [p for p in game.rglob('*') if p.is_file() and p.stat().st_mode & 0o111]
         self.assertEqual(executable, [], 'no game file stays executable')
