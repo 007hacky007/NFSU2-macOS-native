@@ -59,11 +59,21 @@ struct ResultView: View {
             .controlSize(.large)
             Spacer()
             if model.buildFilesRemoved {
-                Text("Build files removed").font(.caption).foregroundColor(.secondary)
+                Text("Temporary files deleted\(model.buildFilesBytes.map { ", \(sizeText($0)) freed" } ?? ""). NFSU2.app and your game are unchanged.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
             } else {
-                Button("Remove build files", action: model.removeBuildFiles)
-                    .controlSize(.small)
-                    .help("Frees the space used while building. The private Python is kept.")
+                VStack(spacing: 4) {
+                    Button("Delete temporary files\(model.buildFilesBytes.map { " (\(sizeText($0)))" } ?? "")",
+                           action: model.removeBuildFiles)
+                        .controlSize(.small)
+                    Text("Only the Builder's own work files. NFSU2.app, your game copy, saves and settings stay. An update makes them again.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .frame(maxWidth: .infinity, minHeight: 430)

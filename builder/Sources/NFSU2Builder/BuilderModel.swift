@@ -554,6 +554,7 @@ final class BuilderModel: ObservableObject {
                 case let .success(app):
                     buildFilesRemoved = false
                     phase = .finished(app)
+                    measureBuildFiles()
                 case let .failure(error as InstallError) where error.details == nil && isGameRunning():
                     appendLog(error.message)
                     phase = .quitToInstall(built: built)
@@ -578,6 +579,21 @@ final class BuilderModel: ObservableObject {
 
     /// The workspace is renamed aside first, so quitting during the slow delete cannot leave a
     /// marked but incomplete workspace behind; the next start sweeps whatever is left.
+    /// The size of the Builder's work files (the workspace), shown on the delete button.
+    @Published private(set) var buildFilesBytes: Int64? = nil
+
+    private func measureBuildFiles() {
+        buildFilesBytes = nil
+        let workspace = paths.workspace(version: version)
+        DispatchQueue.global(qos: .utility).async {
+            let bytes = allocatedSize(of: workspace)
+            DispatchQueue.main.async { [self] in buildFilesBytes = bytes }
+        }
+    }
+
+    /// Deletes only the Builder's own work files (its workspace: the copy of the sources, the
+    /// translated and compiled game code, the lifter's packages). NFSU2.app, the player's game
+    /// copy, saves, settings and the private Python are not touched.
     func removeBuildFiles() {
         let workspace = paths.workspace(version: version)
         workspaceReady = false

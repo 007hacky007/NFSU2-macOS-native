@@ -118,3 +118,21 @@ public func buildToolsCheck(paths: BuilderPaths, version: String) -> CheckState 
     else { return .blocked("Packages need to be set up again (small download)") }
     return .ready("Installed")
 }
+
+/// The disk space the files under `url` take (allocated, so APFS clones and sparse files count
+/// as the space they use). 0 when it is not there.
+public func allocatedSize(of url: URL) -> Int64 {
+    let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
+    guard let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
+    var total: Int64 = 0
+    for case let file as URL in walker {
+        guard let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+        total += Int64(values.totalFileAllocatedSize ?? 0)
+    }
+    return total
+}
+
+/// "612 MB", "1.4 GB": sizes as Finder shows them.
+public func sizeText(_ bytes: Int64) -> String {
+    ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+}

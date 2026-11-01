@@ -288,4 +288,17 @@ final class EnvironmentTests: XCTestCase {
         // No attribute present: still fine.
         try removeQuarantine(at: dir)
     }
+
+    /// The size on the delete button: what the files really take on disk.
+    func testAllocatedSizeAndSizeText() throws {
+        let dir = tmp.appendingPathComponent("ws")
+        XCTAssertEqual(allocatedSize(of: dir), 0, "a workspace that is not there takes nothing")
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("gen"), withIntermediateDirectories: true)
+        try Data(count: 3_000_000).write(to: dir.appendingPathComponent("gen/all.c"))
+        try Data(count: 1_000).write(to: dir.appendingPathComponent("small"))
+        let size = allocatedSize(of: dir)
+        XCTAssertGreaterThanOrEqual(size, 3_001_000)
+        XCTAssertLessThan(size, 3_200_000)
+        XCTAssertEqual(sizeText(612_000_000), "612 MB")
+    }
 }
