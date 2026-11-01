@@ -37,8 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tests -t tests -p 'test_*.py'
-          # Real-time suites (loopback peers, the Discord mock's timing) get a second try on a busy runner
-          RETRY_UNITS="roam_unit discord_unit" tests/run_suite.sh
+          # roam_unit runs in real time over loopback; a busy runner gets a second try
+          RETRY_UNITS=roam_unit tests/run_suite.sh
           swift test --package-path builder
 
       - name: Build app

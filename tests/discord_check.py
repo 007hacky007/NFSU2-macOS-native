@@ -73,8 +73,10 @@ def split_conns(rows):
 
 
 def clean_end(rows):
-    """The last connection ends with a clear (SET_ACTIVITY without activity) then CLOSE."""
-    ins = [r for r in rows if r.get('dir') == 'in']
+    """The last connection ends with a clear (SET_ACTIVITY without activity) then CLOSE.
+    Keep-alive frames (PING 3 / PONG 4) don't count: a PING from Discord that lands between
+    the clear and the CLOSE is rightly answered with a PONG."""
+    ins = [r for r in rows if r.get('dir') == 'in' and r.get('op') not in (3, 4)]
     if len(ins) < 2:
         check(False, 'clear + CLOSE at quit (too few frames)'); return
     last, before = ins[-1], ins[-2]
