@@ -659,9 +659,13 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   and Players' races, and Enter on one leaves the other players' markers (a
   crew-mate's stays) or their race lobbies (yours stays) off the map; the
   game's registry keeps the choice.  The race lobbies' labels are smaller and
-  go beside their icon where they cover no other icon.
+  go beside their icon where they cover no other icon.  **Tuners grey on the
+  maps** (on by default; off is the original game's orange): the game's own
+  outrun challengers are light grey on the minimap and the world map (the
+  legend's Opponent Car too), so they are not taken for players.
   Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
-  `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`, `NFSU2_ROAM_MAP_FILTER=0`.
+  `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`, `NFSU2_ROAM_MAP_FILTER=0`,
+  `NFSU2_ROAM_AI_GREY=0`.
 - **Horns and the other players' car sounds** (with Play online; both off by
   default, as in the original game, which has no horn): the launcher's
   **Horn** picker gives the player a horn (dual, single, truck, train, klaxon,

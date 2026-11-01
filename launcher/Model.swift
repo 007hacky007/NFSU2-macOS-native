@@ -127,6 +127,7 @@ final class LauncherModel: ObservableObject {
     @Published var hearCars: Bool { didSet { defaults.set(hearCars, forKey: Prefs.hearCars) } }
     @Published var roamTuners: Bool { didSet { defaults.set(roamTuners, forKey: Prefs.roamTuners) } }   // RoamExtras.swift
     @Published var roamMapFilter: Bool { didSet { defaults.set(roamMapFilter, forKey: Prefs.roamMapFilter) } }
+    @Published var roamAIGrey: Bool { didSet { defaults.set(roamAIGrey, forKey: Prefs.roamAIGrey) } }
     var onlineError: String? {
         guard online else { return nil }
         if let e = OnlineSettings.error(server: server, name: playerName) { return e }
@@ -242,6 +243,7 @@ final class LauncherModel: ObservableObject {
         defaults.register(defaults: RoamExtras.defaults)
         roamTuners = defaults.bool(forKey: Prefs.roamTuners)
         roamMapFilter = defaults.bool(forKey: Prefs.roamMapFilter)
+        roamAIGrey = defaults.bool(forKey: Prefs.roamAIGrey)
         controller = defaults.bool(forKey: Prefs.controller)
         stickDeadzone = min(0.5, max(0, defaults.double(forKey: Prefs.stickDeadzone)))
         padHotplug = defaults.bool(forKey: Prefs.padHotplug)
@@ -432,7 +434,7 @@ final class LauncherModel: ObservableObject {
             // Off: their cars sound as the game alone sounds them.
             if hearCars { setenv("NFSU2_ROAM_CARSFX", "1", 0) }
             // Later free-roam options (RoamExtras.swift): on in the engine unless set to 0.
-            for (k, v) in RoamExtras.environment(tuners: roamTuners, mapFilter: roamMapFilter) { setenv(k, v, 0) }
+            for (k, v) in RoamExtras.environment(tuners: roamTuners, mapFilter: roamMapFilter, aiGrey: roamAIGrey) { setenv(k, v, 0) }
         }
         // Horns between players in free roam and Online races (runtime/horn.c,
         // racehorn.c).  Off: no horn, as in the original game.
