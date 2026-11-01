@@ -146,6 +146,8 @@ enum Prefs {
     static let lanTiming = "LauncherLanTiming"     // NFSU2_LAN_TIMING: "pc" | "exact"
     static let resolutionScale = "LauncherResolutionScale" // NFSU2_RENDER: DisplayOptions.scales
     static let movieFraming = "LauncherMovieFraming"       // NFSU2_MOVIE: fit | fill | stretch
+    static let exposure = "LauncherExposure"               // NFSU2_EXPOSURE: DisplayOptions.exposures
+    static let whiteLevel = "LauncherWhiteLevel"           // NFSU2_WHITE_LEVEL: DisplayOptions.whiteLevels
     static let subtitles = "LauncherMovieSubtitles"        // NFSU2_SUBTITLES=1
     static let background = "LauncherBackground"           // NFSU2_BACKGROUND: pause | run
     static let photoMode = "LauncherPhotoMode"     // NFSU2_PHOTO=1: photo mode and F12 screenshots
@@ -192,6 +194,8 @@ enum Prefs {
         OriginalValue(\.lanTiming, "pc"),
         OriginalValue(\.resolutionScale, DisplayOptions.originalScale),
         OriginalValue(\.movieFraming, DisplayOptions.originalFraming),
+        OriginalValue(\.exposure, DisplayOptions.originalExposure),
+        OriginalValue(\.whiteLevel, DisplayOptions.originalWhiteLevel),
         OriginalValue(\.subtitles, false),
         OriginalValue(\.background, DisplayOptions.originalBackground),
         OriginalValue(\.photoMode, false),

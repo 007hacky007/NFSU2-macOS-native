@@ -94,6 +94,8 @@ final class LauncherModel: ObservableObject {
     // The Display card (DisplayOptions.swift)
     @Published var resolutionScale: String { didSet { defaults.set(resolutionScale, forKey: Prefs.resolutionScale) } }
     @Published var movieFraming: String { didSet { defaults.set(movieFraming, forKey: Prefs.movieFraming) } }
+    @Published var exposure: String { didSet { defaults.set(exposure, forKey: Prefs.exposure) } }
+    @Published var whiteLevel: String { didSet { defaults.set(whiteLevel, forKey: Prefs.whiteLevel) } }
     @Published var subtitles: Bool { didSet { defaults.set(subtitles, forKey: Prefs.subtitles) } }
     @Published var background: String { didSet { defaults.set(background, forKey: Prefs.background) } }
     /// NFSU2_FPS values; the labels are in FrameRateCard.
@@ -224,6 +226,8 @@ final class LauncherModel: ObservableObject {
         musicFolder = defaults.string(forKey: Prefs.musicFolder) ?? ""
         resolutionScale = DisplayOptions.pick(defaults.string(forKey: Prefs.resolutionScale), DisplayOptions.scales, DisplayOptions.originalScale)
         movieFraming = DisplayOptions.pick(defaults.string(forKey: Prefs.movieFraming), DisplayOptions.framings, DisplayOptions.originalFraming)
+        exposure = DisplayOptions.pick(defaults.string(forKey: Prefs.exposure), DisplayOptions.exposures, DisplayOptions.originalExposure)
+        whiteLevel = DisplayOptions.pick(defaults.string(forKey: Prefs.whiteLevel), DisplayOptions.whiteLevels, DisplayOptions.originalWhiteLevel)
         subtitles = defaults.bool(forKey: Prefs.subtitles)
         background = DisplayOptions.pick(defaults.string(forKey: Prefs.background), DisplayOptions.backgrounds, DisplayOptions.originalBackground)
         online = defaults.bool(forKey: Prefs.online)
@@ -396,10 +400,11 @@ final class LauncherModel: ObservableObject {
         applyMusic()                // a music folder through EA Trax (Music.swift)
         if seedRegistry { setenv("NFSU2_SEED_REGISTRY", "1", 0) }        // runtime/regseed.c
         if lanTiming != "pc" { setenv("NFSU2_LAN_TIMING", lanTiming, 0) }   // framerate.c
-        // Resolution scale, movies and the background (runtime/display.c, language.c,
-        // lifecycle.c); the original game's values set nothing.
+        // Resolution scale, Exposure and White Level, movies and the background (runtime/
+        // display.c, picture.m, language.c, lifecycle.c); the original game's values set nothing.
         for (k, v) in DisplayOptions.environment(scale: resolutionScale, framing: movieFraming,
-                                                 subtitles: subtitles, background: background) {
+                                                 subtitles: subtitles, background: background,
+                                                 exposure: exposure, whiteLevel: whiteLevel) {
             setenv(k, v, 0)
         }
         // Online: the game's LAN and Online modes through the server (runtime/

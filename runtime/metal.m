@@ -7984,6 +7984,10 @@ void metal_run_main_loop(void){
                             }
                         }
                         if (native_scene_take_capture()) native_scene_encode_capture(cb, dtex);   /* F12: a PNG (native_scene.m) */
+                        /* picture.m: Exposure and White Level over the finished frame, after the dumps and the
+                         * screenshots (they keep the colours as drawn), before the counters */
+                        { void pic_tone(id<MTLDevice>, id<MTLCommandBuffer>, id<MTLTexture>);
+                          if (!abt_off("PICTURE")) pic_tone(g_dev, cb, dtex); }
                         if (fc_px) fpscounter_draw(cb, dtex, fc_ppp, fc_bw, fc_bh);
                         if (ns_px) netstats_draw(cb, dtex, fc_ppp, fpscounter_bottom());
                         { struct timespec _e1; clock_gettime(CLOCK_MONOTONIC,&_e1);

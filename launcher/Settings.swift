@@ -144,6 +144,20 @@ struct DisplayCard: View {
                 }
                 .labelsHidden().fixedSize()
             }
+            SettingRow(title: "Exposure",
+                       description: "The whole picture darker or brighter, from half to twice as bright, menus and HUD too, for eyes a bright picture tires. Screenshots keep the game's own colours.") {
+                Picker("", selection: $model.exposure) {
+                    ForEach(DisplayOptions.exposures, id: \.self) { Text(DisplayOptions.exposureLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            SettingRow(title: "White level",
+                       description: "The brightest the picture gets: only the brightest parts come down, so dark streets stay as they are.") {
+                Picker("", selection: $model.whiteLevel) {
+                    ForEach(DisplayOptions.whiteLevels, id: \.self) { Text(DisplayOptions.whiteLevelLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
             SettingRow(title: "Movie framing",
                        description: "How the movies fill a wide window. Fit keeps black bars at the sides, Fill crops the top and bottom.") {
                 Picker("", selection: $model.movieFraming) {
