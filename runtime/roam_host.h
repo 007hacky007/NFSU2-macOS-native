@@ -50,7 +50,7 @@ void roam_hud_marker(float *x, float *y);    /* roam.c */
 int  roam_no_profile(const char *name);      /* roam.c */
 
 #define ROAM_HOOK_RET    GA(0x00581485u)     /* the return address guest calls see: the main-loop hook (roam.c) */
-#define RH_FE_NODES      1024                /* objects FEng draws of one package: roamfix.c's level sorter (the game: 512) */
+#define RH_FE_NODES      4096                /* objects FEng draws of one package: roamfix.c's level sorter (the game: 512) */
 #define GPTR(a)          (g_mem + (uint32_t)(a))
 #define rh_committed(a)  mem_is_committed(a)
 #define rlog(...)        fprintf(stderr, __VA_ARGS__)

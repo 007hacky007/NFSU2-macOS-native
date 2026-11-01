@@ -1,7 +1,7 @@
 #!/bin/bash
 # The free-roam multiplayer core without the game (about 15 s):
 #   1. tests/roam_unit.c: the protocol's byte layout, the session state
-#      machine, interpolation, the loopback guard, a fuzzer (287 checks;
+#      machine, interpolation, the loopback guard, a fuzzer (352 checks;
 #      in-process fake network, no socket);
 #   2. on 127.0.0.1 inside tests/net/loopback-only.sb: a stand-in friend
 #      (tests/roam_fakepeer.c) driving a circle and a viewer peer
