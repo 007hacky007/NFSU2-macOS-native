@@ -602,6 +602,8 @@ int  rc_established(const rc_session *s);
 /* peer i is on the hub's last list (or there is no hub): a peer left out goes within T_HUB_GRACE, and the game gives
  * its car's slot to one the hub lists */
 int  rc_peer_listed(const rc_session *s, int i);
+/* the players the hub's last list links us with (the Online statistics panel, netstats.m); -1 while no hub answers */
+int  rc_hub_links(const rc_session *s);
 /* the first of our crews (conf.crews) that peer i is in too: 0 .. n_crews - 1, or -1 (as the hub's list marks it,
  * or as its HELLO names its crews: an older core's, or without a hub) */
 int  rc_peer_crew(const rc_session *s, int i);

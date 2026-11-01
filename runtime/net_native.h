@@ -14,6 +14,12 @@ void native_net_shutdown(void);
 /* 1: the launcher handed the engine a claimed name's token (NFSU2_CLAIM_FD) */
 int native_net_has_claim(void);
 void native_net_wait(int *word, int expected, int64_t ns);
+/* the Online statistics panel (netstats.m): the link to the server
+ * (NETSTATS_* of netstats.h), its place in the server's queue (pos of of, 0:
+ * not known) and the round trip of the last ping (ms, -1: none yet).  Any
+ * thread; NETSTATS_OFFLINE until free roam or LAN play first wants the server */
+typedef struct { int state, queue_pos, queue_of, rtt_ms; } native_net_status;
+void native_net_get_status(native_net_status *out);
 #define __builtin_wasm_memory_atomic_wait32(p, v, ns) native_net_wait((p), (v), (ns))
 #define __builtin_wasm_memory_atomic_notify(p, n) ((void)(p), (void)(n))
 #endif

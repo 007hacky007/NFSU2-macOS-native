@@ -20,6 +20,7 @@
 #include "enhance.h"
 #include "perflog.h"
 #include "fpscounter.h"
+#include "netstats.h"
 #include "headlights.h"
 #include "texrep.h"
 #include "native_scene.h"
@@ -5214,6 +5215,7 @@ void metal_early_init(void){
     if (!g_dev){ fprintf(stderr, "metal: device not found\n"); return; }
     g_queue = [g_dev newCommandQueue];
     fpscounter_init(g_dev);
+    netstats_init(g_dev);                  /* the Online statistics panel (NFSU2_NET_STATS=1) */
     @autoreleasepool {
         g_vbuf[0] = malloc(sizeof(MVert)*MAXV); g_vbuf[1] = malloc(sizeof(MVert)*MAXV);
         g_dbuf[0] = malloc(sizeof(MDraw)*MAXD); g_dbuf[1] = malloc(sizeof(MDraw)*MAXD);
@@ -7943,8 +7945,9 @@ void metal_run_main_loop(void){
                          * ratio: fc_ppp = frame pixels per window point, fc_bw x fc_bh =
                          * the screen pixels the frame is shown at. */
                         int fc_px = fpscounter_on() && rb >= 0;
+                        int ns_px = netstats_on() && rb >= 0;   /* the Online statistics panel (netstats.m), under it */
                         double fc_ppp = 1.0; unsigned fc_bw = 0, fc_bh = 0;
-                        if (fc_px){ double cw = atomic_load(&g_cont_w), ch = atomic_load(&g_cont_h);
+                        if (fc_px || ns_px){ double cw = atomic_load(&g_cont_w), ch = atomic_load(&g_cont_h);
                             double bs = g_win ? [g_win backingScaleFactor] : 2.0;
                             if (cw > 0 && ch > 0){
                                 fc_ppp = fmax(dtex.width / cw, dtex.height / ch);
@@ -7982,6 +7985,7 @@ void metal_run_main_loop(void){
                         }
                         if (native_scene_take_capture()) native_scene_encode_capture(cb, dtex);   /* F12: a PNG (native_scene.m) */
                         if (fc_px) fpscounter_draw(cb, dtex, fc_ppp, fc_bw, fc_bh);
+                        if (ns_px) netstats_draw(cb, dtex, fc_ppp, fpscounter_bottom());
                         { struct timespec _e1; clock_gettime(CLOCK_MONOTONIC,&_e1);
                           unsigned long long dt =
                               (unsigned long long)(_e1.tv_sec-_e0.tv_sec)*1000000000ull

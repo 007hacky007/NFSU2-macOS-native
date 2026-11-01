@@ -2,9 +2,9 @@
 """Loopback-only WebSocket fixture, using no third-party packages.
 
 A relay server of its own on 127.0.0.1 and tests/net/native/transport.m as the
-client (runtime/net_native.m): relay, resume, queue, two clients, idle,
-burst, a peer list of a full server, the launcher's claim token and exit at
-process end.  tests/net_harness.sh runs it inside the
+client (runtime/net_native.m): relay (and the round trip of a ping), resume,
+queue (and the place in it), two clients, idle, burst, a peer list of a full
+server, the launcher's claim token and exit at process end.  tests/net_harness.sh runs it inside the
 loopback-only sandbox profile (tests/net/loopback-only.sb).
 """
 import base64
@@ -92,6 +92,8 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
             conn.settimeout(10)
             handshake(conn)
             send(conn, {"t": "queue", "pos": 1, "of": 2, "ticket": "fixture-only-ticket"})
+            # a while in the line, so the client sees its place (native_net_get_status)
+            time.sleep(0.4)
     conn, address = listener.accept()
     with conn:
         conn.settimeout(10)
@@ -108,6 +110,10 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
         while True:
             kind, data = receive(conn)
             if kind == 1:
+                # the switch answers pings: the client's round trip (switch_rtt_ms)
+                control = json.loads(data)
+                if control.get("t") == "ping":
+                    send(conn, {"t": "pong", "id": control["id"]})
                 continue
             assert kind == 2
             protocol, source, destination, sport, dport = struct.unpack("!B3xIIHH", data[:16])
@@ -220,7 +226,7 @@ def main():
                 os.close(read_end)
                 assert result.returncode == 0
             else:
-                result = subprocess.run([binary, url] + ([scenario] if scenario in ("resume", "idle", "burst", "big", "atexit") else []), timeout=20)
+                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "atexit") else []), timeout=20)
                 assert result.returncode == 0
             thread.join(timeout=5)
             if failure:

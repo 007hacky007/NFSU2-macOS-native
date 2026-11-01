@@ -87,6 +87,7 @@
 #include "roam_core.h"
 #include "roam_plat.h"
 #include "names.h"
+#include "netstats.h"
 
 /* ---- game addresses ---------------------------------------------------------- */
 /* European v1.2 addresses; GA() maps them for the North American build (build_na.h) */
@@ -4873,7 +4874,7 @@ static void init_once(CPU *c){
     roam_plat_cfg pc = { (uint16_t)port, O.test, disc, rh_opt("NFSU2_ROAM_IMPAIR") };
     if (roam_plat_start(&pc, &g_s) != 0){
         rlog("[roam] free-roam multiplayer could not start (see above): off\n"); O.on = 0; return; }
-    g_net_ok = 1;
+    __atomic_store_n(&g_net_ok, 1, __ATOMIC_RELEASE);  /* after O's names: roam_game_netstats reads them from another thread */
     uint32_t pip[RC_MAX_PEERS * 2]; uint16_t ppt[RC_MAX_PEERS * 2];
     int np = roam_plat_parse_peers(opt("NFSU2_ROAM_PEERS"), O.test, (uint16_t)port, pip, ppt, RC_MAX_PEERS * 2);
     roam_plat_lock();
@@ -5144,9 +5145,9 @@ static void crews_follow(void){
     rc_set_crews(&g_s, h, RC_CREW_MAX);
     int n = g_s.conf.n_crews; uint32_t c[RC_CREW_MAX] = {0};
     for (int i = 0; i < n; i++) c[i] = g_s.conf.crews[i];
-    roam_plat_unlock();
-    O.ncrew = n;
+    O.ncrew = n;                                    /* (with the lock: roam_game_netstats copies the names) */
     for (int i = 0; i < RC_CREW_MAX; i++) O.crew[i][0] = 0;
+    roam_plat_unlock();
     rlog("[roam] f=%ld crews changed (Game Tools): %d: %08x %08x %08x %08x, colours %06x %06x %06x %06x\n", rh_frame(), n,
          c[0], c[1], c[2], c[3], O.crew_rgb[0], O.crew_rgb[1], O.crew_rgb[2], O.crew_rgb[3]);
 }
@@ -5870,6 +5871,29 @@ uint32_t roam_game_pool(uint32_t name, uint32_t count){
 /* discord.c (the Discord presence): friends connected now, i.e. established
  * and not lost; 0 while free-roam multiplayer is off.  Takes the session
  * lock, so any thread may ask. */
+/* netstats.m (the Online statistics panel): the friends' cars shown near the
+ * player (active slots, not hidden), the players the hub's last list links us
+ * with, the room and crews (for the server's /players); 0 while free-roam
+ * multiplayer is off.  Takes the session lock, so any thread may ask; the
+ * slots are the game thread's, read as they are (a count a frame old at most) */
+_Static_assert(NETSTATS_CREWS == RC_CREW_MAX, "the panel's crews are the session's");
+int roam_game_netstats(netstats_roam *o){
+    memset(o, 0, sizeof *o); o->linked = -1;
+    if (!O.on || !__atomic_load_n(&g_net_ok, __ATOMIC_ACQUIRE)) return 0;
+    for (int k = 0; k < NSLOT; k++)
+        o->shown += __atomic_load_n(&g_sl[k].st, __ATOMIC_RELAXED) == SL_ACTIVE && !__atomic_load_n(&g_sl[k].hidden, __ATOMIC_RELAXED);
+    roam_plat_lock();
+    o->linked = rc_hub_links(&g_s);
+    o->room = g_s.conf.room;
+    o->ncrews = g_s.conf.n_crews < 0 ? 0 : g_s.conf.n_crews > NETSTATS_CREWS ? NETSTATS_CREWS : g_s.conf.n_crews;
+    for (int i = 0; i < o->ncrews; i++){
+        o->crews[i] = g_s.conf.crews[i];
+        if (i < O.ncrew) snprintf(o->crew_name[i], sizeof o->crew_name[i], "%s", O.crew[i]);
+    }
+    snprintf(o->room_name, sizeof o->room_name, "%s", O.room);
+    roam_plat_unlock();
+    return 1;
+}
 int roam_game_friends(void){
     if (!O.on || !g_net_ok) return 0;
     int n = 0;

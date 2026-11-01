@@ -34,7 +34,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
                         "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED",
-                        "NFSU2_LANGPACKS"]
+                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS"]
         for k in launched { unsetenv(k) }
 
         // defaults
@@ -44,6 +44,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.allCars && m.garage && m.intro == "skippable" && m.headlights == "players" && m.cutsceneBars, "defaults: both releases' cars, 10-car garage, skippable intro, players' headlights, cutscene bars")
         check(!m.discord && m.discordImage.isEmpty && !m.online && m.server == OnlineSettings.defaultServer && m.freeRoam == .off && m.horn == .off,
               "defaults: no Discord, no picture, offline, default server, no free roam, no horn")
+        check(!m.netStats, "defaults: no Online statistics panel")
         check(m.controller && abs(m.stickDeadzone - 0.10) < 1e-9 && m.music == "game" && m.lanTiming == "pc" && !m.seedRegistry && m.reflections == .original,
               "defaults: controller on, dead zone 0.10, game music, PC LAN timing, no registry seed, original reflections")
         check(m.picture.allSatisfy { $0 == 0 }, "defaults: every picture option as on PC")
@@ -51,8 +52,9 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         // persistence
         m.frameRate = "60"; m.fpsCounter = 2; m.discord = true; m.discordImage = "https://example.com/car.png"
         m.headlights = "all"; m.intro = "off"; m.horn = .klaxon; m.freeRoam = .ghost; m.lanTiming = "exact"; m.stickDeadzone = 0.2
-        m.picture = [1, 1, 1, 2]; m.reflections = .sharp; m.wideHUD = true; m.garage = false
+        m.picture = [1, 1, 1, 2]; m.reflections = .sharp; m.wideHUD = true; m.garage = false; m.netStats = true
         m = LauncherModel()
+        check(m.netStats, "persistence: Online statistics")
         check(m.frameRate == "60" && m.fpsCounter == 2 && m.discord && m.discordImage == "https://example.com/car.png", "persistence: frame rate, counter, Discord and its picture")
         check(m.headlights == "all" && m.intro == "off" && m.horn == .klaxon && m.freeRoam == .ghost && m.lanTiming == "exact", "persistence: headlights, intro, horn, free roam, LAN timing")
         check(abs(m.stickDeadzone - 0.2) < 1e-9 && m.picture == [1, 1, 1, 2] && m.reflections == .sharp && m.wideHUD && !m.garage, "persistence: dead zone, picture, reflections, HUD, garage")
@@ -76,7 +78,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.game = .ready(GameLocation(exe: exe, embedded: false))
         m.restoreOriginalGame(); m.controller = true; m.stickDeadzone = 0.15
         m.wideHUD = true; m.frameRate = "60"; m.discord = true; m.discordImage = "my_car"; m.cutsceneBars = false; m.intro = "off"
-        m.metalHUD = true
+        m.metalHUD = true; m.netStats = true
         m.play()
         // no engine is next to the test: play() falls back from one engine to the other as it does
         check(spawned.map { $0.hasSuffix("/Contents/MacOS/nfsu2-engine") || $0.hasSuffix("/Contents/MacOS/nfsu2-engine-hd") } == true,
@@ -89,6 +91,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(env("MTL_HUD_ENABLED") == "1", "play: the Metal performance overlay")
         check(["1", "hotplug"].contains(env("NFSU2_PAD") ?? "") && env("NFSU2_PAD_DEADZONE") == "0.15" && env("NFSU2_HEADLIGHTS") == "off", "play: controller, dead zone, headlights")
         check(env("NFSU2_NET") == nil && env("NFSU2_SERVER_URL") == nil && env("NFSU2_ROAM") == nil, "play: offline sets no network variable")
+        check(env("NFSU2_NET_STATS") == nil, "play: offline, no Online statistics even with the switch on")
         // the next Play after a change: what the launcher set itself follows the switch
         m.wideHUD = false; m.controller = false; m.stickDeadzone = 0.3
         m.play()
@@ -114,6 +117,11 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.play()
         check(env("NFSU2_NET") == "online" && env("NFSU2_SERVER_URL") == "ws://127.0.0.1:8080/lan" && env("NFSU2_ROAM") == "1" && env("NFSU2_HORN") == "dual",
               "online: network, server, free roam, horn")
+        check(env("NFSU2_NET_STATS") == "1", "online: the Online statistics panel (NFSU2_NET_STATS=1)")
+        for k in launched { unsetenv(k) }
+        m.netStats = false; m.play()
+        check(env("NFSU2_NET") == "online" && env("NFSU2_NET_STATS") == nil, "online: Online statistics off, no NFSU2_NET_STATS")
+        m.netStats = true
         m.playerName = "x"; check(m.onlineError != nil, "online: a name that is too short is caught before Play")
         m.playerName = "Driver_1"; m.server = "ws://example.com/lan"; check(m.onlineError != nil, "online: ws:// to another machine is caught before Play")
         m.server = OnlineSettings.defaultServer; m.online = false
@@ -124,11 +132,12 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.headlights = "all"; m.reflections = .sharpest; m.reflectSky = true; m.reflectLights = true; m.reflectDetail = true
         m.picture = PictureOptions.all.map { $0.choices.count - 1 }; m.online = true; m.freeRoam = .ghost; m.hearCars = true
         m.horn = .train; m.allCars = true; m.garage = true; m.intro = "skippable"; m.discord = true; m.discordImage = "x"
-        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"
+        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true
         let changed = Prefs.originalGame.filter { !$0.isSet(m) }.count
         check(!m.isOriginalGame && changed >= 20, "original game: \(changed) of \(Prefs.originalGame.count) options changed")
         m.restoreOriginalGame()
         check(m.isOriginalGame && Prefs.originalGame.allSatisfy { $0.isSet(m) }, "original game: Restore sets all \(Prefs.originalGame.count) options")
+        check(!m.netStats && !LauncherModel().netStats, "original game: Online statistics off, and kept off")
         check(LauncherModel().isOriginalGame, "original game: still so at the next start")
 
         // embedded: a game inside the app; its language packs go outside the bundle

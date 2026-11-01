@@ -7,6 +7,7 @@ void fpscounter_cycle(void);              /* off -> on -> detailed -> off */
 void fpscounter_note_present(void);       /* main thread, per drawable handed to the display */
 void fpscounter_note_presented(double t); /* presentedTime of a drawable (any thread; 0 = not shown) */
 void fpscounter_note_gpu(double ms);      /* command-buffer completion handler */
+double fpscounter_bottom(void);           /* pixels from the frame's top to below the panel drawn last (0: none) */
 #ifdef __OBJC__
 #import <Metal/Metal.h>
 #import <Cocoa/Cocoa.h>

@@ -397,6 +397,16 @@ struct MultiplayerCard: View {
                         .onAppear { model.recheckName() }
                 }
                 PlayerCountsRow(model: model, counts: model.counts)     // PlayerCounts.swift
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Online statistics").font(.system(size: 12.5)).foregroundColor(Theme.text)
+                        Text("A small panel in a corner of the game: the connection, the round trip to the server and the player counts. Off: as in the original game.")
+                            .font(.system(size: 11)).foregroundColor(Theme.dim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: $model.netStats).labelsHidden().toggleStyle(SwitchToggleStyle())
+                }
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
             VStack(alignment: .leading, spacing: 6) {

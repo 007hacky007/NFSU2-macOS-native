@@ -136,6 +136,7 @@ enum Prefs {
     static let quickChatGroups = "LauncherQuickChatGroups"     // [String] x 4 (also Game Tools')
     static let quickChatPhrases = "LauncherQuickChatPhrases"   // [Int] x 16, phrase numbers (also Game Tools')
     static let countsURL = "LauncherCountsURL"     // the player counts' address (PlayerCounts.swift)
+    static let netStats = "LauncherNetStats"       // NFSU2_NET_STATS=1: the engine's Online statistics panel (runtime/netstats.m)
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
     static let music = "LauncherMusic"             // "game" | "folder": EA Trax plays a music folder (Music.swift)
@@ -173,6 +174,7 @@ enum Prefs {
         OriginalValue(\.reflectDetail, false),
         OriginalValue(\.picture, Array(repeating: 0, count: PictureOptions.all.count)),
         OriginalValue(\.online, false),
+        OriginalValue(\.netStats, false),
         OriginalValue(\.freeRoam, .off),
         OriginalValue(\.hearCars, false),
         OriginalValue(\.quickChat, false),
