@@ -465,6 +465,7 @@ static uint16_t g_hello_core[NN];          /* the core version each node's HELLO
 static int g_hub_on, g_hub_link[NN][NN], g_hub_hello[NN], g_hub_snap[NN], g_hub_snapx[NN], g_hub_bye[NN], g_hub_lobby[NN];
 static int g_hub_ncrews[NN]; static uint32_t g_hub_crews[NN][RC_CREW_MAX];   /* each node's crews, as its last HELLO to the hub had them */
 static uint32_t g_hub_room[NN];             /* ...and its room */
+static int g_hub_friend[NN][NN];            /* the server's friends lists: i and j are friends (both ways) */
 static uint16_t g_hub_flags[NN];            /* ...and its flags: with RC_HF_HUBCREW its lists end in crew marks */
 static rc_lobby g_hub_lobby_last[NN];
 static int g_hub_hello_n[NN]; static uint32_t g_hub_hello_ids[NN][RC_MAX_PEERS];   /* the ids of each node's last HELLO to the hub */
@@ -557,7 +558,9 @@ static void net_run(int64_t until, int nn){
             for (int i = 0; i < nn && g_qn < 20000; i++){
                 rc_msg m; memset(&m, 0, sizeof m); m.h.type = RC_MSG_PEERS; m.h.sender = 0xB0B;
                 /* crew marks as the server's hub makes them: to a node that reads them and is in a crew */
-                if ((g_hub_flags[i] & RC_HF_HUBCREW) && g_hub_ncrews[i] > 0){
+                int befriended = 0;
+                for (int j = 0; j < nn; j++) befriended |= g_hub_friend[i][j];
+                if ((g_hub_flags[i] & RC_HF_HUBCREW) && (g_hub_ncrews[i] > 0 || befriended)){
                     m.h.flags = RC_HF_CREW; m.u.peers.n_mine = (uint8_t)g_hub_ncrews[i];
                     memcpy(m.u.peers.mine, g_hub_crews[i], sizeof m.u.peers.mine);
                 }
@@ -568,6 +571,7 @@ static void net_run(int64_t until, int nn){
                         for (int c = 0; m.h.flags && c < g_hub_ncrews[i]; c++)
                             for (int d = 0; d < g_hub_ncrews[j]; d++)
                                 if (g_hub_crews[j][d] == g_hub_crews[i][c]) m.u.peers.crew[m.u.peers.n] |= (uint8_t)(1u << c);
+                        if (m.h.flags && g_hub_friend[i][j]) m.u.peers.crew[m.u.peers.n] |= RC_MARK_FRIEND;
                         m.u.peers.n++; }
                 Pkt *p = &g_q[g_qn++];
                 p->at = g_now + g_lat_us; p->to = i; p->ip = HUB_IP; p->port = HUB_PORT; p->len = rc_encode(&m, p->b, sizeof p->b);
@@ -1764,6 +1768,38 @@ static void t_room(void){
     g_hub_on = 0; for (int i = 0; i < 3; i++) g_n[i].conf.hub_ip = 0;
 }
 
+/* ---- 4h. friends: the hub marks them in a player's list (RC_MARK_FRIEND, past the crews' bits), with crews or
+ * without; a list without marks makes nobody a friend ---- */
+static void t_friends(void){
+    mesh(3, 8); g_now = 0;
+    g_hub_on = 1; g_hub_next = 0; memset(g_hub_link, 0, sizeof g_hub_link); memset(g_hub_friend, 0, sizeof g_hub_friend);
+    memset(g_hub_ncrews, 0, sizeof g_hub_ncrews); memset(g_hub_flags, 0, sizeof g_hub_flags);
+    for (int i = 0; i < 3; i++){ g_n[i].conf.hub_ip = HUB_IP; g_n[i].conf.hub_port = HUB_PORT; }
+    hub_links(0, 1); hub_links(0, 2); hub_links(1, 2);
+    g_hub_friend[0][1] = g_hub_friend[1][0] = 1;
+    drive(3, 4000000);
+    int k01 = peer_of(0, 0x501), k02 = peer_of(0, 0x502), k10 = peer_of(1, 0x500), k21 = peer_of(2, 0x501);
+    CHECK(est(0) == 2 && est(1) == 2 && est(2) == 2, "friends: everyone linked (%d %d %d)", est(0), est(1), est(2));
+    CHECK(k01 >= 0 && rc_peer_friend(&g_n[0], k01) && k10 >= 0 && rc_peer_friend(&g_n[1], k10),
+          "friends: 0 and 1 marked each other's friend, no crews needed");
+    CHECK(k02 >= 0 && !rc_peer_friend(&g_n[0], k02) && k21 >= 0 && !rc_peer_friend(&g_n[2], k21) && rc_peer_crew(&g_n[0], k01) < 0,
+          "friends: 2 nobody's friend, and a friend is in no crew for that");
+    CHECK(!rc_peer_friend(&g_n[0], -1) && !rc_peer_friend(&g_n[0], RC_TABLE), "friends: out of the table, no friend");
+    /* with crews too: the friend bit beside the crews' */
+    uint32_t owls = rc_room_hash("Night Owls");
+    rc_set_crews(&g_n[0], &owls, 1); rc_set_crews(&g_n[2], &owls, 1);
+    drive(3, g_now + 3000000);
+    k01 = peer_of(0, 0x501); k02 = peer_of(0, 0x502);
+    CHECK(rc_peer_friend(&g_n[0], k01) && rc_peer_crew(&g_n[0], k01) < 0 && !rc_peer_friend(&g_n[0], k02) && rc_peer_crew(&g_n[0], k02) == 0,
+          "friends: with crews, 1 a friend in none of them, 2 a crew-mate and no friend");
+    /* friends no more: the next list says so */
+    g_hub_friend[0][1] = g_hub_friend[1][0] = 0;
+    drive(3, g_now + 3000000);
+    CHECK(!rc_peer_friend(&g_n[0], peer_of(0, 0x501)), "friends: unmarked at the next list");
+    g_hub_on = 0; for (int i = 0; i < 3; i++) g_n[i].conf.hub_ip = 0;
+    memset(g_hub_ncrews, 0, sizeof g_hub_ncrews);
+}
+
 /* ---- 4e. race lobbies: LOBBY only to a peer that takes them, only for us; the hub's LOBBIES -- */
 static void t_lobby(void){
     mesh(3, 8);
@@ -1880,6 +1916,7 @@ int main(int argc, char **argv){
     t_statex();
     t_crews();
     t_room();
+    t_friends();
     t_snapstates();
     t_bigmesh();
     t_interp();

@@ -6,20 +6,23 @@
 //           come as in the original game.
 //   map     NFSU2_ROAM_MAP_FILTER=0: no Players and Players' races rows in the world
 //           map's legend (roam_game.c wmf_*), every marker shown, as in the original game.
+//   friends NFSU2_ROAM_FRIENDS=0: no friend requests by front bumpers, friends not
+//           marked, no notices (Friends.swift, runtime/native_controls.m).
 //   grey    NFSU2_ROAM_AI_GREY=0: the game's outrun challengers keep the game's orange on
 //           the minimap and the world map (roam_game.c arrow_colours, ai_map_open).
 import SwiftUI
 
 enum RoamExtras {
     /// first start: everything on, as in nfsu2-web
-    static let defaults: [String: Any] = [Prefs.roamTuners: true, Prefs.roamMapFilter: true, Prefs.roamAIGrey: true]
+    static let defaults: [String: Any] = [Prefs.roamTuners: true, Prefs.roamMapFilter: true, Prefs.roamAIGrey: true, Prefs.roamFriends: true]
 
     /// What play() hands the engine for these options (with free roam on): only the ones that are off.
-    static func environment(tuners: Bool, mapFilter: Bool, aiGrey: Bool) -> [(String, String)] {
+    static func environment(tuners: Bool, mapFilter: Bool, aiGrey: Bool, friends: Bool) -> [(String, String)] {
         var e: [(String, String)] = []
         if !tuners { e.append(("NFSU2_ROAM_TUNERS", "0")) }
         if !mapFilter { e.append(("NFSU2_ROAM_MAP_FILTER", "0")) }
         if !aiGrey { e.append(("NFSU2_ROAM_AI_GREY", "0")) }
+        if !friends { e.append(("NFSU2_ROAM_FRIENDS", "0")) }
         return e
     }
 }

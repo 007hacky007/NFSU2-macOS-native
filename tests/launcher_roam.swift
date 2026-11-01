@@ -14,7 +14,7 @@ func check(_ ok: Bool, _ what: String) {
 func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
 
 @main struct LauncherRoamTests {
-    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER", "NFSU2_ROAM_AI_GREY"]
+    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER", "NFSU2_ROAM_AI_GREY", "NFSU2_ROAM_FRIENDS"]
     static func clear() { for k in vars { unsetenv(k) } }
     static func main() {
         setvbuf(stdout, nil, _IOLBF, 0)
@@ -26,6 +26,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.roamTuners, "defaults: the game's tuners come with other players about")
         check(m.roamMapFilter, "defaults: the world map legend's Players rows")
         check(m.roamAIGrey, "defaults: the game's challengers grey on the maps")
+        check(m.roamFriends, "defaults: friends in free roam")
 
         // environment
         let exe = URL(fileURLWithPath: "/nonexistent/Need for Speed Underground 2/SPEED2.EXE")
@@ -33,7 +34,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.game = .ready(GameLocation(exe: exe, embedded: false))
         m.online = true; m.playerName = "Driver_1"; m.server = "ws://127.0.0.1:8080/lan"; m.freeRoam = .solid
         m.play()
-        check(env("NFSU2_ROAM") == "1" && env("NFSU2_ROAM_TUNERS") == nil && env("NFSU2_ROAM_MAP_FILTER") == nil && env("NFSU2_ROAM_AI_GREY") == nil, "play: everything on, nothing more for the engine")
+        check(env("NFSU2_ROAM") == "1" && env("NFSU2_ROAM_TUNERS") == nil && env("NFSU2_ROAM_MAP_FILTER") == nil && env("NFSU2_ROAM_AI_GREY") == nil && env("NFSU2_ROAM_FRIENDS") == nil, "play: everything on, nothing more for the engine")
         clear()
         m.roamTuners = false
         m.play()
@@ -47,6 +48,10 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.play()
         check(env("NFSU2_ROAM_AI_GREY") == "0", "play: the challengers in the game's colour (NFSU2_ROAM_AI_GREY=0)")
         clear()
+        m.roamFriends = false
+        m.play()
+        check(env("NFSU2_ROAM_FRIENDS") == "0", "play: friends off (NFSU2_ROAM_FRIENDS=0)")
+        clear()
         m.freeRoam = .off; m.play()
         check(env("NFSU2_ROAM") == nil && env("NFSU2_ROAM_TUNERS") == nil, "play: free roam off, none of them")
         clear()
@@ -58,6 +63,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.roamTuners, "original game: the tuners come, as in the original game")
         check(!m.roamMapFilter, "original game: no rows of ours in the world map's legend")
         check(!m.roamAIGrey, "original game: the challengers in the game's orange")
+        check(!m.roamFriends, "original game: no friends in free roam")
         LauncherModel.testSpawn = nil
 
         // invite links (Invite.swift): nfsu2-web's own vectors (web/test/invite.test.mjs)

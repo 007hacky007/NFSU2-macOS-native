@@ -1154,6 +1154,9 @@ int rc_set_room(rc_session *s, uint32_t room){
     for (int i = 0; i < RC_TABLE; i++) if (s->peer[i].state != RC_PS_FREE) s->peer[i].last_hello_tx = INT64_MIN / 4;
     return n;
 }
+int rc_peer_friend(const rc_session *s, int i){
+    return i >= 0 && i < RC_TABLE && s->peer[i].state != RC_PS_FREE && s->peer[i].hub_friend;
+}
 int rc_peer_crew(const rc_session *s, int i){
     if (i < 0 || i >= RC_TABLE) return -1;
     const rc_peer *p = &s->peer[i];
@@ -1370,6 +1373,7 @@ void rc_receive(rc_session *s, uint32_t ip, uint16_t port, const uint8_t *buf, i
             q->n_hub_crews = 0;
             for (int c = 0; marks && c < m.u.peers.n_mine; c++)
                 if (m.u.peers.crew[k] >> c & 1u) q->hub_crews[q->n_hub_crews++] = m.u.peers.mine[c];
+            q->hub_friend = marks && (m.u.peers.crew[k] & RC_MARK_FRIEND);
         }
         return;
     }

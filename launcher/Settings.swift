@@ -182,7 +182,9 @@ struct ControlsSettings: View {
 struct OnlineSettingsTab: View {
     @ObservedObject var model: LauncherModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) { MultiplayerCard(model: model); NetTimingCard(model: model) }
+        VStack(alignment: .leading, spacing: 12) {
+            MultiplayerCard(model: model); FriendsCard(model: model, friends: model.friends); NetTimingCard(model: model)
+        }
     }
 }
 

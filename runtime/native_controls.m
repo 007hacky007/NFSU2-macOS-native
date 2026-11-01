@@ -7,8 +7,23 @@
  * and up to four crews with their colours (changed while the game runs:
  * roam_game.c solid_follow, crews_follow; kept in the launcher's settings, the
  * same defaults domain), the room (changed while the game runs: roam_game.c
- * room_follow; kept in the launcher's settings too), a phrase to say, and a
- * log of the notices and phrases.  Always: the music folder's controls (radio_native.h): Pause /
+ * room_follow; kept in the launcher's settings too), friends (below), a phrase
+ * to say, and a log of the notices and phrases.
+ *
+ * Friends (NFSU2_ROAM_FRIENDS, on unless 0; ported from th0mk's nfsu2-web
+ * web/src/app/friends.ts, MIT): with a claimed name (the launcher hands the
+ * game its keyphrase's token: net_native.m) the game asks the server for its
+ * friends on its link ({"t":"friend","op":"list"}: the hub then links them
+ * first and marks them, roam_game.c FRIEND_CREW), tells it the room's name
+ * once it has friends (their Join), and asks where they play every minute
+ * ("where": a notice when one comes into free roam, and Game Tools' Join).
+ * Two cars touching front bumpers for 3 s (roam_game.c bump_*,
+ * roam_plat_friend) ask the server what that player is to this one ("can")
+ * and a line under the middle of the picture offers "Add Bo as a friend" or
+ * "Bo wants to be friends: accept" (F, or the panel's button: "add"), or says
+ * why not.  The launcher's Friends lists them outside the game (/friends).
+ * Every message goes out from the main thread (friends_tick), never with
+ * this file's lock held.  Always: the music folder's controls (radio_native.h): Pause /
  * Resume, Next track, Shuffle, and back to the game's own soundtrack.
  *
  * Quick chat (NFSU2_ROAM_SAY=1, the launcher's Quick chat switch): four
@@ -401,6 +416,229 @@ int roam_plat_lobby(const char *json){ @autoreleasepool {
     return 1;
 } }
 
+/* ---- friends (net_native.m's link; any thread in, the main thread out) ------------------------- */
+__attribute__((weak)) int native_net_text(const char *json){ (void)json; return 0; }   /* net_native.m */
+#define FRIEND_LIST_TRY_S  2.0       /* the list tried this often until the link takes it */
+#define FRIEND_WHERE_S     60.0      /* where the friends play, asked this often while there are some */
+#define FRIEND_TOAST_S     6.0
+static int fOn = -1, fClaimed, fListed, fPendCan, fPendAdd;
+static double fListTry, fWhereAt, fToastUntil;
+static NSString *fMe, *fRoomSent, *fToast;
+static NSArray<NSString *> *fFriends;
+static NSArray<NSDictionary *> *fWhere;                 /* [{name, where: roam|online|"", room?}], the server's last */
+static NSMutableDictionary<NSString *, NSString *> *fWas;   /* each friend's where (lower case name), for the notices */
+static NSMutableSet<NSString *> *fAsksNoted;
+static uint32_t fOfferId;
+static NSString *fOfferName, *fOfferSt;                 /* the car touched; "wait", "new", "asks", "asked", "friends", "claim", "theirs" */
+static int friends_on(void){
+    if (fOn < 0){ const char *r = getenv("NFSU2_ROAM"), *f = getenv("NFSU2_ROAM_FRIENDS"); fOn = r && *r == '1' && !(f && *f == '0'); }
+    return fOn;
+}
+/* two names of one player: the same Online form, in any case (the name over a car, a claimed name) */
+static NSString *online_form(NSString *s){
+    NSMutableString *o = [NSMutableString string]; BOOL gap = NO;
+    for (NSUInteger i = 0; i < s.length && o.length < 15; i++){
+        unichar c = [s characterAtIndex:i];
+        BOOL ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok){ gap = YES; continue; }
+        if (gap && o.length && o.length < 14) [o appendString:@"_"];
+        gap = NO; [o appendFormat:@"%C", c];
+    }
+    while (o.length && o.length < 3) [o appendString:@"_"];
+    return o.length ? o.lowercaseString : s.lowercaseString;
+}
+static BOOL same_player(NSString *a, NSString *b){ return a && b && [online_form(a) isEqualToString:online_form(b)]; }
+static void friend_toast(NSString *text){
+    pthread_mutex_lock(&mu); fToast = text; fToastUntil = now_s() + FRIEND_TOAST_S; pthread_mutex_unlock(&mu);
+    add_message(text);
+}
+static NSString *room_now(void){
+    pthread_mutex_lock(&mu);
+    NSString *r = roomGeneration ? [NSString stringWithUTF8String:roomName] : nil; pthread_mutex_unlock(&mu);
+    if (!r){ const char *e = getenv("NFSU2_ROAM_ROOM"); r = native_controls_tidy_name(e ? [NSString stringWithUTF8String:e] ?: @"" : @""); }
+    return r ?: @"";
+}
+static BOOL in_room(NSDictionary *f, NSString *mine){
+    return [f[@"where"] isEqual:@"roam"] && [f[@"room"] isKindOfClass:NSString.class] && rc_room_hash([f[@"room"] UTF8String]) == rc_room_hash(mine.UTF8String);
+}
+/* the link is up (again): the list asked again, the room's name told again */
+void native_controls_net_welcome(int claimed){
+    pthread_mutex_lock(&mu); fClaimed = claimed; fListed = 0; fListTry = 0; fRoomSent = nil; pthread_mutex_unlock(&mu);
+}
+/* the car touched nose to nose for 3 s (on 1), or parted (roam_game.c bump_page): {"id","name","on"} */
+int roam_plat_friend(const char *json){ @autoreleasepool {
+    NSDictionary *m = json_object(json);
+    if (!m || !json_int(m[@"id"], 0, UINT32_MAX) || ![m[@"name"] isKindOfClass:NSString.class] || [m[@"name"] length] > 64 || !json_int(m[@"on"], 0, 1)) return -1;
+    if (!friends_on()) return 1;
+    NSString *name = m[@"name"];
+    pthread_mutex_lock(&mu);
+    if ([m[@"on"] intValue] == 1){ fOfferId = [m[@"id"] unsignedIntValue]; fOfferName = name; fOfferSt = @"wait"; fPendCan = 1; fPendAdd = 0; }
+    else if (same_player(fOfferName, name)){ fOfferName = nil; fOfferSt = nil; fPendCan = fPendAdd = 0; }
+    pthread_mutex_unlock(&mu);
+    return 1;
+} }
+/* what the line under the picture says now (0: none), and whether F (or the panel's button) does something */
+int native_controls_friend_line(char *buf, size_t cap, int *actionable){ @autoreleasepool {
+    pthread_mutex_lock(&mu); NSString *n = fOfferName, *st = fOfferSt; pthread_mutex_unlock(&mu);
+    NSString *t = nil;
+    if ([st isEqual:@"new"]) t = [NSString stringWithFormat:@"F: add %@ as a friend", n];
+    else if ([st isEqual:@"asks"]) t = [NSString stringWithFormat:@"F: %@ wants to be friends, accept", n];
+    else if ([st isEqual:@"asked"]) t = [NSString stringWithFormat:@"Friend request sent to %@", n];
+    else if ([st isEqual:@"friends"]) t = [NSString stringWithFormat:@"You and %@ are friends", n];
+    else if ([st isEqual:@"claim"]) t = @"Claim your name in the launcher (Settings, Online) to add friends";
+    else if ([st isEqual:@"theirs"]) t = [NSString stringWithFormat:@"%@ has no claimed name, so can't add friends yet", n];
+    if (actionable) *actionable = [st isEqual:@"new"] || [st isEqual:@"asks"];
+    if (buf && cap) snprintf(buf, cap, "%s", t ? t.UTF8String : "");
+    return t != nil;
+} }
+/* F, or the panel's button: the request (or the answer to theirs) */
+int native_controls_friend_act(void){
+    pthread_mutex_lock(&mu);
+    int ok = fOfferName && ([fOfferSt isEqual:@"new"] || [fOfferSt isEqual:@"asks"]);
+    if (ok){ fPendAdd = 1; fOfferSt = @"wait"; }
+    pthread_mutex_unlock(&mu);
+    return ok;
+}
+static NSString *where_text(NSDictionary *f, NSString *mine){
+    if ([f[@"where"] isEqual:@"roam"]){
+        if (in_room(f, mine)) return @"free roam, your room";
+        NSString *r = f[@"room"];
+        return [r isKindOfClass:NSString.class] ? (r.length ? [NSString stringWithFormat:@"free roam, room %@", r] : @"free roam, no room") : @"free roam";
+    }
+    return [f[@"where"] isEqual:@"online"] ? @"Online lobby" : @"offline";
+}
+/* the friends in free roam in another room (a Join each): name and room ("" everyone's); the panel's popup */
+NSArray<NSArray<NSString *> *> *native_controls_friends_to_join(void){
+    NSString *mine = room_now();
+    pthread_mutex_lock(&mu); NSArray *w = fWhere; pthread_mutex_unlock(&mu);
+    NSMutableArray *o = [NSMutableArray array];
+    for (NSDictionary *f in w) if ([f[@"where"] isEqual:@"roam"] && [f[@"room"] isKindOfClass:NSString.class] && !in_room(f, mine)) [o addObject:@[f[@"name"], f[@"room"]]];
+    return o;
+}
+/* a server message of friends' ({"t":"friend",...}, net_native.m's queue) */
+void native_controls_net_friend(const char *json){ @autoreleasepool {
+    NSDictionary *m = json_object(json);
+    if (!m || !friends_on() || ![m[@"op"] isKindOfClass:NSString.class]) return;
+    NSString *op = m[@"op"], *name = [m[@"name"] isKindOfClass:NSString.class] ? m[@"name"] : @"";
+    if (name.length > 64) return;
+    NSMutableArray<NSString *> *toasts = [NSMutableArray array], *lines = [NSMutableArray array];
+    pthread_mutex_lock(&mu);
+    BOOL mine = fOfferName && name.length && same_player(fOfferName, name);
+    if ([op isEqual:@"list"]){
+        NSMutableArray *fr = [NSMutableArray array];
+        if ([m[@"friends"] isKindOfClass:NSArray.class]) for (id f in m[@"friends"]) if ([f isKindOfClass:NSString.class] && [f length] <= 64) [fr addObject:f];
+        fFriends = fr; fMe = [m[@"me"] isKindOfClass:NSString.class] ? m[@"me"] : nil; fListed = 1; fWhereAt = 0;
+        if (!fAsksNoted) fAsksNoted = [NSMutableSet set];
+        if ([m[@"asks"] isKindOfClass:NSArray.class]) for (id a in m[@"asks"])
+            if ([a isKindOfClass:NSString.class] && [a length] <= 64 && ![fAsksNoted containsObject:[a lowercaseString]]){
+                [fAsksNoted addObject:[a lowercaseString]];
+                [lines addObject:[NSString stringWithFormat:@"%@ wants to be friends: accept in the launcher (Settings, Online, Friends)", a]];
+            }
+        if ([m[@"mail"] isKindOfClass:NSArray.class]) for (id x in m[@"mail"])
+            if ([x isKindOfClass:NSDictionary.class] && [x[@"from"] isKindOfClass:NSString.class] && [x[@"body"] isKindOfClass:NSString.class])
+                [lines addObject:[NSString stringWithFormat:@"Message from %@: %@", x[@"from"], [x[@"body"] substringToIndex:MIN([x[@"body"] length], 500u)]]];
+    } else if ([op isEqual:@"where"] && [m[@"friends"] isKindOfClass:NSArray.class]){
+        NSMutableArray *w = [NSMutableArray array];
+        for (id f in m[@"friends"]){
+            if (![f isKindOfClass:NSDictionary.class] || ![f[@"name"] isKindOfClass:NSString.class] || [f[@"name"] length] > 64) continue;
+            NSMutableDictionary *e = [@{ @"name": f[@"name"], @"where": [@[@"roam", @"online"] containsObject:f[@"where"]] ? f[@"where"] : @"" } mutableCopy];
+            if ([f[@"room"] isKindOfClass:NSString.class] && [f[@"room"] lengthOfBytesUsingEncoding:NSUTF8StringEncoding] <= 63) e[@"room"] = f[@"room"];
+            [w addObject:e];
+        }
+        NSMutableDictionary *was = fWas ?: [NSMutableDictionary dictionary];
+        fWas = [NSMutableDictionary dictionary]; fWhere = w;
+        pthread_mutex_unlock(&mu);
+        NSString *mineRoom = room_now();
+        pthread_mutex_lock(&mu);
+        for (NSDictionary *f in w){
+            NSString *key = [f[@"name"] lowercaseString];
+            fWas[key] = f[@"where"];
+            if (![f[@"where"] isEqual:@"roam"] || [was[key] isEqual:@"roam"]) continue;
+            NSString *r = f[@"room"];
+            [toasts addObject:!r || in_room(f, mineRoom) ? [NSString stringWithFormat:@"Your friend %@ is in free roam", f[@"name"]]
+                            : r.length ? [NSString stringWithFormat:@"Your friend %@ is in free roam, room %@: Join in Game Tools (Cmd+Shift+M)", f[@"name"], r]
+                            : [NSString stringWithFormat:@"Your friend %@ is in free roam, in no room: Join in Game Tools (Cmd+Shift+M)", f[@"name"]]];
+        }
+    } else if ([op isEqual:@"can"]){
+        if (mine){
+            NSString *st = [m[@"st"] isKindOfClass:NSString.class] ? m[@"st"] : @"";
+            if ([st isEqual:@"far"]){ fOfferName = nil; fOfferSt = nil; }
+            else if ([@[@"new", @"asks", @"asked", @"friends", @"claim", @"theirs"] containsObject:st]){ fOfferName = name; fOfferSt = st; }
+        }
+    } else if ([op isEqual:@"add"]){
+        NSString *done = [m[@"done"] isKindOfClass:NSString.class] ? m[@"done"] : @"";
+        if ([done isEqual:@"friends"]){ if (!fWas) fWas = [NSMutableDictionary dictionary]; fWas[name.lowercaseString] = @"roam"; }
+        if ([done isEqual:@"friends"] && !mine) [toasts addObject:[NSString stringWithFormat:@"You and %@ are friends now", name]];
+        else if ([done isEqual:@"full"]) [toasts addObject:@"A friends list is full (50 at most)"];
+        if (mine && [@[@"asked", @"friends", @"claim", @"theirs"] containsObject:done]) fOfferSt = done;
+        else if (mine && [done isEqual:@"full"]){ fOfferName = nil; fOfferSt = nil; }
+        if (mine && [done isEqual:@"asked"]) [lines addObject:[NSString stringWithFormat:@"Friend request sent to %@", name]];
+        if (mine && [done isEqual:@"friends"]) [lines addObject:[NSString stringWithFormat:@"You and %@ are friends now", name]];
+    } else if ([op isEqual:@"asks"]){
+        if (mine && fOfferName) fOfferSt = @"asks";
+        else [toasts addObject:[NSString stringWithFormat:@"%@ wants to be friends: answer in the launcher (Settings, Online, Friends)", name]];
+    } else if ([op isEqual:@"friends"]){
+        if (!fWas) fWas = [NSMutableDictionary dictionary];
+        fWas[name.lowercaseString] = @"roam";
+        if (mine && fOfferName){ fOfferSt = @"friends"; [lines addObject:[NSString stringWithFormat:@"You and %@ are friends now", name]]; }
+        else [toasts addObject:[NSString stringWithFormat:@"You and %@ are friends now", name]];
+    } else if ([op isEqual:@"mail"] && [m[@"from"] isKindOfClass:NSString.class] && [m[@"body"] isKindOfClass:NSString.class]){
+        [toasts addObject:[NSString stringWithFormat:@"Message from %@: %@", m[@"from"], [m[@"body"] substringToIndex:MIN([m[@"body"] length], 500u)]]];
+    }
+    pthread_mutex_unlock(&mu);
+    for (NSString *t in lines) add_message(t);
+    for (NSString *t in toasts) friend_toast(t);
+} }
+static NSString *friend_json(NSDictionary *d){
+    NSData *data = [NSJSONSerialization dataWithJSONObject:d options:0 error:NULL];
+    return data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+}
+/* the main thread, ~30 times a second: what is due goes out (never with the lock held: net_native.m waits for its
+ * own queue, whose messages come in here under it) */
+void native_controls_friends_tick(double now){ @autoreleasepool {
+    if (!friends_on()) return;
+    NSString *room = room_now();
+    NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+    pthread_mutex_lock(&mu);
+    int list = 0, where = 0, sendRoom = 0, can = 0, add = 0;
+    NSString *who = fOfferName;
+    if (fClaimed){
+        if (!fListed && now - fListTry >= FRIEND_LIST_TRY_S){ fListTry = now; list = 1; fListed = 1; }   /* (again if not sent) */
+        if (fListed && fFriends.count && now - fWhereAt >= FRIEND_WHERE_S){ fWhereAt = now; where = 1; }
+        if (fListed && fFriends.count && ![room isEqual:fRoomSent]){ fRoomSent = room; sendRoom = 1; }
+    }
+    if (fPendCan && who){ fPendCan = 0; can = fClaimed; if (!fClaimed) fOfferSt = @"claim"; }
+    if (fPendAdd && who){ fPendAdd = 0; add = 1; }
+    pthread_mutex_unlock(&mu);
+    if (list) [out addObject:@{ @"t": @"friend", @"op": @"list" }];
+    if (sendRoom) [out addObject:@{ @"t": @"room", @"name": room }];
+    if (where) [out addObject:@{ @"t": @"friend", @"op": @"where" }];
+    if (can) [out addObject:@{ @"t": @"friend", @"op": @"can", @"name": who }];
+    if (add) [out addObject:@{ @"t": @"friend", @"op": @"add", @"name": who }];
+    for (NSDictionary *d in out){
+        NSString *j = friend_json(d);
+        int sent = j && native_net_text(j.UTF8String);
+        if (sent) continue;
+        pthread_mutex_lock(&mu);                          /* not sent: again (the list) or forgotten (the line goes) */
+        if ([d[@"t"] isEqual:@"room"]) fRoomSent = nil;
+        if ([d[@"op"] isEqual:@"list"]) fListed = 0;
+        if ([d[@"op"] isEqual:@"can"] || [d[@"op"] isEqual:@"add"]){ fOfferName = nil; fOfferSt = nil; }
+        pthread_mutex_unlock(&mu);
+    }
+    if (list || can || add) fprintf(stderr, "[friends] %s%s%s\n", list ? "asked for the list " : "", can ? "asked what the player touched is " : "",
+                                    add ? "sent the request (or the answer)" : "");
+} }
+/* the toast at the top of the picture (a friend in free roam, a request, friends now): "" none */
+static NSString *friend_toast_now(double now){
+    pthread_mutex_lock(&mu); NSString *t = now < fToastUntil ? fToast : nil; pthread_mutex_unlock(&mu);
+    return t;
+}
+int native_controls_friend_toast(char *buf, size_t cap){ @autoreleasepool {
+    NSString *t = friend_toast_now(now_s());
+    if (buf && cap) snprintf(buf, cap, "%s", t ? t.UTF8String : "");
+    return t != nil;
+} }
+
 /* ---- the controller (guest thread) --------------------------------------------- */
 void native_controls_pad(int connected, float *rx, float *ry, int *b, int *rs){
     pthread_mutex_lock(&mu);
@@ -452,6 +690,14 @@ int native_controls_handle_event(NSEvent *ev){
     if (qKeys[code]){ pthread_mutex_unlock(&mu); return 1; }        /* held: its repeats are ours too */
     double now = now_s();
     chat_expire(now);
+    /* F while a friend's line offers something (the game has no use for F) */
+    if (code == 3 && fOfferName && ([fOfferSt isEqual:@"new"] || [fOfferSt isEqual:@"asks"]) && qDriving && (qFocused || qTestFocus) &&
+        now - qDriveAt < 0.25 && !native_scene_active() && !(ev.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption))){
+        qKeys[code] = YES;
+        if (!ev.isARepeat){ fPendAdd = 1; fOfferSt = @"wait"; }
+        pthread_mutex_unlock(&mu);
+        return 1;
+    }
     int d = -1;
     switch (code){                                                   /* 1-4, also on the keypad */
     case 18: case 83: d = 0; break; case 19: case 84: d = 1; break;
@@ -558,13 +804,29 @@ int native_controls_set_room(const char *name, char *error, size_t capacity){ @a
     int group = qGroup, pad = qPad, layout[16]; memcpy(layout, qLayout, sizeof layout);
     char gname[100]; snprintf(gname, sizeof gname, "%s", group >= 0 ? qGroupNames[group] : "");
     BOOL visible = chat_eligible(now), wait = chat_wait(now);
+    BOOL driving = qDriving && (qFocused || qTestFocus) && now - qDriveAt < 0.25 && !native_scene_active(), shown = (qFocused || qTestFocus);
     typeof(qLines) lines; memcpy(lines, qLines, sizeof lines);
     typeof(qMarks) marks; memcpy(marks, qMarks, sizeof marks);
     int count = now - qMarksAt < 0.15 ? qMarksCount : 0;
     pthread_mutex_unlock(&mu);
-    if (!visible) return;
     NSRect pic = self.picture;
     CGFloat k = MAX(0.75, MIN(1.6, MIN(pic.size.width / 1280, pic.size.height / 720)));
+    /* friends: the front bumpers' line under the middle of the picture while driving, a toast at its top */
+    char fl[200]; int act = 0;
+    NSString *toast = shown ? friend_toast_now(now) : nil;
+    NSString *line = driving && native_controls_friend_line(fl, sizeof fl, &act) ? [NSString stringWithUTF8String:fl] : nil;
+    for (int i = 0; i < 2; i++){
+        NSString *t = i ? toast : line;
+        if (!t.length) continue;
+        NSDictionary *a = @{NSFontAttributeName: [NSFont systemFontOfSize:15 * k weight:NSFontWeightSemibold],
+                            NSForegroundColorAttributeName: i == 0 && act ? [NSColor colorWithSRGBRed:0.89 green:0.94 blue:0.82 alpha:1] : NSColor.whiteColor};
+        NSSize ts = [t sizeWithAttributes:a];
+        CGFloat y = i ? pic.origin.y + 18 * k : pic.origin.y + pic.size.height * 0.62;
+        NSRect box = NSMakeRect(pic.origin.x + (pic.size.width - ts.width) / 2 - 12 * k, y, ts.width + 24 * k, ts.height + 12 * k);
+        [[NSColor colorWithWhite:0.04 alpha:0.85] setFill]; [[NSBezierPath bezierPathWithRoundedRect:box xRadius:8 * k yRadius:8 * k] fill];
+        [t drawAtPoint:NSMakePoint(box.origin.x + 12 * k, box.origin.y + 6 * k) withAttributes:a];
+    }
+    if (!visible) return;
     if (group >= 0){
         NSDictionary *a = @{NSFontAttributeName: [NSFont systemFontOfSize:14 * k weight:NSFontWeightMedium], NSForegroundColorAttributeName: NSColor.whiteColor};
         NSRect box = NSMakeRect(pic.origin.x + 20 * k, pic.origin.y + 20 * k, 300 * k, 155 * k);
@@ -608,11 +870,12 @@ int native_controls_set_room(const char *name, char *error, size_t capacity){ @a
 @interface GameTools : NSObject <NSWindowDelegate>
 @property NSPanel *panel, *chatPanel;
 @property GameToolsOverlay *overlay;
-@property NSTextField *status, *crewNote, *chatHint, *chatError, *music, *roomField;
+@property NSTextField *status, *crewNote, *chatHint, *chatError, *music, *roomField, *friendStatus;
 @property NSArray<NSTextField *> *crewFields, *groupFields;
 @property NSArray<NSColorWell *> *crewWells;
 @property NSArray<NSPopUpButton *> *groupPhrases;
-@property NSButton *engage, *leave, *collision, *say, *groups, *apply, *joinRoom;
+@property NSButton *engage, *leave, *collision, *say, *groups, *apply, *joinRoom, *friendAct, *joinFriend;
+@property NSPopUpButton *friendPopup;
 @property NSButton *musicOn, *pause, *next, *shuffle;
 @property NSPopUpButton *phrase;
 @property NSTextView *log;
@@ -706,6 +969,14 @@ static NSColor *color_of(unsigned rgb){
     self.crewNote.stringValue = room.length ? [NSString stringWithFormat:@"Room \u201c%@\u201d: only its players see you. You leave the old room's players now (after a race or a lobby, once it is over).", room]
                                             : @"No room: you see everyone again. You leave the old room's players now (after a race or a lobby, once it is over).";
 }
+- (void)friendAct:(id)sender { (void)sender; native_controls_friend_act(); [self refresh]; }
+- (void)joinFriend:(id)sender {
+    (void)sender;
+    NSArray *all = native_controls_friends_to_join(); NSInteger i = self.friendPopup.indexOfSelectedItem;
+    if (i < 0 || i >= (NSInteger)all.count) return;
+    self.roomField.stringValue = all[i][1];
+    [self joinRoom:nil];
+}
 - (void)showCrews:(NSString *)names colours:(NSString *)colours {
     NSArray *n = [names componentsSeparatedByString:@","], *c = [colours componentsSeparatedByString:@","];
     for (int i = 0; i < 4; i++){
@@ -793,6 +1064,26 @@ static NSColor *color_of(unsigned rgb){
     self.leave.enabled = self.roam && [v isEqual:@"lobby"];
     self.say.enabled = self.groups.enabled = self.phrase.enabled = net;
     self.collision.enabled = self.apply.enabled = self.joinRoom.enabled = self.roomField.enabled = self.roam;
+    /* friends: the front bumpers' offer, and the friends in free roam in another room */
+    char fl[200]; int act = 0;
+    int line = native_controls_friend_line(fl, sizeof fl, &act);
+    pthread_mutex_lock(&mu); NSArray *fr = fFriends; NSArray *where = fWhere; int claimed = fClaimed; NSString *offer = fOfferSt; pthread_mutex_unlock(&mu);
+    NSString *mine = room_now();
+    NSMutableArray *roam = [NSMutableArray array];
+    for (NSDictionary *f in where) if ([f[@"where"] isEqual:@"roam"]) [roam addObject:[NSString stringWithFormat:@"%@ (%@)", f[@"name"], where_text(f, mine)]];
+    self.friendStatus.stringValue = !self.roam || !friends_on() ? @"Friends: off (the launcher's Settings, Online)"
+        : line ? [NSString stringWithUTF8String:fl]
+        : !claimed ? @"Friends need a claimed name: claim yours in the launcher (Settings, Online)"
+        : !fr.count ? @"No friends yet: touch front bumpers with another player for 3 s to add one"
+        : roam.count ? [@"Friends in free roam: " stringByAppendingString:[roam componentsJoinedByString:@", "]]
+        : [NSString stringWithFormat:@"%lu friend(s), none in free roam now", (unsigned long)fr.count];
+    self.friendAct.title = [offer isEqual:@"asks"] ? @"Accept friend" : @"Add friend";
+    self.friendAct.enabled = act;
+    NSArray *join = native_controls_friends_to_join();
+    NSMutableArray *titles = [NSMutableArray array];
+    for (NSArray *j in join) [titles addObject:[NSString stringWithFormat:@"%@ (%@)", j[0], [j[1] length] ? [NSString stringWithFormat:@"room %@", j[1]] : @"no room"]];
+    if (![titles isEqual:self.friendPopup.itemTitles]){ [self.friendPopup removeAllItems]; [self.friendPopup addItemsWithTitles:titles]; }
+    self.friendPopup.enabled = self.joinFriend.enabled = self.roam && titles.count > 0;
     for (NSTextField *f in self.crewFields) f.enabled = self.roam;
     for (NSColorWell *w in self.crewWells) w.enabled = self.roam;
     self.chatHint.stringValue = net ? @"Quick chat: 1-4 twice, or the right stick twice" : @"Quick chat is off (in the launcher)";
@@ -816,6 +1107,7 @@ static NSColor *color_of(unsigned rgb){
 /* the pump: ~30 times a second on the main thread (an NSTimer of the run loop metal.m turns) */
 - (void)tick:(NSTimer *)t {
     (void)t; double now = now_s();
+    native_controls_friends_tick(now);
     pthread_mutex_lock(&mu);
     qFocused = g_game.keyWindow && NSApp.active;
     chat_expire(now);
@@ -927,14 +1219,20 @@ void native_controls_install(NSWindow *game){
     groups_from_env();
     ui = [GameTools new];
     ui.roam = roam && *roam == '1';
-    NSPanel *p = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 520, 775) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+    NSPanel *p = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 520, 855) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                               backing:NSBackingStoreBuffered defer:NO];
     p.title = @"Game Tools"; p.delegate = ui; p.releasedWhenClosed = NO;
     p.hidesOnDeactivate = YES; p.becomesKeyOnlyIfNeeded = NO;
     p.collectionBehavior = NSWindowCollectionBehaviorFullScreenAuxiliary;
-    p.contentView = [[GameToolsView alloc] initWithFrame:NSMakeRect(0, 0, 520, 775)];
+    p.contentView = [[GameToolsView alloc] initWithFrame:NSMakeRect(0, 0, 520, 855)];
     ui.panel = p;
     NSView *v = p.contentView;
+    ui.friendStatus = label(v, @"", NSMakeRect(20, 810, 350, 36));
+    ui.friendStatus.font = [NSFont systemFontOfSize:12];
+    ui.friendAct = button(v, @"Add friend", @selector(friendAct:), NSMakeRect(378, 812, 128, 32));
+    ui.friendPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 774, 356, 28) pullsDown:NO];
+    ui.friendPopup.accessibilityLabel = @"Friends in another room"; [v addSubview:ui.friendPopup];
+    ui.joinFriend = button(v, @"Join friend", @selector(joinFriend:), NSMakeRect(378, 772, 128, 32));
     label(v, @"Room", NSMakeRect(20, 738, 50, 22));
     ui.roomField = [[NSTextField alloc] initWithFrame:NSMakeRect(70, 736, 300, 24)];
     ui.roomField.placeholderString = @"Everyone"; ui.roomField.accessibilityLabel = @"Room";

@@ -13,6 +13,9 @@ net_mailbox *native_net_mailbox(uint32_t mode);
 void native_net_shutdown(void);
 /* 1: the launcher handed the engine a claimed name's token (NFSU2_CLAIM_FD) */
 int native_net_has_claim(void);
+/* a control message of free roam's friends to the switch (JSON, at most 4096 bytes): 1 sent, 0 no link now
+ * (native_controls.m) */
+int native_net_text(const char *json);
 void native_net_wait(int *word, int expected, int64_t ns);
 /* the Online statistics panel (netstats.m): the link to the server
  * (NETSTATS_* of netstats.h), its place in the server's queue (pos of of, 0:

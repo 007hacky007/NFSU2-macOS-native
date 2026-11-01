@@ -137,6 +137,7 @@ Click a picture to see it full size.
 | Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. The game's own tuners still challenge you with other players around. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
 | Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby and changes your room while you play. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
 | Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="docs/readme/full/ph-horns-pause-audio-eu.jpg"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
+| Friends | Touch front bumpers with another player in free roam to become friends; friends stand out in free roam, and the launcher lists where each one plays with a Join. Needs a claimed name. |  |
 | Player counts | See how many play on the server, in your room and in your crews before you join. | <a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/f-player-counts.jpg" width="180" alt="Online settings with player counts"></a> |
 | Online statistics | A small panel in the game's corner while you play online: the connection or your place in the server queue, the round trip to the server, and how many play on the server, in free roam, in the Online lobby, in your room and crews. Off by default. | |
 | Better online races | Every track, up to 6 players, 2 laps by default, a lobby filter that works, and you log in under your own name. | |
@@ -664,7 +665,19 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   while other players are around, so their outruns and unique parts are there
   online too; within 30 m of you a tuner comes first, and at a door or an
   event no tuner challenges you.  Off: they stay away while another player's
-  car is in your world.  **Players in the world map's legend** (on by
+  car is in your world.  **Friends in free roam** (with a claimed name; on by
+  default, off is the original game): touch front bumpers with another player
+  for 3 s and a line under the middle of the picture offers **Add Bo as a
+  friend** (F, or Game Tools' button), or **Bo wants to be friends: accept**;
+  once both said yes you are friends, on the server's friends lists (EA
+  Messenger's, the same as in the browser game).  Friends' names and arrows
+  show in a pale lime at any distance, the server links friends first, a
+  notice says when one comes into free roam, and Game Tools' **Join friend**
+  drives you into their room.  Settings > Online > **Friends** lists them with
+  where each one plays (free roam and its room, the Online lobby, offline),
+  answers requests, removes a friend, takes a request back and asks a player
+  by name (the server's `/friends`, with the keyphrase's token, only to the
+  server it was remembered for).  **Players in the world map's legend** (on by
   default; off is the original game): the legend gets two rows more, Players
   and Players' races, and Enter on one leaves the other players' markers (a
   crew-mate's stays) or their race lobbies (yours stays) off the map; the
@@ -675,7 +688,7 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   legend's Opponent Car too), so they are not taken for players.
   Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
   `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`, `NFSU2_ROAM_MAP_FILTER=0`,
-  `NFSU2_ROAM_AI_GREY=0`.
+  `NFSU2_ROAM_AI_GREY=0`, `NFSU2_ROAM_FRIENDS=0`.
 - **Horns and the other players' car sounds** (with Play online; both off by
   default, as in the original game, which has no horn): the launcher's
   **Horn** picker gives the player a horn (dual, single, truck, train, klaxon,

@@ -142,6 +142,7 @@ enum Prefs {
     static let roamTuners = "LauncherRoamTuners"   // false: NFSU2_ROAM_TUNERS=0 (RoamExtras.swift)
     static let roamMapFilter = "LauncherRoamMapFilter"     // false: NFSU2_ROAM_MAP_FILTER=0
     static let roamAIGrey = "LauncherRoamAIGrey"           // false: NFSU2_ROAM_AI_GREY=0
+    static let roamFriends = "LauncherRoamFriends"         // false: NFSU2_ROAM_FRIENDS=0 (Friends.swift)
     static let music = "LauncherMusic"             // "game" | "folder": EA Trax plays a music folder (Music.swift)
     static let musicFolder = "LauncherMusicFolder"
     static let seedRegistry = "LauncherSeedRegistry" // NFSU2_SEED_REGISTRY=1: highest graphics on the first launch
@@ -183,6 +184,7 @@ enum Prefs {
         OriginalValue(\.roamTuners, true),
         OriginalValue(\.roamMapFilter, false),
         OriginalValue(\.roamAIGrey, false),
+        OriginalValue(\.roamFriends, false),
         OriginalValue(\.quickChat, false),
         OriginalValue(\.horn, .off),
         OriginalValue(\.allCars, false),

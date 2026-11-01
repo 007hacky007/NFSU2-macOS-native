@@ -323,13 +323,15 @@ static struct {
                                                  -1: by the two cars' weights (car_mass, their square roots), 100: the game's own (the whole hit) */
     int test_mass, test_fmass;                /* NFSU2_ROAM_TEST_MASS / _FMASS (test aid, kg): car_mass of the player's car / friends' cars */
     int map_filter;                           /* NFSU2_ROAM_MAP_FILTER (default 1): the world map legend's Players rows (wmf_*) */
+    int friends;                              /* NFSU2_ROAM_FRIENDS (default 1): friends marked, front bumpers offer one (bump_*) */
     int ai_grey;                              /* NFSU2_ROAM_AI_GREY (default 1): the game's AI racers grey on the minimap and the map */
     int tuners;                               /* NFSU2_ROAM_TUNERS (default 1): the game's outrun tuners come with friends about
                                                  (0: held off while a friend's car is in the world, as before) */
     char name[RC_NAME_MAX + 1], room[64];
     char crew[RC_CREW_MAX][100]; int ncrew;   /* NFSU2_ROAM_CREW: the crews' names, in the player's order (crews_parse; a
                                                  name of 24 characters is up to 96 bytes of UTF-8) */
-    uint32_t crew_rgb[RC_CREW_MAX];           /* ...and their colours (NFSU2_ROAM_CREW_RGB, the player's picks; else CREW_RGB) */
+    uint32_t crew_rgb[RC_CREW_MAX + 1];       /* ...and their colours (NFSU2_ROAM_CREW_RGB, the player's picks; else CREW_RGB);
+                                                 the last a friend's (FRIEND_CREW, FRIEND_RGB) */
 } O;
 
 /* ---- state ------------------------------------------------------------------------------- */
@@ -405,7 +407,8 @@ typedef struct {
     uint32_t unsafe;                          /* touching pairs skipped: its body had no rigid body (roam_game_pair_unsafe) */
     uint8_t  reused;                          /* its car was a parked one that already wore the look (assign, step 1) */
     int64_t  touch_t;                         /* when the car last touched the player's car (host time; block_hit) */
-    int      crew;                            /* the friend is in our crew number crew - 1 (O.crew; 0: none) */
+    int      crew;                            /* the friend is in our crew number crew - 1 (O.crew; FRIEND_CREW: our friend
+                                                 in none of them; 0: none) */
 } Slot;
 static Slot g_sl[NSLOT];
 static uint32_t g_world_seen;
@@ -3044,7 +3047,8 @@ typedef struct { int idx; uint32_t id; char name[RC_NAME_MAX + 1]; int visible, 
                  uint8_t cfg[RC_CFG_MAX]; int have_pose; rc_pose pose; float err; uint32_t look;
                  int64_t newest, rt;   /* the sender's time of its newest snapshot, and the one the car is drawn at (push_pose) */
                  int horn;             /* their horn (horn.h's kinds) */
-                 int crew;             /* in our crew number crew - 1 (rc_peer_crew + 1; 0: none) */ } PeerView;
+                 int crew;             /* in our crew number crew - 1 (rc_peer_crew + 1; FRIEND_CREW: our friend in none
+                                          of them, rc_peer_friend; 0: none) */ } PeerView;
 static PeerView g_pv[RC_TABLE]; static int g_npv;
 static struct { uint32_t id, gen; int horn; } g_phorn[RC_TABLE];   /* each peer's horn, as its record (cfg_gen) has it */
 
@@ -5151,6 +5155,94 @@ static void say_frame(int64_t host, int in_roam, uint8_t st){
     uint32_t from; uint8_t ph, sq;
     while (rc_take_say(&g_s, &from, &ph, &sq)) say_recv(from, ph, sq, host, in_roam && !g_racing);
 }
+
+/* Front bumpers (free roam's friends, NFSU2_ROAM_FRIENDS: Game Tools' "Add friend", native_controls.m): the
+ * player's car and a friend's touching nose to nose for BUMP_US (3 s), whether cars are solid or not (passable
+ * cars drive into each other, so this reads the cars' places, not the game's collisions).  Game Tools is told then
+ * (roam_plat_friend), and again once they parted; it offers to add that player (the server checks that the two are
+ * linked, and both names claimed).  A
+ * car's nose: its place (+0x60, the centre of mass: minus the car's own offset to it, +0x60 - +0x50 forward) plus
+ * its front wheels' place forward (RidePhysicsInfo +0x10, as wheels_pose reads it) plus BUMP_NOSE_M (the
+ * overhangs, 0.7-1.0 m).  Touching: the two point at each other (within BUMP_DOT) and each is ahead of the other,
+ * side by side within BUMP_SIDE_M, the noses at most BUMP_GAP_M apart or up to BUMP_DEEP_M into each other (a
+ * passable car), heights within 1.5 m.  A part of BUMP_LAPSE_US or less is no parting (each game draws the other
+ * car a little off); parted for BUMP_OFF_US after the 3 s, it is over.  Only in free roam proper (driving, no
+ * race, no outrun, no lobby). */
+#define BUMP_US         3000000
+#define BUMP_LAPSE_US   300000
+#define BUMP_OFF_US     1500000
+#define BUMP_NOSE_M     0.85f
+#define BUMP_DOT        (-0.8f)
+#define BUMP_SIDE_M     1.2f
+#define BUMP_GAP_M      0.45f
+#define BUMP_DEEP_M     1.2f
+static struct { uint32_t id; int64_t since, last; int on; char name[RC_NAME_MAX + 1]; } g_bump[NSLOT];
+static int g_bump_can;                       /* free roam proper at the last frame (for `mp bump`) */
+/* how far a car's nose is ahead of its place +0x60, along fx, fy (its forward, flat and of length 1) */
+static float bump_nose(uint32_t car, float fx, float fy){
+    uint32_t ph = MR32(car + 0x20u);
+    float x = ok(ph, 0xc0) ? MRF32(ph + 0x10u) : 0.f;
+    if (!(x > 0.6f && x < 2.6f)) x = 1.3f;
+    float com = (MRF32(car + 0x60u) - MRF32(car + 0x50u)) * fx + (MRF32(car + 0x64u) - MRF32(car + 0x54u)) * fy;
+    if (!(com > -1.f && com < 1.f)) com = 0.f;
+    return x - com + BUMP_NOSE_M;
+}
+/* a car's forward, flat and of length 1 (0: it points up or down) */
+static int bump_fwd(uint32_t car, float *fx, float *fy){
+    float x = MRF32(car + 0x90u), y = MRF32(car + 0x94u), l = rc_sqrtf(x * x + y * y);
+    if (!(l > 0.3f && l < 2.f)) return 0;
+    *fx = x / l; *fy = y / l;
+    return 1;
+}
+/* the player's car `me` and `car` touch nose to nose now (gap: how far apart the noses are, negative: into each other) */
+static int bump_touch(uint32_t me, uint32_t car, float *gap){
+    float f0x, f0y, f1x, f1y;
+    if (!bump_fwd(me, &f0x, &f0y) || !bump_fwd(car, &f1x, &f1y) || f0x * f1x + f0y * f1y > BUMP_DOT) return 0;
+    float dx = MRF32(car + 0x60u) - MRF32(me + 0x60u), dy = MRF32(car + 0x64u) - MRF32(me + 0x64u), dz = MRF32(car + 0x68u) - MRF32(me + 0x68u);
+    float along = dx * f0x + dy * f0y, side = dx * f0y - dy * f0x;
+    if (!(along > 0.f) || -(dx * f1x + dy * f1y) <= 0.f || side > BUMP_SIDE_M || side < -BUMP_SIDE_M || dz > 1.5f || dz < -1.5f) return 0;
+    *gap = along - bump_nose(me, f0x, f0y) - bump_nose(car, f1x, f1y);
+    return *gap < BUMP_GAP_M && *gap > -BUMP_DEEP_M;
+}
+static void bump_page(uint32_t id, const char *name, int on){
+    char buf[96], ids[16]; MpJs j = { buf, 0, sizeof buf };
+    snprintf(ids, sizeof ids, "%u", id);
+    js_raw(&j, "{"); js_key(&j, "id"); js_raw(&j, ids); js_str(&j, "name", name); js_int(&j, "on", on); js_raw(&j, "}");
+    roam_plat_lock();
+    int r = roam_plat_friend(buf);
+    roam_plat_unlock();
+    if (r < 0) rlog("[roam] f=%ld front bumpers: Game Tools did not take the line\n", rh_frame());
+}
+/* every frame: `can` = free roam proper (see above) */
+static void bump_frame(int64_t host, int can){
+    uint32_t me = can ? player_car() : 0;
+    if (me && !ok(me, 0x9e0)) me = 0;
+    for (int k = 0; k < NSLOT; k++){
+        Slot *s = &g_sl[k];
+        int live = me && s->st == SL_ACTIVE && !s->hidden && !s->paused && ok(s->car, 0x9e0);
+        if (live && g_bump[k].id != s->peer_id){
+            /* another friend in this slot: the one before parted */
+            if (g_bump[k].on) bump_page(g_bump[k].id, g_bump[k].name, 0);
+            g_bump[k].id = s->peer_id; g_bump[k].since = g_bump[k].last = 0; g_bump[k].on = 0;
+            snprintf(g_bump[k].name, sizeof g_bump[k].name, "%s", s->name);
+        }
+        float gap = 0.f;
+        g_bump_can = can;
+        if (live && bump_touch(me, s->car, &gap)){
+            if (!g_bump[k].since || host - g_bump[k].last > BUMP_LAPSE_US) g_bump[k].since = host;
+            g_bump[k].last = host;
+            if (!g_bump[k].on && host - g_bump[k].since >= BUMP_US){
+                g_bump[k].on = 1;
+                bump_page(s->peer_id, s->name, 1);
+                rlog("[roam] f=%ld front bumpers: touching %s's for 3 s (the noses %.2f m apart)\n", rh_frame(), s->name, (double)gap);
+            }
+        } else if (g_bump[k].on && (!live || host - g_bump[k].last > BUMP_OFF_US)){
+            g_bump[k].on = 0; g_bump[k].since = 0;
+            bump_page(g_bump[k].id, g_bump[k].name, 0);
+            rlog("[roam] f=%ld front bumpers: apart from %s's\n", rh_frame(), g_bump[k].name);
+        } else if (!g_bump[k].on && g_bump[k].since && host - g_bump[k].last > BUMP_LAPSE_US) g_bump[k].since = 0;
+    }
+}
 static uint8_t local_status(int in_roam){
     uint32_t flow = rd32(G_FLOW);
     if (in_roam) return g_sync_paused > 1 ? RC_ST_PAUSED : RC_ST_ROAM;
@@ -5170,6 +5262,11 @@ static uint8_t local_status(int in_roam){
  * place: cyan, magenta, violet, red (nfsu2-web's).  No green or orange: the
  * game's own arrows for the player and the others */
 static const uint32_t CREW_RGB[RC_CREW_MAX] = { 0x3cd2ff, 0xff50c8, 0xa078ff, 0xff4646 };
+/* friends (the server's friends lists: the hub marks them, RC_MARK_FRIEND) are seen as crew-mates are, wherever they
+ * are, their names in front at any distance, their arrows on the minimap and the world map, in a crew of their own:
+ * a faint lime white, barely apart from other names.  A friend in one of our crews has the crew's colour */
+#define FRIEND_CREW     (RC_CREW_MAX + 1)
+#define FRIEND_RGB      0xe4efd2u
 static void crew_rgb_parse(const char *rgb);
 /* The launcher's Crew (NFSU2_ROAM_CREW): names joined by commas, each
  * trimmed; empty ones, one that hashes as an earlier one (rc_room_hash:
@@ -5196,6 +5293,7 @@ static void crews_parse(const char *v, rc_config *cf){
  * values joined by commas in the crews' order, an empty or unreadable one
  * the place's CREW_RGB */
 static void crew_rgb_parse(const char *rgb){
+    O.crew_rgb[RC_CREW_MAX] = FRIEND_RGB;
     for (int i = 0; i < RC_CREW_MAX; i++){
         O.crew_rgb[i] = CREW_RGB[i];
         if (!rgb || !*rgb) continue;
@@ -5225,6 +5323,7 @@ static void init_once(CPU *c){
     O.tuners = env_int("NFSU2_ROAM_TUNERS", 1, 0, 1);
     O.map_filter = env_int("NFSU2_ROAM_MAP_FILTER", 1, 0, 1);
     O.ai_grey = env_int("NFSU2_ROAM_AI_GREY", 1, 0, 1);
+    O.friends = env_int("NFSU2_ROAM_FRIENDS", 1, 0, 1);
     O.max_cars = env_int("NFSU2_ROAM_MAX_CARS", MAX_CARS, 0, MAX_CARS);
     g_mp.alone_us = (int64_t)env_int("NFSU2_ROAM_LOBBY_ALONE_S", (int)(MP_ALONE_US / 1000000), 5, 3600) * 1000000;
     g_mp.idle_us = (int64_t)env_int("NFSU2_ROAM_LOBBY_IDLE_S", (int)(MP_IDLE_US / 1000000), 10, 3600) * 1000000;
@@ -5798,6 +5897,7 @@ void roam_game_frame(CPU *c){
                           (p->status == RC_ST_ROAM && host - p->last_snap_rx < 2000000));
             v->paused = p->status == RC_ST_PAUSED; v->duels = p->duels; v->listed = rc_peer_listed(&g_s, i);
             v->crew = rc_peer_crew(&g_s, i) + 1;
+            if (!v->crew && O.friends && rc_peer_friend(&g_s, i)) v->crew = FRIEND_CREW;
             v->cfg_gen = p->cfg_gen; v->cfg_len = 0; v->has_cfg = p->cfg_len > 0; v->err = 0;
             int slotted = -1;
             for (int k = 0; k < NSLOT; k++) if (g_sl[k].st != SL_FREE && g_sl[k].st != SL_PARKED && g_sl[k].peer == i && g_sl[k].peer_id == p->id) slotted = k;
@@ -5950,6 +6050,7 @@ void roam_game_frame(CPU *c){
             else if (host >= g_em_release_at){ em_let_go(); g_em_release_at = 0; }
         }
     }
+    if (O.friends) bump_frame(host, in_roam && world_runs && st == RC_ST_ROAM && !g_racing && g_du.st == DU_IDLE && !mp_busy());
     du_frame(c, host, in_roam, world_runs, duin, nduin);
     mp_frame(c, host, in_roam, world_runs, mpfrom, mpin, nmpin);
     mp_panel(host, in_roam);
