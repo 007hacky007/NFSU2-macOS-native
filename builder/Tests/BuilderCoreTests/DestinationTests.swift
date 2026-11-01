@@ -149,6 +149,20 @@ final class DestinationTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dest.path), ["NFSU2.app"])
     }
 
+    /// An app built without the game inside plays from the launcher's saved folder: the Builder
+    /// offers that folder, only while it exists.
+    func testLauncherGameFolder() throws {
+        let domain = "org.nfsu2.builder-test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        XCTAssertNil(launcherGameFolder(domain: domain))
+        let folder = root.appendingPathComponent("My Game")
+        defaults.set(folder.path, forKey: "OyunDizini")
+        XCTAssertNil(launcherGameFolder(domain: domain), "a saved folder that is gone is not offered")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        XCTAssertEqual(launcherGameFolder(domain: domain)?.path, folder.path)
+    }
+
     func testInstalledAppAndTheBuildButton() throws {
         let dest = root.appendingPathComponent("Applications")
         XCTAssertNil(InstalledApp.find(in: dest))

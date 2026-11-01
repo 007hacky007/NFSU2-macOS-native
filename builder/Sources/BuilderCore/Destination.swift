@@ -21,6 +21,16 @@ public func destinationCheck(_ directory: URL) -> CheckState {
     return .blocked("Choose a folder you can write to")
 }
 
+/// The game folder the NFSU2 launcher remembers (its Prefs.gameFolder, "OyunDizini"): where an
+/// NFSU2.app built without the game inside (before Builder 1.0.0, or from Terminal) plays the
+/// game from. Only read, and only when the folder is still there.
+public func launcherGameFolder(domain: String = gameBundleID) -> URL? {
+    guard let path = UserDefaults(suiteName: domain)?.string(forKey: "OyunDizini"), !path.isEmpty else { return nil }
+    var isDir: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { return nil }
+    return URL(fileURLWithPath: path)
+}
+
 /// An NFSU2.app that is already there: the one an update replaces.
 public struct InstalledApp: Equatable {
     public let url: URL

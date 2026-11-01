@@ -90,6 +90,12 @@ final class GameCopyTests: XCTestCase {
         let empty = tmp.appendingPathComponent("Old/NFSU2.app")
         try write("plist", to: empty.appendingPathComponent("Contents/Info.plist"))
         XCTAssertEqual(checker.check([empty]).blocking, GameDataMessages.appWithoutGame)
+
+        // the folder an app without the game inside plays from says so
+        var folder = checker.check([game])
+        XCTAssertEqual(folder.kind, .folder)
+        folder.fromCurrentApp = true
+        XCTAssertEqual(folder.state, .ready("The game folder your current NFSU2.app plays from, matches the European test release release"))
     }
 
     func testParentFolderFindsTheGameInside() throws {

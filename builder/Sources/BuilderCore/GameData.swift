@@ -23,6 +23,8 @@ public struct GameDataReport: Equatable {
     public let details: [String]
     /// The size of the game data as it goes into the app (unpacked, for discs).
     public var bytes: Int64 = 0
+    /// A game folder the current NFSU2.app plays from (an app built without the game inside).
+    public var fromCurrentApp = false
 
     /// The data has a supported SPEED2.EXE, so it is the game program too.
     public var providesProgram: Bool { program?.isSupported == true }
@@ -30,7 +32,8 @@ public struct GameDataReport: Equatable {
     public var state: CheckState {
         if let blocking = blocking { return .blocked(blocking) }
         if !notes.isEmpty { return .automatic(notes.joined(separator: " ")) }
-        let what = kind == .discs ? "Disc data" : kind == .app ? "Uses the game inside your current NFSU2.app" : "Game folder"
+        let what = kind == .discs ? "Disc data" : kind == .app ? "Uses the game inside your current NFSU2.app"
+            : fromCurrentApp ? "The game folder your current NFSU2.app plays from" : "Game folder"
         return .ready(release.map { "\(what), matches the \($0) release" } ?? what)
     }
 

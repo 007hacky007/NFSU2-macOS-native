@@ -33,6 +33,8 @@ final class BuilderModel: ObservableObject {
     /// The game data is the NFSU2.app found in the destination, offered by the Builder
     /// rather than chosen by the player.
     private var dataIsInstalledApp = false
+    /// That offered data is the game folder an NFSU2.app without the game inside plays from.
+    private var dataIsAppFolder = false
 
     let paths = BuilderPaths()
     let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0-dev"
@@ -100,17 +102,26 @@ final class BuilderModel: ObservableObject {
 
     /// An NFSU2.app with the game inside, in the destination or else in /Applications, is the
     /// game data of an update: its game is checked like any other copy and cloned into the new
-    /// app. A choice the player made in this session is kept.
+    /// app. An NFSU2.app built without the game inside offers the game folder it plays from
+    /// (the launcher's saved folder) instead. A choice the player made in this session is kept.
     private func offerInstalledApp() {
         existingApp = InstalledApp.find(in: destination)
-        let offered = [destination, defaultDestination].lazy.compactMap { InstalledApp.find(in: $0) }
-            .first { $0.game != nil && $0.url != self.rejectedApp }
-        if let app = offered, !playerChoseData {
-            dataChoice = [app.url]
+        let apps = [destination, defaultDestination].compactMap { InstalledApp.find(in: $0) }
+        var offered = apps.first { $0.game != nil && $0.url != self.rejectedApp }?.url
+        var isFolder = false
+        if offered == nil, apps.contains(where: { $0.game == nil }),
+           let folder = launcherGameFolder(), folder != rejectedApp {
+            offered = folder
+            isFolder = true
+        }
+        if let source = offered, !playerChoseData {
+            dataChoice = [source]
             dataIsInstalledApp = true
+            dataIsAppFolder = isFolder
         } else if dataIsInstalledApp {
             dataChoice = (defaults.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }
             dataIsInstalledApp = false
+            dataIsAppFolder = false
         }
     }
 
@@ -255,7 +266,9 @@ final class BuilderModel: ObservableObject {
     private func refreshData() {
         guard !dataChoice.isEmpty else {
             (dataReport, dataDetails) = (nil, nil)
-            let note = rejectedApp == nil ? "" : "The game inside your current NFSU2.app is incomplete or changed, so it cannot be used. "
+            let note = rejectedApp == nil ? ""
+                : rejectedApp?.pathExtension == "app" ? "The game inside your current NFSU2.app is incomplete or changed, so it cannot be used. "
+                : "The game folder your current NFSU2.app plays from is incomplete or changed, so it cannot be used. "
             states[.gameData] = .blocked(note + "Choose your game folder, the two disc images (.iso, .cue or disc folders), or an NFSU2.app with the game inside")
             return updateProgramRow()
         }
@@ -281,10 +294,13 @@ final class BuilderModel: ObservableObject {
                     // back to the player's own choice.
                     rejectedApp = choice.first
                     dataIsInstalledApp = false
+                    dataIsAppFolder = false
                     dataChoice = (defaults.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }
                     checkedData = nil
                     return refreshData()
                 }
+                var report = report
+                report.fromCurrentApp = dataIsAppFolder && report.kind == .folder
                 dataReport = report
                 states[.gameData] = report.state
                 dataDetails = report.blocking == nil && report.notes.isEmpty ? nil : report.detailsText
