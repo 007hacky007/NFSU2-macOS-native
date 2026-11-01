@@ -42,8 +42,9 @@ public func macCheck(isAppleSilicon: Bool, version: OperatingSystemVersion) -> C
 }
 
 /// Free space the build needs on the workspace volume: the private Python, the build tools,
-/// the translated code and the compiled engines (measured: about 2.1 GB), with room to spare.
-public let requiredBuildBytes: Int64 = 3_000_000_000
+/// the translated code and the compiled engines (measured on a European build: 0.63 GB, the
+/// built NFSU2.app 89 MB), with room to spare.
+public let requiredBuildBytes: Int64 = 1_500_000_000
 /// A game folder unpacked from the discs (about 1.7 GB) when it goes on the same volume.
 public let gameFolderBytes: Int64 = 2_000_000_000
 
