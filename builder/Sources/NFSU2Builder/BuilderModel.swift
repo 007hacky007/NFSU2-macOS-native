@@ -55,6 +55,9 @@ final class BuilderModel: ObservableObject {
     /// An offered NFSU2.app whose game did not pass the checks: not offered again, and the
     /// empty game row says why.
     private var rejectedApp: URL?
+    /// Why the game inside that app cannot be reused, when the check said so precisely (no
+    /// record of the game it was built from, or files changed since).
+    private var rejectedReason: String?
     private var checkedData: [URL]?
     private var dataToken = UUID()
     private var programVerdict: ProgramVerdict?
@@ -266,6 +269,10 @@ final class BuilderModel: ObservableObject {
     private func refreshData() {
         guard !dataChoice.isEmpty else {
             (dataReport, dataDetails) = (nil, nil)
+            if let reason = rejectedReason {
+                states[.gameData] = .blocked(reason)
+                return updateProgramRow()
+            }
             let note = rejectedApp == nil ? ""
                 : rejectedApp?.pathExtension == "app" ? "The game inside your current NFSU2.app is incomplete or changed, so it cannot be used. "
                 : "The game folder your current NFSU2.app plays from is incomplete or changed, so it cannot be used. "
@@ -293,6 +300,7 @@ final class BuilderModel: ObservableObject {
                     // The game in the current app is missing files or has another SPEED2.EXE:
                     // back to the player's own choice.
                     rejectedApp = choice.first
+                    rejectedReason = report.appNotReusable ? report.blocking : nil
                     dataIsInstalledApp = false
                     dataIsAppFolder = false
                     dataChoice = (defaults.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }

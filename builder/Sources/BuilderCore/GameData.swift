@@ -25,6 +25,9 @@ public struct GameDataReport: Equatable {
     public var bytes: Int64 = 0
     /// A game folder the current NFSU2.app plays from (an app built without the game inside).
     public var fromCurrentApp = false
+    /// The game inside an app is not provably the complete copy it was built from (no record,
+    /// or the tree differs from it): `blocking` says which.
+    public var appNotReusable = false
 
     /// The data has a supported SPEED2.EXE, so it is the game program too.
     public var providesProgram: Bool { program?.isSupported == true }
@@ -55,6 +58,11 @@ public enum GameDataMessages {
     public static let chooseOne = "Choose one game folder, or the two disc images (.iso, .cue or disc folders) together."
     public static let bothDiscs = "These are the files of one disc only. Choose both disc images together."
     public static let appWithoutGame = "This app has no game inside it. Choose your game folder, or the two disc images."
+    public static let appFromOlderBuilder = "This NFSU2.app was made by an older NFSU2 Builder and does not hold the complete game. Choose your original game copy (folder or the two disc images) once; later updates reuse the new app."
+    public static func appChanged(_ count: Int?) -> String {
+        let what = count.map { " (\(grouped($0)) \($0 == 1 ? "file" : "files"))" } ?? ""
+        return "The game inside this NFSU2.app was changed\(what), so it cannot be reused. Choose your original game copy."
+    }
     public static func coreMissing(_ missing: [String]) -> String {
         let first = missing.prefix(2).joined(separator: ", ")
         let more = missing.count > 2 ? " and \(missing.count - 2) more" : ""
@@ -158,8 +166,31 @@ public struct GameDataChecker {
             return GameDataReport(kind: kind, sources: sources, blocking: GameDataMessages.appWithoutGame, notes: [],
                                   release: nil, program: nil, server: nil, details: [])
         }
+        // The game inside an app is reused only when it is, file for file, the copy recorded
+        // when that app was built; the hashes computed for that stand in below.
+        var verified: [String: String] = [:]
+        if kind == .app {
+            var refusal: (String, [String])?
+            switch verifyEmbeddedGame(sources[0]) {
+            case let .intact(hashes): verified = hashes
+            case .noRecord: refusal = (GameDataMessages.appFromOlderBuilder, ["No \(GameRecord.fileName) in the app"])
+            case let .changed(count, details): refusal = (GameDataMessages.appChanged(count), details)
+            }
+            if let (message, details) = refusal {
+                var report = GameDataReport(kind: kind, sources: sources, blocking: message, notes: [], release: nil,
+                                            program: nil, server: nil, details: details)
+                report.appNotReusable = true
+                return report
+            }
+        }
         do {
-            let files = kind == .discs ? try discFiles(sources) : try folderFiles(sources[0])
+            var files = kind == .discs ? try discFiles(sources) : try folderFiles(sources[0])
+            if !verified.isEmpty {
+                files = files.map { file in
+                    guard let sha = verified[file.path] else { return file }
+                    return DataFile(path: file.path, size: file.size, crc32: nil, sha256: { sha }, header: file.header)
+                }
+            }
             var report = compare(files, kind: kind, sources: sources)
             report.bytes = files.reduce(Int64(0)) { $0 + Int64($1.size) }
             return report

@@ -79,6 +79,7 @@ final class GameCopyTests: XCTestCase {
         let app = tmp.appendingPathComponent("Applications/NFSU2.app")
         let game = try makeGameFolder("Applications/NFSU2.app/Contents/Resources/Game", exe: supportedEU)
         try write("plist", to: app.appendingPathComponent("Contents/Info.plist"))
+        try writeRecord(app)
         let before = try snapshot(app)
         let report = checker.check([app])
         XCTAssertEqual(report.kind, .app)
@@ -97,6 +98,77 @@ final class GameCopyTests: XCTestCase {
         XCTAssertEqual(folder.kind, .folder)
         folder.fromCurrentApp = true
         XCTAssertEqual(folder.state, .ready("The game folder your current NFSU2.app plays from, matches the European test release release"))
+    }
+
+    /// An app made by Builder 1.0.0 has no record of the game it was built from (that Builder
+    /// left part of the copy out): refused, the player chooses the original copy once.
+    func testAppWithoutARecordIsRefused() throws {
+        let app = try makeApp()
+        let before = try snapshot(app)
+        let report = checker.check([app])
+        XCTAssertEqual(report.kind, .app)
+        XCTAssertEqual(report.blocking, GameDataMessages.appFromOlderBuilder)
+        XCTAssertEqual(report.blocking, "This NFSU2.app was made by an older NFSU2 Builder and does not hold the complete game. Choose your original game copy (folder or the two disc images) once; later updates reuse the new app.")
+        XCTAssertTrue(report.appNotReusable)
+        XCTAssertFalse(report.providesProgram)
+        XCTAssertEqual(try snapshot(app), before, "the app is only read")
+    }
+
+    /// A changed, a missing and an added file each make the game inside the app not the copy it
+    /// was built from: refused with the count. Finder's .DS_Store is no change (the build drops it).
+    func testAppWhoseGameDiffersFromItsRecordIsRefused() throws {
+        func check(_ change: (URL) throws -> Void) throws -> GameDataReport {
+            let app = try makeApp()
+            try writeRecord(app)
+            try change(app.appendingPathComponent("Contents/Resources/Game"))
+            let before = try snapshot(app)
+            let report = checker.check([app])
+            XCTAssertEqual(try snapshot(app), before, "the app is only read")
+            try fm.removeItem(at: app)
+            return report
+        }
+        let changed = try check { try self.write("globam", to: $0.appendingPathComponent("GLOBAL/GLOBALB.LZC")) }
+        XCTAssertEqual(changed.blocking, "The game inside this NFSU2.app was changed (1 file), so it cannot be reused. Choose your original game copy.")
+        XCTAssertTrue(changed.appNotReusable)
+        XCTAssertEqual(changed.details, ["Changed in the app: GLOBAL/GLOBALB.LZC"])
+        let resized = try check { try self.write("a longer movie", to: $0.appendingPathComponent("MOVIES/intro.vp6")) }
+        XCTAssertEqual(resized.details, ["Changed in the app: MOVIES/intro.vp6"])
+        let missing = try check { try self.fm.removeItem(at: $0.appendingPathComponent("MOVIES/intro.vp6")) }
+        XCTAssertEqual(missing.blocking, GameDataMessages.appChanged(1))
+        XCTAssertEqual(missing.details, ["Missing from the app: MOVIES/intro.vp6"])
+        let added = try check { try self.write("plugin", to: $0.appendingPathComponent("SCRIPTS/.hidden.asi")) }
+        XCTAssertEqual(added.blocking, GameDataMessages.appChanged(1))
+        XCTAssertEqual(added.details, ["Added to the app: SCRIPTS/.hidden.asi"])
+        let linked = try check { try self.fm.createSymbolicLink(atPath: $0.appendingPathComponent("link.dll").path, withDestinationPath: "/etc/hosts") }
+        XCTAssertEqual(linked.details, ["Added to the app: link.dll"])
+        let several = try check { game in
+            try self.fm.removeItem(at: game.appendingPathComponent("server.dll"))
+            try self.write("x", to: game.appendingPathComponent("CARS/CORSA/GEOMETRY.BIN"))
+            try self.write("x", to: game.appendingPathComponent("dinput8.dll"))
+        }
+        XCTAssertEqual(several.blocking, "The game inside this NFSU2.app was changed (3 files), so it cannot be reused. Choose your original game copy.")
+        let finder = try check { try self.write("finder", to: $0.appendingPathComponent("GLOBAL/.DS_Store")) }
+        XCTAssertNil(finder.blocking)
+        let unreadable = try check { try self.write("# nfsu2-game-files 2\n", to: $0.deletingLastPathComponent().appendingPathComponent("game-files.tsv")) }
+        XCTAssertEqual(unreadable.blocking, "The game inside this NFSU2.app was changed, so it cannot be reused. Choose your original game copy.")
+    }
+
+    /// The record's format as pack.sh writes it: tests/test_builder_tools.py checks that pack.sh
+    /// writes the line for this file name exactly so.
+    func testRecordFormat() throws {
+        let text = "# nfsu2-game-files 1\nGLOBAL/a\\tb\\\\c \u{f6}.txt\t3\t\(String(repeating: "0a", count: 32))\nSPEED2.EXE\t0\t\(String(repeating: "f", count: 64))\n"
+        let record = try XCTUnwrap(GameRecord(text: text))
+        XCTAssertEqual(record.files, ["GLOBAL/a\tb\\c \u{f6}.txt": .init(size: 3, sha256: String(repeating: "0a", count: 32)),
+                                      "SPEED2.EXE": .init(size: 0, sha256: String(repeating: "f", count: 64))])
+        XCTAssertNotNil(GameRecord(text: "# nfsu2-game-files 1\n"))
+        for bad in ["", "# nfsu2-game-files 1", "# nfsu2-game-files 2\n", "# nfsu2-game-files 1\na\t1\n",
+                    "# nfsu2-game-files 1\na\t-1\t\(String(repeating: "0", count: 64))\n",
+                    "# nfsu2-game-files 1\na\t1\t\(String(repeating: "A", count: 64))\n",
+                    "# nfsu2-game-files 1\n../a\t1\t\(String(repeating: "0", count: 64))\n",
+                    "# nfsu2-game-files 1\na\\x\t1\t\(String(repeating: "0", count: 64))\n",
+                    "# nfsu2-game-files 1\na\t1\t\(String(repeating: "0", count: 64))\na\t1\t\(String(repeating: "0", count: 64))\n"] {
+            XCTAssertNil(GameRecord(text: bad), bad)
+        }
     }
 
     func testParentFolderFindsTheGameInside() throws {
@@ -410,6 +482,28 @@ final class GameCopyTests: XCTestCase {
         if let exe = exe { try write(exe, to: game.appendingPathComponent(lowercase ? "speed2.exe" : "SPEED2.EXE")) }
         try write(server10, to: game.appendingPathComponent("server.dll"))
         return game
+    }
+
+    /// An NFSU2.app with a supported game inside and Windows extras, without a record.
+    private func makeApp() throws -> URL {
+        let app = tmp.appendingPathComponent("Applications/NFSU2.app")
+        let game = try makeGameFolder("Applications/NFSU2.app/Contents/Resources/Game", exe: supportedEU)
+        try write("plugin", to: game.appendingPathComponent("SCRIPTS/mod.asi"))
+        try write("plugin", to: game.appendingPathComponent("dinput8.dll"))
+        try write("plist", to: app.appendingPathComponent("Contents/Info.plist"))
+        return app
+    }
+
+    /// Writes Contents/Resources/game-files.tsv for the game inside `app` as pack.sh does.
+    private func writeRecord(_ app: URL) throws {
+        let game = app.appendingPathComponent("Contents/Resources/Game")
+        var lines = [GameRecord.header]
+        for path in fm.subpaths(atPath: game.path)!.sorted()
+        where (try fm.attributesOfItem(atPath: game.appendingPathComponent(path).path))[.type] as? FileAttributeType == .typeRegular {
+            let data = try Data(contentsOf: game.appendingPathComponent(path))
+            lines.append("\(path)\t\(data.count)\t\(sha(data))")
+        }
+        try write(lines.joined(separator: "\n") + "\n", to: app.appendingPathComponent("Contents/Resources/\(GameRecord.fileName)"))
     }
 
     /// Two disc folders laid out like the PC discs: compressed.zip with backslash names,

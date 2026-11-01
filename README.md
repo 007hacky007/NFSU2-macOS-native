@@ -100,7 +100,11 @@ your game files, or the unpacked discs, plus the supported `SPEED2.EXE`. On the
 same disk the game files are APFS clones, so they take no extra space; from
 discs or another disk they are copied. The app needs no game folder and can be
 moved anywhere. Your own copy, disc images and archives are only read. An
-existing `NFSU2.app` with the game inside can be the game data too (an update).
+existing `NFSU2.app` with the game inside can be the game data too (an update),
+but only when the game in it still matches the list of files, sizes and SHA-256
+checksums written next to it at build time (`Contents/Resources/game-files.tsv`);
+an app from the first 1.0.0 Builder has no such list, so choose your original game
+copy once and later updates reuse the new app.
 
 On an M1 Pro the build takes about 3 minutes: lifting 52 s, compiling 57 s,
 linking 10 s and the launcher 60 s (a rebuild skips the launcher). The first
