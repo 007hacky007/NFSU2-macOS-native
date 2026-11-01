@@ -13,7 +13,13 @@ What each version of NFSU2 Builder brings. The newest version is first.
 - Room and crew names match even when friends type them a little differently: capitals (Greek and Cyrillic too), spaces and invisible characters do not count. The launcher's player counts for your room and crews follow the same rule.
 
 ### Fixed
-- Online play no longer reconnects every second on a busy server.
+- Online play no longer reconnects every second on a busy server, which kept the Online menu at Connecting to lobby.
+- The game no longer crashes when your car touches another player's car in free roam.
+- Free roam's Loading screens no longer drag on, or never end, with many players around: the city's sections load before other players' cars.
+- In Online races, the other players' cars come straight from each player and their corrections are smoothed, so they jump less.
+- Your car keeps its spoiler and exhaust tips after a shop in free roam with other players.
+- A failed magazine or DVD cover save no longer garbles your profile's name.
+- LAN play's network clock can no longer step backwards.
 
 ## 1.0.0 - 2026-11-01
 
