@@ -266,6 +266,32 @@ class EmbeddedBuildTests(unittest.TestCase):
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
                        capture_output=True)
 
+    def test_no_macos_code_from_the_copy_and_its_quarantine_stays(self):
+        """A downloaded repack may hide a Mac program: it never goes into the app, and the
+        game files keep the download's quarantine (only what the build made loses it)."""
+        folder = self.game_folder(self.tmp / 'Repack')
+        (folder / 'SPEED2.EXE').write_bytes(self.EXE)
+        shutil.copy('/usr/bin/true', folder / 'readme.txt')                 # a Mach-O under another name
+        (folder / 'Tool.app/Contents/MacOS').mkdir(parents=True)
+        shutil.copy('/usr/bin/true', folder / 'Tool.app/Contents/MacOS/Tool')
+        (folder / 'GLOBAL/run.command').write_text('#!/bin/sh\n')
+        quarantine = '0081;00000000;Test;'
+        for f in (folder / 'GLOBAL/GLOBALB.LZC', self.root / 'out/nfsu2_launcher'):
+            subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', quarantine, str(f)], check=True)
+        status, events, _ = self.build(folder / 'SPEED2.EXE', folder)
+        self.assertEqual(status, 0, events)
+        app = self.root / builder_cli.APP
+        game = app / 'Contents/Resources/Game'
+        self.assertEqual(sorted(tree(game)), ['GLOBAL/GLOBALB.LZC', 'MOVIES/intro.vp6', 'SPEED2.EXE', 'server.dll'])
+
+        def attr(path):
+            r = subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)], capture_output=True, text=True)
+            return r.stdout.strip() if r.returncode == 0 else None
+        self.assertEqual(attr(game / 'GLOBAL/GLOBALB.LZC'), quarantine, 'game data keeps its quarantine')
+        self.assertIsNone(attr(app / 'Contents/MacOS/NFSU2'), 'what the build made loses it')
+        subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
+                       capture_output=True)
+
     def test_update_from_an_existing_app_keeps_it_as_it_was(self):
         """The new app is made in the workspace from the old app's game; the old app is only read
         (installing it over the old one is BuilderCore's installApp, tested in DestinationTests)."""

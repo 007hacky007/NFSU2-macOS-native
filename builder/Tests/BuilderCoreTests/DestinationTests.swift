@@ -90,6 +90,28 @@ final class DestinationTests: XCTestCase {
         try "data \(marker)".write(to: game.appendingPathComponent("GLOBAL/GLOBALB.LZC"), atomically: true, encoding: .utf8)
     }
 
+    private func hasQuarantine(_ url: URL) -> Bool {
+        getxattr(url.path, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) >= 0
+    }
+
+    /// Installing clears quarantine from what the build made, never from the game data copied
+    /// from the player's own copy (a Mac program hidden in a download keeps macOS's check).
+    func testInstallKeepsQuarantineOnTheGameData() throws {
+        let dest = root.appendingPathComponent("dest")
+        try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        let built = root.appendingPathComponent("built/NFSU2.app")
+        try makeEmbeddedApp(at: built, marker: "new")
+        let data = built.appendingPathComponent("Contents/Resources/Game/GLOBAL/GLOBALB.LZC")
+        let made = built.appendingPathComponent("Contents/marker")
+        for file in [data, made] {
+            XCTAssertEqual(setxattr(file.path, "com.apple.quarantine", "0081;00000000;Test;", 19, 0, XATTR_NOFOLLOW), 0)
+        }
+        let result = try installApp(built, into: dest, isRunning: { false })
+        XCTAssertTrue(hasQuarantine(result.appendingPathComponent("Contents/Resources/Game/GLOBAL/GLOBALB.LZC")))
+        XCTAssertFalse(hasQuarantine(result.appendingPathComponent("Contents/marker")))
+        XCTAssertFalse(hasQuarantine(result))
+    }
+
     private func gameData(_ app: URL) throws -> String {
         try String(contentsOf: app.appendingPathComponent("Contents/Resources/Game/GLOBAL/GLOBALB.LZC"), encoding: .utf8)
     }

@@ -135,6 +135,19 @@ def remove_quarantine(path):
     subprocess.run(['/usr/bin/xattr', '-dr', 'com.apple.quarantine', str(path)], capture_output=True)
 
 
+def remove_quarantine_from_app(app):
+    """Everything the build made loses quarantine; Contents/Resources/Game keeps it on the files
+    copied from the player's copy (the game only reads them). Its SPEED2.EXE was verified and
+    cleared in the staging copy already."""
+    game = app / 'Contents/Resources/Game'
+    subprocess.run(['/usr/bin/xattr', '-d', 'com.apple.quarantine', str(app), str(app / 'Contents'),
+                    str(app / 'Contents/Resources')], capture_output=True)
+    for parent in (app / 'Contents', app / 'Contents/Resources'):
+        for child in parent.iterdir():
+            if child not in (app / 'Contents/Resources', game):
+                remove_quarantine(child)
+
+
 def stage_game(staging, exe, data):
     """Makes `staging` from `data` (a game folder, an NFSU2.app or the discs) with `exe` as
     its SPEED2.EXE. The data is only read; `staging` is made anew."""
@@ -262,7 +275,7 @@ def build(args):
     inside = find_exe(app / 'Contents/Resources/Game') if (app / 'Contents/Resources/Game').is_dir() else None
     if not inside or sha256(inside) != exe_sha:
         raise BuildError('the game did not go into the app completely')
-    remove_quarantine(app)
+    remove_quarantine_from_app(app)
     result = subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)],
                             capture_output=True, text=True)
     if result.returncode:

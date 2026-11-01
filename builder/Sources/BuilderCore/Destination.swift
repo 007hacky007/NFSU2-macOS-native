@@ -82,7 +82,7 @@ public func installApp(_ built: URL, into directory: URL, isRunning: () -> Bool)
         } else {
             try fm.copyItem(at: built, to: staging)
         }
-        try removeQuarantine(at: staging)
+        try removeQuarantine(fromBuiltApp: staging)
         guard fm.fileExists(atPath: staging.appendingPathComponent("Contents/Info.plist").path) else {
             throw InstallError(message: "The built app is incomplete.")
         }

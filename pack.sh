@@ -152,7 +152,43 @@ if [ "$EMBED" = 1 ]; then
       || { echo "could not copy $name into the app"; exit 1; }
   done
   find "$GAME" -name .DS_Store -delete
+  # No macOS code from the player's copy goes into the app: the game is Windows
+  # files only, and a Mac program hidden in a downloaded repack must not end up
+  # inside a signed app (it would lose the quarantine check below).  Windows files
+  # and mods stay.
+  find "$GAME" \( -iname '*.app' -o -iname '*.framework' -o -iname '*.bundle' -o -iname '*.plugin' \
+      -o -iname '*.kext' -o -iname '*.pkg' -o -iname '*.mpkg' -o -iname '*.workflow' \) -prune \
+      -exec echo "left out of the app (macOS code): {}" \; -exec rm -rf {} +
+  find "$GAME" -type f \( -iname '*.command' -o -iname '*.tool' -o -iname '*.sh' -o -iname '*.dylib' \
+      -o -iname '*.so' -o -iname '*.scpt' \) -exec echo "left out of the app (macOS code): {}" \; -delete
+  find "$GAME" -type f -size +3c -exec sh -c '
+    for f; do
+      case "$(od -An -tx1 -N4 "$f" | tr -d " \n")" in
+        feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca)
+          echo "left out of the app (macOS code): $f"; rm -f "$f" ;;
+      esac
+    done' sh {} +
 fi
+
+# Extended attributes off before signing: codesign --strict refuses resource
+# forks and Finder info inside a bundle.  Everything this script made loses all
+# of them (quarantine too).  The game data copied from the player's own copy only
+# loses those two, so a download's quarantine stays on its files (the game only
+# reads them).
+clear_attrs(){
+  local p
+  for p in "$APP" "$APP/Contents" "$APP/Contents/Resources"; do xattr -c "$p" 2>/dev/null; done
+  for p in "$APP/Contents"/* "$APP/Contents/Resources"/*; do
+    case "$p" in "$APP/Contents/Resources"|"$APP/Contents/Resources/Game") continue ;; esac
+    xattr -cr "$p" 2>/dev/null
+  done
+  if [ -d "$APP/Contents/Resources/Game" ]; then
+    xattr -c "$APP/Contents/Resources/Game" 2>/dev/null
+    xattr -dr com.apple.FinderInfo "$APP/Contents/Resources/Game" 2>/dev/null
+    xattr -dr com.apple.ResourceFork "$APP/Contents/Resources/Game" 2>/dev/null
+  fi
+  return 0
+}
 
 VER="$(date +%Y.%m.%d)"
 # Version tracking (see link.sh): shows in Finder like "2.0 (2026.10.18)".
@@ -208,10 +244,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Extended attributes from the source tree or the game copy (quarantine, Finder
-# info, resource forks) off before signing: codesign --strict refuses resource
-# forks and Finder info inside a bundle.
-xattr -cr "$APP" 2>/dev/null || true
+clear_attrs
 
 # --- signature ---
 # If SIGN_ID is given, sign with a real certificate (for those with an Apple
@@ -233,8 +266,8 @@ else
     && echo "signature: ad-hoc (not notarized)" || echo "warning: codesign failed"
 fi
 
-# clear extended attributes (quarantine etc. coming from the source tree)
-xattr -cr "$APP" 2>/dev/null || true
+# again after signing (codesign can leave attributes behind), same rules
+clear_attrs
 
 SZ="$(du -sh "$APP" | cut -f1)"
 echo "ready: $APP  ($SZ)"
