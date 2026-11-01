@@ -1,9 +1,13 @@
 /* Foundation WebSocket transport shared by free roam and the guest's LAN.
  * The wire format is web/src/net/proto.ts. Advertise raw frames only; the
  * switch retains browser interoperability without requiring its optional
- * bundle, compact, delta and prediction codecs here.  LAN play's bound UDP
- * ports go with the hello and {"t":"lan"} ("udp", net_proto.h udp_ports), so
- * the switch sends a LAN broadcast only where a socket takes it.
+ * bundle, compact, delta and prediction codecs here.  The peer list comes as
+ * changes ("deltas":1 in the hello, {"t":"delta","peers":[...],"gone":[...]}
+ * after the whole list; the server's lan crate members.rs send_delta), not the
+ * whole list every second (some 190 KB on a busy server) while LAN play is
+ * open; LAN play's bound UDP ports go with the hello and {"t":"lan"} ("udp",
+ * net_proto.h udp_ports), so the switch sends a LAN broadcast only where a
+ * socket takes it.
  *
  * The client side of th0mk's nfsu2-web server's switch (its wire format:
  * net_proto.h, MIT). */
@@ -188,7 +192,8 @@ void native_net_get_status(native_net_status *o){
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task didOpenWithProtocol:(NSString *)protocol {
     (void)s; (void)protocol; if (socket != task) return;
     connected = YES; lanSent = lan && ld(&lan->want); udpSent = [self lanPorts];
-    NSMutableDictionary *hello = [@{ @"t": @"hello", @"name": name, @"lan": @((int)lanSent) } mutableCopy];
+    /* deltas: the peer list's changes after the whole list (a server that sends them to everyone ignores it) */
+    NSMutableDictionary *hello = [@{ @"t": @"hello", @"name": name, @"lan": @((int)lanSent), @"deltas": @1 } mutableCopy];
     if (udpSent) hello[@"udp"] = @(udpSent);
     if (vip && token.length){ hello[@"vip"] = [NSString stringWithFormat:@"%u.%u.%u.%u", vip >> 24, (vip >> 16) & 255, (vip >> 8) & 255, vip & 255]; hello[@"token"] = token; }
     if (ticket.length) hello[@"ticket"] = ticket;
@@ -272,6 +277,21 @@ void native_net_get_status(native_net_status *o){
             if (![self deliver:d]) [pending addObject:d];
         }
         peers = next; [self publish:welcomed ? NET_PAGE_ONLINE : NET_PAGE_OFFLINE];
+    } else if ([type isEqual:@"delta"] && [m[@"peers"] isKindOfClass:NSArray.class] && [m[@"gone"] isKindOfClass:NSArray.class]){
+        /* the peer list's changes since the last: who left, then who joined or got a name (the whole list came first) */
+        for (id g in m[@"gone"]){
+            if (![g isKindOfClass:NSNumber.class]) continue;
+            NSNumber *p = @([g unsignedIntValue]);
+            if (![peers containsObject:p]) continue;
+            [peers removeObject:p];
+            if (p.unsignedIntValue == vip) continue;
+            uint8_t gone[24] = { NET_KIND_LAN_TCP }; put32(gone + 4, p.unsignedIntValue); put32(gone + 8, vip); gone[16] = NET_LAN_TCP_GONE;
+            NSData *d = [NSData dataWithBytes:gone length:sizeof gone];
+            if (![self deliver:d]) [pending addObject:d];
+        }
+        for (id p in m[@"peers"]) if ([p isKindOfClass:NSDictionary.class] && [p[@"vip"] isKindOfClass:NSNumber.class])
+            [peers addObject:@([p[@"vip"] unsignedIntValue])];
+        [self publish:welcomed ? NET_PAGE_ONLINE : NET_PAGE_OFFLINE];
     }
 }
 - (void)receive {

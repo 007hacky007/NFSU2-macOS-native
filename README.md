@@ -646,7 +646,9 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   Unit tests: `tests/netstats_unit.sh`.
 - **LAN play through the server** tells it which UDP ports the game's sockets
   are bound to, so LAN broadcasts (the servers' adverts every 3 s) come only
-  where a socket takes them (`runtime/net_relay.c`, `runtime/net_native.m`).
+  where a socket takes them (`runtime/net_relay.c`, `runtime/net_native.m`),
+  and takes the server's list of players as what changed, not the whole list
+  (some 190 KB on a busy server) every second.
 - **Free roam with other players** (with Play online; Off, the default, is free
   roam as in the original game): the players in career free roam see each
   other's cars live, with their customization and names, on the minimap and

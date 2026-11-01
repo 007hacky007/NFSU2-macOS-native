@@ -4,8 +4,8 @@
 A relay server of its own on 127.0.0.1 and tests/net/native/transport.m as the
 client (runtime/net_native.m): relay (and the round trip of a ping), resume,
 queue (and the place in it), two clients, idle, burst, a peer list of a full
-server, the launcher's claim token, LAN play's ports (lanports) and exit at
-process end.  tests/net_harness.sh runs it inside the
+server, the launcher's claim token, LAN play's ports and the peer list's
+changes (lanports) and exit at process end.  tests/net_harness.sh runs it inside the
 loopback-only sandbox profile (tests/net/loopback-only.sb).
 """
 import base64
@@ -82,6 +82,7 @@ def handshake(conn):
     hello = json.loads(data)
     assert kind == 1 and hello["t"] == "hello" and hello["name"] == "fixture-player"
     assert not hello.get("bundle") and not hello.get("compact")
+    assert hello.get("deltas") == 1, "the hello asks for the peer list's changes"
     assert hello.get("claim") == CLAIM_EXPECTED[0], "the hello names the launcher's claim token, and only then"
     return hello, path
 
@@ -116,6 +117,9 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
             crowd = [{"vip": 0x0A4D0100 + i, "name": f"player-{i:05}-with-a-long-name"} for i in range(4500)]
             send(conn, {"t": "peers", "peers": crowd})
         send(conn, {"t": "peers", "peers": [{"vip": 0x0A4D0002}, {"vip": 0x0A4D0003}]})
+        if lanports:
+            # the list's changes, as members.rs send_delta makes them: 3 left, 5 came
+            send(conn, {"t": "delta", "peers": [{"vip": 0x0A4D0005, "name": "five"}], "gone": [0x0A4D0003]})
         while True:
             kind, data = receive(conn)
             if kind == 1:
@@ -131,7 +135,7 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
             send(conn, reply, binary=True)
             break
         if lanports:
-            # the new ports in {"t":"lan"} (LAN play still on), then a list that names 9 so the client knows
+            # the new ports in {"t":"lan"} (LAN play still on), then a change that names 9 so the client knows
             while True:
                 kind, data = receive(conn)
                 if kind != 1:
@@ -142,7 +146,7 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
                     continue
                 assert control == {"t": "lan", "on": 1, "udp": SET | 1 << (3658 % 31)}, control
                 break
-            send(conn, {"t": "peers", "peers": [{"vip": 0x0A4D0002}, {"vip": 0x0A4D0003}, {"vip": 0x0A4D0009}]})
+            send(conn, {"t": "delta", "peers": [{"vip": 0x0A4D0009, "name": "nine"}], "gone": []})
         if burst:
             counts = {1: 0, 3: 0}
             previous = None

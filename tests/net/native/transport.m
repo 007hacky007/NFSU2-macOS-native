@@ -100,10 +100,18 @@ int main(int argc, char **argv){
             assert(m->tx_tail == NET_TX_SLOTS + 1 && other->tx_tail == NET_TX_SLOTS);
         }
         if (argc > 2 && !strcmp(argv[2], "lanports")){
-            /* LAN play open with its sockets' ports said (net_relay.c udp_ports): the hello carries them, and
-             * {"t":"lan"} again when they change */
+            /* LAN play open with its sockets' ports said (net_relay.c udp_ports): the hello carries them; then the
+             * peer list as changes (the fixture's delta) and the ports again in {"t":"lan"} when they change */
             net_mailbox *l = native_net_mailbox(NET_MODE_LAN); assert(l);
             for (int i = 0; i < 500 && __atomic_load_n(&l->page_state, __ATOMIC_SEQ_CST) != NET_PAGE_ONLINE; i++) usleep(10000);
+            /* the whole list (2, 3) is there; the delta: 3 gone, 5 in */
+            for (int i = 0; i < 500 && !(__atomic_load_n(&l->peer_bits[0], __ATOMIC_SEQ_CST) & (1u << 5)); i++) usleep(10000);
+            uint32_t bits = __atomic_load_n(&l->peer_bits[0], __ATOMIC_SEQ_CST);
+            assert((bits & (1u << 2)) && !(bits & (1u << 3)) && (bits & (1u << 5)) && l->switch_peers == 2);
+            /* 3 left: LAN play's TCP from it is reset (a GONE made here, never taken from the wire) */
+            for (int i = 0; i < 500 && !__atomic_load_n(&l->rx_head, __ATOMIC_SEQ_CST); i++) usleep(10000);
+            net_slot *g = (net_slot *)((uint8_t *)l + l->rx_off);
+            assert(l->rx_head == 1 && g->kind == NET_KIND_LAN_TCP && g->src_ip == 0x0a4d0003u && g->data[0] == NET_LAN_TCP_GONE);
             __atomic_store_n(&l->udp_ports, NET_UDP_PORTS_SET | 1u << (3658 % 31), __ATOMIC_SEQ_CST);
             /* the fixture says when it had the new ports: a peer list naming 9 */
             for (int i = 0; i < 500 && !(__atomic_load_n(&l->peer_bits[0], __ATOMIC_SEQ_CST) & (1u << 9)); i++) usleep(10000);
