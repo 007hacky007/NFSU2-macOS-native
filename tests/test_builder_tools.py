@@ -248,6 +248,28 @@ class BuilderCliTests(unittest.TestCase):
             self.assertIn(sha, gen)
 
 
+def game_record(app):
+    """Contents/Resources/game-files.tsv read the way BuilderCore's GameRecord reads it:
+    {path: (size, sha256)}, after checking the header and the format of every line."""
+    lines = (Path(app) / 'Contents/Resources/game-files.tsv').read_text(encoding='utf-8').split('\n')
+    assert lines[0] == '# nfsu2-game-files 1' and lines[-1] == '', lines[:1]
+    escapes = {'\\\\': '\\', '\\t': '\t', '\\n': '\n', '\\r': '\r'}
+    out = {}
+    for line in lines[1:-1]:
+        name, size, sha = line.split('\t')
+        assert re.fullmatch(r'[0-9a-f]{64}', sha) and re.fullmatch(r'[0-9]+', size), line
+        path = re.sub(r'\\.', lambda m: escapes[m.group(0)], name)
+        assert path not in out, path
+        out[path] = (int(size), sha)
+    return out
+
+
+def game_files(game):
+    """Every regular file under `game` (hidden ones too) with its size and SHA-256."""
+    return {str(p.relative_to(game)): (p.stat().st_size, hashlib.sha256(p.read_bytes()).hexdigest())
+            for p in Path(game).rglob('*') if p.is_file() and not p.is_symlink()}
+
+
 class EmbeddedBuildTests(unittest.TestCase):
     """builder_cli.py build through the real pack.sh --embed in a made-up workspace: the
     engines and the launcher are copies of /usr/bin/true, the lift, compile and link steps are
@@ -318,6 +340,11 @@ class EmbeddedBuildTests(unittest.TestCase):
                           'SCRIPTS/mod.asi': b'windows plugin', 'dinput8.dll': b'windows plugin',
                           'SPEED2.EXE': self.EXE}, 'the whole game goes in, Windows extras too; .DS_Store stays out')
         self.assertFalse((self.root / builder_cli.STAGING).exists(), 'the staging copy is removed')
+        record = game_record(app)
+        self.assertEqual(record, game_files(app / 'Contents/Resources/Game'), 'the record lists every game file')
+        self.assertEqual(sorted(record), ['GLOBAL/GLOBALB.LZC', 'MOVIES/intro.vp6', 'SCRIPTS/mod.asi', 'SPEED2.EXE',
+                                          'dinput8.dll', 'server.dll'])
+        self.assertEqual(record['SPEED2.EXE'], (len(self.EXE), hashlib.sha256(self.EXE).hexdigest()))
         with open(app / 'Contents/Info.plist', 'rb') as f:
             info = plistlib.load(f)
         self.assertEqual(info['NFSBuilderVersion'], '1.1.0')
@@ -355,6 +382,7 @@ class EmbeddedBuildTests(unittest.TestCase):
         for name in ('readme.txt', 'Tool.app', 'Helper', 'run.command', 'readme.dat', 'tool.JAR', 'Open.terminal',
                      'fat64.bin'):
             self.assertIn(f'/{name}\n', self.pack_log, f'{name} is named in the build log')
+        self.assertEqual(game_record(app), game_files(game), 'the record lists what is left, nothing that was left out')
         executable = [p for p in game.rglob('*') if p.is_file() and p.stat().st_mode & 0o111]
         self.assertEqual(executable, [], 'no game file stays executable')
         self.assertEqual((folder / 'MOVIES/intro.vp6').stat().st_mode & 0o777, 0o755, 'the copy is only read')
@@ -396,23 +424,47 @@ class EmbeddedBuildTests(unittest.TestCase):
 
     def test_update_from_an_existing_app_keeps_it_as_it_was(self):
         """The new app is made in the workspace from the old app's game; the old app is only read
-        (installing it over the old one is BuilderCore's installApp, tested in DestinationTests)."""
+        (installing it over the old one is BuilderCore's installApp, tested in DestinationTests)
+        and the new app's record is the old one's."""
+        folder = self.game_folder(self.tmp / 'My Game')
+        (folder / 'SPEED2.EXE').write_bytes(self.EXE)
+        status, events, _ = self.build(folder / 'SPEED2.EXE', folder, version='1.1.0')
+        self.assertEqual(status, 0, events)
         old = self.tmp / 'Applications/NFSU2.app'
-        self.game_folder(old / 'Contents/Resources/Game')
-        shutil.rmtree(old / 'Contents/Resources/Game/SCRIPTS')
-        (old / 'Contents/Resources/Game/dinput8.dll').unlink()
-        (old / 'Contents/Resources/Game/.DS_Store').unlink()
-        (old / 'Contents/Resources/Game/SPEED2.EXE').write_bytes(self.EXE)
-        with open(old / 'Contents/Info.plist', 'wb') as f:
-            plistlib.dump({'CFBundleIdentifier': 'org.nfsu2.nativeport', 'NFSBuilderVersion': '1.0.0'}, f)
+        old.parent.mkdir()
+        (self.root / builder_cli.APP).rename(old)
+        old_game = old / 'Contents/Resources/Game'
+        self.assertEqual(game_record(old), game_files(old_game))
         before = manifest(old)
-        status, events, _ = self.build(old / 'Contents/Resources/Game/SPEED2.EXE', old, version='1.2.0')
+        status, events, _ = self.build(old_game / 'SPEED2.EXE', old, version='1.2.0')
         self.assertEqual(status, 0, events)
         self.assertEqual(manifest(old), before, 'the old app is only read')
         app = self.root / builder_cli.APP
-        self.assertEqual(tree(app / 'Contents/Resources/Game'), tree(old / 'Contents/Resources/Game'))
+        self.assertEqual(tree(app / 'Contents/Resources/Game'), tree(old_game))
+        self.assertEqual((app / 'Contents/Resources/game-files.tsv').read_bytes(),
+                         (old / 'Contents/Resources/game-files.tsv').read_bytes(), 'the same game, the same record')
+        self.assertEqual(game_record(app), game_files(app / 'Contents/Resources/Game'))
         with open(app / 'Contents/Info.plist', 'rb') as f:
             self.assertEqual(plistlib.load(f)['NFSBuilderVersion'], '1.2.0')
+        subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
+                       capture_output=True)
+
+    def test_the_record_writes_any_file_name_as_builder_core_reads_it(self):
+        """The line for a name with a tab, a backslash and a non-ASCII letter, exactly as
+        GameCopyTests.testRecordFormat parses it."""
+        folder = self.game_folder(self.tmp / 'My Game')
+        (folder / 'SPEED2.EXE').write_bytes(self.EXE)
+        (folder / 'GLOBAL/a\tb\\c \u00f6.txt').write_bytes(b'abc')
+        (folder / 'GLOBAL/line\nbreak.txt').write_bytes(b'')
+        status, events, _ = self.build(folder / 'SPEED2.EXE', folder)
+        self.assertEqual(status, 0, events)
+        app = self.root / builder_cli.APP
+        lines = (app / 'Contents/Resources/game-files.tsv').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[0], '# nfsu2-game-files 1')
+        self.assertIn('GLOBAL/a\\tb\\\\c \u00f6.txt\t3\t' + hashlib.sha256(b'abc').hexdigest(), lines)
+        self.assertIn('GLOBAL/line\\nbreak.txt\t0\t' + hashlib.sha256(b'').hexdigest(), lines)
+        self.assertEqual(list(game_record(app)), sorted(game_record(app), key=str.encode), 'sorted by path')
+        self.assertEqual(game_record(app), game_files(app / 'Contents/Resources/Game'))
 
     def test_a_failed_package_step_leaves_no_staging_copy(self):
         folder = self.game_folder(self.tmp / 'My Game')

@@ -182,6 +182,27 @@ if [ "$EMBED" = 1 ]; then
     done' sh {} +
   # The game only reads its files: none of them stays executable.
   find "$GAME" -type f -perm +111 -exec chmod a-x {} +
+  # A record of the game tree as it is in the app, next to it (so Game stays exactly the
+  # player's copy): NFSU2 Builder reuses the game of an app for an update only when every
+  # file listed here is there unchanged and nothing else is.  The first line names the
+  # format; then one line per regular file under Game, sorted:
+  #   relative path <TAB> size in bytes <TAB> SHA-256 (lowercase hex)
+  # with \ tab, newline and carriage return in a path written as \\ \t \n \r.
+  echo "recording the game files in the app..."
+  /usr/bin/perl -e '
+    use strict; use warnings; use File::Find; use Digest::SHA;
+    my $game = shift; my %size;
+    find({ no_chdir => 1, wanted => sub {
+      lstat($File::Find::name) or die "cannot read $File::Find::name\n";
+      $size{substr($File::Find::name, length($game) + 1)} = -s _ if -f _;
+    } }, $game);
+    print "# nfsu2-game-files 1\n";
+    for my $path (sort keys %size) {
+      my $sha = Digest::SHA->new(256)->addfile("$game/$path", "b")->hexdigest;
+      (my $name = $path) =~ s/([\\\t\n\r])/$1 eq "\\" ? "\\\\" : $1 eq "\t" ? "\\t" : $1 eq "\n" ? "\\n" : "\\r"/ge;
+      print "$name\t$size{$path}\t$sha\n";
+    }' "$GAME" > "$APP/Contents/Resources/game-files.tsv" \
+    || { echo "could not record the game files in the app"; exit 1; }
 fi
 
 # Extended attributes off before signing: codesign --strict refuses resource
