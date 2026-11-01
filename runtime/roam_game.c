@@ -386,6 +386,8 @@ typedef struct {
     uint32_t moded, wheelfix;                 /* other physics modes the game set (roam_game_inert); frames the wheels were put back (wheels_pose) */
     uint32_t blinks;                          /* times the game blinked the car out (unblink) */
     uint32_t hits; float hit_max;             /* hits with the player's car; the most speed the game gave the player's car in one (m/s) */
+    uint32_t unsafe;                          /* touching pairs skipped: its body had no rigid body (roam_game_pair_unsafe) */
+    uint8_t  reused;                          /* its car was a parked one that already wore the look (assign, step 1) */
     int64_t  touch_t;                         /* when the car last touched the player's car (host time; block_hit) */
     int      crew;                            /* the friend is in our crew number crew - 1 (O.crew; 0: none) */
 } Slot;
@@ -5059,8 +5061,9 @@ static void assign(CPU *c, int64_t host){
         int was = s->st;
         s->peer = v->idx; s->peer_id = v->id; s->unseen_since = 0; s->near_since = 0; s->idle_since = 0; s->soft = 0; s->crew = v->crew;
         snprintf(s->name, sizeof s->name, "%s", v->name);
+        s->reused = 0; s->unsafe = 0;
         if (reuse){
-            s->st = SL_ACTIVE; s->cfg_gen = v->cfg_gen; s->hidden = 1; g_acquires++; g_reuses++;
+            s->st = SL_ACTIVE; s->cfg_gen = v->cfg_gen; s->hidden = 1; s->reused = 1; g_acquires++; g_reuses++;
             set_name(s);
             rlog("[roam] f=%ld slot %d for %s, %.0f m away: the parked %s already wears this look\n", rh_frame(), k,
                     s->name, (double)v->dist, s->carname);
@@ -5624,6 +5627,35 @@ static void block_hit(Slot *s, int64_t host){
  * neither now.  The crashed mark the same hit sets (car +0x38, 0x5F6BF0,
  * read by the physics) and the game's other thresholds of the capped hit
  * (30) keep the game's own values. */
+/* roam.c, before a touching pair (0x5B2620): 1 when either body has no rigid
+ * body ([body +0x68]).  The pair's impulse (0x5AF0F0) asks each body for its
+ * rigid body's state (vtable +0x60, 0x593A50 reads [[body +0x68] +0x158]):
+ * a body without one faulted there, with a friend's car that came near the
+ * player's car (a player's report, 2026-11-01: its slot had a parked car that
+ * already wore the look).  The pair is skipped (no hit, the cars pass this
+ * step) and the car is logged with its slot's state, the first time and every
+ * 100th. */
+int roam_game_pair_unsafe(uint32_t pair){
+    if (!ok(pair, 0x14)) return 0;
+    uint32_t body[2] = { MR32(pair + 0xcu), MR32(pair + 0x10u) };
+    for (int i = 0; i < 2; i++){
+        if (ok(body[i], 0x6c) && ok(MR32(body[i] + 0x68u), 0x15c)) continue;
+        int k = -1;
+        for (int j = 0; j < NSLOT; j++) if (g_sl[j].st != SL_FREE && ok(g_sl[j].car, 0x9e0) && MR32(g_sl[j].car + 0x3cu) == body[i]) k = j;
+        uint32_t n = k >= 0 ? g_sl[k].unsafe++ : 0;
+        if (n % 100 == 0){
+            if (k >= 0){
+                Slot *s = &g_sl[k];
+                rlog("[roam] f=%ld slot %d: %s's car touched another without a rigid body (body 0x%08x, its +0x68 0x%08x): the hit skipped "
+                     "(state %d, hidden %d, ghost %d, soft %d, reused %d, created %d, activated %d, physics 0x%08x, driver 0x%08x, active %u; %u times)\n",
+                     rh_frame(), k, s->name, body[i], ok(body[i], 0x6c) ? MR32(body[i] + 0x68u) : 0, s->st, s->hidden, s->ghost, s->soft, s->reused,
+                     s->created, s->activated, rd32(s->car + 0x28u), rd32(s->car + 0x24u), (unsigned)MR8(s->car + CAR_ACTIVE), n + 1);
+            } else rlog("[roam] f=%ld a car of the game's touched another without a rigid body (body 0x%08x): the hit skipped\n", rh_frame(), body[i]);
+        }
+        return 1;
+    }
+    return 0;
+}
 #define G_CRASH_VIEW    GA(0x007a186cu)   /* float 30: the hit (t m/s) that starts the crash view */
 #define G_CRASH_CAP     GA(0x007a1860u)   /* float 40: what 0x59FB80 caps the hit at first */
 #define CRASH_VIEW_X    1.5f          /* a friend's car: the player's car's part of the hit starts it at this x the game's */
