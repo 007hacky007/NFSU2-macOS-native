@@ -32,6 +32,10 @@ runx "net 120 0" NFSU2_FPS=240
 runx "net 120 0" NFSU2_FPS=120
 runx "net 240 1" NFSU2_FPS=240 NFSU2_LAN_TIMING=exact
 runx "net 60 0" NFSU2_FPS=60
+# the slot's wait after Present, before the game reads the pads (runtime/framerate.c hfr_after_present)
+runx "present 60"
+runx "present 120"
+runx "present 60" NFSU2_PACE_AT=frame
 # replays above 60 fps: WorldTimer from the game's own clock (runtime/framerate.c, sub_0057a0f0)
 runx "replay 120"
 runx "replay 240"

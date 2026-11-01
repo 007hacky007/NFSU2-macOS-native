@@ -8,6 +8,10 @@
  *                              a network race (NFSU2_LAN_TIMING): the rate,
  *                              the clock fixes, and the World constructor's
  *                              30 fps request undone
+ *   framerate_unit present <rate>
+ *                              the slot's wait after Present (before the
+ *                              pads are read), NFSU2_PACE_AT=frame: in
+ *                              FrameTimeUpdate as before
  *   framerate_unit replay <rate>
  *                              the timer fix's WorldTimer: exact over a race,
  *                              and a replay from a snapshot ticks as the race
@@ -18,7 +22,9 @@
 uint8_t *g_mem;
 uint8_t g_cbits[1u << 15];
 int metal_display_hz(void){ return 120; }
-void guest_sleep_ns(long ns){ (void)ns; }
+void guest_sleep_ns(long ns){ if (ns > 0){ struct timespec t = { ns / 1000000000L, ns % 1000000000L }; nanosleep(&t, 0); } }
+static int g_taken_waits;
+void metal_wait_taken(void){ g_taken_waits++; }
 uint64_t spin_slept_us(void){ return 0; }
 long metal_frames(void){ return 0; }
 void sub_005ff4a0_orig(CPU *c){ (void)c; MRF32(A_CAP) = 1.f / 30.f; }   /* the World constructor of a network race */
@@ -116,8 +122,46 @@ static int replay(int rate){
     return 0;
 }
 
+/* the pacer's slot: waited for after Present (by default), FrameTimeUpdate then takes it without a sleep of its
+ * own; with NFSU2_PACE_AT=frame FrameTimeUpdate sleeps as before.  Either way one slot a frame, the same slot. */
+static int present(int rate){
+    int at_present = pace_at_present();
+    int64_t P = (int64_t)llround(1e9 / rate);
+    uint64_t slept, missed;
+    g_pace_rate = 0; g_last_slot = 0; g_taken_waits = 0;
+    CHECK(pace(rate, &slept, &missed) == 1, "the first frame takes a slot");
+    int64_t s0 = g_last_slot;
+    int waits = 0, own = 0;
+    for (int i = 1; i <= 8; i++){
+        g_pace_rate = rate;                    /* FrameTimeUpdate paced this frame */
+        hfr_after_present();
+        uint64_t pre = g_pre_slept;
+        if (pre) waits++;
+        int n = pace(rate, &slept, &missed);
+        if (slept) own++;
+        CHECK(n == 1 && missed == 0, "frame %d: %d slots, %llu missed", i, n, (unsigned long long)missed);
+        CHECK(g_last_slot == s0 + i * P, "frame %d: slot %lld, expected %lld", i, (long long)(g_last_slot - s0), (long long)(i * P));
+        CHECK(g_pace_rate == 0, "frame %d: the wait after Present once a frame", i);
+    }
+    CHECK(g_taken_waits == 8, "the renderer's taking waited for after each paced Present (%d)", g_taken_waits);
+    if (at_present) CHECK(waits == 8 && own == 0, "the wait after Present slept %d times, FrameTimeUpdate %d", waits, own);
+    else CHECK(waits == 0 && own == 8, "NFSU2_PACE_AT=frame: FrameTimeUpdate slept %d times, after Present %d", own, waits);
+    /* a Present of no paced frame (a loading screen) never waits */
+    g_taken_waits = 0; hfr_after_present();
+    CHECK(g_taken_waits == 0 && g_pre_target == 0, "a Present without a paced frame does not wait");
+    /* a late frame after the wait: the missed slots dropped, as before */
+    g_pace_rate = rate; hfr_after_present();
+    guest_sleep_ns((long)(2 * P + P / 2));
+    int64_t before = g_last_slot;
+    int n = pace(rate, &slept, &missed);
+    CHECK(n >= 2 && missed >= 1 && g_last_slot > before + P, "a late frame: %d slots, %llu missed", n, (unsigned long long)missed);
+    printf("PASS pacing at %d fps: the slot's wait %s\n", rate, at_present ? "after Present, before the pads are read" : "in FrameTimeUpdate (NFSU2_PACE_AT=frame)");
+    return 0;
+}
+
 int main(int argc, char **argv){
     if (argc == 2 && !strcmp(argv[1], "uncapped")) return uncapped();
+    if (argc == 3 && !strcmp(argv[1], "present")) return present(atoi(argv[2]));
     if (argc == 3 && !strcmp(argv[1], "replay")) return replay(atoi(argv[2]));
     if (argc == 4 && !strcmp(argv[1], "net")) return net(atoi(argv[2]), atoi(argv[3]));
     if (argc != 3){ fprintf(stderr, "usage: framerate_unit <mode rate> <cutscene rate>\n"); return 2; }

@@ -5051,6 +5051,40 @@ void metal_present(void){
     if (yielded){ void guest_blocking_end(void); guest_blocking_end(); }
 }
 
+/* After a main-loop Present (com.c), before the game reads the pads and starts the next
+ * frame: wait until the main thread has taken the frame just handed over (it has its
+ * drawable and encodes it), so no frame of the game's waits behind one that waits for
+ * a drawable while a busy GPU holds them all; its input would be a frame older when it
+ * is shown.  The encoding itself still runs beside the next frame's simulation.  Not in
+ * mailbox mode (frames there replace each other) or with NODRAW; at most 50 ms.
+ * NFSU2_WAIT_TAKEN=0: no wait, as before (A/B).  After th0mk's nfsu2-web
+ * (runtime/web/gpu_web.c, NFSU2_WAIT_TAKEN), MIT. */
+static _Atomic unsigned long long g_wait_taken_ns, g_wait_taken_n;
+void metal_wait_taken(void){
+    static int on = -1;
+    if (on < 0){ const char *e = getenv("NFSU2_WAIT_TAKEN"); on = !(e && *e == '0') && !ENVC("NODRAW"); }
+    int hfr_mailbox(void);
+    if (!on || !g_layer || hfr_mailbox()) return;
+    pthread_mutex_lock(&g_qlock);
+    if (g_ready < 0 || g_enc_rb >= 0){ pthread_mutex_unlock(&g_qlock); return; }
+    pthread_mutex_unlock(&g_qlock);
+    int guest_blocking_begin(void);
+    int yielded = guest_blocking_begin();
+    struct timespec w0, ts; clock_gettime(CLOCK_MONOTONIC, &w0);
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 50L * 1000000L;
+    if (ts.tv_nsec >= 1000000000L){ ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&g_qlock);
+    while (g_ready >= 0 && g_enc_rb < 0)
+        if (pthread_cond_timedwait(&g_qcond, &g_qlock, &ts) != 0) break;
+    pthread_mutex_unlock(&g_qlock);
+    if (yielded){ void guest_blocking_end(void); guest_blocking_end(); }
+    struct timespec w1; clock_gettime(CLOCK_MONOTONIC, &w1);
+    atomic_fetch_add(&g_wait_taken_ns, (unsigned long long)(w1.tv_sec - w0.tv_sec) * 1000000000ull
+                                       + (unsigned long long)w1.tv_nsec - (unsigned long long)w0.tv_nsec);
+    atomic_fetch_add(&g_wait_taken_n, 1ull);
+}
+
 /* ---- READING BACK A LOCKABLE RENDER TARGET -----------------------------------
  * The magazine and DVD covers: the game makes a lockable render target
  * (CreateRenderTarget, Lockable=1), StretchRects the middle of the screen into it
@@ -6720,6 +6754,7 @@ void metal_run_main_loop(void){
                         pthread_mutex_lock(&g_qlock);
                         int rb = g_ready;
                         g_enc_rb = rb;
+                        pthread_cond_broadcast(&g_qcond);    /* taken: metal_wait_taken */
                         /* Release the lock HERE.  It used to be held for the whole frame
                          * encoding (0.4-2 ms), and then through the vertex copy too;
                          * since metal_draw_raw asks for the same lock per draw, the
@@ -8220,6 +8255,9 @@ void metal_budget_report(void){
             (double)atomic_load(&g_wait_present_ns)/(double)fr/1e6,
             (double)atomic_load(&g_wait_frame_ns)/(double)fr/1e6,
             (double)atomic_load(&g_wait_drawable_ns)/(double)fr/1e6);
+    if (atomic_load(&g_wait_taken_n))
+        fprintf(stderr, "  guest wait taken  : %.2f ms/frame (after Present, for the frame to be taken: %llu waits)\n",
+                (double)atomic_load(&g_wait_taken_ns)/(double)fr/1e6, atomic_load(&g_wait_taken_n));
     fprintf(stderr, "  render passes     : %.1f/frame,  draw calls: %.0f/frame\n",
             (double)atomic_load(&g_pass_n)/(double)fr,
             (double)atomic_load(&g_draw_n)/(double)fr);
