@@ -952,7 +952,8 @@ static void t_vlan(const char *py, const char *hubpy){
     snprintf(sock, sizeof sock, "%s/hub.sock", dir); snprintf(pcap, sizeof pcap, "%s/hub.pcap", dir); snprintf(log, sizeof log, "%s/hub.log", dir);
     pid_t hub = fork();
     if (!hub){
-        execl(py, py, "-I", hubpy, "--sock", sock, "--pcap", pcap, "--log", log, "--delay", "2", "--quit-after", "60", (char *)0);
+        /* execlp: py may be a bare "python3" (no .venv, as on CI) and must be found on PATH */
+        execlp(py, py, "-I", hubpy, "--sock", sock, "--pcap", pcap, "--log", log, "--delay", "2", "--quit-after", "60", (char *)0);
         _exit(127);
     }
     for (int i = 0; i < 100 && access(sock, F_OK); i++) usleep(50000);
