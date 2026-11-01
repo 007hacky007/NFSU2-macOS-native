@@ -4,6 +4,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = BuilderModel()
     private var terminateSignal: DispatchSourceSignal?
+    private var snapshotWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when started with `swift run`, where there is no app bundle to say so.
@@ -26,19 +27,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let folder = UserDefaults.standard.string(forKey: "SnapshotFolder") { startSnapshots(URL(fileURLWithPath: folder)) }
     }
 
-    /// For release testing (`--args -SnapshotFolder <dir>`): a PNG of the window each time what it
-    /// shows changes, drawn offscreen so it works without a screen recording permission.
+    /// For release testing (`--args -SnapshotFolder <dir>`): a PNG of the window's content each
+    /// time what it shows changes. A copy of the content is drawn in a window kept off screen (as
+    /// the launcher's NFSU2_LAUNCHER_SNAPSHOT does), which needs no screen recording permission.
     private func startSnapshots(_ folder: URL) {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var last = "", count = 0
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [model] _ in
-            guard let view = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil })?.contentView else { return }
+        let host = NSHostingView(rootView: RootView(model: model))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderBack(nil)
+        snapshotWindow = window
+        var last = "", count = 0, pending = ""
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [model] _ in
             var key = "\(model.phaseName) \(model.states)"
             if case let .building(step, fraction, _) = model.phase { key = "building \(step) \(Int(fraction * 10))" }
-            guard key != last, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            // Wait one tick after a change so the off-screen copy has been laid out and drawn.
+            guard key != last else { return }
+            guard key == pending else { pending = key; return }
+            let fit = host.fittingSize
+            window.setContentSize(NSSize(width: 560, height: max(470, fit.height)))
+            host.layoutSubtreeIfNeeded()
+            host.display()
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+            host.cacheDisplay(in: host.bounds, to: rep)
             last = key
             count += 1
-            view.cacheDisplay(in: view.bounds, to: rep)
             let name = String(format: "%03d-%@.png", count, model.phaseName)
             try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent(name))
         }
@@ -124,6 +139,7 @@ struct RootView: View {
         .padding(20)
         .frame(width: 560)
         .frame(minHeight: 470, alignment: .top)
+        .background(Color(NSColor.windowBackgroundColor))
         .background(GrowWindowToFit(content: "\(model.states)\(model.dataDetails ?? "")\(model.phaseName)"))
     }
 }
