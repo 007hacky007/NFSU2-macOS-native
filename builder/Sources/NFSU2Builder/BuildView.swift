@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Plain names for the pipeline steps, in `buildSteps` order.
 let buildStepNames = [
-    "prepare": "Prepare the game folder",
+    "prepare": "Prepare the game data",
     "lift": "Translate SPEED2.EXE to C",
     "compile": "Compile the game",
     "link": "Build the original and HD engines",
