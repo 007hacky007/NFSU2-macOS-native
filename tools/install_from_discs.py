@@ -7,11 +7,16 @@ backslash paths) plus a few loose folders, so the installer is not needed:
     python3 tools/install_from_discs.py "<output folder>" <disc 1> <disc 2>
 
 Each disc can be a .cue, a raw .bin (2352-byte sectors), an .iso, or a folder
-(a mounted or copied disc).  Needs 7-Zip (`brew install sevenzip`) for .bin/.iso
-images.  The result is a normal game folder; the launcher still checks that its
-SPEED2.EXE is the supported build (see README, "Requirements").
+(a mounted or copied disc).  Images are read directly (tools/disc.py, ISO 9660 and
+Joliet); 7-Zip (`brew install sevenzip`) is only tried for an image that reader
+cannot open.  The images are only read.  The result is a normal game folder; the
+launcher still checks that its SPEED2.EXE is the supported build (see README,
+"Requirements").
 """
 import os, posixpath, shutil, subprocess, sys, tempfile, zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.disc import Disc, DiscError  # noqa: E402
 
 # Disc content that belongs to the installer or the copy protection, not the game.
 SKIP_TOP = {'autorun', 'autorun.exe', 'autorun.inf', 'autorungui.dll', 'bin.dat',
@@ -42,13 +47,17 @@ def cue_bin(cue):
     raise SystemExit(f"{cue}: no FILE line")
 
 
+def disc_image(path):
+    """The image file of a .cue, .bin or .iso."""
+    return cue_bin(path) if path.lower().endswith('.cue') else path
+
+
 def disc_folder(path, work):
-    """Return a folder with the disc's files."""
+    """Return a folder with the disc's files (7-Zip; only when tools/disc.py cannot read it)."""
     if os.path.isdir(path):
         return path
+    path = disc_image(path)
     low = path.lower()
-    if low.endswith('.cue'):
-        path, low = cue_bin(path), cue_bin(path).lower()
     if low.endswith('.bin'):
         iso = os.path.join(work, 'disc.iso')
         print(f"  converting {os.path.basename(path)} to ISO")
@@ -63,7 +72,7 @@ def disc_folder(path, work):
 
 
 def unzip_backslash(zpath, out):
-    """Extract a zip whose member names use Windows backslashes."""
+    """Extract a zip (a path or a file object) whose member names use Windows backslashes."""
     n = 0
     with zipfile.ZipFile(zpath) as z:
         for info in z.infolist():
@@ -79,6 +88,34 @@ def unzip_backslash(zpath, out):
                 shutil.copyfileobj(src, f, 1 << 20)
             n += 1
     return n
+
+
+def skipped(name):
+    low = name.lower()
+    return low in SKIP_TOP or low.endswith(SKIP_EXT) or low.startswith('.')
+
+
+def install_image(disc, out):
+    """Install straight from an image read by tools/disc.py (no temporary copy)."""
+    entries = list(disc.entries())
+    for entry in entries:
+        top = entry.path.parts[0]
+        if str(entry.path).lower() == 'compressed.zip':
+            with disc.open(entry) as f:
+                print(f"  compressed.zip: {unzip_backslash(f, out)} files")
+            continue
+        if skipped(top):
+            continue
+        rel = entry.path.parts
+        if len(rel) == 1 and top.lower() == 'speed2.exe':
+            rel = ('SPEED2.EXE',)
+        dst = os.path.join(out, *rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with disc.open(entry) as src, open(dst, 'wb') as f:
+            shutil.copyfileobj(src, f, 1 << 20)
+    for top in sorted({e.path.parts[0] for e in entries if not skipped(e.path.parts[0])
+                       and str(e.path).lower() != 'compressed.zip'}):
+        print(f"  {'SPEED2.EXE' if top.lower() == 'speed2.exe' else top}")
 
 
 def install_disc(folder, out):
@@ -106,8 +143,18 @@ def main():
     os.makedirs(out, exist_ok=True)
     for i, disc in enumerate(sys.argv[2:], 1):
         print(f"disc {i}: {disc}")
+        disc = os.path.abspath(disc)
+        if not os.path.isdir(disc):
+            try:
+                with Disc(disc_image(disc)) as image:
+                    install_image(image, out)
+                continue
+            except DiscError as e:
+                if not (shutil.which('7zz') or shutil.which('7z')):
+                    raise SystemExit(f"{disc}: {e}")
+                print(f"  {e}; trying 7-Zip")
         with tempfile.TemporaryDirectory(dir=out, prefix='.disc') as work:
-            install_disc(disc_folder(os.path.abspath(disc), work), out)
+            install_disc(disc_folder(disc, work), out)
     exe = os.path.join(out, 'SPEED2.EXE')
     print(f"\ninstalled to {out}")
     if not os.path.exists(exe):

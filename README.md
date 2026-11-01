@@ -7,7 +7,8 @@ https://github.com/user-attachments/assets/f58f98bd-ca90-48fa-9a7d-5d056cf0cbbb
 > **This is a fork** of [TalhaMudo/NFSU2Recomp](https://github.com/TalhaMudo/NFSU2Recomp):
 > upstream's main plus features upstream does not have. They are all optional and
 > off (as in the original game) unless noted; see [This fork](#this-fork) for the
-> list. Upstream's Releases page linked below has upstream's builds, without them.
+> list. This fork's app is made on your own Mac by [NFSU2 Builder](#nfsu2-builder);
+> upstream's Releases page has upstream's builds, without this fork's features.
 
 **Play *Need for Speed: Underground 2* (NFSU2, 2004) natively on Apple Silicon
 Macs (M1 and later): no Wine, no CrossOver, no emulator, no virtual machine.**
@@ -22,9 +23,9 @@ time. On an M1 Pro, races run at **119 fps** (the display's limit), against
 
 > **This repository contains no game code and no game assets.** It contains the
 > recompiler and the runtime only. You need your own copy of the game. The C
-> code generated from its executable is never committed. The prebuilt app on
-> the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) contains the recompiled program but no game files:
-> on first launch you point it at your own installation.
+> code generated from its executable is never committed. This fork ships no
+> ready-made app: [NFSU2 Builder](#nfsu2-builder) recompiles your own `SPEED2.EXE`
+> on your Mac.
 
 ![Race, native ARM64 build](screenshots/selected/27_20260924_current-race.jpg)
 
@@ -50,8 +51,58 @@ dropped silently.
 | Engine | Fairer thread scheduling, a reusable guest heap and virtual memory, quitting through the game's own shutdown (saves are never cut), pause when you switch apps, faster loading and car screens, a stall watchdog |
 | Compiler and tests | x87 precision control, full 128-bit SSE2, override and hook lists derived from the runtime, optional lift options (`LREGS`, `JTSWITCH`, `INLINE_LIST`, `FTOL2INL`, see `LIFTER_EFFICIENCY.md`), more ISA and runtime checks for both builds |
 
-There is no prebuilt app of this fork yet; build it as described in
-[Build and run](#build-and-run).
+### NFSU2 Builder
+
+This fork publishes no ready-made `NFSU2.app`. The recompiled code is made from
+each player's own `SPEED2.EXE`, so the app is built on your Mac, and NFSU2
+Builder does that for you without Terminal:
+
+1. Download `NFSU2-Builder.dmg` from this fork's [Releases page](https://github.com/007hacky007/NFSU2-macOS-native/releases/latest) and open it.
+2. Double-click NFSU2 Builder. macOS blocks it the first time because it is not
+   signed by Apple: click **Done**, open System Settings > Privacy & Security,
+   scroll down and click **Open Anyway** (the pictures in the disk image show
+   where). On macOS 14 or older, right-click NFSU2 Builder and choose Open.
+3. Fix any red row: each one has a button. **Install...** gets Apple's Xcode
+   command line tools (about 2 GB, needed to compile), **Install** gets the
+   Builder's own Python and the lifter's packages (about 32 MB). **Choose...**
+   picks your game data and, when that does not hold one, the game program.
+4. Click **Build NFSU2.app**, then **Play**.
+
+What it needs:
+
+- **Game data:** your installed game folder, or the two PC disc images (`.iso`,
+  `.cue`/`.bin`, or disc folders) chosen together. Data of either region works.
+  Files that differ from the releases the Builder knows (another language, a
+  repack, mods) give an amber note and never block the build.
+- **Game program:** one of the two `SPEED2.EXE` files in
+  [Game versions](#game-versions), both v1.2 without the CD check. If your game
+  folder does not have one, choose the file itself or a zip, rar or 7z archive
+  that holds it. The disc version and EA's official v1.2 patch are
+  copy-protected and refused with a plain message. **Which copy works?** in the
+  window lists the two files with size and SHA-256.
+
+What it does: it runs the same scripts as the Terminal build
+([Build from Terminal](#build-from-terminal)) from a copy of the sources bundled in
+the app, builds the original and HD engines for your `SPEED2.EXE`'s region, puts
+`NFSU2.app` in `/Applications` (or a folder you choose) and points its launcher at
+your game folder, so the first start goes straight to the launcher window. A folder
+that already holds a supported `SPEED2.EXE` is used as it is. Otherwise (disc
+images, or a folder with another `SPEED2.EXE`) the Builder makes a game folder of
+its own, `~/Games/NFSU2` unless you change it, with APFS clones of your folder's
+files or the unpacked discs, and the chosen `SPEED2.EXE`. Your own copy, disc
+images and archives are only read.
+
+On an M1 Pro the build takes about 3 minutes (lifting 52 s, compiling 57 s, linking
+10 s, the launcher 60 s; a rebuild skips the launcher), plus about 1.5 minutes the
+first time for the Python download and setup. It needs about 1.5 GB of free space
+while building (the workspace is 0.6 GB per region built; **Remove build files**
+frees it afterwards) and 1.7 GB more when it unpacks disc images. The Builder works in
+`~/Library/Application Support/NFSU2 Builder` and never touches the Python of
+your system or Homebrew. It downloads only its Python (python-build-standalone,
+checked against a pinned SHA-256) and the packages in `requirements.txt`; never
+the game, a game executable or a patch. Saves and settings live outside the app
+(`~/Library/Application Support/NFSU2 Saves`, `~/.nfsu2_registry`), so building
+again and replacing `NFSU2.app` keeps your progress.
 
 Parts of the runtime and tools are ported from th0mk's
 [nfsu2-web](https://github.com/th0mk/nfsu2-web) (MIT License, Copyright (c)
@@ -195,7 +246,8 @@ HD build draws about 18 W.
 
 - Apple Silicon Mac, macOS 11 or later. Developed on an M1 Pro, macOS 27.
 - Xcode Command Line Tools (`clang`; `swiftc` for the launcher window).
-- Python 3 with `capstone` 5.x and `pefile` (`requirements.txt`).
+- Python 3 with `capstone` 5.x and `pefile` (`requirements.txt`). NFSU2 Builder
+  installs its own Python; only the command line tools come from Apple.
 - Rosetta 2, only for `tools/fuzzisa.py`.
 - Your own installation of the game, with one of these executables (both v1.2
   without the CD check, built Feb 9 2005):
@@ -220,10 +272,23 @@ the note under the table).
 | North American v1.2, no CD check (the build most PC mods target) | 4,800,512 | `f9dd86c054878ce6276beb07c1fd61874f7a1e4bf1f241b084c65b73e24168a7` | **Supported** (engines `nfsu2-engine-na`, `-na-hd`). Tested on US disc data from the menus into a Quick Race, original and HD. |
 | US v1.0 retail disc | 5,987,981 | `2cbd698fee8338a13d1891bc17d27e6641b4b9dd40580de818594b9140222899` | **Cannot be supported.** Protected by SafeDisc: the code section is encrypted on disc and only decrypted at run time, so there is nothing to recompile. |
 
-The retail disc executable carries the disc's copy protection, and the official
-v1.2 patch most likely keeps it (not verified here). A static recompiler needs
-readable machine code, so the port cannot use a protected executable, and this
-project does not remove copy protection.
+The retail disc executable carries the disc's copy protection, and EA's official
+v1.2 patch keeps it: the patched European `SPEED2.EXE` (5,987,979 bytes, SHA-256
+`7442cb462d043c2780ba80a7b84cb548320b4c8b36256993c5e6c28d4290f422`) still has
+SafeDisc's `stxt774` and `stxt371` sections and encrypted code. The European v1.0
+disc executable (5,987,980 bytes, SHA-256
+`bf94f3664398bf33eb91bcecaba627893ffd20bb64d813c6e5b2b9f3062cd3ac`) is protected
+the same way. A static recompiler needs readable machine code, so the port cannot
+use a protected executable, and this project does not remove copy protection.
+The official patch changes only `SPEED2.EXE`, `server.dll` and
+`FRONTEND/FrontB.lzc`; the other 1,213 files of the European discs stay
+byte-identical.
+
+**Any region's data works with either supported executable.** The data can come
+from the discs or an installation of either region; the runtime picks the region
+from the data (below). NFSU2 Builder checks the data against the known releases in
+`tools/known_releases.tsv` (paths, sizes and checksums only, written by
+`tools/release_manifest.py`).
 
 **Data from the discs.** The US discs and the European release share 1,218 of
 their ~1,250 files byte for byte. The differences are the region's cars (the US
@@ -248,9 +313,12 @@ The discs hold the game in plain zip files, so the Windows installer is not
 needed. With the two disc images (`.cue`/`.bin`, `.iso`, or the disc folders):
 
 ```bash
-brew install sevenzip     # only needed for .bin/.iso images
 python3 tools/install_from_discs.py ~/Games/NFSU2 "Disc 1.cue" "Disc 2.cue"
 ```
+
+The images are read directly (`tools/disc.py`, ISO 9660 and Joliet); 7-Zip is
+only tried for an image that reader cannot open. NFSU2 Builder does this step
+for you.
 
 This writes a normal game folder (about 1.7 GB) that the launcher can point at.
 It copies the disc's `SPEED2.EXE` too, but see the table above: the disc
@@ -284,9 +352,10 @@ stops on bytes an earlier, misaligned scan covered), which became traps;
 `LIFT_MISSING=1` (set by `tools/gen_v2.sh` for this build) lifts such targets in
 extra shards.
 
-## Build and run
+## Build from Terminal
 
-Run everything from the repository root.
+[NFSU2 Builder](#nfsu2-builder) runs these same steps for players. This section
+is for power users and LLM agents. Run everything from the repository root.
 
 ```bash
 export NFSU2_DATA="/path/to/Need for Speed Underground 2"   # folder containing SPEED2.EXE
@@ -541,9 +610,9 @@ and that Download refuses any other file.
 
 **Can I play Need for Speed: Underground 2 on a Mac?**
 Yes, on an Apple Silicon Mac (M1 or later) with your own copy of the PC game.
-Download `NFSU2.zip` from the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest), or build the port as
-described above (`./pack.sh` produces a double-clickable `NFSU2.app`). Open it,
-choose the game folder once, click Play. Menus, races, career saves and sound
+Get NFSU2 Builder from this fork's [Releases page](https://github.com/007hacky007/NFSU2-macOS-native/releases/latest) and let it build
+`NFSU2.app` from your game copy ([NFSU2 Builder](#nfsu2-builder)), or build it from
+Terminal (`./pack.sh` produces a double-clickable `NFSU2.app`). Open it, click Play. Menus, races, career saves and sound
 work.
 
 **Do I need Wine, CrossOver, Whisky, Parallels or a virtual machine?**
@@ -556,14 +625,12 @@ against 10–15 fps under Wine 11.18 with Rosetta 2, and 119 fps against 45 fps
 in the 3D menus. Method and raw numbers are in `WINE_COMPARISON.md`.
 
 **Is there a ready-made download?**
-Yes: the [Releases page](https://github.com/TalhaMudo/NFSU2Recomp/releases/latest) has `NFSU2.zip`. The app holds both
-graphics modes, Original and HD (MSAA, ray-traced reflections), chosen in its
-Settings; older releases had a separate `NFSU2.HD.zip`. It contains no game files:
-the window asks for the folder that holds your own `SPEED2.EXE`.
-The app is not notarized, so macOS blocks the first start: open System Settings ›
-Privacy & Security and click **Open Anyway** (on macOS 14 and older: right-click
-the app › Open). If macOS says the app is damaged, run once in Terminal:
-`xattr -dr com.apple.quarantine /Applications/NFSU2.app`
+Not of the game app in this fork: this fork's [Releases page](https://github.com/007hacky007/NFSU2-macOS-native/releases/latest) has
+NFSU2 Builder, which makes `NFSU2.app` on your Mac from your own `SPEED2.EXE`
+(see [NFSU2 Builder](#nfsu2-builder)). The app it builds holds both graphics
+modes, Original and HD (MSAA, ray-traced reflections), chosen in its Settings, and
+no game files. Upstream's Releases page has upstream's own builds, without this
+fork's features.
 
 **Can I carry the game to another Mac in one piece?**
 Yes. In the app's Settings (More tab), **Make Copy…** creates "NFSU2 Portable.app" with the
@@ -578,9 +645,9 @@ executable cannot be supported (it is copy-protected). Console versions are not
 supported. See [Game versions](#game-versions).
 
 **I only have the PC discs. Can I install them on a Mac?**
-Yes, without Windows: `tools/install_from_discs.py` unpacks the disc images
-into a game folder. See [Installing from the PC discs on a
-Mac](#installing-from-the-pc-discs-on-a-mac).
+Yes, without Windows: choose both disc images in NFSU2 Builder, together with a
+supported `SPEED2.EXE`, or run `tools/install_from_discs.py`. See [Installing from
+the PC discs on a Mac](#installing-from-the-pc-discs-on-a-mac).
 
 **Does it work on Intel Macs?**
 No. Only Apple Silicon is targeted and tested.

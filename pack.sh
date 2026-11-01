@@ -20,6 +20,8 @@
 #   ./pack.sh --hd            "NFSU2 HD.app" with the HD engine only (the older
 #                             two-app layout; separate bundle id, sits next to NFSU2.app)
 #   ./pack.sh --original-only NFSU2.app with the original engine only
+#   ./pack.sh --region eu|na  NFSU2.app with only that executable's engines (NFSU2 Builder
+#                             builds one region: European or North American v1.2)
 #
 # The game data does NOT go into the bundle BY DEFAULT: the app asks for the
 # folder on first launch and remembers the choice.  That keeps the bundle small
@@ -32,9 +34,12 @@
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
-WITH_DATA=0; MAKE_ZIP=0; HD=0; EMBED=0; ORIG_ONLY=0; SIGN_ID="${SIGN_ID:-}"
+WITH_DATA=0; MAKE_ZIP=0; HD=0; EMBED=0; ORIG_ONLY=0; REGION=""; SIGN_ID="${SIGN_ID:-}"
+NEXT=""
 for a in "$@"; do
+  if [ "$NEXT" = region ]; then REGION="$a"; NEXT=""; continue; fi
   case "$a" in
+    --region)    NEXT=region ;;
     --with-data) WITH_DATA=1 ;;
     --zip)       MAKE_ZIP=1 ;;
     --hd)        HD=1 ;;
@@ -51,6 +56,12 @@ else
   BIN="$ROOT/out/nfsu2_boot";    NAME="NFSU2";    DISP="Need for Speed Underground 2"
   BID="org.nfsu2.nativeport";    TAG=""
 fi
+case "$REGION" in
+  ""|eu) ;;
+  na) [ "$HD" = 0 ] || { echo "--region na can't be combined with --hd"; exit 1; }
+      BIN="$ROOT/out/nfsu2_na_boot" ;;
+  *)  echo "--region must be eu or na"; exit 1 ;;
+esac
 [ -x "$BIN" ] || { echo "build first: ./build.sh && ./link.sh  ($BIN missing)"; exit 1; }
 
 if [ "$EMBED" = 1 ] && { [ "$WITH_DATA" = 1 ] || [ "$MAKE_ZIP" = 1 ]; }; then
@@ -78,7 +89,7 @@ if [ -x "$LAUNCHER" ]; then
   cp "$LAUNCHER" "$APP/Contents/MacOS/NFSU2"
   if [ "$HD" = 1 ]; then
     cp "$BIN" "$APP/Contents/MacOS/nfsu2-engine-hd"; ENGINES+=(nfsu2-engine-hd)
-  else
+  elif [ "$REGION" != na ]; then
     cp "$BIN" "$APP/Contents/MacOS/nfsu2-engine"; ENGINES+=(nfsu2-engine)
     if [ "$ORIG_ONLY" = 0 ] && [ -x "$ROOT/out/nfsu2_hd_boot" ]; then
       cp "$ROOT/out/nfsu2_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-hd"; ENGINES+=(nfsu2-engine-hd)
@@ -86,10 +97,10 @@ if [ -x "$LAUNCHER" ]; then
   fi
   # North American v1.2 engines (BUILD=na ./build.sh && BUILD=na ./link.sh), if built;
   # the launcher picks them by the SPEED2.EXE it finds.
-  if [ "$HD" = 0 ] && [ -x "$ROOT/out/nfsu2_na_boot" ]; then
+  if [ "$HD" = 0 ] && [ "$REGION" != eu ] && [ -x "$ROOT/out/nfsu2_na_boot" ]; then
     cp "$ROOT/out/nfsu2_na_boot" "$APP/Contents/MacOS/nfsu2-engine-na"; ENGINES+=(nfsu2-engine-na)
   fi
-  if [ "$ORIG_ONLY" = 0 ] && [ -x "$ROOT/out/nfsu2_na_hd_boot" ]; then
+  if [ "$ORIG_ONLY" = 0 ] && [ "$REGION" != eu ] && [ -x "$ROOT/out/nfsu2_na_hd_boot" ]; then
     cp "$ROOT/out/nfsu2_na_hd_boot" "$APP/Contents/MacOS/nfsu2-engine-na-hd"; ENGINES+=(nfsu2-engine-na-hd)
   fi
 else

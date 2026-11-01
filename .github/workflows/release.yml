@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt dmgbuild==1.6.7
+
+      # Only tests that need no game copy: no game file is ever available here.
+      - name: Test
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -t tests -p 'test_*.py'
+          tests/run_suite.sh
+          swift test --package-path builder
+
+      - name: Build app
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          python tools/make_builder.py --version "$VERSION" --output dist
+
+      - name: Build disk image
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          dmgbuild -s builder/dmg/settings.py -D app="dist/NFSU2 Builder.app" "NFSU2 Builder $VERSION" dist/NFSU2-Builder.dmg
+          (cd dist && shasum -a 256 NFSU2-Builder.dmg > NFSU2-Builder.dmg.sha256)
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" dist/NFSU2-Builder.dmg dist/NFSU2-Builder.dmg.sha256 --title "NFSU2 Builder $VERSION" --generate-notes
