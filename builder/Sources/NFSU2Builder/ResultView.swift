@@ -68,6 +68,11 @@ struct ResultView: View {
                     Button("Delete temporary files\(model.buildFilesBytes.map { " (\(sizeText($0)))" } ?? "")",
                            action: model.removeBuildFiles)
                         .controlSize(.small)
+                    Text("Deletes \(abbreviated(model.paths.workspace(version: model.version)))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Only the Builder's own work files. NFSU2.app, your game copy, saves and settings stay. An update makes them again.")
                         .font(.caption)
                         .foregroundColor(.secondary)

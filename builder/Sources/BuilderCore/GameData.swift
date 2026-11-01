@@ -51,6 +51,13 @@ extension CheckState {
     }
 }
 
+/// Files the build leaves out of NFSU2.app on purpose (pack.sh --embed): Windows-only helpers the
+/// port never uses. Their absence is not "missing", so an app the Builder made checks as complete.
+/// `path` is relative to the game folder, lowercased.
+public func leftOutOfTheApp(_ path: String) -> Bool {
+    path == "safemode.bat" || path == "dinput8.dll" || path.hasPrefix("scripts/")
+}
+
 public enum GameDataMessages {
     public static let chooseOne = "Choose one game folder, or the two disc images (.iso, .cue or disc folders) together."
     public static let bothDiscs = "These are the files of one disc only. Choose both disc images together."
@@ -322,7 +329,8 @@ public struct GameDataChecker {
         let best = manifest.releases.max { (counts[$0.id] ?? 0, -indexOf($0)) < (counts[$1.id] ?? 0, -indexOf($1)) }
         var missing: [String] = []
         if let best = best {
-            for (key, entries) in manifest.files where present[key] == nil && entries.contains(where: { $0.releases.contains(best.id) }) {
+            for (key, entries) in manifest.files where present[key] == nil && !leftOutOfTheApp(key)
+                && entries.contains(where: { $0.releases.contains(best.id) }) {
                 missing.append(entries[0].path)
             }
         }
