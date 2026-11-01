@@ -370,6 +370,14 @@ static double thread_cpu_us(void){
     return ts.tv_sec * 1e6 + ts.tv_nsec / 1e3;
 }
 static double g_max_call_us, g_max_wall_us, g_init_us = -1;
+/* CPU budget for one game-thread call: 1 ms here; a slow shared CI runner may raise it
+ * (NFSU2_TEST_CALL_BUDGET_US, set by the release workflow). A call that blocks on Discord would
+ * take far longer than either. */
+static double call_budget_us(void){
+    const char *e = getenv("NFSU2_TEST_CALL_BUDGET_US");
+    double v = e && *e ? atof(e) : 0;
+    return v > 0 ? v : 1000;
+}
 static void run_frames(double sec){
     double end = mono_s() + sec;
     while (mono_s() < end){
@@ -446,7 +454,7 @@ int main(int argc, char **argv){
         sit_menus(); run_frames(DS_RATE_WIN + 1.0);      /* the last state must win (coalescing) */
         double ms = timed_shutdown();
         CHECK(ms < DS_QUIT_WAIT_MS, "ipc quit took %.0f ms", ms);
-        CHECK(g_max_call_us < 1000, "ipc longest game-thread call %.0f us CPU (wall %.0f us; first call, which "
+        CHECK(g_max_call_us < call_budget_us(), "ipc longest game-thread call %.0f us CPU (wall %.0f us; first call, which "
               "starts the IPC thread, %.0f us)", g_max_call_us, g_max_wall_us, g_init_us);
         usleep(200000); mock_stop(SIGTERM);
         printf("INFO ipc frames in %s\n", g_log_path);
@@ -516,7 +524,7 @@ int main(int argc, char **argv){
         while (!g_c.ready && mono_s() - t < 5) run_frames(0.05);
         CHECK(g_c.ready, "restart: reconnected %.2f s after Discord came back", mono_s() - t);
         run_frames(1.0);
-        CHECK(g_max_call_us < 1000, "restart: longest game-thread call %.0f us CPU (wall %.0f us)", g_max_call_us, g_max_wall_us);
+        CHECK(g_max_call_us < call_budget_us(), "restart: longest game-thread call %.0f us CPU (wall %.0f us)", g_max_call_us, g_max_wall_us);
         timed_shutdown(); usleep(200000); mock_stop(SIGTERM);
         return g_fail;
     }
@@ -544,7 +552,7 @@ int main(int argc, char **argv){
         mock_start(py, tmp, c, c, 0);
         ipc_env(1);
         for (int k = 0; k < 12; k++){ if (k & 1) sit_menus(); else sit_custom(); run_frames(0.5); }
-        CHECK(g_max_call_us < 1000, "noread: longest game-thread call %.0f us CPU (wall %.0f us)", g_max_call_us, g_max_wall_us);
+        CHECK(g_max_call_us < call_budget_us(), "noread: longest game-thread call %.0f us CPU (wall %.0f us)", g_max_call_us, g_max_wall_us);
         double ms = timed_shutdown();
         CHECK(ms <= DS_QUIT_WAIT_MS + 50, "noread: quit took %.0f ms (bound %d ms)", ms, DS_QUIT_WAIT_MS);
         usleep(100000); mock_stop(SIGTERM);
@@ -569,7 +577,7 @@ int main(int argc, char **argv){
         ipc_env(2);
         sit_menus(); run_frames(1.5);
         sit_race(0, 3); run_frames(2.5);
-        CHECK(g_max_call_us < 1000, "%s: longest game-thread call %.0f us CPU (wall %.0f us)", c, g_max_call_us, g_max_wall_us);
+        CHECK(g_max_call_us < call_budget_us(), "%s: longest game-thread call %.0f us CPU (wall %.0f us)", c, g_max_call_us, g_max_wall_us);
         double ms = timed_shutdown();
         CHECK(ms <= DS_QUIT_WAIT_MS + 50, "%s: quit took %.0f ms (bound %d ms)", c, ms, DS_QUIT_WAIT_MS);
         usleep(100000); mock_stop(SIGTERM);

@@ -38,7 +38,8 @@ jobs:
           set -euo pipefail
           python -m unittest discover -s tests -t tests -p 'test_*.py'
           # roam_unit runs in real time over loopback; a busy runner gets a second try
-          RETRY_UNITS=roam_unit tests/run_suite.sh
+          # a shared runner is several times slower than a Mac: a looser CPU budget per Discord call
+          RETRY_UNITS=roam_unit NFSU2_TEST_CALL_BUDGET_US=5000 tests/run_suite.sh
           swift test --package-path builder
 
       - name: Build app
