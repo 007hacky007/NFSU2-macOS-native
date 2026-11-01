@@ -7,11 +7,13 @@
  * camera and the game gets none of them (a key or button let go still reaches
  * it, so nothing held before stays held):
  *   WASD move, E / Q up / down, arrows turn, Shift faster, [ / ] field of view,
- *   Z / C tilt, Tab orbit / free, R reset, Esc closes; the mouse: drag turns,
- *   right drag pans, the wheel moves closer.  Controller: left stick moves,
- *   right stick turns, RB / LB up / down, the triggers closer / further, LS
- *   faster, d-pad up / down field of view, left / right tilt, A saves, B or
- *   Start closes, X orbit / free, Y reset.
+ *   Z / C tilt, Tab orbit / free, R reset, N the names over the players' cars
+ *   (free roam with friends: photo.c status bit 16), Esc closes; the mouse:
+ *   drag turns, right drag pans, the wheel moves closer.  Controller: left
+ *   stick moves, right stick turns, RB / LB up / down, the triggers closer /
+ *   further, LS faster, d-pad up / down field of view, left / right tilt, A
+ *   saves, B or Start closes, X orbit / free, Y reset, a click of the right
+ *   stick the names.
  * The keys are read by their place on the keyboard (macOS key codes), as the
  * game's own are (metal.m mac_to_dik).  The controller is the game's own
  * DirectInput pad (gamepad.m), read here on the guest thread; after photo mode,
@@ -51,7 +53,7 @@
 
 void photo_input(int command, int a, int b);       /* photo.c */
 void gamepad_fill(unsigned char *dst);             /* gamepad.m: DIJOYSTATE2 */
-enum { PH_HELLO, PH_OPEN, PH_HOLD, PH_MOVE, PH_TURN, PH_DRAG, PH_PAN, PH_DOLLY, PH_FOV, PH_ROLL, PH_MODE, PH_RESET };
+enum { PH_HELLO, PH_OPEN, PH_HOLD, PH_MOVE, PH_TURN, PH_DRAG, PH_PAN, PH_DOLLY, PH_FOV, PH_ROLL, PH_MODE, PH_RESET, PH_NAMES };
 enum { HB_FAST = 65536 };
 
 #define NSTATUS 12
@@ -183,6 +185,7 @@ void native_scene_guest_frame(void) {
     if (pressed & ((1u << NPAD_B) | (1u << NPAD_START))) { clearCamera(); photo_input(PH_OPEN, 0, 0); return; }
     if (pressed & (1u << NPAD_X)) photo_input(PH_MODE, 2, 0);
     if (pressed & (1u << NPAD_Y)) photo_input(PH_RESET, 0, 0);
+    if (pressed & (1u << NPAD_RS)) { NativeSceneSnapshot s; native_scene_snapshot(&s); if (s.photo & 16) photo_input(PH_NAMES, 2, 0); }
     int hold = atomic_load(&keyboardHold);
     if (pad.buttons & (1u << NPAD_LB)) hold |= 32;
     if (pad.buttons & (1u << NPAD_RB)) hold |= 16;
@@ -223,6 +226,8 @@ int native_scene_handle_event(NSEvent *event) {
         case 53: clearCamera(); photo_input(PH_OPEN, 0, 0); break;        /* Esc */
         case 48: photo_input(PH_MODE, 2, 0); break;                       /* Tab */
         case 15: photo_input(PH_RESET, 0, 0); break;                      /* R */
+        case 45: { NativeSceneSnapshot s; native_scene_snapshot(&s);        /* N: the names, where they can show */
+                   if (s.photo & 16) photo_input(PH_NAMES, 2, 0); break; }
         case 49: native_scene_request_capture(); break;                   /* Space */
         default: break;
         }
@@ -409,8 +414,10 @@ void native_scene_pump(void) {
     }
     if (on) {
         pthread_mutex_lock(&noticeLock); NSString *message = captureNotice; pthread_mutex_unlock(&noticeLock);
-        NSString *text = [NSString stringWithFormat:@"PHOTO - %@ camera     FOV %.1f     Tilt %.1f\nWASD move | E/Q up/down | arrows turn | drag turn / right drag pan\nScroll closer | [ / ] FOV | Z/C tilt | Shift faster\nTab camera | R reset | F12 / Space save | Esc exit\nPad: sticks move / turn | RB/LB up/down | triggers closer / further\nA save | B exit | X camera | Y reset | D-pad FOV / tilt\n%@",
-                          (s.photo & 4) ? @"Free" : @"Orbit", s.fov, s.roll, message ?: @""];
+        NSString *names = (s.photo & 16) ? [NSString stringWithFormat:@"     Names %@", (s.photo & 8) ? @"on" : @"off"] : @"";
+        NSString *text = [NSString stringWithFormat:@"PHOTO - %@ camera     FOV %.1f     Tilt %.1f%@\nWASD move | E/Q up/down | arrows turn | drag turn / right drag pan\nScroll closer | [ / ] FOV | Z/C tilt | Shift faster\nTab camera | R reset | %@F12 / Space save | Esc exit\nPad: sticks move / turn | RB/LB up/down | triggers closer / further\nA save | B exit | X camera | Y reset | %@D-pad FOV / tilt\n%@",
+                          (s.photo & 4) ? @"Free" : @"Orbit", s.fov, s.roll, names, (s.photo & 16) ? @"N names | " : @"",
+                          (s.photo & 16) ? @"RS names | " : @"", message ?: @""];
         if (![text isEqualToString:ui.photoView.text]) { ui.photoView.text = text; ui.photoView.needsDisplay = YES; }
     }
     if (!driftHidden) {

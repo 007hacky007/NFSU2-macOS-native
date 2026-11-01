@@ -71,6 +71,11 @@ int      roam_plat_solid(void);
  * (0x00RRGGBB, 0: the place's default), and a number that changes with each
  * change (0: not changed, NFSU2_ROAM_CREW and NFSU2_ROAM_CREW_RGB hold) */
 uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]);
+/* the room as the player changed it in the panel while the game runs (its
+ * Room box, or a friend's Join): its name into name (UTF-8 ending in a 0
+ * byte; "" for no room), and a number that changes with each change (0: not
+ * changed, NFSU2_ROAM_ROOM holds) */
+uint32_t roam_plat_room(char name[64]);
 /* quick chat (roam_game.c say_*): whether this platform has it (a picker and
  * the lines over the cars), the phrase the player picked since the last call
  * (-1: none), and a phrase said (by a friend, or by the player) as a JSON
@@ -78,6 +83,11 @@ uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX])
 int      roam_plat_quickchat(void);
 int      roam_plat_say_pick(void);
 int      roam_plat_said(const char *json);
+/* front bumpers (roam_game.c bump_*): the player's car and a friend's touched
+ * nose to nose for 3 s, or parted after that, as a JSON object
+ * {"id","name","on"}: Game Tools offers to add that player as a friend (1
+ * taken, -1 not).  With the session lock held */
+int      roam_plat_friend(const char *json);
 /* where the names of the players who said something lately are this frame:
  * ids[i] at xys[3i], xys[3i + 1] (parts of the picture from its top left
  * corner) with the name's scale xys[3i + 2]; n = 0: none.  On the game

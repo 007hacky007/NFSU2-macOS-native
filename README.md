@@ -133,10 +133,11 @@ Click a picture to see it full size.
 | **Online and free roam** | | |
 | LAN play | Race Macs and Windows PCs on the same network, and host LAN games with the game's own server. | |
 | Online play | The game's Online mode through a community server, since EA's servers are gone. Your place in a full server survives a reconnect. Off by default. | <a href="docs/readme/full/online-lobby.jpg"><img src="docs/readme/thumbs/online-lobby.jpg" width="180" alt="The game's Online lobby"></a> |
-| Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
-| Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
-| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
+| Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms (invite links to share them) and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
+| Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. The game's own tuners still challenge you with other players around. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
+| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby and changes your room while you play. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
 | Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="docs/readme/full/ph-horns-pause-audio-eu.jpg"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
+| Friends | Touch front bumpers with another player in free roam to become friends; friends stand out in free roam, and the launcher lists where each one plays with a Join. Needs a claimed name. |  |
 | Player counts | See how many play on the server, in your room and in your crews before you join. | <a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/f-player-counts.jpg" width="180" alt="Online settings with player counts"></a> |
 | Online statistics | A small panel in the game's corner while you play online: the connection or your place in the server queue, the round trip to the server, and how many play on the server, in free roam, in the Online lobby, in your room and crews. Off by default. | |
 | Better online races | Every track, up to 6 players, 2 laps by default, a lobby filter that works, and you log in under your own name. | |
@@ -581,8 +582,11 @@ keeps playing after entering a shop.
 **Photo mode** (`NFSU2_PHOTO=1`; launcher: Settings > Game > Photo mode, off by
 default): while you drive offline, F12, Cmd+Shift+P or the pause menu's Photo
 Mode stops the world and the race clock, hides the HUD and frees the camera
-(orbit and free camera, field of view, tilt, reset; keys, mouse and controller,
-listed in a panel while it is on). F12 or Space saves a PNG; F12 anywhere else
+(orbit about a point up to 25 m from the car, from up to 30 m away, and a free
+camera up to 50 m out; Tab switches between them, field of view, tilt, reset;
+keys, mouse and controller, listed in a panel while it is on).  In free roam with
+other players, N (a click of the right stick) shows the names over their cars and
+your own, off at first. F12 or Space saves a PNG; F12 anywhere else
 (menus, network races) saves a screenshot without holding the game up. The
 pictures go to `~/Library/Application Support/NFSU2/Screenshots`
 (`NFSU2_APPSUPPORT=<dir>` puts them in `<dir>/Screenshots`), and the launcher's
@@ -662,9 +666,42 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   prize goes into the career.  Two players near each other can challenge
   each other to an outrun.  **Room**: only players with the same room name
   see each other; **Crew**: names and arrows of your crew in its colour at
-  any distance.
+  any distance.  **Invite links**: **Copy Invite Link** under Room copies the
+  browser game's link to your room or to one of your crews
+  (`https://nfsu2.xyz/#room=Blue%20Room`, a crew's with your room after it),
+  and **Paste Invite Link** takes such a link from another player, asks, and
+  sets the room or adds the crew (turning free roam on where it was off).  In
+  a running game, Game Tools' **Room** changes the room at once: the old
+  room's players go and the new one's come within a second (after an outrun,
+  a lobby or a race, once it is over).  **Outrun tuners with other players** (on by default, as in
+  the original game): the game's own tuners still come out to challenge you
+  while other players are around, so their outruns and unique parts are there
+  online too; within 30 m of you a tuner comes first, and at a door or an
+  event no tuner challenges you.  Off: they stay away while another player's
+  car is in your world.  **Friends in free roam** (with a claimed name; on by
+  default, off is the original game): touch front bumpers with another player
+  for 3 s and a line under the middle of the picture offers **Add Bo as a
+  friend** (F, or Game Tools' button), or **Bo wants to be friends: accept**;
+  once both said yes you are friends, on the server's friends lists (EA
+  Messenger's, the same as in the browser game).  Friends' names and arrows
+  show in a pale lime at any distance, the server links friends first, a
+  notice says when one comes into free roam, and Game Tools' **Join friend**
+  drives you into their room.  Settings > Online > **Friends** lists them with
+  where each one plays (free roam and its room, the Online lobby, offline),
+  answers requests, removes a friend, takes a request back and asks a player
+  by name (the server's `/friends`, with the keyphrase's token, only to the
+  server it was remembered for).  **Players in the world map's legend** (on by
+  default; off is the original game): the legend gets two rows more, Players
+  and Players' races, and Enter on one leaves the other players' markers (a
+  crew-mate's stays) or their race lobbies (yours stays) off the map; the
+  game's registry keeps the choice.  The race lobbies' labels are smaller and
+  go beside their icon where they cover no other icon.  **Tuners grey on the
+  maps** (on by default; off is the original game's orange): the game's own
+  outrun challengers are light grey on the minimap and the world map (the
+  legend's Opponent Car too), so they are not taken for players.
   Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
-  `NFSU2_ROAM_CREW`.
+  `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`, `NFSU2_ROAM_MAP_FILTER=0`,
+  `NFSU2_ROAM_AI_GREY=0`, `NFSU2_ROAM_FRIENDS=0`.
 - **Horns and the other players' car sounds** (with Play online; both off by
   default, as in the original game, which has no horn): the launcher's
   **Horn** picker gives the player a horn (dual, single, truck, train, klaxon,

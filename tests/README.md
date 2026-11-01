@@ -23,8 +23,9 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `texture_unit`, `texture_packs` | texture pack reading, drawing, the launcher's builder |
 | `game_folder_tools` | tools/writewatch.c and tools/manifest.py (the game-folder proof's tools) |
 | `net_harness` | the Winsock / Netbios HLE and NetTick (244 checks with the virtual LAN hub tools/vlanhub.py), the native WebSocket relay fixtures (tests/net/native) |
-| `roam_unit` | the free-roam core (354 checks) and a loopback stand-in friend (roam_fakepeer, roam_recv) |
-| `native_controls`, `launcher_online` | Game Tools and quick chat; the launcher's online settings |
+| `roam_unit` | the free-roam core (370 checks: rooms changed while playing, friends marked by the hub among them) and a loopback stand-in friend (roam_fakepeer, roam_recv) |
+| `native_controls`, `launcher_online` | Game Tools, its room and friends, and quick chat; the launcher's online settings |
+| `launcher_roam`, `friends_api` | the later free-roam options, invite links; the launcher's Friends against a stand-in for /friends on 127.0.0.1 |
 | `netstats_unit` | the Online statistics panel: its text, the /players address and answer, the fetch against a stand-in on 127.0.0.1 |
 | `ff_unit`, `rumble_unit` | force feedback effects and the controller's motors |
 | `discord_unit`, `launcher_settings`, `vault` | Discord presence (mock IPC), launcher settings, cloud saves |

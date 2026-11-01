@@ -74,6 +74,11 @@ __attribute__((constructor)) static void read_claim_token(void){
     memset(b, 0, sizeof b);
 }
 int native_net_has_claim(void){ return claim_token[0] != 0; }
+/* Free roam's friends (native_controls.m, ported from th0mk's nfsu2-web web/src/app/friends.ts): the server's
+ * {"t":"friend",...} messages on this link go there, and so does the news of each welcome; its own go out through
+ * native_net_text.  Weak here: the tests that build this file alone have no Game Tools. */
+__attribute__((weak)) void native_controls_net_friend(const char *json){ (void)json; }
+__attribute__((weak)) void native_controls_net_welcome(int claimed){ (void)claimed; }
 static char native_queue_key;
 static uint32_t ld(const uint32_t *p){ return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
 static void st(uint32_t *p, uint32_t v){ __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
@@ -253,6 +258,7 @@ void native_net_get_status(native_net_status *o){
         vip = v; mask = ntohl(a.s_addr); generation++; welcomed = YES; queued = NO; dropped = NO; backoff = 250;
         token = [m[@"token"] isKindOfClass:NSString.class] ? m[@"token"] : nil; ticket = nil;
         [self publish:NET_PAGE_ONLINE]; fprintf(stderr, "[network] connected to switch as %u.%u.%u.%u\n", vip >> 24, (vip >> 16) & 255, (vip >> 8) & 255, vip & 255);
+        native_controls_net_welcome(claim_token[0] != 0);
     } else if ([type isEqual:@"queue"]){
         if ([m[@"ticket"] isKindOfClass:NSString.class]) ticket = m[@"ticket"];
         if (!queued) fprintf(stderr, "[network] waiting in the server queue\n"); queued = YES; [self publish:NET_PAGE_OFFLINE];
@@ -267,6 +273,8 @@ void native_net_get_status(native_net_status *o){
             for (unsigned i = 0; i < 2; i++){ net_mailbox *x = i ? roam : lan; if (x) __atomic_store(&x->switch_rtt_ms, &ms, __ATOMIC_SEQ_CST); }
             st_set(&st_rtt, (int)(now - sent));
         }
+    } else if ([type isEqual:@"friend"] && text.length <= 65536){
+        native_controls_net_friend(text.UTF8String);
     } else if ([type isEqual:@"kick"] || [type isEqual:@"ban"]){ stopped = YES; [self lost];
     } else if ([type isEqual:@"peers"] && [m[@"peers"] isKindOfClass:NSArray.class]){
         NSMutableSet *next = [NSMutableSet new];
@@ -382,6 +390,28 @@ net_mailbox *native_net_mailbox(uint32_t mode){
         result = *p;
     });
     return result;
+}
+/* a control message of ours on the link ({"t":"friend",...} or {"t":"room",...}: native_controls.m), sent once it is
+ * welcomed; 0 when there is no link to send it on (never connected, or not now) */
+int native_net_text(const char *json){
+    if (!transport || !json) return 0;
+    size_t n = strnlen(json, 4097);
+    if (!n || n > 4096) return 0;
+    NSString *text = [[NSString alloc] initWithBytes:json length:n encoding:NSUTF8StringEncoding];
+    if (!text) return 0;
+    __block int sent = 0;
+    void (^send)(void) = ^{
+        NFSNativeNet *t = transport;
+        if (!t->socket || !t->welcomed || t->stopped) return;
+        NSURLSessionWebSocketTask *s = t->socket;
+        [s sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithString:text] completionHandler:^(NSError *error){
+            if (error) dispatch_async(t->queue, ^{ if (t->socket == s) [t lost]; });
+        }];
+        sent = 1;
+    };
+    if (dispatch_get_specific(&native_queue_key)) send();       /* (from a message of the link's own: its queue) */
+    else dispatch_sync(transport->queue, send);
+    return sent;
 }
 void native_net_shutdown(void){
     if (!transport) return;

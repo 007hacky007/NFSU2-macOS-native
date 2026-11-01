@@ -23,6 +23,7 @@
 #define GA_0x004901d0u 0x004901d0u   /* function 004901d0 + 0x0 */
 #define GA_0x004941c0u 0x004941c0u   /* function 004941c0 + 0x0 */
 #define GA_0x00495a30u 0x00495a30u   /* function 00495a30 + 0x0 */
+#define GA_0x00496920u 0x00496920u   /* function 00496920 + 0x0 */
 #define GA_0x00498f00u 0x00498f00u   /* function 00498f00 + 0x0 */
 #define GA_0x00499b50u 0x00499b50u   /* function 00499b50 + 0x0 */
 #define GA_0x00499c00u 0x00499c00u   /* function 00499c00 + 0x0 */
@@ -76,6 +77,8 @@
 #define GA_0x00505450u 0x00505450u   /* function 00505450 + 0x0 */
 #define GA_0x0050b990u 0x0050b990u   /* function 0050b990 + 0x0 */
 #define GA_0x0050c900u 0x0050c900u   /* function 0050c900 + 0x0 */
+#define GA_0x0050c980u 0x0050c980u   /* function 0050c980 + 0x0 */
+#define GA_0x0050c990u 0x0050c990u   /* function 0050c990 + 0x0 */
 #define GA_0x0050ca00u 0x0050ca00u   /* function 0050ca00 + 0x0 */
 #define GA_0x0050ca50u 0x0050ca50u   /* function 0050ca50 + 0x0 */
 #define GA_0x0050d388u 0x0050d388u   /* function 0050d350 + 0x38 */
@@ -87,6 +90,8 @@
 #define GA_0x00517e20u 0x00517e20u   /* function 00517e20 + 0x0 */
 #define GA_0x00517f80u 0x00517f80u   /* function 00517f80 + 0x0 */
 #define GA_0x0051cbb0u 0x0051cba0u   /* function 0051cbb0 + 0x0 */
+#define GA_0x0051d080u 0x0051d070u   /* function 0051d080 + 0x0 */
+#define GA_0x0051d180u 0x0051d170u   /* function 0051d180 + 0x0 */
 #define GA_0x0051e240u 0x0051e230u   /* function 0051e240 + 0x0 */
 #define GA_0x0051e850u 0x0051e840u   /* function 0051e850 + 0x0 */
 #define GA_0x0051f680u 0x0051f670u   /* function 0051f680 + 0x0 */

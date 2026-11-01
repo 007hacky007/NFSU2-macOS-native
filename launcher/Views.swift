@@ -436,6 +436,7 @@ struct MultiplayerCard: View {
                     .font(.system(size: 11)).foregroundColor(Theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(model.freeRoam == .off ? 0.5 : 1)
+                InviteRow(model: model)                                   // Invite.swift
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Hear other players' cars").font(.system(size: 12.5)).foregroundColor(Theme.text)
@@ -447,6 +448,7 @@ struct MultiplayerCard: View {
                     Toggle("", isOn: $model.hearCars).labelsHidden().toggleStyle(SwitchToggleStyle())
                 }
                 .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
+                RoamExtrasRows(model: model)                              // RoamExtras.swift
                 QuickChatRow(model: model)                                // QuickChat.swift
             }
             .disabled(!model.online).opacity(model.online ? 1 : 0.5)
