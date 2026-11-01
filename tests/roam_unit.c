@@ -705,6 +705,8 @@ static void t_hub(void){
           "hub: the pairs it lists establish, nobody else (%d %d %d %d)", est(0), est(1), est(2), est(3));
     CHECK(g_bcast_calls == 0, "hub: no discovery broadcast while it answers (%d)", g_bcast_calls);
     CHECK(g_n[0].hub_was == 2, "hub: answering");
+    CHECK(rc_hub_links(&g_n[0]) == 1 && rc_hub_links(&g_n[2]) == 1, "hub: its list links each with one player (%d %d)",
+          rc_hub_links(&g_n[0]), rc_hub_links(&g_n[2]));
     CHECK(g_hub_hello[0] >= 3 && g_hub_snap[0] >= 6 && g_hub_snap[0] <= 9, "hub: a HELLO every second (%d) and a SNAP twice a second (%d) in %.0f s",
           g_hub_hello[0], g_hub_snap[0], (double)(g_now - t0) / 1e6);
     /* a player the hub does not list for us: its HELLOs are ignored */
@@ -729,6 +731,7 @@ static void t_hub(void){
     drive(4, g_now + 13000000);
     CHECK(g_bcast_calls > 0 && g_n[0].hub_was == 0 && est(0) == 1, "hub silent: discovery again, peers kept (%d broadcasts, state %d, %d peers)", g_bcast_calls, g_n[0].hub_was, est(0));
     CHECK(rc_peer_listed(&g_n[0], peer_of(0, id[2])), "hub silent: every peer counts as listed");
+    CHECK(rc_hub_links(&g_n[0]) == -1, "hub silent: no hub links (%d)", rc_hub_links(&g_n[0]));
     /* it answers again; a BYE tells it we stop */
     g_hub_on = 1; g_hub_next = 0;
     drive(4, g_now + 2000000);

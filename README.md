@@ -138,6 +138,7 @@ Click a picture to see it full size.
 | Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
 | Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="docs/readme/full/ph-horns-pause-audio-eu.jpg"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
 | Player counts | See how many play on the server, in your room and in your crews before you join. | <a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/f-player-counts.jpg" width="180" alt="Online settings with player counts"></a> |
+| Online statistics | A small panel in the game's corner while you play online: the connection or your place in the server queue, the round trip to the server, and how many play on the server, in free roam, in the Online lobby, in your room and crews. Off by default. | |
 | Better online races | Every track, up to 6 players, 2 laps by default, a lobby filter that works, and you log in under your own name. | |
 | Show in Discord | Your Discord status shows the game and the race you are in. Off by default. | <a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/f-discord.jpg" width="180" alt="Show in Discord switch"></a> |
 | **Input** | | |
@@ -623,6 +624,18 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   the keyphrase's token goes to the game through a pipe, never the environment,
   and only to the server it was remembered with (`launcher/NameClaims.swift`,
   `runtime/net_native.m`).
+- **Online statistics** (Settings, Online, with Play online; off by default, as
+  in the original game): a small panel in the top-left corner of the game, under
+  the frame-rate counter when that is on.  It shows the connection (connected,
+  waiting in the server queue with the place in it, reconnecting, offline), the
+  round trip to the server (the switch's ping and pong every 2 s), the players
+  on the server, in free roam, in the Online lobby, in your room and in each
+  crew (the server's `/players`, asked at the start and every 30 s, as **Check
+  Player Counts** asks it), "Server busy: fewer cars shown" when the server
+  says so, and in free roam with other players the cars shown near you and the
+  players the server's hub links you with (`runtime/netstats.m`).  It never
+  shows upload or download rates.  Environment: `NFSU2_NET_STATS=1`.
+  Unit tests: `tests/netstats_unit.sh`.
 - **Free roam with other players** (with Play online; Off, the default, is free
   roam as in the original game): the players in career free roam see each
   other's cars live, with their customization and names, on the minimap and

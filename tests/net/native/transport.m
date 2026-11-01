@@ -1,11 +1,13 @@
 /* Native WebSocket transport (runtime/net_native.m) on loopback, driven by
  * tests/net/native/loopback.py: URL validation without arguments; with a
  * ws://127.0.0.1 URL, the handshake, the welcome, a UDP datagram each way
- * through the mailbox, and (second argument) resume, idle, burst, big (a peer
+ * through the mailbox, and (second argument) relay (also the round trip of
+ * a ping), resume, queue (the place in the line), idle, burst, big (a peer
  * list of a full server keeps the link), claim (the launcher's token in the
  * hello), atexit or the second of two clients. */
 #import <Foundation/Foundation.h>
 #include "net_native.h"
+#include "netstats.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +31,18 @@ int main(int argc, char **argv){
         assert(m);
         m->port = 47210;
         __atomic_store_n(&m->want, 1, __ATOMIC_SEQ_CST);
-        for (int i = 0; i < 500 && __atomic_load_n(&m->page_state, __ATOMIC_SEQ_CST) != NET_PAGE_ONLINE; i++) usleep(10000);
+        int queue = argc > 2 && !strcmp(argv[2], "queue"), saw_queue = 0;
+        native_net_status ns;
+        for (int i = 0; i < 500 && __atomic_load_n(&m->page_state, __ATOMIC_SEQ_CST) != NET_PAGE_ONLINE; i++){
+            native_net_get_status(&ns);
+            saw_queue |= ns.state == NETSTATS_QUEUED && ns.queue_pos == 1 && ns.queue_of == 2;
+            usleep(10000);
+        }
         assert(m->page_state == NET_PAGE_ONLINE);
+        /* the statistics panel's view of the link (netstats.m): connected, the queue's place seen while in it */
+        native_net_get_status(&ns);
+        assert(ns.state == NETSTATS_CONNECTED && ns.queue_pos == 0);
+        if (queue) assert(saw_queue);
         int second = argc > 2 && !strcmp(argv[2], "second");
         assert(m->vip == (second ? 0x0a4d0003u : 0x0a4d0002u));
         assert(m->netmask == 0xffffff00u);
@@ -43,6 +55,18 @@ int main(int argc, char **argv){
         s = (net_slot *)((uint8_t *)m + m->rx_off);
         assert(s->kind == NET_KIND_UDP && s->src_ip == (second ? 0x0a4d0002u : 0x0a4d0003u) && s->dst_ip == m->vip);
         assert(s->len == 4 && memcmp(s->data, second ? "ping" : "pong", 4) == 0);
+        if (argc > 2 && !strcmp(argv[2], "relay")){
+            /* relay: the fixture answers the pings; their round trip in the mailbox and the panel's status */
+            double rtt = -1;
+            for (int i = 0; i < 500; i++){
+                native_net_get_status(&ns);
+                __atomic_load(&m->switch_rtt_ms, &rtt, __ATOMIC_SEQ_CST);
+                if (ns.rtt_ms >= 0 && rtt >= 0) break;
+                usleep(10000);
+            }
+            assert(ns.rtt_ms >= 0 && ns.rtt_ms < 1000 && rtt >= 0 && rtt < 1000);
+            printf("round trip %d ms\n", ns.rtt_ms);
+        }
         if (second){
             __atomic_store_n(&m->tx_head, 1, __ATOMIC_SEQ_CST);
             for (int i = 0; i < 500 && !__atomic_load_n(&m->tx_tail, __ATOMIC_SEQ_CST); i++) usleep(10000);

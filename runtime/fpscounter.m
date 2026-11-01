@@ -249,10 +249,14 @@ static int pso_init(void){
     return 1;
 }
 void fpscounter_init(id<MTLDevice> dev){ g_fd = dev; }
+/* the Online statistics panel (netstats.m) goes under the counter */
+static double g_bottom;
+double fpscounter_bottom(void){ return fc_mode() ? g_bottom : 0; }
 
 /* main thread: after the game's frame (and the frame-dump copy), before the present */
 void fpscounter_draw(id<MTLCommandBuffer> cb, id<MTLTexture> dst, double px_per_pt, unsigned bw, unsigned bh){
     int m = fc_mode();
+    g_bottom = 0;
     if (!m || dst.pixelFormat != MTLPixelFormatBGRA8Unorm || !pso_init()) return;
     /* a frame smaller than the window is scaled up on screen: the panel is
      * drawn at the same size in points, but with at least 9-pixel text */
@@ -311,6 +315,7 @@ void fpscounter_draw(id<MTLCommandBuffer> cb, id<MTLTexture> dst, double px_per_
     if (!g_tex) return;
     double mg = round(10 * ppp);
     if (mg + g_tw > dst.width || mg + g_th > dst.height) return;   /* window too small for it */
+    g_bottom = mg + g_th;
     /* the pass covers only the corner up to the panel: W x H from the top-left */
     double W = mg + g_tw, H = mg + g_th;
     float R[4] = { (float)(-1 + 2 * mg / W), (float)(1 - 2 * mg / H),

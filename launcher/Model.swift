@@ -110,6 +110,7 @@ final class LauncherModel: ObservableObject {
     }
     @Published var countsURL: String { didSet { defaults.set(countsURL, forKey: Prefs.countsURL); counts.clear() } }
     let counts = PlayerCountsCheck()     // Check Player Counts (PlayerCounts.swift): nothing asked until pressed
+    @Published var netStats: Bool { didSet { defaults.set(netStats, forKey: Prefs.netStats) } }   // Online statistics in the game
     @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName); recheckName() } }
     /// Claimed names (NameClaims.swift): the name checked while Settings shows it and before Play
     lazy var names = NameClaimModel(defaults: defaults)
@@ -226,6 +227,7 @@ final class LauncherModel: ObservableObject {
         let savedServer = defaults.string(forKey: Prefs.server) ?? OnlineSettings.defaultServer
         server = savedServer
         countsURL = defaults.string(forKey: Prefs.countsURL) ?? PlayerCounts.address(for: savedServer)
+        netStats = defaults.bool(forKey: Prefs.netStats)
         playerName = defaults.string(forKey: Prefs.playerName) ?? ""
         freeRoam = FreeRoam(rawValue: defaults.string(forKey: Prefs.freeRoam) ?? "") ?? .off
         roamRoom = defaults.string(forKey: Prefs.roamRoom) ?? ""
@@ -396,6 +398,9 @@ final class LauncherModel: ObservableObject {
             setenv("NFSU2_SERVER_URL", server, 0)
             setenv("NFSU2_ROAM_NAME", playerName, 0)
             setenv("NFSU2_NET_NAME", playerName, 0)
+            // Online statistics in a corner of the game (runtime/netstats.m): the connection, the
+            // round trip and the server's player counts.  Off: no panel, as in the original game.
+            if netStats { setenv("NFSU2_NET_STATS", "1", 0) }
         }
         // Free roam with other players, through the same server (runtime/roam.c,
         // roam_game.c).  Off: free roam as in the original game.

@@ -8,6 +8,7 @@
 #import <Foundation/Foundation.h>
 #include "net_native.h"
 #include "nettest.h"
+#include "netstats.h"
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -74,6 +75,14 @@ static uint32_t be32(const uint8_t *p){ return (uint32_t)p[0] << 24 | (uint32_t)
 static void put32(uint8_t *p, uint32_t v){ p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
 static void put16(uint8_t *p, uint16_t v){ p[0] = v >> 8; p[1] = v; }
 static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
+/* the link as the statistics panel shows it (native_net_get_status): written on the transport's queue */
+static int st_state = NETSTATS_OFFLINE, st_pos, st_of, st_rtt = -1;
+static void st_set(int *p, int v){ __atomic_store_n(p, v, __ATOMIC_RELAXED); }
+void native_net_get_status(native_net_status *o){
+    o->state = __atomic_load_n(&st_state, __ATOMIC_RELAXED);
+    o->queue_pos = __atomic_load_n(&st_pos, __ATOMIC_RELAXED); o->queue_of = __atomic_load_n(&st_of, __ATOMIC_RELAXED);
+    o->rtt_ms = __atomic_load_n(&st_rtt, __ATOMIC_RELAXED);
+}
 
 @interface NFSNativeNet : NSObject <NSURLSessionWebSocketDelegate> {
 @public
@@ -90,7 +99,7 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
     uint64_t retryAt, startedAt, idleAt, pingAt;
     unsigned backoff, nextMailbox;
     dispatch_semaphore_t closeWait;
-    BOOL connected, welcomed, sending, receiving, stopped, lanSent, queued;
+    BOOL connected, welcomed, sending, receiving, stopped, lanSent, queued, dropped;
 }
 - (void)pump;
 - (void)connect;
@@ -137,6 +146,15 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
         st(&m->switch_peers, (uint32_t)peers.count); st(&m->page_state, state);
         __atomic_add_fetch(&m->rx_bell, 1, __ATOMIC_SEQ_CST);
     }
+    /* the panel's view: in the line while the server says so on this link; a link lost (or a try after one) is
+     * "reconnecting" until the next welcome; idle or stopped, offline */
+    int s = stopped || state == NET_PAGE_IDLE || state == NET_PAGE_NONE ? NETSTATS_OFFLINE
+          : state == NET_PAGE_ONLINE ? NETSTATS_CONNECTED
+          : queued && socket ? NETSTATS_QUEUED
+          : dropped || state == NET_PAGE_OFFLINE ? NETSTATS_RECONNECTING : NETSTATS_CONNECTING;
+    if (state == NET_PAGE_IDLE) dropped = NO;
+    if (s != NETSTATS_QUEUED){ st_set(&st_pos, 0); st_set(&st_of, 0); }
+    st_set(&st_state, s);
 }
 - (void)sendJSON:(NSDictionary *)object {
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
@@ -152,7 +170,7 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
     [items addObject:[NSURLQueryItem queryItemWithName:@"queue" value:nil]];
     if ((vip && token.length) || ticket.length) [items addObject:[NSURLQueryItem queryItemWithName:@"resume" value:nil]];
     u.queryItems = items;
-    startedAt = now_ms(); queued = NO; [self publish:NET_PAGE_CONNECTING];
+    startedAt = now_ms(); queued = NO; st_set(&st_rtt, -1); [self publish:NET_PAGE_CONNECTING];
     /* The peer list with LAN play on names every player on the server (up to 6000, a name up to 32
      * characters): a few hundred KB on a busy server, which a 64 KB cap turned into a reconnect a second. */
     socket = [session webSocketTaskWithURL:u.URL]; socket.maximumMessageSize = 4 << 20;
@@ -181,7 +199,7 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
     NSURLSessionWebSocketTask *old = socket; socket = nil;
     connected = welcomed = sending = receiving = NO;
     [old cancelWithCloseCode:NSURLSessionWebSocketCloseCodeGoingAway reason:nil];
-    [pending removeAllObjects]; [peers removeAllObjects];
+    [pending removeAllObjects]; [peers removeAllObjects]; dropped = YES;
     for (unsigned i = 0; i < 2; i++){
         net_mailbox *m = i ? roam : lan; if (!m) continue;
         uint32_t head = ld(&m->tx_head), tail = ld(&m->tx_tail);
@@ -217,12 +235,23 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
         uint32_t v = [m[@"vip"] unsignedIntValue]; struct in_addr a;
         NSString *ms = [m[@"mask"] isKindOfClass:NSString.class] ? m[@"mask"] : @"255.255.255.0";
         if ((v & 0xffff0000u) != 0x0a4d0000u || inet_pton(AF_INET, ms.UTF8String, &a) != 1){ [self lost]; return; }
-        vip = v; mask = ntohl(a.s_addr); generation++; welcomed = YES; queued = NO; backoff = 250;
+        vip = v; mask = ntohl(a.s_addr); generation++; welcomed = YES; queued = NO; dropped = NO; backoff = 250;
         token = [m[@"token"] isKindOfClass:NSString.class] ? m[@"token"] : nil; ticket = nil;
         [self publish:NET_PAGE_ONLINE]; fprintf(stderr, "[network] connected to switch as %u.%u.%u.%u\n", vip >> 24, (vip >> 16) & 255, (vip >> 8) & 255, vip & 255);
     } else if ([type isEqual:@"queue"]){
         if ([m[@"ticket"] isKindOfClass:NSString.class]) ticket = m[@"ticket"];
         if (!queued) fprintf(stderr, "[network] waiting in the server queue\n"); queued = YES; [self publish:NET_PAGE_OFFLINE];
+        /* {"t":"queue","pos":p,"of":n,...} (the server's lan crate, queue.rs): p 1 is the next in */
+        int pos = [m[@"pos"] isKindOfClass:NSNumber.class] ? [m[@"pos"] intValue] : 0, of = [m[@"of"] isKindOfClass:NSNumber.class] ? [m[@"of"] intValue] : 0;
+        st_set(&st_pos, pos > 0 && pos < 1000000 ? pos : 0); st_set(&st_of, of > 0 && of < 1000000 ? of : 0);
+    } else if ([type isEqual:@"pong"] && [m[@"id"] isKindOfClass:NSNumber.class]){
+        /* the answer to our ping ({"t":"ping","id":now_ms}, pump): the round trip to the switch */
+        uint64_t now = now_ms(), sent = [m[@"id"] unsignedLongLongValue];
+        if (sent <= now && now - sent < 60000){
+            double ms = (double)(now - sent);
+            for (unsigned i = 0; i < 2; i++){ net_mailbox *x = i ? roam : lan; if (x) __atomic_store(&x->switch_rtt_ms, &ms, __ATOMIC_SEQ_CST); }
+            st_set(&st_rtt, (int)(now - sent));
+        }
     } else if ([type isEqual:@"kick"] || [type isEqual:@"ban"]){ stopped = YES; [self lost];
     } else if ([type isEqual:@"peers"] && [m[@"peers"] isKindOfClass:NSArray.class]){
         NSMutableSet *next = [NSMutableSet new];

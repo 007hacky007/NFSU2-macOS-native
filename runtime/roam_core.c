@@ -1115,6 +1115,12 @@ static int in_group(const rc_session *s, const rc_peer *p){
     return s->hub_was != 2 || p->configured || p->hub_listed_us == s->hub_heard_us;
 }
 int rc_peer_listed(const rc_session *s, int i){ return i >= 0 && i < RC_TABLE && in_group(s, &s->peer[i]); }
+int rc_hub_links(const rc_session *s){
+    if (!s->conf.hub_ip || s->hub_was != 2) return -1;
+    int n = 0;
+    for (int i = 0; i < RC_TABLE; i++) n += s->peer[i].state != RC_PS_FREE && s->peer[i].hub_listed_us == s->hub_heard_us;
+    return n;
+}
 void rc_set_crews(rc_session *s, const uint32_t *crews, int n){
     s->conf.n_crews = 0;
     for (int i = 0; i < n && s->conf.n_crews < RC_CREW_MAX; i++){
