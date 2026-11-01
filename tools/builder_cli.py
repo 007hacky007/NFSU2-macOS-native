@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import quarantine  # noqa: E402
 PREFIX = 'NFSU2-EVENT '
 # Where the game data is staged while building, and where pack.sh --embed puts the app.
 STAGING = 'out/game'
@@ -113,7 +115,9 @@ def game_source(path):
 
 
 def copy_tree(source, target):
-    """APFS clones on the same volume (no extra space), a normal copy otherwise."""
+    """APFS clones on the same volume (no extra space), a normal copy otherwise (macOS's cp -R
+    keeps the extended attributes; -X would drop them). Either way the game data keeps its
+    quarantine: a copy that lost it fails the build."""
     target.mkdir(parents=True)
     for name in sorted(os.listdir(source)):
         if name.startswith('.') or name.lower() == 'speed2.exe':
@@ -127,6 +131,10 @@ def copy_tree(source, target):
             result = subprocess.run(['/bin/cp', '-R', str(src), str(target / name)], capture_output=True, text=True)
         if result.returncode:
             raise BuildError(f'could not copy {name} from the game data: {result.stderr.strip()}')
+        try:
+            quarantine.check_kept(src, target / name)
+        except OSError as e:
+            raise BuildError(str(e)) from e
 
 
 def remove_quarantine(path):

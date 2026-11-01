@@ -56,6 +56,15 @@ def manifest(folder):
     return out
 
 
+def quarantine_of(path):
+    r = subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def set_quarantine(path, value):
+    subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', value, str(path)], check=True)
+
+
 def tree(folder):
     return {str(p.relative_to(folder)): p.read_bytes() for p in sorted(Path(folder).rglob('*'))
             if p.is_file() and not p.name.startswith('.')}
@@ -65,7 +74,7 @@ class MakeBuilderTests(unittest.TestCase):
     def test_bundle_sources_cover_the_build_and_nothing_private(self):
         names = {p.as_posix() for p in make_builder.build_sources(ROOT)}
         for required in ('build.sh', 'link.sh', 'pack.sh', 'VERSION', 'requirements.txt', 'tools/gen_v2.sh',
-                         'tools/builder_cli.py', 'tools/install_from_discs.py', 'tools/disc.py',
+                         'tools/builder_cli.py', 'tools/install_from_discs.py', 'tools/disc.py', 'tools/quarantine.py',
                          'tools/known_releases.tsv', 'tools/genall.py', 'runtime/cpu.h', 'launcher/Game.swift',
                          'tests/boot.c', 'tests/main_all.c'):
             self.assertIn(required, names)
@@ -177,6 +186,53 @@ class BuilderCliTests(unittest.TestCase):
         self.assertEqual(quarantine(staging / 'SPEED2.EXE'), '', 'only the verified SPEED2.EXE is cleared')
         self.assertEqual(quarantine(source / 'Tool.app/Contents/MacOS/Tool'), flag)
 
+    def test_a_copy_instead_of_clones_keeps_the_quarantine_or_stops(self):
+        """Game data on another disk is copied (cp -R), not cloned: the copies keep the
+        quarantine, and a copy that lost it stops the build instead of going on."""
+        source = self.tmp / 'Downloaded Game'
+        (source / 'GLOBAL').mkdir(parents=True)
+        (source / 'GLOBAL/GLOBALB.LZC').write_text('global')
+        (source / 'server.dll').write_text('server')
+        flag = '0081;00000000;Browser;'
+        for name in ('GLOBAL/GLOBALB.LZC', 'server.dll'):
+            set_quarantine(source / name, flag)
+        copies = []
+        real_run = subprocess.run
+
+        def run(command, *a, **k):
+            if command[0] == '/bin/cp':
+                copies.append(command[1:-2])
+            return real_run(command, *a, **k)
+        with mock.patch.object(builder_cli, 'same_volume', return_value=False), \
+                mock.patch.object(builder_cli.subprocess, 'run', run):
+            staging = self.stage([source])
+        self.assertEqual(copies, [['-R'], ['-R']], 'no clones were tried')
+        for name in ('GLOBAL/GLOBALB.LZC', 'server.dll'):
+            self.assertTrue((quarantine_of(staging / name) or '').startswith('0081;'), name)
+
+        def loses_quarantine(command, *a, **k):    # even cp -X keeps it on macOS, so remove it
+            result = real_run(command, *a, **k)
+            if command[0] == '/bin/cp':
+                real_run(['/usr/bin/xattr', '-dr', 'com.apple.quarantine', command[-1]], check=True)
+            return result
+        with mock.patch.object(builder_cli, 'same_volume', return_value=False), \
+                mock.patch.object(builder_cli.subprocess, 'run', loses_quarantine), \
+                self.assertRaises(builder_cli.BuildError) as caught:
+            self.stage([source])
+        self.assertIn('lost the quarantine', str(caught.exception))
+
+    def test_stage_game_from_quarantined_discs(self):
+        """Files unpacked from a downloaded disc image or zip are new files; they get the
+        quarantine of what they came from."""
+        one, two = make_discs(self.tmp)
+        flag = '0081;00000000;Browser;'
+        set_quarantine(two / 'compressed.zip', flag)
+        set_quarantine(two / 'MOVIES/intro.vp6', flag)
+        staging = self.stage([one, two])
+        for name in ('GLOBAL/GLOBALB.LZC', 'server.dll', 'MOVIES/intro.vp6'):
+            self.assertEqual(quarantine_of(staging / name), flag, name)
+        self.assertIsNone(quarantine_of(staging / 'TRACKS/TRACKMAP4014.bin'), 'disc 1 was not quarantined')
+
     def test_stage_game_from_discs(self):
         one, two = make_discs(self.tmp)
         before = manifest(one), manifest(two)
@@ -229,8 +285,10 @@ class EmbeddedBuildTests(unittest.TestCase):
         def run(command, env=None, progress=None):
             runs.append(command[0])
             if command[0] == './pack.sh':
-                subprocess.run(command, cwd=self.root, env={**os.environ, 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
-                                                            **(env or {})}, check=True, capture_output=True)
+                done = subprocess.run(command, cwd=self.root, env={**os.environ, 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+                                                                   **(env or {})}, check=True, capture_output=True,
+                                      text=True)
+                self.pack_log = done.stdout
         out = io.StringIO()
         with mock.patch.object(builder_cli, 'ROOT', self.root), \
                 mock.patch.object(builder_cli, 'run', run), \
@@ -275,22 +333,62 @@ class EmbeddedBuildTests(unittest.TestCase):
         shutil.copy('/usr/bin/true', folder / 'readme.txt')                 # a Mach-O under another name
         (folder / 'Tool.app/Contents/MacOS').mkdir(parents=True)
         shutil.copy('/usr/bin/true', folder / 'Tool.app/Contents/MacOS/Tool')
+        (folder / 'Helper/Contents/MacOS').mkdir(parents=True)              # a bundle without an extension
+        (folder / 'Helper/Contents/Info.plist').write_text('<plist/>')
+        (folder / 'Helper/Contents/MacOS/Helper').write_text('data')
         (folder / 'GLOBAL/run.command').write_text('#!/bin/sh\n')
+        (folder / 'readme.dat').write_text('#!/bin/sh\necho hi\n')        # a script under a game-like name
+        (folder / 'GLOBAL/tool.JAR').write_text('PK jar')
+        (folder / 'Open.terminal').write_text('<plist/>')
+        (folder / 'MOVIES/intro.vp6').chmod(0o755)
         quarantine = '0081;00000000;Test;'
         for f in (folder / 'GLOBAL/GLOBALB.LZC', self.root / 'out/nfsu2_launcher'):
-            subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', quarantine, str(f)], check=True)
+            set_quarantine(f, quarantine)
         status, events, _ = self.build(folder / 'SPEED2.EXE', folder)
         self.assertEqual(status, 0, events)
         app = self.root / builder_cli.APP
         game = app / 'Contents/Resources/Game'
         self.assertEqual(sorted(tree(game)), ['GLOBAL/GLOBALB.LZC', 'MOVIES/intro.vp6', 'SCRIPTS/mod.asi', 'SPEED2.EXE',
                                               'dinput8.dll', 'server.dll'])
+        self.assertFalse((game / 'Helper').exists())
+        for name in ('readme.txt', 'Tool.app', 'Helper', 'run.command', 'readme.dat', 'tool.JAR', 'Open.terminal'):
+            self.assertIn(f'/{name}\n', self.pack_log, f'{name} is named in the build log')
+        executable = [p for p in game.rglob('*') if p.is_file() and p.stat().st_mode & 0o111]
+        self.assertEqual(executable, [], 'no game file stays executable')
+        self.assertEqual((folder / 'MOVIES/intro.vp6').stat().st_mode & 0o777, 0o755, 'the copy is only read')
+        self.assertEqual(quarantine_of(game / 'GLOBAL/GLOBALB.LZC'), quarantine, 'game data keeps its quarantine')
+        self.assertIsNone(quarantine_of(app / 'Contents/MacOS/NFSU2'), 'what the build made loses it')
+        subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
+                       capture_output=True)
 
-        def attr(path):
-            r = subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)], capture_output=True, text=True)
-            return r.stdout.strip() if r.returncode == 0 else None
-        self.assertEqual(attr(game / 'GLOBAL/GLOBALB.LZC'), quarantine, 'game data keeps its quarantine')
-        self.assertIsNone(attr(app / 'Contents/MacOS/NFSU2'), 'what the build made loses it')
+    def test_game_data_on_another_disk_is_copied_with_its_quarantine(self):
+        """No clones from another disk: builder_cli.py and pack.sh copy, and the copies keep
+        the quarantine (an HFS+ disk image stands in for the other disk)."""
+        image, mount = self.tmp / 'disk.dmg', self.tmp / 'Other Disk'
+        mount.mkdir()
+        subprocess.run(['/usr/bin/hdiutil', 'create', '-quiet', '-size', '8m', '-fs', 'HFS+', '-volname', 'Other',
+                        '-o', str(image)], check=True)
+        subprocess.run(['/usr/bin/hdiutil', 'attach', '-quiet', '-nobrowse', '-noverify', '-mountpoint', str(mount),
+                        str(image)], check=True)
+        self.addCleanup(subprocess.run, ['/usr/bin/hdiutil', 'detach', '-quiet', '-force', str(mount)])
+        folder = self.game_folder(mount / 'Game')
+        (folder / 'SPEED2.EXE').write_bytes(self.EXE)
+        flag = '0081;00000000;Browser;'
+        set_quarantine(folder / 'GLOBAL/GLOBALB.LZC', flag)
+        set_quarantine(folder / 'server.dll', flag)
+        status, events, _ = self.build(folder / 'SPEED2.EXE', folder)
+        self.assertEqual(status, 0, events)
+        app = self.root / builder_cli.APP
+        for name in ('GLOBAL/GLOBALB.LZC', 'server.dll'):
+            self.assertTrue((quarantine_of(app / 'Contents/Resources/Game' / name) or '').startswith('0081;'), name)
+        subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
+                       capture_output=True)
+        # pack.sh on its own, straight from the other disk.
+        shutil.rmtree(app)
+        subprocess.run(['./pack.sh', '--region', 'eu', '--embed'], cwd=self.root, check=True, capture_output=True,
+                       env={**os.environ, 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'GAME_DIR': str(folder)})
+        for name in ('GLOBAL/GLOBALB.LZC', 'server.dll'):
+            self.assertTrue((quarantine_of(app / 'Contents/Resources/Game' / name) or '').startswith('0081;'), name)
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
                        capture_output=True)
 
@@ -350,6 +448,23 @@ class DiscTests(unittest.TestCase):
                        check=True, env=env, capture_output=True)
         self.assertEqual(tree(self.tmp / 'from_images'), tree(self.tmp / 'from_folders'))
         self.assertIn('SPEED2.EXE', tree(self.tmp / 'from_images'))
+
+    def test_files_from_a_quarantined_image_carry_its_quarantine(self):
+        one, two = make_discs(self.tmp / 'discs')
+        images = [self.iso(one), self.iso(two)]
+        flags = ['0081;00000000;Browser;', '0083;00000001;Other;']
+        for image, flag in zip(images, flags):
+            set_quarantine(image, flag)
+        out = self.tmp / 'from_images'
+        subprocess.run([sys.executable, str(ROOT / 'tools/install_from_discs.py'), str(out), *map(str, images)],
+                       check=True, env={**os.environ, 'PATH': '/usr/bin:/bin'}, capture_output=True)
+        self.assertEqual({name: quarantine_of(out / name) for name in tree(out)},
+                         {'TRACKS/TRACKMAP4014.bin': flags[0], 'GLOBAL/GLOBALB.LZC': flags[1],
+                          'server.dll': flags[1], 'MOVIES/intro.vp6': flags[1], 'SPEED2.EXE': flags[1]})
+        # tools/disc.py on its own
+        subprocess.run([sys.executable, str(ROOT / 'tools/disc.py'), str(images[1]), str(self.tmp / 'disc2')],
+                       check=True, capture_output=True)
+        self.assertEqual({quarantine_of(self.tmp / 'disc2' / name) for name in tree(self.tmp / 'disc2')}, {flags[1]})
 
 
 if __name__ == '__main__':

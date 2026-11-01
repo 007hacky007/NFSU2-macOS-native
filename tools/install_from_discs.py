@@ -11,11 +11,13 @@ Each disc can be a .cue, a raw .bin (2352-byte sectors), an .iso, or a folder
 Joliet); 7-Zip (`brew install sevenzip`) is only tried for an image that reader
 cannot open.  The images are only read.  The result is a normal game folder; the
 launcher still checks that its SPEED2.EXE is the supported build (see README,
-"Requirements").
+"Requirements").  Every file keeps the quarantine of what it came from (the image, the
+zip or the disc folder's file), as a copy would.
 """
 import os, posixpath, shutil, subprocess, sys, tempfile, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools import quarantine  # noqa: E402
 from tools.disc import Disc, DiscError  # noqa: E402
 
 # Disc content that belongs to the installer or the copy protection, not the game.
@@ -71,8 +73,9 @@ def disc_folder(path, work):
     return out
 
 
-def unzip_backslash(zpath, out):
-    """Extract a zip (a path or a file object) whose member names use Windows backslashes."""
+def unzip_backslash(zpath, out, qtn=None):
+    """Extract a zip (a path or a file object) whose member names use Windows backslashes;
+    every file gets the quarantine value `qtn` (that of the zip or the image it is on)."""
     n = 0
     with zipfile.ZipFile(zpath) as z:
         for info in z.infolist():
@@ -86,6 +89,7 @@ def unzip_backslash(zpath, out):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with z.open(info) as src, open(dst, 'wb') as f:
                 shutil.copyfileobj(src, f, 1 << 20)
+            quarantine.write(dst, qtn)
             n += 1
     return n
 
@@ -95,14 +99,15 @@ def skipped(name):
     return low in SKIP_TOP or low.endswith(SKIP_EXT) or low.startswith('.')
 
 
-def install_image(disc, out):
-    """Install straight from an image read by tools/disc.py (no temporary copy)."""
+def install_image(disc, out, qtn=None):
+    """Install straight from an image read by tools/disc.py (no temporary copy); every file
+    gets the image's quarantine value `qtn`."""
     entries = list(disc.entries())
     for entry in entries:
         top = entry.path.parts[0]
         if str(entry.path).lower() == 'compressed.zip':
             with disc.open(entry) as f:
-                print(f"  compressed.zip: {unzip_backslash(f, out)} files")
+                print(f"  compressed.zip: {unzip_backslash(f, out, qtn)} files")
             continue
         if skipped(top):
             continue
@@ -113,25 +118,32 @@ def install_image(disc, out):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with disc.open(entry) as src, open(dst, 'wb') as f:
             shutil.copyfileobj(src, f, 1 << 20)
+        quarantine.write(dst, qtn)
     for top in sorted({e.path.parts[0] for e in entries if not skipped(e.path.parts[0])
                        and str(e.path).lower() != 'compressed.zip'}):
         print(f"  {'SPEED2.EXE' if top.lower() == 'speed2.exe' else top}")
 
 
-def install_disc(folder, out):
+def install_disc(folder, out, qtn=None):
+    """Install from a disc folder. Each file gets the quarantine of its source file, or `qtn`
+    when the folder is 7-Zip's unpacking of an image (`qtn` is then the image's)."""
+    def copy(src, dst):
+        shutil.copy2(src, dst)
+        quarantine.write(dst, qtn or quarantine.read(src))
+
     for entry in sorted(os.listdir(folder)):
         src = os.path.join(folder, entry)
         low = entry.lower()
         if low == 'compressed.zip':
-            print(f"  compressed.zip: {unzip_backslash(src, out)} files")
+            print(f"  compressed.zip: {unzip_backslash(src, out, qtn or quarantine.read(src))} files")
         elif low in SKIP_TOP or low.endswith(SKIP_EXT) or low.startswith('.'):
             continue
         elif os.path.isdir(src):
-            shutil.copytree(src, os.path.join(out, entry), dirs_exist_ok=True)
+            shutil.copytree(src, os.path.join(out, entry), dirs_exist_ok=True, copy_function=copy)
             print(f"  {entry}/")
         else:
             dst = 'SPEED2.EXE' if low == 'speed2.exe' else entry
-            shutil.copy2(src, os.path.join(out, dst))
+            copy(src, os.path.join(out, dst))
             print(f"  {dst}")
 
 
@@ -144,17 +156,19 @@ def main():
     for i, disc in enumerate(sys.argv[2:], 1):
         print(f"disc {i}: {disc}")
         disc = os.path.abspath(disc)
+        qtn = None
         if not os.path.isdir(disc):
+            qtn = quarantine.read(disc_image(disc)) or quarantine.read(disc)
             try:
                 with Disc(disc_image(disc)) as image:
-                    install_image(image, out)
+                    install_image(image, out, qtn)
                 continue
             except DiscError as e:
                 if not (shutil.which('7zz') or shutil.which('7z')):
                     raise SystemExit(f"{disc}: {e}")
                 print(f"  {e}; trying 7-Zip")
         with tempfile.TemporaryDirectory(dir=out, prefix='.disc') as work:
-            install_disc(disc_folder(disc, work), out)
+            install_disc(disc_folder(disc, work), out, qtn)
     exe = os.path.join(out, 'SPEED2.EXE')
     print(f"\ninstalled to {out}")
     if not os.path.exists(exe):

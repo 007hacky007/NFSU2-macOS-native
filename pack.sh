@@ -149,24 +149,39 @@ if [ "$EMBED" = 1 ]; then
     esac
     /bin/cp -Rc "$item" "$GAME/$name" 2>/dev/null || { rm -rf "$GAME/$name"; /bin/cp -R "$item" "$GAME/$name"; } \
       || { echo "could not copy $name into the app"; exit 1; }
+    # A clone keeps the extended attributes; so does a copy (cp -c copies where it
+    # cannot clone, cp -R by default).  Should one still lose a quarantine, stop.
+    lost="$(comm -23 <(cd "$SRC" && find "./$name" -xattrname com.apple.quarantine | sort) \
+                     <(cd "$GAME" && find "./$name" -xattrname com.apple.quarantine | sort))"
+    [ -z "$lost" ] || { echo "the copy in the app lost the quarantine of: $(printf '%s ' $lost | head -c 300)"; exit 1; }
   done
   find "$GAME" -name .DS_Store -delete
   # No macOS code from the player's copy goes into the app: the game is Windows
-  # files only, and a Mac program hidden in a downloaded repack must not end up
-  # inside a signed app (it would lose the quarantine check below).  Windows files
-  # and mods stay.
-  find "$GAME" \( -iname '*.app' -o -iname '*.framework' -o -iname '*.bundle' -o -iname '*.plugin' \
-      -o -iname '*.kext' -o -iname '*.pkg' -o -iname '*.mpkg' -o -iname '*.workflow' \) -prune \
+  # files only, and a Mac program or script hidden in a downloaded repack must
+  # not end up inside a signed app (it would lose the quarantine check below).
+  # Windows files and mods stay.  Left out: bundles (by extension, or any folder
+  # with Contents/Info.plist), scripts and libraries by extension, and any file
+  # that starts with "#!" or a Mach-O header.
+  find "$GAME" -mindepth 1 \( -iname '*.app' -o -iname '*.appex' -o -iname '*.framework' -o -iname '*.bundle' \
+      -o -iname '*.plugin' -o -iname '*.kext' -o -iname '*.pkg' -o -iname '*.mpkg' -o -iname '*.workflow' \
+      -o -iname '*.action' -o -iname '*.xpc' -o -iname '*.prefpane' -o -iname '*.saver' -o -iname '*.qlgenerator' \
+      -o -iname '*.mdimporter' -o -iname '*.scptd' -o -iname '*.wdgt' -o -iname '*.component' \
+      -o -iname '*.systemextension' -o \( -type d -exec test -e {}/Contents/Info.plist \; \) \) -prune \
       -exec echo "left out of the app (macOS code): {}" \; -exec rm -rf {} +
-  find "$GAME" -type f \( -iname '*.command' -o -iname '*.tool' -o -iname '*.sh' -o -iname '*.dylib' \
-      -o -iname '*.so' -o -iname '*.scpt' \) -exec echo "left out of the app (macOS code): {}" \; -delete
-  find "$GAME" -type f -size +3c -exec sh -c '
+  find "$GAME" \( -type f -o -type l \) \( -iname '*.command' -o -iname '*.tool' -o -iname '*.sh' -o -iname '*.bash' \
+      -o -iname '*.zsh' -o -iname '*.csh' -o -iname '*.ksh' -o -iname '*.fish' -o -iname '*.py' -o -iname '*.pl' \
+      -o -iname '*.rb' -o -iname '*.php' -o -iname '*.scpt' -o -iname '*.applescript' -o -iname '*.terminal' \
+      -o -iname '*.dylib' -o -iname '*.so' -o -iname '*.jar' \) \
+      -exec echo "left out of the app (macOS code): {}" \; -delete
+  find "$GAME" -type f -size +1c -exec sh -c '
     for f; do
       case "$(od -An -tx1 -N4 "$f" | tr -d " \n")" in
-        feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca)
+        2321*|feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca)
           echo "left out of the app (macOS code): $f"; rm -f "$f" ;;
       esac
     done' sh {} +
+  # The game only reads its files: none of them stays executable.
+  find "$GAME" -type f -perm +111 -exec chmod a-x {} +
 fi
 
 # Extended attributes off before signing: codesign --strict refuses resource

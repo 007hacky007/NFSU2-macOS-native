@@ -2,7 +2,8 @@
 """Read ISO9660/Joliet from a raw MODE1/2352 BIN or a 2048-byte ISO, without 7-Zip.
 
 Usage: python3 tools/disc.py IMAGE NEW_DIRECTORY
-The image is read-only and the destination must not already exist.
+The image is read-only and the destination must not already exist; every file written
+carries the image's quarantine (tools/quarantine.py), like a copy of it would.
 tools/install_from_discs.py uses it to read the PC discs; NFSU2 Builder reads them the
 same way (builder/Sources/BuilderCore/Disc.swift).
 Ported from the NFSV port's tools/disc.py.
@@ -13,8 +14,12 @@ import json
 import re
 import shutil
 import struct
+import sys
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools import quarantine  # noqa: E402
 
 
 class DiscError(ValueError):
@@ -162,6 +167,7 @@ class Disc:
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f'destination already exists: {destination}')
         entries = list(self.entries())
+        qtn = quarantine.read(self.path)
         destination.mkdir(parents=True)
         try:
             for entry in entries:
@@ -174,6 +180,7 @@ class Disc:
                         out.write(self.read_extent(extent, size))
                         extent += (size + 2047) // 2048
                         left -= size
+                quarantine.write(target, qtn)
         except BaseException:
             shutil.rmtree(destination)
             raise
