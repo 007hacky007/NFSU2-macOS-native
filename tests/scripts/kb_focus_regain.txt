@@ -1,0 +1,64 @@
+# Keys held through a focus loss (runtime/keyboard_mac.m kbdmac_release_all, key_down): the focus loss lets
+# every held key go and nothing sticks, but a key still down is pressed again by its next autorepeat.  A key
+# pressed with Command held never reaches the game, not even by its repeats, and a key held through a focus
+# loss whose repeats carry Command is no shortcut.  (On the Mac a Command press releases nothing: its key's
+# repeats are dropped, kb_focus_mouse.)  After th0mk's nfsu2-web tests/scripts/kb_focus_regain.txt (MIT).
+# @in+0x2d4 throttle, @in+0x2c8 steer (+ = left); [[[0x8900ac]+4]+0x30] is the player's input controller.
+#   tests/run_suite.sh --game <outdir> kbregain
+# Good: every expect passes.  Before the fix the "pressed again" expects fail.
+0     nstapuntil RETURN MC_Background.fng 120 4000
++200  nstap RETURN                                  # "create a profile?" -> No
++0    waitfng GarageMain.fng 3000
++400  nstapuntil RETURN UI_QRModeSelect.fng 150 3000
++200  nstapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  nstapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  nstapuntil RETURN UI_QRCarSelect.fng 150 1500
++200  nstapuntil RETURN PC_Loading.fng 150 1500
++0    waitmem 0x8654a4 6 3000
++700  log --- hold Up (throttle) and Left ---
++0    nsdown UP
++0    nsdown LEFT
++240  expect f:[[[0x8900ac]+4]+0x30]+0x2d4 > 0.5
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2c8 > 0.5
++0    log --- focus lost while both keys are held: both go up ---
++0    nsfocus out
++10   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 < 0.5
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2c8 < 0.5
++180  nsfocus in
++180  log --- focus back, the keys still down: nothing held until they repeat ---
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2d4 < 0.5
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2c8 < 0.5
++0    nsrepeat UP 3
++0    nsrepeat LEFT 3
++10   log --- their autorepeats press them again ---
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2d4 > 0.5
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2c8 > 0.5
++0    nsup UP
++0    nsup LEFT
++30   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 < 0.5
++0    expect f:[[[0x8900ac]+4]+0x30]+0x2c8 < 0.5
++0    log --- Up held through a focus loss, then Command: its repeats with Command press nothing, the next without does ---
++0    nsdown UP
++60   nsfocus out
++10   nsfocus in
++10   nsdown LCMD
++4    nsrepeat UP 2
++10   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 < 0.5
++0    nsup LCMD
++0    nsrepeat UP 3
++10   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 > 0.5
++0    nsup UP
++30   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 < 0.5
++0    log --- Up pressed with Command held: its repeats after Command change nothing ---
++0    nsdown LCMD
++4    nsdown UP
++10   nsup LCMD
++0    nsrepeat UP 3
++10   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 < 0.5
++0    nsup UP
++30   log --- and a fresh press still works ---
++0    nsdown UP
++60   expect f:[[[0x8900ac]+4]+0x30]+0x2d4 > 0.5
++0    nsup UP
++30   log kb_focus_regain_end
++10   quit

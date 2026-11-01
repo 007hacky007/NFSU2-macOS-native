@@ -142,18 +142,20 @@ Click a picture to see it full size.
 | Better online races | Every track, up to 6 players, 2 laps by default, a lobby filter that works, and you log in under your own name. | |
 | Show in Discord | Your Discord status shows the game and the race you are in. Off by default. | <a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/f-discord.jpg" width="180" alt="Show in Discord switch"></a> |
 | **Input** | | |
-| Mac keyboard | Typing works on every keyboard layout, with accents and Option as Alt, as on Windows. | |
+| Mac keyboard | Typing works on every keyboard layout, with accents and Option as Alt, as on Windows. A key held through Cmd-Tab and back drives again with its next autorepeat. | |
 | Key rebinding | Rebinding keys in the game's Controls menu works and is kept, with Mac key names. | |
 | Game controller | Separate trigger axes, bindings that stay between sessions, menus driven by the pad, dead zones, and a choice of what happens when it is unplugged. | <a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/f-controller.jpg" width="180" alt="Controller settings"></a> |
 | Rumble | The controller vibrates with the game's force feedback, optionally on crashes too. Off by default. | <a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/f-rumble.jpg" width="180" alt="Rumble settings"></a> |
 | **Graphics** | | |
 | Frame rate | Choose 30, 60, 120 or 240 FPS, or follow the screen; speed, physics, smoke and the NOS trail stay as at 60. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/f-frame-rate.jpg" width="180" alt="Frame rate settings"></a> |
+| Less controller lag | The frame wait comes before the controller is read, as on Windows, and no frame waits behind one the screen has not taken yet. Replays at 120 and 240 FPS play to the end. | |
 | Frame-rate counter | Frames per second and frame times in the corner, simple or detailed; Cmd-N switches it. Off by default. | <a href="docs/readme/full/fps-counter.jpg"><img src="docs/readme/thumbs/fps-counter.jpg" width="180" alt="Frame-rate counter in a race"></a> |
 | Metal performance overlay | Apple's Metal HUD in the top right corner: frame rate, GPU time, frame interval and memory, for checking performance. Off by default. | <a href="docs/readme/full/metal-hud.jpg"><img src="docs/readme/thumbs/metal-hud.jpg" width="180" alt="Apple's Metal performance overlay over the title screen"></a> |
 | Other cars' headlights | Other players' headlights light the road, or every car's. Single player looks as before unless you pick All cars. | <a href="docs/readme/full/other-headlights.jpg"><img src="docs/readme/thumbs/headlights.jpg" width="180" alt="Before and after: other cars' headlights on the road"></a> |
 | Sharper reflections | Sharper wet road, mirror and car paint, with the sky, car lights and more detail in them. Off by default. | <a href="docs/readme/full/hr-mirror-eu.jpg"><img src="docs/readme/thumbs/reflections.jpg" width="180" alt="Rear-view mirror, original and sharpest"></a> |
 | Picture options | Remove the PC version's yellow-green tint, the console gamma, edge smoothing and sharpening. Off by default. | <a href="docs/readme/full/vo-colour-eu.jpg"><img src="docs/readme/thumbs/picture.jpg" width="180" alt="City with the original tint, less tint and no tint"></a> |
 | Resolution scale | Draw at 50 to 200% of the window's pixels: faster or sharper. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/f-display.jpg" width="180" alt="Display settings"></a> |
+| Exposure and White Level | The whole picture from half to twice as bright, and its brightest parts brought down to 40-100%, for eyes a bright picture tires (`NFSU2_EXPOSURE`, `NFSU2_WHITE_LEVEL`). Screenshots keep the game's colours. Off by default. | |
 | Sharper menus and HUD | One click downloads LunicAura106's Upscaled HUD mod and sets it up; Cmd-T compares. Off by default. | <a href="docs/readme/full/uhud-before-after.jpg"><img src="docs/readme/thumbs/uhud.jpg" width="180" alt="Menu and speedometer, original and with the Upscaled HUD"></a> |
 | Texture packs | The community's texture mods (TexMod, TexWizard and more): 38 listed, 27 with one-click Download, each with its own switch. Off by default. | <a href="docs/readme/full/tp-texpacks-winter-na.jpg"><img src="docs/readme/thumbs/texture-packs.jpg" width="180" alt="Winter texture pack in the main menu"></a> |
 | Upscaled textures | Builds a 4x sharper copy of the game's own textures from your files, on your Mac. Off by default. | <a href="docs/readme/launcher/upscaled-textures.png"><img src="docs/readme/thumbs/f-upscaled.jpg" width="180" alt="Upscaled textures card"></a> |
@@ -170,6 +172,7 @@ Click a picture to see it full size.
 | Movie framing | Movies fit with black bars, fill the screen, or stretch. | |
 | **Career and saves** | | |
 | 10-car garage | Ten career garage slots instead of five, and Trade Car for 80% of what you paid. Old saves still load in the original game. | <a href="docs/readme/full/garage-slots-eu-na.jpg"><img src="docs/readme/thumbs/garage.jpg" width="180" alt="Garage with ten slots and Trade Car"></a> |
+| Hidden races on the map | The career's 33 hidden races on the map and the radar like the others, up to 8 races of each kind at once, as MaxHwoy's Show Hidden Races Mod (`NFSU2_SHOW_HIDDEN_RACES=1`). Off by default. | |
 | Power in bhp or kW | Choose the power unit apart from the speed unit, in Options and the pause menu. | <a href="docs/readme/full/power-units-eu-na.jpg"><img src="docs/readme/thumbs/power-units.jpg" width="180" alt="Gameplay options with Power Units"></a> |
 | Both regions' cars | With all four cars' files, buy and race the Corsa, 106, Civic and RSX in either version. | <a href="docs/readme/full/region-cars.jpg"><img src="docs/readme/thumbs/region-cars.jpg" width="180" alt="Peugeot 106 and Honda Civic in Quick Race car select"></a> |
 | Languages | Pick the game's language in the launcher, 16 in all. | <a href="docs/readme/full/language-eu-na.jpg"><img src="docs/readme/thumbs/languages.jpg" width="180" alt="Main menu in six languages"></a> |
@@ -586,7 +589,9 @@ pictures go to `~/Library/Application Support/NFSU2/Screenshots`
 **Screenshots…** shows, exports and deletes them. **Drift mode in free roam**
 (`NFSU2_DRIFT=1`; Settings > Game, off by default): X in the career's free roam
 turns on the game's drift handling, drift camera and drift scoring, with a points
-panel over the window; X again turns them off. Tests: `tests/native_scene.sh`,
+panel over the window; X again turns them off. The car then handles as in the
+drift races, with its own Drift tuning from Performance Tuning / Dyno, and keeps
+its nitrous (X neither empties nor fills it). Tests: `tests/native_scene.sh`,
 `tests/photo_gallery.sh`, `tests/photo_drift.sh`.
 
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
@@ -624,6 +629,9 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   the keyphrase's token goes to the game through a pipe, never the environment,
   and only to the server it was remembered with (`launcher/NameClaims.swift`,
   `runtime/net_native.m`).
+  With no profile in the save folder yet, the game's name box for the first
+  profile starts with the player name's letters and digits (7 at most) instead
+  of NAME; one Enter takes it (`NFSU2_NEW_PROFILE_NAME`, `runtime/gamefix.c`).
 - **Online statistics** (Settings, Online, with Play online; off by default, as
   in the original game): a small panel in the top-left corner of the game, under
   the frame-rate counter when that is on.  It shows the connection (connected,
@@ -636,6 +644,11 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   players the server's hub links you with (`runtime/netstats.m`).  It never
   shows upload or download rates.  Environment: `NFSU2_NET_STATS=1`.
   Unit tests: `tests/netstats_unit.sh`.
+- **LAN play through the server** tells it which UDP ports the game's sockets
+  are bound to, so LAN broadcasts (the servers' adverts every 3 s) come only
+  where a socket takes them (`runtime/net_relay.c`, `runtime/net_native.m`),
+  and takes the server's list of players as what changed, not the whole list
+  (some 190 KB on a busy server) every second.
 - **Free roam with other players** (with Play online; Off, the default, is free
   roam as in the original game): the players in career free roam see each
   other's cars live, with their customization and names, on the minimap and

@@ -52,6 +52,7 @@ final class LauncherModel: ObservableObject {
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     private var setLangPacks = false     // NFSU2_LANGPACKS was set by us
+    private var setNewProfile = false    // NFSU2_NEW_PROFILE_NAME was set by us
     @Published var allCars: Bool { didSet { defaults.set(allCars, forKey: Prefs.allCars) } }
     /// Settings › Check for updates (UpdateCheck.swift); off: no request, no notice.
     @Published var checkUpdates: Bool {
@@ -66,6 +67,7 @@ final class LauncherModel: ObservableObject {
     @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
     @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
+    @Published var hiddenRaces: Bool { didSet { defaults.set(hiddenRaces, forKey: Prefs.hiddenRaces) } }
     @Published var photoMode: Bool { didSet { defaults.set(photoMode, forKey: Prefs.photoMode) } }
     @Published var driftMode: Bool { didSet { defaults.set(driftMode, forKey: Prefs.driftMode) } }
     @Published var uhud: Bool { didSet { defaults.set(uhud, forKey: Prefs.uhud) } }
@@ -92,6 +94,8 @@ final class LauncherModel: ObservableObject {
     // The Display card (DisplayOptions.swift)
     @Published var resolutionScale: String { didSet { defaults.set(resolutionScale, forKey: Prefs.resolutionScale) } }
     @Published var movieFraming: String { didSet { defaults.set(movieFraming, forKey: Prefs.movieFraming) } }
+    @Published var exposure: String { didSet { defaults.set(exposure, forKey: Prefs.exposure) } }
+    @Published var whiteLevel: String { didSet { defaults.set(whiteLevel, forKey: Prefs.whiteLevel) } }
     @Published var subtitles: Bool { didSet { defaults.set(subtitles, forKey: Prefs.subtitles) } }
     @Published var background: String { didSet { defaults.set(background, forKey: Prefs.background) } }
     /// NFSU2_FPS values; the labels are in FrameRateCard.
@@ -195,6 +199,7 @@ final class LauncherModel: ObservableObject {
         intro = defaults.string(forKey: Prefs.intro) ?? "skippable"
         discord = defaults.bool(forKey: Prefs.discord)
         garage = defaults.bool(forKey: Prefs.garage)
+        hiddenRaces = defaults.bool(forKey: Prefs.hiddenRaces)
         photoMode = defaults.bool(forKey: Prefs.photoMode)
         driftMode = defaults.bool(forKey: Prefs.driftMode)
         uhud = defaults.bool(forKey: Prefs.uhud)
@@ -221,6 +226,8 @@ final class LauncherModel: ObservableObject {
         musicFolder = defaults.string(forKey: Prefs.musicFolder) ?? ""
         resolutionScale = DisplayOptions.pick(defaults.string(forKey: Prefs.resolutionScale), DisplayOptions.scales, DisplayOptions.originalScale)
         movieFraming = DisplayOptions.pick(defaults.string(forKey: Prefs.movieFraming), DisplayOptions.framings, DisplayOptions.originalFraming)
+        exposure = DisplayOptions.pick(defaults.string(forKey: Prefs.exposure), DisplayOptions.exposures, DisplayOptions.originalExposure)
+        whiteLevel = DisplayOptions.pick(defaults.string(forKey: Prefs.whiteLevel), DisplayOptions.whiteLevels, DisplayOptions.originalWhiteLevel)
         subtitles = defaults.bool(forKey: Prefs.subtitles)
         background = DisplayOptions.pick(defaults.string(forKey: Prefs.background), DisplayOptions.backgrounds, DisplayOptions.originalBackground)
         online = defaults.bool(forKey: Prefs.online)
@@ -312,6 +319,7 @@ final class LauncherModel: ObservableObject {
     func play() {
         guard case .ready(let loc) = game else { return }
         if let err = onlineError { alert("Online play is not set up", err); return }
+        let typedName = playerName       // the first profile's name: the one typed, not the digits played under
         // a name another player claimed: asked about once (NameClaims.swift); not in the settings tests
         if online && LauncherModel.testSpawn == nil {
             switch names.gate(name: playerName, server: server, retry: { [weak self] in self?.play() }) {
@@ -343,12 +351,21 @@ final class LauncherModel: ObservableObject {
             if wideHUD { setenv("HUDPOS", "1", 1); setHUDPOS = true }
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
         }
+        // No profile in the save folder yet: the game's name box for the first one starts with the
+        // Player name instead of NAME (runtime/gamefix.c sub_004ff3b0).  One set by hand wins.
+        if setNewProfile || env["NFSU2_NEW_PROFILE_NAME"] == nil {
+            let saves = (env["NFSU2_SAVEDIR"] ?? "").isEmpty ? Paths.saves : URL(fileURLWithPath: env["NFSU2_SAVEDIR"]!)
+            let first = OnlineSettings.newProfileName(typedName)
+            if !first.isEmpty && !OnlineSettings.hasProfile(in: saves) { setenv("NFSU2_NEW_PROFILE_NAME", first, 1); setNewProfile = true }
+            else if setNewProfile { unsetenv("NFSU2_NEW_PROFILE_NAME"); setNewProfile = false }
+        }
         if !allCars { setenv("NFSU2_ALL_CARS", "0", 0) }          // one set by hand wins
         if intro != "skippable" { setenv("BOOTMOVIES", intro, 0) }       // one set by hand wins
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
         if discord && !discordImage.isEmpty && DiscordImage.valid(discordImage) { setenv("NFSU2_DISCORD_LARGE_IMAGE", discordImage, 0) }
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
+        if hiddenRaces { setenv("NFSU2_SHOW_HIDDEN_RACES", "1", 0) }   // hiddenraces.c; one set by hand wins
         if photoMode { setenv("NFSU2_PHOTO", "1", 0) }          // photo.c, native_scene.m; one set by hand wins
         if driftMode { setenv("NFSU2_DRIFT", "1", 0) }          // drift.c; one set by hand wins
         // Apple's Metal Performance HUD, drawn by macOS over the game's window (no engine
@@ -383,10 +400,11 @@ final class LauncherModel: ObservableObject {
         applyMusic()                // a music folder through EA Trax (Music.swift)
         if seedRegistry { setenv("NFSU2_SEED_REGISTRY", "1", 0) }        // runtime/regseed.c
         if lanTiming != "pc" { setenv("NFSU2_LAN_TIMING", lanTiming, 0) }   // framerate.c
-        // Resolution scale, movies and the background (runtime/display.c, language.c,
-        // lifecycle.c); the original game's values set nothing.
+        // Resolution scale, Exposure and White Level, movies and the background (runtime/
+        // display.c, picture.m, language.c, lifecycle.c); the original game's values set nothing.
         for (k, v) in DisplayOptions.environment(scale: resolutionScale, framing: movieFraming,
-                                                 subtitles: subtitles, background: background) {
+                                                 subtitles: subtitles, background: background,
+                                                 exposure: exposure, whiteLevel: whiteLevel) {
             setenv(k, v, 0)
         }
         // Online: the game's LAN and Online modes through the server (runtime/

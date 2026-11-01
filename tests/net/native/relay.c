@@ -42,9 +42,19 @@ int main(void){
     setenv("NFSU2_LAN_NOTHREAD", "1", 1);
     assert(!relay_vlan_hello("switch", &g_ws_id));
     assert(g_ws_id.ip == ip(2));
+    /* udp_ports: the relay says which UDP ports have a socket (none yet), so the switch sends a LAN broadcast only
+     * where one takes it (net_native.m sends it with the hello and {"t":"lan"}) */
+    assert(mb->udp_ports == NET_UDP_PORTS_SET);
     WsSock u = sock(2), u2 = sock(2); int n; uint32_t from; uint16_t port; char buf[100];
+    assert(mb->udp_ports == NET_UDP_PORTS_SET);              /* open, not bound */
     assert(!relay_vlan_bind(&u, 0, 3658)); assert(relay_vlan_bind(&u2, 0, 3658) == WSAEADDRINUSE);
+    assert(mb->udp_ports == (NET_UDP_PORTS_SET | 1u << (3658 % 31)));
     assert(!relay_vlan_bind(&u2, 0, 3659));
+    assert(mb->udp_ports == (NET_UDP_PORTS_SET | 1u << (3658 % 31) | 1u << (3659 % 31)));
+    { WsSock adv = sock(2); assert(!relay_vlan_bind(&adv, 0, 9999));       /* server.dll's advert port */
+      assert(mb->udp_ports & 1u << (9999 % 31));
+      relay_vlan_close(&adv, 0); vfd_close(adv.fd);
+      assert(!(mb->udp_ports & 1u << (9999 % 31)) && (mb->udp_ports & 1u << (3658 % 31))); }
     assert(!relay_vlan_sendto(&u, (uint8_t *)"local", 5, ip(2), 3659, &n) && n == 5);
     assert(!relay_vlan_recvfrom(&u2, (uint8_t *)buf, sizeof buf, 0, &from, &port, &n));
     assert(n == 5 && !memcmp(buf, "local", 5) && port == 3658);
@@ -64,6 +74,8 @@ int main(void){
     mb->page_state = NET_PAGE_OFFLINE; relay_vlan_test_pump(); assert(relay_vlan_conn_was_reset(&remote));
     /* Host descriptors keep native semantics when the relay backend is linked. */
     int fd[2]; assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, fd)); assert(vfd_send(fd[0], "fd", 2, 0) == 2); assert(vfd_recv(fd[1], buf, sizeof buf, 0) == 2); vfd_close(fd[0]); vfd_close(fd[1]);
-    puts("native relay UDP, local/remote TCP, FIN, link reset and host fds passed");
+    /* a TCP bind is no UDP port */
+    { WsSock t = sock(1); uint32_t before = mb->udp_ports; assert(!relay_vlan_bind(&t, 0, 20930)); assert(mb->udp_ports == before); }
+    puts("native relay UDP (and its bound ports for the switch), local/remote TCP, FIN, link reset and host fds passed");
     return 0;
 }

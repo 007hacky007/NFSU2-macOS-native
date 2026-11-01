@@ -32,7 +32,20 @@
  *   CAS's strongest setting (-1/5), 50 = half of it.  Pixels that EDGEAA
  *   smoothed are not sharpened again.
  *
- * Both run in the same pass: metal.m finds the draw that copies the finished
+ * NFSU2_EXPOSURE=<stops>, NFSU2_WHITE_LEVEL=<percent>  Exposure and White
+ *   Level (the launcher's Display card), for eyes a bright picture tires, as
+ *   qUINT Lightroom's sliders through ReShade on the PC game: each colour
+ *   channel c (0 .. 1, as drawn) goes to y = min(1, c * 2^stops), stops -1 ..
+ *   +1 in steps of 0.1, and a y above knee * white (knee 0.8: the top fifth)
+ *   bends down so that 1 lands on white, 40 .. 100 % in steps of 5 (a
+ *   rational shoulder with slope 1 where it starts, so no edge shows).  0 and
+ *   100: no pass.  Over the finished frame, menus and HUD included, read in
+ *   place like the console curve and after it, but after the frame dumps and
+ *   F12 screenshots are taken, so those keep the colours as drawn (metal.m
+ *   PICTURE OPTIONS, pic_tone).  The curve is th0mk's nfsu2-web
+ *   web/src/gpu/wgsl.ts TONE (MIT).
+ *
+ * EDGEAA and SHARPEN run in the same pass: metal.m finds the draw that copies the finished
  * scene to the screen (PICTURE OPTIONS) and lets it read the pass's output
  * instead; the game's own texture is not changed, so effects that read it in
  * the next frame see the game's image.
@@ -42,6 +55,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 static NSString *kPicSrc = @
     "#include <metal_stdlib>\n"
@@ -60,6 +74,15 @@ static NSString *kPicSrc = @
     "fragment half4 pic_gamma(V in [[stage_in]], half4 d [[color(0)]]) {\n"
     "  float3 c = float3(d.rgb);\n"
     "  return half4(half3(float3(x360(c.r), x360(c.g), x360(c.b))), d.a); }\n"
+    /* Exposure and White Level: T = mult, white, knee (nfsu2-web's TONE) */
+    "struct TP { float mult, white, knee, pad; };\n"
+    "fragment half4 pic_tone(V in [[stage_in]], half4 d [[color(0)]], constant TP &T [[buffer(0)]]) {\n"
+    "  float3 y = min(float3(d.rgb) * T.mult, float3(1.0));\n"
+    "  float s = T.knee * T.white;\n"
+    "  float m = (1.0 - s) / (T.white - s);\n"
+    "  float3 t = max(y - s, float3(0.0)) / (1.0 - s);\n"
+    "  float3 b = s + (T.white - s) * (m * t) / (1.0 + (m - 1.0) * t);\n"
+    "  return half4(half3(select(y, b, y > float3(s))), d.a); }\n"
     "struct PP { float2 px; float aa; float sharp; float hasz; float pad[3]; };\n"
     "static float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
     "static float q1(depth2d<float> z, int2 p) {\n"
@@ -158,6 +181,54 @@ void pic_gamma(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> scr){
     g_gamma_n++;
 }
 
+/* Exposure and White Level (NFSU2_EXPOSURE, NFSU2_WHITE_LEVEL): the settings as
+ * the pass takes them, quantised to the launcher's steps; 0 when they leave the
+ * picture as drawn. */
+#define TONE_KNEE 0.8f
+static int g_tone = -1;
+static float g_tone_mult = 1.f, g_tone_white = 1.f;
+static id<MTLRenderPipelineState> g_tone_pso;
+static MTLPixelFormat g_tone_fmt;
+static unsigned long g_tone_n;
+
+int pic_tone_params(float *mult, float *white, float *knee){
+    if (g_tone < 0){
+        const char *e = getenv("NFSU2_EXPOSURE"), *w = getenv("NFSU2_WHITE_LEVEL");
+        long h = e && *e ? lround(strtod(e, 0) * 10.0) : 0;          /* tenths of a stop */
+        long p = w && *w ? lround(strtod(w, 0) / 5.0) * 5 : 100;      /* percent, steps of 5 */
+        h = h < -10 ? -10 : h > 10 ? 10 : h;
+        p = p < 40 ? 40 : p > 100 ? 100 : p;
+        g_tone_mult = exp2f((float)h / 10.f); g_tone_white = (float)p / 100.f;
+        g_tone = h != 0 || p != 100;
+        if (g_tone) fprintf(stderr, "[tone] exposure %+.1f, white level %ld %%\n", (double)h / 10.0, p);
+    }
+    if (mult) *mult = g_tone_mult;
+    if (white) *white = g_tone_white;
+    if (knee) *knee = TONE_KNEE;
+    return g_tone;
+}
+
+/* The finished frame in scr (single sampled), after the frame dumps and screenshots were taken:
+ * Exposure and White Level in place. */
+void pic_tone(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> scr){
+    if (!pic_tone_params(0, 0, 0) || !scr) return;
+    if (!g_tone_pso || g_tone_fmt != scr.pixelFormat){
+        g_tone_pso = pic_pso(dev, @"pic_tone", scr.pixelFormat); g_tone_fmt = scr.pixelFormat;
+        if (!g_tone_pso){ g_tone = 0; return; }
+    }
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = scr;
+    rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
+    [en setRenderPipelineState:g_tone_pso];
+    struct { float mult, white, knee, pad; } T = { g_tone_mult, g_tone_white, TONE_KNEE, 0.f };
+    [en setFragmentBytes:&T length:sizeof T atIndex:0];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [en endEncoding];
+    g_tone_n++;
+}
+
 static int g_aa = -1, g_sharp = -1;
 static id<MTLRenderPipelineState> g_pre_pso;
 static MTLPixelFormat g_pre_fmt;
@@ -219,6 +290,8 @@ id<MTLTexture> pic_pre(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture
 
 void pic_report(void){
     if (pic_gamma_on()) fprintf(stderr, "  console gamma    : %lu frames\n", g_gamma_n);
+    if (pic_tone_params(0, 0, 0)) fprintf(stderr, "  exposure/white   : x%.2f, white %.0f %%, %lu frames\n",
+                                          (double)g_tone_mult, (double)g_tone_white * 100.0, g_tone_n);
     if (pic_pre_on()) fprintf(stderr, "  scene pass       : edge smoothing %s (depth edges %lu frames, luma only %lu), sharpening %d%%, %lu frames\n",
                               g_aa ? "on" : "off", g_pre_z, g_pre_noz, g_sharp, g_pre_n);
 }

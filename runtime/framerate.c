@@ -55,7 +55,9 @@
  *   ticks      exact ticks: a 1/3600 s tick base instead of 1/1800, so every
  *              supported rate is a whole number of ticks; the count comes
  *              from the pacer's slots
- *   timer      fractional carry for RealTimer / WorldTimer (1/4000 s units)
+ *   timer      RealTimer / WorldTimer (1/4000 s units) without the per-frame
+ *              rounding: RealTimer carries the fraction, WorldTimer follows
+ *              the game's own WorldTimeFrames clock (replays restore it)
  *   particles  the "Acid" effect step: the frame's real dt (at most 1/60 s,
  *              1/30 at 30 fps) instead of a constant 1/60
  *   trail      NOS / streak trail sampled every frame, its history resampled
@@ -83,6 +85,7 @@
 #include <stdatomic.h>
 
 void guest_sleep_ns(long ns);           /* win32_ext.c: sleeps with the guest lock released */
+void metal_wait_taken(void);            /* metal.m: until the renderer has taken the frame handed over */
 int  metal_display_hz(void);            /* metal.m: the window's screen, maximum fps */
 
 enum { FX_TICKS = 1, FX_TIMER = 2, FX_PARTICLES = 4, FX_TRAIL = 8, FX_AUDIO = 16, FX_RTF = 32,
@@ -114,6 +117,8 @@ static const char *const g_fx_name[FX_N] = { "ticks", "timer", "particles", "tra
 #define A_WORLDTIMER  GA(0x00865188u)   /* WorldTimer, 1/4000 s */
 #define A_WORLD_S     GA(0x007fb718u)   /* WorldTimer in seconds (float) */
 #define A_WTF         GA(0x007fb720u)   /* WorldTimeFrames */
+#define A_WTF_REST    GA(0x00865154u)   /* WorldTimeFrames remainder (s) (NA 0x865158) */
+#define A_FRAME60     GA(0x007875bcu)   /* 1/60 */
 #define A_U4000       GA(0x00784268u)   /* 1/4000 */
 #define A_FRAMECNT    GA(0x00870818u)   /* eFrameCounter (render) */
 #define A_STREAK_FC   GA(0x008a44ecu)   /* UpdateCarStreakingFlares: last frame */
@@ -137,7 +142,7 @@ static int    g_log = 0;
 static int    g_resolved = 0;
 static int    g_cutscenes60;
 static int    g_lan_pc = 1;         /* NFSU2_LAN_TIMING: 1 = pc, 0 = exact */
-static double g_rt_carry = 0, g_wt_carry = 0;   /* timer fix: RealTimer / WorldTimer fractions */
+static double g_rt_carry = 0;       /* timer fix: RealTimer's fraction */
 
 static uint64_t mono_ns(void){ return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 static int display_hz(void){
@@ -350,21 +355,65 @@ static int64_t g_last_slot = 0;     /* start of the previous frame's slot, ns */
  * and spins the rest (NFSU2_PACE_HALVE / NFSU2_PACE_SPIN) because a browser's
  * timer can be 1 to 15 ms coarse; the Mac's is not, so this only measures. */
 static uint64_t g_ps_n, g_ps_late_ns, g_ps_max_ns, g_ps_late_h[4];   /* < 0.1, 0.5, 1 ms, more */
+static void pace_sleep(int64_t target, int64_t now){
+    guest_sleep_ns((long)(target - now));
+    int64_t late = (int64_t)mono_ns() - target; if (late < 0) late = 0;
+    g_ps_n++; g_ps_late_ns += (uint64_t)late; if ((uint64_t)late > g_ps_max_ns) g_ps_max_ns = (uint64_t)late;
+    g_ps_late_h[late < 100000 ? 0 : late < 500000 ? 1 : late < 1000000 ? 2 : 3]++;
+}
+
+/* ---- the wait after Present -----------------------------------------------
+ * The game reads the pads right after Present, in the same call (0x5D2860,
+ * NA 0x5D2850: Present, then 0x5CFA20 (NA 0x5CFA10) polls them), and the
+ * next frame steers with what it read; the keyboard it reads at the start of
+ * that frame's update, after FrameTimeUpdate.  On Windows the wait for the
+ * display was inside Present, before the pads' read.  Here the pacer waited
+ * in FrameTimeUpdate, after it: a controller's input was as old as that
+ * wait, up to a whole period older than a key's (17 ms at 60 fps, 33 at 30).
+ * So a main-loop Present (com.c, after metal_present) first waits until the
+ * renderer has taken the frame it handed over (metal_wait_taken: no frame of
+ * the game's queued behind one that waits for a drawable, NFSU2_WAIT_TAKEN=0:
+ * as before), then for the next slot itself, and FrameTimeUpdate finds the
+ * slot begun.  NFSU2_PACE_AT=frame: the slot's wait in FrameTimeUpdate, as
+ * before (A/B).  After th0mk's nfsu2-web runtime/framerate.c (MIT). */
+static int     g_pace_rate = 0;     /* the rate FrameTimeUpdate paced the frame at (0: not paced) */
+static int64_t g_pre_target = 0;    /* the slot the wait after Present waited for */
+static uint64_t g_pre_slept = 0;    /* and how long it slept, ns */
+static uint64_t g_pre_n = 0, g_pre_ns = 0;   /* the exit report: waits after Present */
+static int pace_at_present(void){
+    static int on = -1;
+    if (on < 0){ const char *e = getenv("NFSU2_PACE_AT"); on = !(e && !strcasecmp(e, "frame")); }
+    return on;
+}
+void hfr_after_present(void){
+    int rate = g_pace_rate;
+    g_pace_rate = 0;                 /* once a frame: a loading screen's Presents never wait */
+    if (rate <= 0) return;
+    metal_wait_taken();
+    if (!pace_at_present() || !g_last_slot) return;
+    int64_t P = (int64_t)llround(1e9 / rate), now = (int64_t)mono_ns();
+    if (now - g_last_slot > 4 * 1000000000ll) return;
+    int64_t target = g_last_slot + P;
+    if (now >= target) return;
+    pace_sleep(target, now);
+    g_pre_target = target; g_pre_slept = (uint64_t)(target - now);
+    g_pre_n++; g_pre_ns += g_pre_slept;
+}
+
 static int pace(int rate, uint64_t *slept, uint64_t *missed){
     int64_t now = (int64_t)mono_ns();
     *slept = 0; *missed = 0;
     int64_t P = (int64_t)llround(1e9 / rate);
+    int64_t pre = g_pre_target;
+    g_pre_target = 0; g_pre_slept = 0;
     if (!g_last_slot || now - g_last_slot > 4 * 1000000000ll){     /* first frame, or after a load */
         g_last_slot = now;
         return 1;
     }
     int64_t target = g_last_slot + P;
-    if (now < target){
-        guest_sleep_ns((long)(target - now));
-        *slept = (uint64_t)(target - now);
-        { int64_t late = (int64_t)mono_ns() - target; if (late < 0) late = 0;
-          g_ps_n++; g_ps_late_ns += (uint64_t)late; if ((uint64_t)late > g_ps_max_ns) g_ps_max_ns = (uint64_t)late;
-          g_ps_late_h[late < 100000 ? 0 : late < 500000 ? 1 : late < 1000000 ? 2 : 3]++; }
+    if (now < target || (pre == target && now - target < P)){
+        /* early: sleep to the slot (or the wait after Present did) and take it */
+        if (now < target){ pace_sleep(target, now); *slept = (uint64_t)(target - now); }
         g_last_slot = target;
         return 1;
     }
@@ -511,7 +560,7 @@ static void fixes_follow_rate(void){
     net_prev = net;
     if (!first && fx == g_fix) return;
     if (first || ((fx ^ g_fix) & FX_TICKS)){ set_tick_base(fx & FX_TICKS); g_tick_acc = 0; }
-    if ((fx ^ g_fix) & FX_TIMER){ g_rt_carry = 0; g_wt_carry = 0; }
+    if ((fx ^ g_fix) & FX_TIMER) g_rt_carry = 0;
     g_fix = fx; first = 0;
 }
 
@@ -549,7 +598,8 @@ void sub_0057eae0(CPU *c){
     }
     fixes_follow_rate();
     uint64_t t_in = mono_ns();
-    if (g_f.t) g_f.work = t_in - g_f.t;
+    uint64_t pre_slept = g_pre_slept;          /* the wait after Present: sleep, not work */
+    if (g_f.t) g_f.work = t_in - g_f.t - (pre_slept < t_in - g_f.t ? pre_slept : t_in - g_f.t);
 
     int rate = g_mode == M_UNCAPPED ? 0 : content_rate();
     int prev = atomic_exchange(&g_rate_now, rate);
@@ -562,6 +612,8 @@ void sub_0057eae0(CPU *c){
     int slots = 1; double frame_s;
     if (rate > 0){
         slots = pace(rate, &slept, &missed);
+        slept += pre_slept;
+        g_pace_rate = rate;
         frame_s = (double)slots / rate;
     } else frame_s = g_f.t ? (t_in - g_f.t) / 1e9 : 1.0 / 120;   /* uncapped: the frame's own time */
     g_sleep_all_ns += slept;
@@ -619,18 +671,32 @@ void sub_0057a060(CPU *c){
     }
 }
 
-/* ---- timer: WorldTimer advance 0x57a0f0 (skipped while world dt == 0) --- */
+/* ---- timer: WorldTimer advance 0x57a0f0 (skipped while world dt == 0) ---
+ * WorldTimer += round(dt x 4000) has no carry either: 15/3600 s -> 17 units
+ * (+2 %).  The same function keeps an exact world clock of its own:
+ * WorldTimeFrames ([0x7FB720], 60ths) and their remainder ([0x865154], NA
+ * 0x865158, s), n = trunc(60 (dt + remainder)).  The timer fix moves
+ * WorldTimer by that clock's change, rounded: no fraction of ours to carry.
+ * A replay needs it so: it restores the race from a snapshot (the
+ * "WorldTime" block, 0x57BBB0 (NA 0x57BBA0), holds WorldTimer,
+ * WorldTimeFrames and the remainder, not a carry of ours), drives it again
+ * and checks every frame a checksum that includes WorldTimer (0x5FA780, NA
+ * 0x5FA770); with a carry of ours the timer ticked 17 16 17 where the race
+ * had ticked 16 17 17, and the game left the replay after a few frames
+ * above 60 fps.  After th0mk's nfsu2-web runtime/framerate.c (MIT). */
+static double world_clock(void){
+    return (double)(int32_t)MR32(A_WTF) * (double)MRF32(A_FRAME60) + (double)MRF32(A_WTF_REST);
+}
 void sub_0057a0f0_orig(CPU *c);
 void sub_0057a0f0(CPU *c){
     float wdt = MRF32(A_WORLDDT);
     uint32_t w0 = MR32(A_WORLDTIMER);
+    double x0 = world_clock();
     sub_0057a0f0_orig(c);
     if (wdt == 0.f) return;
     g_f.wdt += wdt;
     if (g_fix & FX_TIMER){
-        double ex = (double)wdt * 4000.0 + g_wt_carry;
-        double u = floor(ex + 0.5);
-        g_wt_carry = ex - u;
+        double u = floor(world_clock() * 4000.0 + 0.5) - floor(x0 * 4000.0 + 0.5);
         MR32(A_WORLDTIMER) = w0 + (uint32_t)(int32_t)u;
         MRF32(A_WORLD_S) = (float)((double)(int32_t)MR32(A_WORLDTIMER) * (double)MRF32(A_U4000));
     }
@@ -892,6 +958,8 @@ void hfr_report(void){
     fprintf(stderr, "  mode %s, display %d Hz, rate %d, fixes %s, 60 FPS cutscenes %s\n",
             mode_name(), display_hz(), mode_rate(), fs, g_cutscenes60 ? "on" : "off");
     if (g_tot.frames) stat_line(g_log == 2 ? "all" : "race", &g_tot);
+    if (g_pre_n) fprintf(stderr, "  waits after Present (before the pads are read): %llu, %.2f ms on average\n",
+                         (unsigned long long)g_pre_n, g_pre_ns / 1e6 / (double)g_pre_n);
     if (g_ps_n) fprintf(stderr, "  pacer sleeps: %llu, woke late by %.1f us on average (worst %.2f ms); < 0.1 ms %llu, < 0.5 ms %llu, < 1 ms %llu, more %llu\n",
                         (unsigned long long)g_ps_n, g_ps_late_ns / 1e3 / (double)g_ps_n, g_ps_max_ns / 1e6,
                         (unsigned long long)g_ps_late_h[0], (unsigned long long)g_ps_late_h[1],

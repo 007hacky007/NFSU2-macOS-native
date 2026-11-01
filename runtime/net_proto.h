@@ -106,6 +106,7 @@
 
 /* peer_bits: one bit per host of the switch's network (at most a /21) */
 #define NET_PEER_BITS     2048u
+#define NET_UDP_PORTS_SET 0x80000000u   /* udp_ports: this module says which ports have a socket */
 
 typedef struct {
     /* fixed, written by C before it registers the mailbox */
@@ -113,11 +114,17 @@ typedef struct {
     uint32_t tx_slots, rx_slots, tx_off, rx_off;               /*  16: offsets from the mailbox */
     /* C -> page */
     uint32_t mode, port, tx_head, tx_bell;                     /*  32 */
-    uint32_t rx_tail, c_alive, want, c_pad1;                   /*  48: c_alive: +1 per network-thread loop;
+    uint32_t rx_tail, c_alive, want, udp_ports;                /*  48: c_alive: +1 per network-thread loop;
                                                                   want: this endpoint needs the switch now
                                                                   (free roam: while it runs; LAN play: from
                                                                   the game's WSAStartup to its last
-                                                                  WSACleanup), C rings tx_bell on a change */
+                                                                  WSACleanup), C rings tx_bell on a change;
+                                                                  udp_ports (LAN play): NET_UDP_PORTS_SET and
+                                                                  bit port % 31 of each port a UDP socket is
+                                                                  bound to, so the switch sends a LAN broadcast
+                                                                  only where a socket takes it (0: not said, an
+                                                                  older module: every broadcast), C rings
+                                                                  tx_bell on a change */
     /* page -> C */
     uint32_t page_state, vip, netmask, generation;             /*  64: generation: +1 per switch connection */
     uint32_t tx_tail, rx_head, rx_bell, rx_full_drop;          /*  80 */

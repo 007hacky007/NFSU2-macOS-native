@@ -7,7 +7,8 @@
 #   tilt, closed (the drive camera back, the clock running); the pause menu has Photo Mode after Replay,
 #   drawn with the still camera icon, and opens it; F12 in the pause menu saves a screenshot.
 #   drift (with <career saves>: a NFSU2_SAVEDIR folder with one profile whose career has a car, which
-#   loads at the start): Resume Career, back to free roam, X, a drive with two slides, X.  Whether a
+#   loads at the start): Resume Career, back to free roam, X (the car's physics made again as a drift
+#   event's, with its Drift setup and its nitrous), a drive with two slides, X.  Whether a
 #   drift is banked depends on the drive, so it is reported, not required.
 # Pictures (DUMPFRAME) and the screenshots stay in the run folder printed at the end.
 #   e.g. tests/photo_drift.sh out/nfsu2_boot ~/NFSU2/SPEED2.EXE ~/saves-with-a-career
@@ -64,6 +65,8 @@ if [ -n "$SEED" ]; then
     check "$D" "\[drift\] f=[0-9]+ X outside free roam: nothing" "X outside free roam does nothing"
     check "$D" "\[drift\] f=33[0-9][0-9] drift handling on" "X in free roam: the drift handling on"
     check "$D" "the drift event's styles: [0-9]+ added" "the drift event's styles added to free roam's"
+    check "$D" "\[drift\] f=33[0-9][0-9] the car's physics for a drift event.*its nitrous kept" "the car made again as a drift event's, its nitrous kept"
+    check "$D" "\[drift\] f=61[0-9][0-9] the car's own physics back" "X again: the car's own physics back"
     check "$D" "\[scene\] the drift panel shown" "the drift panel shown"
     check "$D" "\[scene\] the drift panel hidden \(photo mode\)" "the drift panel hidden in photo mode"
     check "$D" "\[drift\] f=61[0-9][0-9] drift handling off" "X again: the drift handling off"

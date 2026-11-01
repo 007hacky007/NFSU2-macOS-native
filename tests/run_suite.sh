@@ -36,9 +36,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
 if [ "${1:-}" != --game ]; then
-  UNITS="${UNITS:-hle_unit watchdog_unit heap_stress windows_waits framerate keyboard_unit horn_unit racenet_unit gamepad_harness
+  UNITS="${UNITS:-hle_unit watchdog_unit heap_stress windows_waits framerate hiddenraces_unit keyboard_unit horn_unit racenet_unit gamepad_harness
     radio_native native_scene headlights_native shader_ps20 save_paths texture_unit game_folder_tools
-    net_harness roam_unit native_controls photo_gallery save_manager display_options language_packs texture_packs
+    net_harness roam_unit native_controls photo_gallery save_manager display_options picture_tone language_packs texture_packs
     launcher_online name_claims netstats_unit ff_unit rumble_unit discord_unit launcher_settings vault}"
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
   pass=0; fail=0; failed=""
@@ -88,6 +88,7 @@ hornpause:pause_horn.txt:parts as SLIDER_BASE_8 SLIDER_KNOB_8 SLIDER_HANDLE_8 SL
 powerunits:options_units.txt:units: power in bhp:
 eucars:qr_eucars.txt:[expect] PASS:EUCARS_RIGHT=$EUCARS_RIGHT
 replay:replay_pause.txt:LOG back_to_pause:
+replay240:replay_sync.txt:LOG back_to_pause:NFSU2_FPS=240
 photo:photo_mode.txt:[expect] PASS:NFSU2_PHOTO=1
 headlights:native_headlights.txt:[expect] PASS:NFSU2_PHOTO=1 NFSU2_FPS=120
 watchdog:watchdog_loading.txt:no Present for:ALARM=400
@@ -97,7 +98,9 @@ heapreset:heap_resetloop.txt:[status] after_reset_8:
 padrace:pad_quickrace.txt:$FLOW:NFSU2_PAD_FAKE=PLUG=1
 padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:NFSU2_PAD_FAKE=PLUG=1
 kbprofile:kb_profile.txt:LOG Cmd-Q now:
+kbprofilefill:kb_profile_prefill.txt:[profile] a new profile's name starts as the Player name:NFSU2_NEW_PROFILE_NAME=Alex_the_Great
 kbfocus:kb_focus_mouse.txt:$FLOW:
+kbregain:kb_focus_regain.txt:LOG kb_focus_regain_end:
 wscameras:ws_cameras.txt:$FLOW:
 wspause:ws_pause.txt:$FLOW:
 careerbot:career_bot.txt:segment done:NFSU2_CAREER_BOT_RACES=2 ALARM=900

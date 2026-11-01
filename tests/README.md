@@ -12,6 +12,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 |---|---|
 | `hle_unit`, `windows_waits`, `watchdog_unit`, `heap_stress` | Win32 HLE answers, waits and handles, the stall watchdog, the guest heap |
 | `framerate` | frame-rate choices (runtime/framerate.c) |
+| `hiddenraces_unit` | the career's hidden races on the map (runtime/hiddenraces.c), off and on |
 | `keyboard_unit`, `gamepad_harness` | DirectInput keyboard and key names; GameController and the synthetic pad |
 | `horn_unit`, `radio_native` | horns, the music folder |
 | `racenet_unit` | network races: the joiners' car states straight to each other, the corrections' fade |
@@ -28,6 +29,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `ff_unit`, `rumble_unit` | force feedback effects and the controller's motors |
 | `discord_unit`, `launcher_settings`, `vault` | Discord presence (mock IPC), launcher settings, cloud saves |
 | `save_manager`, `display_options`, `language_packs` | launcher models |
+| `picture_tone` | Exposure and White Level (runtime/picture.m): the settings, the pass on the GPU against its curve |
 
 ## Game level
 

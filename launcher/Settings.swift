@@ -144,6 +144,20 @@ struct DisplayCard: View {
                 }
                 .labelsHidden().fixedSize()
             }
+            SettingRow(title: "Exposure",
+                       description: "The whole picture darker or brighter, from half to twice as bright, menus and HUD too, for eyes a bright picture tires. Screenshots keep the game's own colours.") {
+                Picker("", selection: $model.exposure) {
+                    ForEach(DisplayOptions.exposures, id: \.self) { Text(DisplayOptions.exposureLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
+            SettingRow(title: "White level",
+                       description: "The brightest the picture gets: only the brightest parts come down, so dark streets stay as they are.") {
+                Picker("", selection: $model.whiteLevel) {
+                    ForEach(DisplayOptions.whiteLevels, id: \.self) { Text(DisplayOptions.whiteLevelLabel($0)).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+            }
             SettingRow(title: "Movie framing",
                        description: "How the movies fill a wide window. Fit keeps black bars at the sides, Fill crops the top and bottom.") {
                 Picker("", selection: $model.movieFraming) {
@@ -199,6 +213,9 @@ struct GameSettings: View {
                 SettingRow(title: "10-car garage and Trade Car",
                            description: "Career slots 6-10, and trading a car in for 80% of what it cost. A save made while off loses the cars in slots 6-10. Off: as in the original game.",
                            isOn: $model.garage)
+                SettingRow(title: "Show hidden races",
+                           description: "The career's 33 hidden races on the map and the radar like the others, and up to 8 races of each kind on the map at once, as MaxHwoy's Show Hidden Races Mod. Off: as in the original game, a hidden race shows only when you drive near it.",
+                           isOn: $model.hiddenRaces)
             }
             Card("Start") {
                 SettingRow(title: "Intro movies", description: "The logos and the opening movie. Skippable: a key or pad button skips each.") {
