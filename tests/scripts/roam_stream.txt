@@ -1,0 +1,49 @@
+# A drive through the city while friends' cars keep loading, the way players
+# met "Loading" screens in the middle of free roam (nfsu2-web reports of
+# 2026-10-28 and 29): the track streamer reads the city's sections through the
+# game's one queue of reads, the same one the friends' cars load through, and
+# starts none while the car loader is busy (runtime/roamfix.c sub_00579820,
+# runtime/roam_game.c load_may_start).  The new career's player drives on the
+# autopilot for DRIVES x 3000 frames (default 4) among stand-in friends
+# (tests/roam/plan_loader.sh: eight of them changing cars every few seconds,
+# so the car loader is busy most of the time).  Read the "[stream]" lines
+# (the sections' waits, the queue, how long the car loader held the streamer
+# up, the Loading screens), "[roam] ... friends' cars waited for the city's
+# sections", and count "[fng] ... HUD_World_Loading.fng" between "drive:
+# start" and "drive: end".  Good: no trap, no [watchdog] report, drive_end,
+# quit.  NFSU2_ROAM_STREAM_FIRST=0 and NFSU2_TEST_STREAM_FIFO=1 bring the
+# game's way back for the A/B; NFSU2_TEST_READ_MS=50 makes every read 50 ms
+# slower, a slow PC's disk.
+# Adapted from th0mk's nfsu2-web tests/scripts/roam_crowd_stream.txt (MIT;
+# its crowd came from the browser's roam-crowd tool; here roam_fakepeer
+# stand-ins on loopback):
+#   NFSU2_DATA=<game> tests/roam/plan.sh <out> 1500 roam_stream.txt 47600 8 tests/roam/plan_loader.sh NFSU2_ROAM_COLLIDE=0 DRIVES=4
+0     tapuntil RETURN MC_Background.fng 120 4000
++120  tap LEFT
++30   tap RETURN
++240  tap BACK
++8    tap BACK
++8    tap BACK
++8    tap BACK
++20   type ${ROAM_PROFILE}
++60   tap RETURN
++240  tap RETURN
++0    waitfng GarageMain.fng 3000
++300  tap LEFT
++60   tap RETURN                      # Career
++300  tap RETURN                      # Start New Career
++0    waitfng UI_EngageMessageDialog.fng 8000
++120  tap RETURN                      # SMS: Continue
++0    waitroam 3000
++0    log ROAM_INROAM
++600  status crowd
++0    trace 30 state=i:[0x8900d8] sections=i:0x88eb20 reads=i:0x8650f4
++0    log drive: start
++0    loop ${DRIVES}
++0    autopilot on
++3000 status drive
++0    endloop
++0    log drive: end
++0    untrace
++60   status drive_end
++60   quit

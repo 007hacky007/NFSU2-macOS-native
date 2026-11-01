@@ -497,6 +497,14 @@ static int fileio_call_impl(CPU *c, const char *n, uint32_t *out){
          * If an OVERLAPPED is given: the offset is taken from the structure, the
          * result is written into it and hEvent is signalled.  Without this the
          * game waits forever for the asynchronous read to finish.        */
+        /* NFSU2_TEST_READ_MS=N (test aid): every read takes N ms more, a slow
+         * PC's disk or file thread (tests/scripts/roam_stream.txt).  The guest
+         * lock is let go meanwhile, as Windows lets the other threads run
+         * during a blocking ReadFile; the handle is looked up after it. */
+        { static int read_ms = -1;
+          if (read_ms < 0){ const char *e = getenv("NFSU2_TEST_READ_MS"); read_ms = e ? atoi(e) : 0; }
+          if (read_ms > 0){ void guest_wait_begin(void); void guest_wait_end(void);
+                            guest_wait_begin(); usleep((useconds_t)read_ms * 1000u); guest_wait_end(); } }
         FH*f=fh_get(A(c,0)); uint32_t buf=A(c,1), len=A(c,2), pnr=A(c,3), ov=A(c,4);
         if(!f||f->fd<0){ if(pnr) MR32(pnr)=0; r=0; }
         else { if(len) mem_commit(buf,len);

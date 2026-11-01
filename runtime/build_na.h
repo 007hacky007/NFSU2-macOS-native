@@ -158,6 +158,8 @@
 #define GA_0x005d2c27u 0x005d2c17u   /* function 005d2922 + 0x305 */
 #define GA_0x005d6666u 0x005d6656u   /* function 005d6580 + 0xe6 */
 #define GA_0x005da340u 0x005da330u   /* function 005da340 + 0x0 */
+#define GA_0x005df120u 0x005df110u   /* operand pair */
+#define GA_0x005e4f20u 0x005e4f10u   /* operand pair */
 #define GA_0x005eba40u 0x005eba30u   /* function 005eba40 + 0x0 */
 #define GA_0x005f0d30u 0x005f0d20u   /* function 005f0d30 + 0x0 */
 #define GA_0x005f1fe0u 0x005f1fd0u   /* function 005f1fe0 + 0x0 */
@@ -454,9 +456,11 @@
 #define GA_0x00865188u 0x0086518cu   /* operand pair */
 #define GA_0x00865194u 0x00865198u   /* operand pair */
 #define GA_0x008651a8u 0x008651acu   /* operand pair */
+#define GA_0x00865220u 0x00865220u   /* operand pair */
 #define GA_0x00865498u 0x00865498u   /* operand pair */
 #define GA_0x0086549cu 0x0086549cu   /* operand pair */
 #define GA_0x008654a4u 0x008654a4u   /* operand pair */
+#define GA_0x00865550u 0x00865550u   /* operand pair */
 #define GA_0x00865558u 0x00865558u   /* operand pair */
 #define GA_0x0086658cu 0x0086658cu   /* operand pair */
 #define GA_0x008669f4u 0x008669f4u   /* operand pair */
@@ -499,6 +503,7 @@
 #define GA_0x00883da0u 0x00883da0u   /* operand pair */
 #define GA_0x00883da4u 0x00883da4u   /* operand pair */
 #define GA_0x00883de0u 0x00883de0u   /* operand pair */
+#define GA_0x0088eb00u 0x0088eb00u   /* operand pair */
 #define GA_0x0088f298u 0x0088f298u   /* operand pair */
 #define GA_0x00890080u 0x00890080u   /* operand pair */
 #define GA_0x00890084u 0x00890084u   /* operand pair */
@@ -906,6 +911,10 @@
 #define sub_00574680_orig sub_00574670_orig
 #define sub_00574680_m sub_00574670_m
 #define sub_00574680_orig_m sub_00574670_orig_m
+#define sub_00579820 sub_00579810
+#define sub_00579820_orig sub_00579810_orig
+#define sub_00579820_m sub_00579810_m
+#define sub_00579820_orig_m sub_00579810_orig_m
 #define sub_0057a060 sub_0057a050
 #define sub_0057a060_orig sub_0057a050_orig
 #define sub_0057a060_m sub_0057a050_m

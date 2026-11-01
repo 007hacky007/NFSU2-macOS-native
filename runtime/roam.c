@@ -10,7 +10,8 @@
  * update in Player::Update (0x6005F0, NA 0x6005E0), where the game places
  * its own LAN race labels.  The main-loop hook also runs the horns of
  * network races and the Horn Volume slider's frame (racehorn.c,
- * hornmenu.c; only with horns on, NFSU2_HORN), free roam or not.  Both are tools/gen_v2.sh HOOKS.  The whole CPU
+ * hornmenu.c; only with horns on, NFSU2_HORN) and the "[stream]" log of the
+ * world's reads (roamfix.c reads_frame), free roam or not.  Both are tools/gen_v2.sh HOOKS.  The whole CPU
  * state is saved and restored around each call (roam_host.h rh_call).
  *
  * The overrides below hand the game's functions to roam_game.c, which says
@@ -33,6 +34,7 @@ void mprace_frame(CPU *c);
 void roam_texts_frame(CPU *c);
 void racehorn_frame(CPU *c);                  /* racehorn.c: horns in network races (NFSU2_HORN) */
 void hornmenu_frame(CPU *c);                  /* hornmenu.c: the Horn Volume slider (NFSU2_HORN) */
+void reads_frame(CPU *c);                     /* roamfix.c: the streamer's reads and Loading screens, for the log */
 
 #define HOOK_MAINLOOP   HOOK_SITE(0x00581485u)   /* GameLoop, before its second debug no-op call */
 #define HOOK_HUD        HOOK_SITE(0x006005f0u)   /* Player::Update (0x6005A0), behind its call of the HUD update (0x4EC5A0) */
@@ -46,6 +48,7 @@ static int roam_on(void){
 /* debug.c guest_hook */
 int roam_hook(CPU *c, uint32_t ip){
     if (ip == HOOK_MAINLOOP){
+        reads_frame(c);                        /* with or without free roam */
         if (roam_on()){ roam_texts_frame(c); mprace_frame(c); roam_game_frame(c); }
         racehorn_frame(c); hornmenu_frame(c);  /* with or without free roam */
         { void career_frame(CPU *); career_frame(c); }   /* career.c: the test runner's career aids */
