@@ -131,10 +131,9 @@ fi
 # --- embedded game data (--embed only) ---
 # /bin/cp -c: APFS clones.  Take NO extra space on the same disk and finish
 # instantly; on another disk (or one that can't clone) it is a normal copy.  The
-# source is only read.  Left out: Windows-only plugins and scripts the native port
-# never loads (as the launcher's portable copy, launcher/Portable.swift) and
-# Finder's .DS_Store files.  server.dll and server.cfg stay: hosting a LAN game
-# loads them.
+# source is only read.  The whole game goes in, Windows-only extras included
+# (SCRIPTS, dinput8.dll, SafeMode.bat: a few KB, and a complete copy checks as
+# complete); only Finder's .DS_Store files and macOS code (below) stay out.
 if [ "$EMBED" = 1 ]; then
   SRC="${GAME_DIR:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2}"
   [ -f "$SRC/SPEED2.EXE" ] || [ -f "$SRC/speed2.exe" ] || [ -f "$SRC/Speed2.exe" ] \
@@ -146,7 +145,7 @@ if [ "$EMBED" = 1 ]; then
     [ -e "$item" ] || [ -L "$item" ] || continue
     name="$(basename "$item")"
     case "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" in
-      .*|scripts|dinput8.dll|safemode.bat) continue ;;
+      .*) continue ;;
     esac
     /bin/cp -Rc "$item" "$GAME/$name" 2>/dev/null || { rm -rf "$GAME/$name"; /bin/cp -R "$item" "$GAME/$name"; } \
       || { echo "could not copy $name into the app"; exit 1; }

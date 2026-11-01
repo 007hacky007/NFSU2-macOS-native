@@ -51,8 +51,8 @@ extension CheckState {
     }
 }
 
-/// Files the build leaves out of NFSU2.app on purpose (pack.sh --embed): Windows-only helpers the
-/// port never uses. Their absence is not "missing", so an app the Builder made checks as complete.
+/// Windows-only extras the port never uses, which Builder 1.0.0 left out of NFSU2.app (later
+/// Builders embed them). Their absence is not "missing", so an app made by 1.0.0 checks as complete.
 /// `path` is relative to the game folder, lowercased.
 public func leftOutOfTheApp(_ path: String) -> Bool {
     path == "safemode.bat" || path == "dinput8.dll" || path.hasPrefix("scripts/")

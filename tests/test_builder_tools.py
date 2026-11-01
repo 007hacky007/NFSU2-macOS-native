@@ -257,7 +257,8 @@ class EmbeddedBuildTests(unittest.TestCase):
         self.assertEqual(manifest(folder), before, 'the game folder is only read')
         self.assertEqual(tree(app / 'Contents/Resources/Game'),
                          {'GLOBAL/GLOBALB.LZC': b'global', 'MOVIES/intro.vp6': b'movie', 'server.dll': b'server',
-                          'SPEED2.EXE': self.EXE})
+                          'SCRIPTS/mod.asi': b'windows plugin', 'dinput8.dll': b'windows plugin',
+                          'SPEED2.EXE': self.EXE}, 'the whole game goes in, Windows extras too; .DS_Store stays out')
         self.assertFalse((self.root / builder_cli.STAGING).exists(), 'the staging copy is removed')
         with open(app / 'Contents/Info.plist', 'rb') as f:
             info = plistlib.load(f)
@@ -282,7 +283,8 @@ class EmbeddedBuildTests(unittest.TestCase):
         self.assertEqual(status, 0, events)
         app = self.root / builder_cli.APP
         game = app / 'Contents/Resources/Game'
-        self.assertEqual(sorted(tree(game)), ['GLOBAL/GLOBALB.LZC', 'MOVIES/intro.vp6', 'SPEED2.EXE', 'server.dll'])
+        self.assertEqual(sorted(tree(game)), ['GLOBAL/GLOBALB.LZC', 'MOVIES/intro.vp6', 'SCRIPTS/mod.asi', 'SPEED2.EXE',
+                                              'dinput8.dll', 'server.dll'])
 
         def attr(path):
             r = subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)], capture_output=True, text=True)
