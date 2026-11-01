@@ -586,7 +586,9 @@ pictures go to `~/Library/Application Support/NFSU2/Screenshots`
 **Screenshots…** shows, exports and deletes them. **Drift mode in free roam**
 (`NFSU2_DRIFT=1`; Settings > Game, off by default): X in the career's free roam
 turns on the game's drift handling, drift camera and drift scoring, with a points
-panel over the window; X again turns them off. Tests: `tests/native_scene.sh`,
+panel over the window; X again turns them off. The car then handles as in the
+drift races, with its own Drift tuning from Performance Tuning / Dyno, and keeps
+its nitrous (X neither empties nor fills it). Tests: `tests/native_scene.sh`,
 `tests/photo_gallery.sh`, `tests/photo_drift.sh`.
 
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full

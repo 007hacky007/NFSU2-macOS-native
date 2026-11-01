@@ -170,6 +170,7 @@
 #define GA_0x005f4250u 0x005f4240u   /* function 005f4250 + 0x0 */
 #define GA_0x005f46b0u 0x005f46a0u   /* function 005f46b0 + 0x0 */
 #define GA_0x005f5020u 0x005f5010u   /* function 005f5020 + 0x0 */
+#define GA_0x005f6c30u 0x005f6c20u   /* function 005f6c30 + 0x0 */
 #define GA_0x005f6ce0u 0x005f6cd0u   /* function 005f6ce0 + 0x0 */
 #define GA_0x005f6d60u 0x005f6d50u   /* function 005f6d60 + 0x0 */
 #define GA_0x005f6e30u 0x005f6e20u   /* function 005f6e30 + 0x0 */
