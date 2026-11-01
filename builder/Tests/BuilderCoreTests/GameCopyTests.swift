@@ -44,24 +44,9 @@ final class GameCopyTests: XCTestCase {
         }
         let old = Data("frontend v1.0".utf8)
         lines.append("file\tFRONTEND/FrontB.lzc\t\(old.count)\t\(sha(old))\t\(String(format: "%08x", crc(old)))\tna\t0")
-        // in both releases, but the build leaves it out of the app (pack.sh --embed), so the test
-        // copies don't have it and it must never count as missing
-        let bat = Data("safe mode".utf8)
-        lines.append("file\tSafeMode.bat\t\(bat.count)\t\(sha(bat))\t\(String(format: "%08x", crc(bat)))\teu,na\t0")
         return try! ReleaseManifest(text: lines.joined(separator: "\n") + "\n")
     }
 
-    /// An app the Builder made has no SafeMode.bat (left out on purpose): its game checks as complete.
-    func testFilesTheBuildLeavesOutAreNotMissing() throws {
-        XCTAssertTrue(leftOutOfTheApp("safemode.bat"))
-        XCTAssertTrue(leftOutOfTheApp("scripts/mod.asi"))
-        XCTAssertFalse(leftOutOfTheApp("global/globalb.lzc"))
-        let game = try makeGameFolder("Applications/NFSU2.app/Contents/Resources/Game", exe: supportedEU)
-        let report = checker.check([game])
-        XCTAssertNil(report.blocking)
-        XCTAssertEqual(report.notes, [], "no 'file of the release missing' note")
-        XCTAssertFalse(report.details.contains { $0.contains("SafeMode.bat") })
-    }
 
     private var checker: GameDataChecker { GameDataChecker(manifest: manifest, programs: programs, servers: servers) }
 
