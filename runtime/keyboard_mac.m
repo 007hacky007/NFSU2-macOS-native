@@ -229,8 +229,12 @@ static void kinit(void){
 
 /* ---- delivering keys to the game ------------------------------------------ */
 /* alttext: pressed with Option and typed text (AltGr-like), so its release
- * is a WM_KEYUP even while Option is still down, as with AltGr on Windows */
-typedef struct { uint8_t down, dik, vk, sys, alttext; } Down;
+ * is a WM_KEYUP even while Option is still down, as with AltGr on Windows.
+ * lost: held when kbdmac_release_all() let it go (a focus loss), and no key
+ * up or fresh press since: the key may still be down, so its next autorepeat
+ * presses it again (as nfsu2-web's input_web.c has it, MIT); without it a
+ * key held through Cmd-Tab and back stayed up until it was pressed anew. */
+typedef struct { uint8_t down, dik, vk, sys, alttext, lost; } Down;
 static Down g_down[128];            /* keys the game has seen go down */
 static int  g_alt_other;            /* a key was pressed while Option was down */
 
@@ -256,7 +260,7 @@ static void press(uint16_t kc, int sys, int repeat){
     uint8_t dik = key_dik(kc), vk = key_vk(kc);
     if (!repeat){
         g_down[kc].down = 1; g_down[kc].dik = dik; g_down[kc].vk = vk; g_down[kc].sys = (uint8_t)sys;
-        g_down[kc].alttext = 0;
+        g_down[kc].alttext = 0; g_down[kc].lost = 0;
         if (dik) kbd_set_key(KSRC_HOST, dik, 1);
     }
     if (vk) post(sys ? WM_SYSKEYDOWN : WM_KEYDOWN, vk, key_lparam(dik, sys, repeat, 0));
@@ -273,7 +277,7 @@ static void release(uint16_t kc, int alt){
 }
 void kbdmac_release_all(const char *why){
     int n = 0;
-    for (uint16_t kc = 0; kc < 128; kc++) if (g_down[kc].down){ release(kc, 0); n++; }
+    for (uint16_t kc = 0; kc < 128; kc++) if (g_down[kc].down){ release(kc, 0); n++; g_down[kc].lost = 1; }
     kbd_release_source(KSRC_HOST);
     g_dead = 0; g_alt_other = 0;
     if (n || kbd_log()) fprintf(stderr, "[key] %s: %d held key(s) released\n", why, n);
@@ -332,9 +336,13 @@ static void key_down(NSEvent *ev){
     uint16_t kc = [ev keyCode];
     NSEventModifierFlags fl = [ev modifierFlags];
     if (kc >= 128 || !K[kc].name){ if (kbd_log()) fprintf(stderr, "[key] key code 0x%02x ignored\n", kc); return; }
-    int repeat = [ev isARepeat];
-    if (repeat && !g_down[kc].down) return;                    /* pressed with Command */
+    int repeat = [ev isARepeat], again = 0;
+    if (repeat && !g_down[kc].down){
+        if (!g_down[kc].lost) return;                          /* pressed with Command */
+        repeat = 0; again = 1;                                 /* held through a focus loss: down again */
+    }
     if (!repeat && g_down[kc].down) repeat = 1;                /* its key up was lost */
+    g_down[kc].lost = 0;
     uint8_t ch[8]; int dead = 0;
     int nch = key_chars(ev, kc, fl, ch, 8, &dead);
     /* Option+key that types something (a character or a dead key) is text,
@@ -346,8 +354,8 @@ static void key_down(NSEvent *ev){
     if (sys) nch = 0;
     if (g_down[0x3A].down || g_down[0x3D].down) g_alt_other = 1;
     if (kbd_log())
-        fprintf(stderr, "[key] host %s kc=0x%02x %s flags 0x%lx chars %d%s\n", repeat ? "repeat " : "keyDown",
-                kc, K[kc].name, (unsigned long)fl, nch, dead ? " (dead key)" : "");
+        fprintf(stderr, "[key] host %s kc=0x%02x %s flags 0x%lx chars %d%s%s\n", repeat ? "repeat " : "keyDown",
+                kc, K[kc].name, (unsigned long)fl, nch, dead ? " (dead key)" : "", again ? " (held through a release)" : "");
     press(kc, sys, repeat);
     if (!repeat) g_down[kc].alttext = (uint8_t)(opt && text);
     if (dead) post(sys ? 0x0107u : WM_DEADCHAR, (uint32_t)dead, key_lparam(key_dik(kc), sys, repeat, 0));
@@ -414,6 +422,12 @@ int kbdmac_handle(NSEvent *ev){
                 if (kbd_log()) fprintf(stderr, "[key] host repeat  kc=0x%02x with Command: held by the game, dropped\n", kc);
                 return 1;
             }
+            /* ... and one the game held before a focus loss: no shortcut either, its first repeat
+             * without Command presses it again */
+            if (kc < 128 && g_down[kc].lost && [ev isARepeat]){
+                if (kbd_log()) fprintf(stderr, "[key] host repeat  kc=0x%02x with Command: held through a release, dropped\n", kc);
+                return 1;
+            }
             if (kbd_log()) fprintf(stderr, "[key] host keyDown kc=0x%02x with Command -> app, not the game\n", kc);
             return 0;
         }
@@ -422,6 +436,7 @@ int kbdmac_handle(NSEvent *ev){
     }
     if (t == NSEventTypeKeyUp){
         uint16_t kc = [ev keyCode];
+        if (kc < 128) g_down[kc].lost = 0;                     /* up for good */
         if (kc < 128 && g_down[kc].down){ key_up(ev); return 1; }
         return ([ev modifierFlags] & NSEventModifierFlagCommand) ? 0 : 1;
     }

@@ -142,7 +142,7 @@ Click a picture to see it full size.
 | Better online races | Every track, up to 6 players, 2 laps by default, a lobby filter that works, and you log in under your own name. | |
 | Show in Discord | Your Discord status shows the game and the race you are in. Off by default. | <a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/f-discord.jpg" width="180" alt="Show in Discord switch"></a> |
 | **Input** | | |
-| Mac keyboard | Typing works on every keyboard layout, with accents and Option as Alt, as on Windows. | |
+| Mac keyboard | Typing works on every keyboard layout, with accents and Option as Alt, as on Windows. A key held through Cmd-Tab and back drives again with its next autorepeat. | |
 | Key rebinding | Rebinding keys in the game's Controls menu works and is kept, with Mac key names. | |
 | Game controller | Separate trigger axes, bindings that stay between sessions, menus driven by the pad, dead zones, and a choice of what happens when it is unplugged. | <a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/f-controller.jpg" width="180" alt="Controller settings"></a> |
 | Rumble | The controller vibrates with the game's force feedback, optionally on crashes too. Off by default. | <a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/f-rumble.jpg" width="180" alt="Rumble settings"></a> |
