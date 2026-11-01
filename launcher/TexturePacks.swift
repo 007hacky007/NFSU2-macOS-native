@@ -114,8 +114,9 @@ final class TexturePackStore: ObservableObject {
     func importMod(_ mod: URL, for c: CatalogPack?, done: ((Bool) -> Void)? = nil) {
         guard let game = game() else { return }
         let base = mod.deletingPathExtension().lastPathComponent
-        let tmpID = c?.id ?? "import-" + String(base.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.prefix(40))
-            + "-" + String(UUID().uuidString.prefix(6)).lowercased()
+        let slug: [Character] = base.lowercased().map { (ch: Character) -> Character in ch.isLetter || ch.isNumber ? ch : "-" }
+        let suffix: String = String(UUID().uuidString.prefix(6)).lowercased()
+        let tmpID: String = c?.id ?? ("import-" + String(slug.prefix(40)) + "-" + suffix)
         start(tmpID, "Making the pack from \(mod.lastPathComponent)…") { report in
             var c = c
             if c == nil, !UHUDPack.isDirectory(mod), let sum = try? Self.sha256(mod) { c = TexturePackCatalog.pack(sha256: sum) }

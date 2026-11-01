@@ -100,7 +100,12 @@ enum TexImage {
     }
     private static let precision = 22
     private static func fixed(_ c: Coeffs) -> [Int32] {
-        c.k.map { v in Int32(v < 0 ? (-0.5 + v * Double(1 << precision)) : (0.5 + v * Double(1 << precision))) }
+        // Spelled out so older Swift compilers type-check it in time.
+        let scale: Double = Double(1 << precision)
+        return c.k.map { (v: Double) -> Int32 in
+            let s: Double = v * scale
+            return Int32(v < 0 ? s - 0.5 : s + 0.5)
+        }
     }
     @inline(__always) private static func clip8(_ v: Int64) -> UInt8 {
         if v >= Int64(1) << (precision + 8) { return 255 }

@@ -133,17 +133,19 @@ struct LanguagePackTests {
         repeat { var b = UInt8(v & 0x7f); v >>= 7; if v > 0 { b |= 0x80 }; o.append(b) } while v > 0
         return o
     }
+    /// joins byte arrays; long + chains are too slow to type-check for older Swift compilers
+    static func cat(_ parts: [UInt8]...) -> [UInt8] { parts.flatMap { $0 } }
     /// one RAR 5 block: CRC (not checked), size, the header's fields
-    static func block(_ fields: [UInt8]) -> [UInt8] { [0, 0, 0, 0] + vint(fields.count) + fields }
+    static func block(_ fields: [UInt8]) -> [UInt8] { cat([0, 0, 0, 0], vint(fields.count), fields) }
     /// a RAR 5 archive with one stored file
     static func rar(name: String, data: [UInt8], extra: [UInt8] = []) -> [UInt8] {
         let sig: [UInt8] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
-        let main = block(vint(1) + vint(0) + vint(0))
-        let n = Array(name.utf8)
-        var f = vint(2) + vint(extra.isEmpty ? 2 : 3)
+        let main = block(cat(vint(1), vint(0), vint(0)))
+        let n: [UInt8] = Array(name.utf8)
+        var f: [UInt8] = cat(vint(2), vint(extra.isEmpty ? 2 : 3))
         if !extra.isEmpty { f += vint(extra.count) }
-        f += vint(data.count) + vint(0) + vint(data.count) + vint(0) + vint(0) + vint(0) + vint(n.count) + n + extra
-        return sig + main + block(f) + data + block(vint(5) + vint(0) + vint(0))
+        f += cat(vint(data.count), vint(0), vint(data.count), vint(0), vint(0), vint(0), vint(n.count), n, extra)
+        return cat(sig, main, block(f), data, block(cat(vint(5), vint(0), vint(0))))
     }
     static func refused(_ what: String, _ body: () throws -> Void) {
         do { try body(); check(false, "refused: " + what) } catch { check(true, "refused: " + what) }
@@ -208,15 +210,20 @@ struct LanguagePackTests {
         // 3. RAR 5 headers that lie
         let sig: [UInt8] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]
         func list(_ b: [UInt8]) throws { _ = try b.withUnsafeBytes { try RarArchive.list($0) } }
-        refused("RAR header size past the end") { try list(sig + [0, 0, 0, 0] + vint(1000) + [2, 0]) }
-        refused("RAR number that never ends") { try list(sig + [0, 0, 0, 0] + [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]) }
-        refused("RAR extra area larger than its header") { try list(sig + block(vint(2) + vint(1) + vint(500) + vint(0))) }
-        refused("RAR file name past its header") { try list(sig + block(vint(2) + vint(0) + vint(0) + vint(0) + vint(0) + vint(0) + vint(0) + vint(200) + [65])) }
-        refused("RAR data area past the end") { try list(sig + block(vint(2) + vint(2) + vint(1_000_000) + vint(0) + vint(0) + vint(0) + vint(0) + vint(0) + vint(1) + [65])) }
-        refused("RAR CRC field past its header") { try list(sig + block(vint(2) + vint(0) + vint(4) + vint(0) + vint(0))) }
+        let zero4: [UInt8] = [0, 0, 0, 0]
+        refused("RAR header size past the end") { try list(cat(sig, zero4, vint(1000), [2, 0])) }
+        refused("RAR number that never ends") { try list(cat(sig, zero4, [UInt8](repeating: 0xff, count: 11))) }
+        refused("RAR extra area larger than its header") { try list(cat(sig, block(cat(vint(2), vint(1), vint(500), vint(0))))) }
+        refused("RAR file name past its header") {
+            try list(cat(sig, block(cat(vint(2), vint(0), vint(0), vint(0), vint(0), vint(0), vint(0), vint(200), [65]))))
+        }
+        refused("RAR data area past the end") {
+            try list(cat(sig, block(cat(vint(2), vint(2), vint(1_000_000), vint(0), vint(0), vint(0), vint(0), vint(0), vint(1), [65]))))
+        }
+        refused("RAR CRC field past its header") { try list(cat(sig, block(cat(vint(2), vint(0), vint(4), vint(0), vint(0))))) }
         refused("RAR extra record of size 0") { try list(rar(name: "a", data: [1], extra: vint(0))) }
-        refused("RAR extra record larger than the area") { try list(rar(name: "a", data: [1], extra: vint(50) + vint(1))) }
-        refused("RAR fields cut off mid-header") { try list(sig + block(vint(2) + vint(0) + [0x80])) }
+        refused("RAR extra record larger than the area") { try list(rar(name: "a", data: [1], extra: cat(vint(50), vint(1)))) }
+        refused("RAR fields cut off mid-header") { try list(cat(sig, block(cat(vint(2), vint(0), [0x80])))) }
         for cut in stride(from: 9, to: rar(name: "abc", data: [1, 2, 3]).count, by: 3) {
             _ = try? list(Array(rar(name: "abc", data: [1, 2, 3]).prefix(cut)))   // must not trap
         }
