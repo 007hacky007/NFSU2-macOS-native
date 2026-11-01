@@ -31,78 +31,172 @@ time. On an M1 Pro, races run at **119 fps** (the display's limit), against
 
 ## This fork
 
-This fork follows upstream's main and adds what upstream is missing or declined.
-Both game versions (European and North American v1.2) are supported, as upstream
-does. Each optional feature has a control in the launcher, which says what the
-original game does; Settings > Restore Original Game turns them all back.
-`docs/fork-tracker.md` lists every feature with its state, so nothing is
-dropped silently.
-
-| Area | Added in this fork |
-|---|---|
-| Online and LAN | LAN play on the real network and hosting through the game's own `server.dll`; Online through a WebSocket relay with queue and resume; player and crew counts; better online races (every track, 6 players) |
-| Free roam with friends | Other players in career free roam, races started from free roam, rooms, up to four colored crews, solid or ghost cars, quick chat with bubbles, a Game Tools panel (Cmd+Shift+M) for the free-roam race lobby, horns, friends' engines heard |
-| Input | Mac keyboard as Windows delivers it (layouts, dead keys, Option as Alt), rebinding that works and is saved, separate trigger axes, pad bindings that persist, menus driven by the pad, hotplug choice, controller rumble |
-| Graphics | Resolution scale (50 to 200%), movie framing (fit, fill, stretch), other cars' headlights, FPS counter, rain fixes on wide screens, UHUD menus and HUD, and an upscaled texture pack the launcher builds from your own game files |
-| Audio and music | Your own music folder through EA Trax with playback controls, sound follows new headphones, music no longer stops after shops |
-| Movies | Subtitles (also in English), 60 FPS race intros and cutscenes |
-| Career and saves | Ten-car garage with Trade Car, power in bhp or kW, both regions' cars, 16 languages with a language pack builder, encrypted cloud saves compatible with the browser version, crash fixes for the car lot and the Performance Shop |
-| Photo and drift | Photo mode with a free camera, PNG screenshots and a gallery in the launcher; drift mode in free roam with a score overlay |
-| Engine | Fairer thread scheduling, a reusable guest heap and virtual memory, quitting through the game's own shutdown (saves are never cut), pause when you switch apps, faster loading and car screens, a stall watchdog |
-| Compiler and tests | x87 precision control, full 128-bit SSE2, override and hook lists derived from the runtime, optional lift options (`LREGS`, `JTSWITCH`, `INLINE_LIST`, `FTOL2INL`, see `LIFTER_EFFICIENCY.md`), more ISA and runtime checks for both builds |
+This fork follows upstream's main and adds what upstream is missing or declined,
+for both game versions (European and North American v1.2). Each optional feature
+has a switch in the launcher that says what the original game does, and
+**Settings > Restore Original Game** turns them all back.
+[`docs/fork-tracker.md`](docs/fork-tracker.md) lists every feature with its state.
 
 ### NFSU2 Builder
 
-This fork publishes no ready-made `NFSU2.app`. The recompiled code is made from
-each player's own `SPEED2.EXE`, so the app is built on your Mac, and NFSU2
-Builder does that for you without Terminal:
+This fork has no ready-made app to download. You get **NFSU2 Builder**, a small
+app that makes `NFSU2.app` on your own Mac from your own copy of the game. There
+is no Terminal and no scripts: each missing item is a red row with a button that
+fixes it. Click a picture to see it full size.
+
+<table>
+<tr>
+<td align="center"><a href="docs/readme/builder/checklist-green.png"><img src="docs/readme/thumbs/builder-checklist-green.jpg" width="180" alt="NFSU2 Builder, every row green"></a><br><sub>Ready to build</sub></td>
+<td align="center"><a href="docs/readme/builder/checklist-red.png"><img src="docs/readme/thumbs/builder-checklist-red.jpg" width="180" alt="NFSU2 Builder refusing the disc SPEED2.EXE"></a><br><sub>A red row says what to fix</sub></td>
+<td align="center"><a href="docs/readme/builder/which-copy.png"><img src="docs/readme/thumbs/builder-which-copy.jpg" width="180" alt="Which copy works? with both SPEED2.EXE files"></a><br><sub>Which SPEED2.EXE works</sub></td>
+</tr>
+<tr>
+<td align="center"><a href="docs/readme/builder/progress.png"><img src="docs/readme/thumbs/builder-progress.jpg" width="180" alt="NFSU2 Builder building"></a><br><sub>Building, about 3 minutes</sub></td>
+<td align="center"><a href="docs/readme/builder/ready.png"><img src="docs/readme/thumbs/builder-ready.jpg" width="180" alt="NFSU2 Builder finished"></a><br><sub>Done, click Play</sub></td>
+<td align="center"><a href="docs/readme/builder/dmg.png"><img src="docs/readme/thumbs/builder-dmg.jpg" width="180" alt="The disk image with the Open Anyway steps"></a><br><sub>Opening it the first time</sub></td>
+</tr>
+</table>
 
 1. Download `NFSU2-Builder.dmg` from this fork's [Releases page](https://github.com/007hacky007/NFSU2-macOS-native/releases/latest) and open it.
-2. Double-click NFSU2 Builder. macOS blocks it the first time because it is not
-   signed by Apple: click **Done**, open System Settings > Privacy & Security,
-   scroll down and click **Open Anyway** (the pictures in the disk image show
-   where). On macOS 14 or older, right-click NFSU2 Builder and choose Open.
-3. Fix any red row: each one has a button. **Install...** gets Apple's Xcode
-   command line tools (about 2 GB, needed to compile), **Install** gets the
-   Builder's own Python and the lifter's packages (about 32 MB). **Choose...**
-   picks your game data and, when that does not hold one, the game program.
+2. Double-click **NFSU2 Builder**. macOS blocks it the first time because Apple has
+   not signed it: click **Done**, then open System Settings > Privacy & Security,
+   scroll down and click **Open Anyway**. The disk image shows where. On macOS 14 or older, right-click
+   NFSU2 Builder and choose Open.
+3. Press the button on each red row. **Choose...** under Game data takes your game
+   folder or the two disc images.
 4. Click **Build NFSU2.app**, then **Play**.
 
-What it needs:
+What you need:
 
-- **Game data:** your installed game folder, or the two PC disc images (`.iso`,
-  `.cue`/`.bin`, or disc folders) chosen together. Data of either region works.
-  Files that differ from the releases the Builder knows (another language, a
-  repack, mods) give an amber note and never block the build.
-- **Game program:** one of the two `SPEED2.EXE` files in
-  [Game versions](#game-versions), both v1.2 without the CD check. If your game
-  folder does not have one, choose the file itself or a zip, rar or 7z archive
-  that holds it. The disc version and EA's official v1.2 patch are
-  copy-protected and refused with a plain message. **Which copy works?** in the
-  window lists the two files with size and SHA-256.
+- **An Apple Silicon Mac** (M1 or later) with macOS 11 or later. The Builder
+  installs Apple's command line tools (about 2 GB) and its own Python (about
+  32 MB) when you press **Install**.
+- **The game data:** your installed game folder, or the two PC disc images
+  (`.iso`, `.cue`/`.bin`, or disc folders). Either region works. A copy with
+  other files (another language, a repack, mods) gets an amber note and still
+  builds.
+- **The game program:** `SPEED2.EXE` v1.2 without the CD check, European or North
+  American ([Game versions](#game-versions) lists both with size and SHA-256).
+  If your game folder doesn't have it, choose the file itself or a zip, rar or 7z
+  archive that holds it. The disc version and EA's official v1.2 patch are
+  copy-protected, so the Builder refuses them and says why.
 
-What it does: it runs the same scripts as the Terminal build
-([Build from Terminal](#build-from-terminal)) from a copy of the sources bundled in
-the app, builds the original and HD engines for your `SPEED2.EXE`'s region, puts
-`NFSU2.app` in `/Applications` (or a folder you choose) and points its launcher at
-your game folder, so the first start goes straight to the launcher window. A folder
-that already holds a supported `SPEED2.EXE` is used as it is. Otherwise (disc
-images, or a folder with another `SPEED2.EXE`) the Builder makes a game folder of
-its own, `~/Games/NFSU2` unless you change it, with APFS clones of your folder's
-files or the unpacked discs, and the chosen `SPEED2.EXE`. Your own copy, disc
-images and archives are only read.
+<details>
+<summary>What the Builder does, how long it takes, what it downloads</summary>
 
-On an M1 Pro the build takes about 3 minutes (lifting 52 s, compiling 57 s, linking
-10 s, the launcher 60 s; a rebuild skips the launcher), plus about 1.5 minutes the
-first time for the Python download and setup. It needs about 1.5 GB of free space
-while building (the workspace is 0.6 GB per region built; **Remove build files**
-frees it afterwards) and 1.7 GB more when it unpacks disc images. The Builder works in
-`~/Library/Application Support/NFSU2 Builder` and never touches the Python of
-your system or Homebrew. It downloads only its Python (python-build-standalone,
-checked against a pinned SHA-256) and the packages in `requirements.txt`; never
-the game, a game executable or a patch. Saves and settings live outside the app
-(`~/Library/Application Support/NFSU2 Saves`, `~/.nfsu2_registry`), so building
-again and replacing `NFSU2.app` keeps your progress.
+It runs the same scripts as [Build from Terminal](#build-from-terminal) from a
+copy of the sources inside the app. It builds the original and HD engines for
+your `SPEED2.EXE`'s region and puts `NFSU2.app` in `/Applications` (or a folder
+you choose). It also points the launcher at your game folder, so the first start
+goes straight to the launcher window.
+
+A game folder that already holds a supported `SPEED2.EXE` is used as it is.
+Otherwise (disc images, or a folder with another `SPEED2.EXE`) the Builder makes
+a game folder of its own, `~/Games/NFSU2` unless you change it. It fills it with
+APFS clones of your files or the unpacked discs, plus the chosen `SPEED2.EXE`.
+Your own copy, disc images and archives are only read.
+
+On an M1 Pro the build takes about 3 minutes: lifting 52 s, compiling 57 s,
+linking 10 s and the launcher 60 s (a rebuild skips the launcher). The first
+time, add about 1.5 minutes for the Python download and setup. It needs about
+1.5 GB of free space while building (0.6 GB stays per region built until you
+press **Remove build files**), and 1.7 GB more when it unpacks disc images.
+
+The Builder works in `~/Library/Application Support/NFSU2 Builder` and never
+touches your system's Python or Homebrew. It downloads only its Python
+(python-build-standalone, checked against a pinned SHA-256) and the packages in
+`requirements.txt`. It never downloads the game, a game program or a patch.
+Saves and settings live outside the app (`~/Library/Application Support/NFSU2
+Saves`, `~/.nfsu2_registry`), so building again keeps your progress.
+
+</details>
+
+### What this fork adds
+
+Click a picture to see it full size.
+
+| Feature | What it does for you | Picture |
+|---|---|---|
+| **Online and free roam** | | |
+| LAN play | Race Macs and Windows PCs on the same network, and host LAN games with the game's own server. | |
+| Online play | The game's Online mode through a community server, since EA's servers are gone. Your place in a full server survives a reconnect. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/8e1c547bcfdc63cc4b4b005a164ea94d9f99fbaf/online-lobby.png"><img src="docs/readme/thumbs/online-lobby.jpg" width="180" alt="The game's Online lobby"></a> |
+| Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms and up to four crews in your colours. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d533cbdadf29f4435707020cf2890b01bc224f4/fr-free-roam-eu-sees-na-ghost.png"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
+| Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d533cbdadf29f4435707020cf2890b01bc224f4/fr-free-roam-na.png"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
+| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
+| Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/78ce02f9706bb64f7055c5c5cf31a92d5e0acf2d/ph-horns-pause-audio-eu.png"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
+| Player counts | See how many play on the server, in your room and in your crews before you join. | <a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/f-player-counts.jpg" width="180" alt="Online settings with player counts"></a> |
+| Better online races | Every track, up to 6 players, 2 laps by default, a lobby filter that works, and you log in under your own name. | |
+| Show in Discord | Your Discord status shows the game and the race you are in. Off by default. | <a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/f-discord.jpg" width="180" alt="Show in Discord switch"></a> |
+| **Input** | | |
+| Mac keyboard | Typing works on every keyboard layout, with accents and Option as Alt, as on Windows. | |
+| Key rebinding | Rebinding keys in the game's Controls menu works and is kept, with Mac key names. | |
+| Game controller | Separate trigger axes, bindings that stay between sessions, menus driven by the pad, dead zones, and a choice of what happens when it is unplugged. | <a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/f-controller.jpg" width="180" alt="Controller settings"></a> |
+| Rumble | The controller vibrates with the game's force feedback, optionally on crashes too. Off by default. | <a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/f-rumble.jpg" width="180" alt="Rumble settings"></a> |
+| **Graphics** | | |
+| Frame rate | Choose 30, 60, 120 or 240 FPS, or follow the screen; speed, physics, smoke and the NOS trail stay as at 60. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/f-frame-rate.jpg" width="180" alt="Frame rate settings"></a> |
+| Frame-rate counter | Frames per second and frame times in the corner, simple or detailed; Cmd-N switches it. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/8e1c547bcfdc63cc4b4b005a164ea94d9f99fbaf/fps-counter.png"><img src="docs/readme/thumbs/fps-counter.jpg" width="180" alt="Frame-rate counter in a race"></a> |
+| Other cars' headlights | Other players' headlights light the road, or every car's. Single player looks as before unless you pick All cars. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/8e1c547bcfdc63cc4b4b005a164ea94d9f99fbaf/other-headlights.png"><img src="docs/readme/thumbs/headlights.jpg" width="180" alt="Before and after: other cars' headlights on the road"></a> |
+| Sharper reflections | Sharper wet road, mirror and car paint, with the sky, car lights and more detail in them. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/b4c523e76c13c2e162fdf416208714425fe6a6e7/hr-mirror-eu.png"><img src="docs/readme/thumbs/reflections.jpg" width="180" alt="Rear-view mirror, original and sharpest"></a> |
+| Picture options | Remove the PC version's yellow-green tint, the console gamma, edge smoothing and sharpening. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d533cbdadf29f4435707020cf2890b01bc224f4/vo-colour-eu.png"><img src="docs/readme/thumbs/picture.jpg" width="180" alt="City with the original tint, less tint and no tint"></a> |
+| Resolution scale | Draw at 50 to 200% of the window's pixels: faster or sharper. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/f-display.jpg" width="180" alt="Display settings"></a> |
+| Sharper menus and HUD | One click downloads LunicAura106's Upscaled HUD mod and sets it up; Cmd-T compares. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/c9ff6706d3110777ab79414a63eb15a800279e3d/uhud-before-after.png"><img src="docs/readme/thumbs/uhud.jpg" width="180" alt="Menu and speedometer, original and with the Upscaled HUD"></a> |
+| Texture packs | The community's texture mods (TexMod, TexWizard and more): 38 listed, 27 with one-click Download, each with its own switch. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d533cbdadf29f4435707020cf2890b01bc224f4/tp-texpacks-winter-na.png"><img src="docs/readme/thumbs/texture-packs.jpg" width="180" alt="Winter texture pack in the main menu"></a> |
+| Upscaled textures | Builds a 4x sharper copy of the game's own textures from your files, on your Mac. Off by default. | <a href="docs/readme/launcher/upscaled-textures.png"><img src="docs/readme/thumbs/f-upscaled.jpg" width="180" alt="Upscaled textures card"></a> |
+| Data mods | Detailed Map, Upscaled Freeway Signs and Carbon 4K, downloaded and applied by the launcher; your game folder stays as it is. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/45039c91e3fb05e369677df4096b5078bd65e420/data-mods-minimap.png"><img src="docs/readme/thumbs/data-mods.jpg" width="180" alt="Minimap without and with the Detailed Map mod"></a> |
+| Rain on wide screens | Rain drops keep their shape and the rain tint covers the whole screen. | |
+| Highest graphics at first start | Start with every graphics option at its highest instead of the game's hardware check. Off by default. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/f-first-launch.jpg" width="180" alt="First launch setting"></a> |
+| **Audio and music** | | |
+| Your own music | Play a folder of your music through EA Trax, with artist and title, pause, next and shuffle. Off by default. | <a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/f-music.jpg" width="180" alt="Music settings"></a> |
+| Headphones | Sound moves to new headphones or AirPods without restarting the game. | |
+| Music after shops | The music no longer stops after you visit a shop. | |
+| **Movies** | | |
+| Subtitles | Subtitles under the story movies, also in English with a free pack. Off by default. | |
+| 60 FPS cutscenes | Race intros and in-game scenes at 60 instead of 30 frames a second, with or without black bars. Off by default. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/4accaa2da262881550eb0db5c644ebc387cad116/rate-bars-eu.png"><img src="docs/readme/thumbs/cutscenes.jpg" width="180" alt="Race intro with and without black bars"></a> |
+| Movie framing | Movies fit with black bars, fill the screen, or stretch. | |
+| **Career and saves** | | |
+| 10-car garage | Ten career garage slots instead of five, and Trade Car for 80% of what you paid. Old saves still load in the original game. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/5cc176e7369c9917adf0ef83057aec3f94fa6f25/garage-slots-eu-na.png"><img src="docs/readme/thumbs/garage.jpg" width="180" alt="Garage with ten slots and Trade Car"></a> |
+| Power in bhp or kW | Choose the power unit apart from the speed unit, in Options and the pause menu. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/ce1c97fab799f636884a751f6bda19b9d4c4680d/power-units-eu-na.png"><img src="docs/readme/thumbs/power-units.jpg" width="180" alt="Gameplay options with Power Units"></a> |
+| Both regions' cars | With all four cars' files, buy and race the Corsa, 106, Civic and RSX in either version. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/94b42149f8792bf78338e22691cfd599da55dc6c/region-cars.png"><img src="docs/readme/thumbs/region-cars.jpg" width="180" alt="Peugeot 106 and Honda Civic in Quick Race car select"></a> |
+| Languages | Pick the game's language in the launcher, 16 in all. | <a href="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/e0942ca8b62deca17dbcc0787187b34828b5340a/language-eu-na.png"><img src="docs/readme/thumbs/languages.jpg" width="180" alt="Main menu in six languages"></a> |
+| Language packs | The launcher downloads and builds packs for the languages your game folder lacks, with voices and movies. | <a href="docs/readme/launcher/settings-mods.png"><img src="docs/readme/thumbs/f-language-packs.jpg" width="180" alt="Language packs in the launcher"></a> |
+| Cloud saves | Encrypted cloud saves that also work with the browser version, linked by an 8-word phrase. Off until you link. | <a href="docs/readme/launcher/saves-cloud.png"><img src="docs/readme/thumbs/f-cloud-saves.jpg" width="180" alt="Encrypted cloud saves in the save window"></a> |
+| Crash fixes | The car lot opens on damaged profiles, and the Performance Shop no longer locks up after Nitrous. | |
+| **Photo and drift** | | |
+| Photo mode | F12 or the pause menu stops the world, hides the HUD and frees the camera; pictures are saved as PNG. Off by default. | <a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/f-photo-drift.jpg" width="180" alt="Photo and drift settings"></a> |
+| Drift mode in free roam | X in free roam switches on drift handling, camera and scoring, with a points panel. Off by default. | |
+| Screenshots gallery | See, export and delete your pictures from the launcher. | |
+| **Engine** | | |
+| Safe quitting | Cmd-Q goes through the game's own shutdown, so a save is never cut in half. | |
+| Switching apps | The game pauses when you switch to another app, as on Windows, or keeps running if you choose. | |
+| Long sessions | Fairer thread scheduling, memory that lasts long careers, faster loading and car screens, and a log report if the game stalls. | |
+| PC-exact math | Physics and timing math rounds like the PC's FPU. | |
+| **Launcher** | | |
+| Restore Original Game | Every option names the original game's value, and one button sets them all back. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/launcher-settings-graphics.jpg" width="180" alt="Settings, Graphics tab"></a> |
+| **For developers** | | |
+| Compiler and tests | x87 precision control, full 128-bit SSE2, override and hook lists derived from the runtime, optional lift options (`LREGS`, `JTSWITCH`, `INLINE_LIST`, `FTOL2INL`, see `LIFTER_EFFICIENCY.md`), and more ISA and runtime checks for both builds. | |
+
+### The launcher
+
+<table>
+<tr>
+<td align="center"><a href="docs/readme/launcher/main.png"><img src="docs/readme/thumbs/launcher-main.jpg" width="180" alt="Launcher main window"></a><br><sub>Main window</sub></td>
+<td align="center"><a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/launcher-settings-graphics.jpg" width="180" alt="Settings, Graphics tab"></a><br><sub>Graphics</sub></td>
+<td align="center"><a href="docs/readme/launcher/settings-picture.png"><img src="docs/readme/thumbs/launcher-settings-picture.jpg" width="180" alt="Settings, Picture tab"></a><br><sub>Picture</sub></td>
+<td align="center"><a href="docs/readme/launcher/settings-controls.png"><img src="docs/readme/thumbs/launcher-settings-controls.jpg" width="180" alt="Settings, Controls tab"></a><br><sub>Controls</sub></td>
+</tr>
+<tr>
+<td align="center"><a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/launcher-settings-online.jpg" width="180" alt="Settings, Online tab"></a><br><sub>Online</sub></td>
+<td align="center"><a href="docs/readme/launcher/settings-game.png"><img src="docs/readme/thumbs/launcher-settings-game.jpg" width="180" alt="Settings, Game tab"></a><br><sub>Game</sub></td>
+<td align="center"><a href="docs/readme/launcher/settings-mods.png"><img src="docs/readme/thumbs/launcher-settings-mods.jpg" width="180" alt="Settings, Mods tab"></a><br><sub>Mods and languages</sub></td>
+<td align="center"><a href="docs/readme/launcher/settings-more.png"><img src="docs/readme/thumbs/launcher-settings-more.jpg" width="180" alt="Settings, More tab"></a><br><sub>More</sub></td>
+</tr>
+<tr>
+<td align="center"><a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups"></a><br><sub>Quick chat groups</sub></td>
+<td align="center"><a href="docs/readme/launcher/texture-packs.png"><img src="docs/readme/thumbs/launcher-texture-packs.jpg" width="180" alt="Texture Packs window"></a><br><sub>Texture packs</sub></td>
+<td align="center"><a href="docs/readme/launcher/upscaled-textures.png"><img src="docs/readme/thumbs/launcher-upscaled-textures.jpg" width="180" alt="Texture Packs window with upscaled textures built"></a><br><sub>Upscaled textures</sub></td>
+<td align="center"><a href="docs/readme/launcher/saves-cloud.png"><img src="docs/readme/thumbs/launcher-saves-cloud.jpg" width="180" alt="Saves window with cloud saves"></a><br><sub>Saves and cloud</sub></td>
+</tr>
+</table>
 
 Parts of the runtime and tools are ported from th0mk's
 [nfsu2-web](https://github.com/th0mk/nfsu2-web) (MIT License, Copyright (c)
