@@ -27,6 +27,12 @@ int main(int argc, char **argv){
         setenv("NFSU2_SERVER_URL", argv[1], 1);
         setenv("NFSU2_ROAM_NAME", "fixture-player", 1);
         assert(native_net_enabled());
+        if (argc > 2 && !strcmp(argv[2], "lanports")){
+            /* LAN play open before the link: the hello says it, with the ports bound so far (9999) */
+            net_mailbox *l = native_net_mailbox(NET_MODE_LAN); assert(l);
+            __atomic_store_n(&l->udp_ports, NET_UDP_PORTS_SET | 1u << (9999 % 31), __ATOMIC_SEQ_CST);
+            __atomic_store_n(&l->want, 1, __ATOMIC_SEQ_CST);
+        }
         net_mailbox *m = native_net_mailbox(NET_MODE_VLAN);
         assert(m);
         m->port = 47210;
@@ -92,6 +98,16 @@ int main(int argc, char **argv){
             __atomic_store_n(&other->tx_head, NET_TX_SLOTS, __ATOMIC_SEQ_CST);
             for (int i = 0; i < 500 && (m->tx_tail != NET_TX_SLOTS + 1 || other->tx_tail != NET_TX_SLOTS); i++) usleep(10000);
             assert(m->tx_tail == NET_TX_SLOTS + 1 && other->tx_tail == NET_TX_SLOTS);
+        }
+        if (argc > 2 && !strcmp(argv[2], "lanports")){
+            /* LAN play open with its sockets' ports said (net_relay.c udp_ports): the hello carries them, and
+             * {"t":"lan"} again when they change */
+            net_mailbox *l = native_net_mailbox(NET_MODE_LAN); assert(l);
+            for (int i = 0; i < 500 && __atomic_load_n(&l->page_state, __ATOMIC_SEQ_CST) != NET_PAGE_ONLINE; i++) usleep(10000);
+            __atomic_store_n(&l->udp_ports, NET_UDP_PORTS_SET | 1u << (3658 % 31), __ATOMIC_SEQ_CST);
+            /* the fixture says when it had the new ports: a peer list naming 9 */
+            for (int i = 0; i < 500 && !(__atomic_load_n(&l->peer_bits[0], __ATOMIC_SEQ_CST) & (1u << 9)); i++) usleep(10000);
+            assert(__atomic_load_n(&l->peer_bits[0], __ATOMIC_SEQ_CST) & (1u << 9));
         }
         if (argc > 2 && !strcmp(argv[2], "idle")){
             __atomic_store_n(&m->want, 0, __ATOMIC_SEQ_CST);

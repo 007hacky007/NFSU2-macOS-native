@@ -1,7 +1,9 @@
 /* Foundation WebSocket transport shared by free roam and the guest's LAN.
  * The wire format is web/src/net/proto.ts. Advertise raw frames only; the
  * switch retains browser interoperability without requiring its optional
- * bundle, compact, delta and prediction codecs here.
+ * bundle, compact, delta and prediction codecs here.  LAN play's bound UDP
+ * ports go with the hello and {"t":"lan"} ("udp", net_proto.h udp_ports), so
+ * the switch sends a LAN broadcast only where a socket takes it.
  *
  * The client side of th0mk's nfsu2-web server's switch (its wire format:
  * net_proto.h, MIT). */
@@ -100,6 +102,7 @@ void native_net_get_status(native_net_status *o){
     unsigned backoff, nextMailbox;
     dispatch_semaphore_t closeWait;
     BOOL connected, welcomed, sending, receiving, stopped, lanSent, queued, dropped;
+    uint32_t udpSent;                       /* the "udp" the switch was last told (0: none) */
 }
 - (void)pump;
 - (void)connect;
@@ -176,10 +179,17 @@ void native_net_get_status(native_net_status *o){
     socket = [session webSocketTaskWithURL:u.URL]; socket.maximumMessageSize = 4 << 20;
     [socket resume];
 }
+/* the UDP ports LAN play's sockets are bound to (net_relay.c ports_note): NET_UDP_PORTS_SET and a bit each, 0 while
+ * LAN play is shut or the relay does not say (the switch then sends it every LAN broadcast) */
+- (uint32_t)lanPorts {
+    uint32_t m = lanSent && lan ? ld(&lan->udp_ports) : 0;
+    return (m & NET_UDP_PORTS_SET) ? m : 0;
+}
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task didOpenWithProtocol:(NSString *)protocol {
     (void)s; (void)protocol; if (socket != task) return;
-    connected = YES; lanSent = lan && ld(&lan->want);
+    connected = YES; lanSent = lan && ld(&lan->want); udpSent = [self lanPorts];
     NSMutableDictionary *hello = [@{ @"t": @"hello", @"name": name, @"lan": @((int)lanSent) } mutableCopy];
+    if (udpSent) hello[@"udp"] = @(udpSent);
     if (vip && token.length){ hello[@"vip"] = [NSString stringWithFormat:@"%u.%u.%u.%u", vip >> 24, (vip >> 16) & 255, (vip >> 8) & 255, vip & 255]; hello[@"token"] = token; }
     if (ticket.length) hello[@"ticket"] = ticket;
     if (claim_token[0]) hello[@"claim"] = @(claim_token);
@@ -305,7 +315,14 @@ void native_net_get_status(native_net_status *o){
     [self receive];
     if (!connected) return;
     BOOL l = lan && ld(&lan->want);
-    if (lanSent != l){ lanSent = l; [self sendJSON:@{ @"t": @"lan", @"on": @((int)l) }]; }
+    BOOL was = lanSent; lanSent = l;
+    uint32_t udp = [self lanPorts];
+    if (was != l || udp != udpSent){
+        udpSent = udp;
+        NSMutableDictionary *msg = [@{ @"t": @"lan", @"on": @((int)l) } mutableCopy];
+        if (udp) msg[@"udp"] = @(udp);
+        [self sendJSON:msg];
+    }
     if (now >= pingAt){ pingAt = now + 2000; [self sendJSON:@{ @"t": @"ping", @"id": @(now) }]; }
     if (!welcomed || sending) return;
     for (unsigned i = 0; i < 2; i++){

@@ -4,7 +4,8 @@
 A relay server of its own on 127.0.0.1 and tests/net/native/transport.m as the
 client (runtime/net_native.m): relay (and the round trip of a ping), resume,
 queue (and the place in it), two clients, idle, burst, a peer list of a full
-server, the launcher's claim token and exit at process end.  tests/net_harness.sh runs it inside the
+server, the launcher's claim token, LAN play's ports (lanports) and exit at
+process end.  tests/net_harness.sh runs it inside the
 loopback-only sandbox profile (tests/net/loopback-only.sb).
 """
 import base64
@@ -85,7 +86,10 @@ def handshake(conn):
     return hello, path
 
 
-def serve(listener, resume=False, queued=False, idle=False, burst=False, big=False):
+SET = 0x80000000
+
+
+def serve(listener, resume=False, queued=False, idle=False, burst=False, big=False, lanports=False):
     if queued:
         conn, _ = listener.accept()
         with conn:
@@ -98,6 +102,11 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
     with conn:
         conn.settimeout(10)
         hello, path = handshake(conn)
+        if lanports:
+            # LAN play open, its UDP sockets' ports said (9999: the server list's adverts)
+            assert hello.get("lan") == 1 and hello.get("udp") == SET | 1 << (9999 % 31), hello
+        else:
+            assert "udp" not in hello, "no ports without LAN play"
         if queued:
             assert hello["ticket"] == "fixture-only-ticket"
             assert "resume" in parse_qs(urlsplit(path).query, keep_blank_values=True)
@@ -121,6 +130,19 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
             reply = struct.pack("!B3xIIHH", 1, destination, source, dport, sport) + b"pong"
             send(conn, reply, binary=True)
             break
+        if lanports:
+            # the new ports in {"t":"lan"} (LAN play still on), then a list that names 9 so the client knows
+            while True:
+                kind, data = receive(conn)
+                if kind != 1:
+                    continue
+                control = json.loads(data)
+                if control.get("t") == "ping":
+                    send(conn, {"t": "pong", "id": control["id"]})
+                    continue
+                assert control == {"t": "lan", "on": 1, "udp": SET | 1 << (3658 % 31)}, control
+                break
+            send(conn, {"t": "peers", "peers": [{"vip": 0x0A4D0002}, {"vip": 0x0A4D0003}, {"vip": 0x0A4D0009}]})
         if burst:
             counts = {1: 0, 3: 0}
             previous = None
@@ -199,11 +221,11 @@ def main():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(2)
-        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "atexit"):
+        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "lanports", "atexit"):
             failure = []
             def worker():
                 try:
-                    serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst", big=scenario == "big")
+                    serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst", big=scenario == "big", lanports=scenario == "lanports")
                 except BaseException as error:
                     failure.append(error)
             CLAIM_EXPECTED[0] = CLAIM if scenario == "claim" else None
@@ -226,7 +248,7 @@ def main():
                 os.close(read_end)
                 assert result.returncode == 0
             else:
-                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "atexit") else []), timeout=20)
+                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "lanports", "atexit") else []), timeout=20)
                 assert result.returncode == 0
             thread.join(timeout=5)
             if failure:
