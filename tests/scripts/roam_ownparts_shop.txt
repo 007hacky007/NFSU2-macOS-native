@@ -1,0 +1,39 @@
+# The player's own car's shop parts (brakes, exhaust tips, rims, spoiler, ...)
+# through visits to the Performance Shop in free roam among friends
+# (nfsu2-web players' reports: brakes, exhaust tips or spoiler gone after any
+# shop, back after a reload; runtime/roam_game.c packs_wake).  A free-roam
+# part pack was left whole as soon as one of its models in HIBERNATING had a
+# copy of its own in it (often a friend's car's); the player's own model of
+# that pack stayed in HIBERNATING and the next shop's take-back lost it.  Now
+# only the models with a copy stay there.  From a career save whose car has
+# shop parts, among stand-in friends changing stock cars (tests/roam/
+# plan_loader.sh), VISITS visits (default 3):
+#   NFSU2_DATA=<game> tests/roam/plan.sh <out> 1200 roam_ownparts_shop.txt 47600 8 tests/roam/plan_loader.sh
+#     NFSU2_SAVE_SEED=<a career save with shop parts> VISITS=3
+# Good: "[roam] ... model(s) back from HIBERNATING" after each visit (with a
+# copy in a pack, "N of its M models in HIBERNATING are in it too, left
+# there" and the others back), and every dump own_* shows the car's parts as
+# own_0 does; no trap, own_end, quit.
+# Adapted from th0mk's nfsu2-web tests/scripts/roam_ownparts_shop.txt (MIT;
+# its friends came from the browser's roam-crowd tool and its part checks
+# from the "mp solids" command, here roam_fakepeer stand-ins and dumps).
+0     bot on
++0    waitroam 6000
++0    bot off
++0    log ROAM_INROAM
++1200 dump own_0
++0    loop ${VISITS}
++0    log VISIT the Performance Shop
++0    shopgo CC_PERF_SHOP
++300  tapfe RETURN UI_EngageShopDialog.fng 120 2400
++120  tap LEFT
++30   tap RETURN                      # enter the shop
++0    waitfe GarageMain.fng 3000
++600  tap ESCAPE
++200  tap LEFT
++30   tap RETURN                      # back to Explore Mode: Yes
++0    waitroam 4000
++600  dump own_visit
++0    endloop
++60   status own_end
++10   quit

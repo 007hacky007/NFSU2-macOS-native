@@ -1492,10 +1492,10 @@ static int shared_owner(uint32_t owner){
  * in races (tests/scripts/roam_ownparts.txt: 4 of 4 drawn, then 1, then 0;
  * players' reports: a magazine cover's car without wheels).  So the models go back to their pack as the front end does,
  * whenever HIBERNATING holds some a pack of ours lists: once the pack is idle
- * (0x48D3C0's test: header in, no loads going on), and only while none of
- * them has a copy of its own in the pack (taking them back writes over the
- * pack's entry).  Then each model is in one pack again, and its loads and
- * unloads all count there. */
+ * (0x48D3C0's test: header in, no loads going on), all but those with a
+ * copy of their own in the pack (taking them back writes over the pack's
+ * entry).  Then each model is in one pack again, and its loads and unloads
+ * all count there. */
 #define FN_PACK_WAKE    GA(0x0048dc60u)   /* cdecl (file): a pack's models back from HIBERNATING (0x57F040 mode 4) */
 #define G_HIBER         GA(0x00830c78u)   /* HIBERNATING's models: +0xC how many, +0x78 the list (0x18 bytes: +0 name, +0x14 the data) */
 static uint32_t g_wake_n = 0xffffffffu; static int g_wake_dup;
@@ -1521,13 +1521,29 @@ static void packs_wake(CPU *c){
         if (!k) continue;
         char nm[64]; cstr(pk + 8u, nm, sizeof nm);
         if (MR8(pk + 0x8au) || !MR32(pk + 0x90u) || (int32_t)MR32(pk + 0xa8u) > 0){ g_wake_n = 0xffffffffu; continue; }  /* busy: next frame */
-        if (dup){
-            if (!g_wake_dup++) rlog("[roam] f=%ld %s: %d of its %d models in HIBERNATING are in it too, left there\n", rh_frame(), nm, dup, k);
-            continue;
+        /* a model with a copy of its own in the pack stays in HIBERNATING: for the take-back (which walks
+         * HIBERNATING's list, finds each name in the pack and moves the entry over the pack's) it has a name the
+         * pack does not list, its own again after; the others go back (a pack left whole for one of them kept the
+         * player's spoiler there, and the next shop's take-back lost it) */
+        uint32_t hid[0x100], was[0x100]; int nh = 0;
+        for (uint32_t j = 0; dup && j < n && nh < 0x100; j++){
+            uint32_t nmj = MR32(tab + 0x18u * j), e = pack_model(pk, nmj);
+            if (!e || !MR32(e + 0x14u)) continue;
+            uint32_t t = nmj ^ 0x5a5a5a5au;
+            while (!t || pack_model(pk, t)) t += 0x9e3779b9u;
+            MR32(tab + 0x18u * j) = t; hid[nh] = t; was[nh++] = nmj;
         }
-        uint32_t file = pk + 8u;
-        rh_call(c, FN_PACK_WAKE, 0, 0, 1, &file);
-        rlog("[roam] f=%ld %s: %d model(s) back from HIBERNATING (%u left there)\n", rh_frame(), nm, k, rd32(G_HIBER + 0xcu));
+        if (dup && !g_wake_dup++) rlog("[roam] f=%ld %s: %d of its %d models in HIBERNATING are in it too, left there\n", rh_frame(), nm, dup, k);
+        if (k > dup){
+            uint32_t file = pk + 8u;
+            rh_call(c, FN_PACK_WAKE, 0, 0, 1, &file);
+            rlog("[roam] f=%ld %s: %d model(s) back from HIBERNATING (%u left there)\n", rh_frame(), nm, k - dup, rd32(G_HIBER + 0xcu));
+        }
+        if (nh){
+            uint32_t n2 = rd32(G_HIBER + 0xcu), t2 = rd32(G_HIBER + 0x78u);
+            for (uint32_t j = 0; ok(t2, n2 * 0x18u) && j < n2 && n2 <= 0x100u; j++)
+                for (int h = 0; h < nh; h++) if (MR32(t2 + 0x18u * j) == hid[h]){ MR32(t2 + 0x18u * j) = was[h]; break; }
+        }
         n = rd32(G_HIBER + 0xcu); tab = rd32(G_HIBER + 0x78u);
         if (!n || n > 0x100u || !ok(tab, n * 0x18u)) break;
     }
