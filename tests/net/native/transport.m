@@ -2,7 +2,8 @@
  * tests/net/native/loopback.py: URL validation without arguments; with a
  * ws://127.0.0.1 URL, the handshake, the welcome, a UDP datagram each way
  * through the mailbox, and (second argument) resume, idle, burst, big (a peer
- * list of a full server keeps the link), atexit or the second of two clients. */
+ * list of a full server keeps the link), claim (the launcher's token in the
+ * hello), atexit or the second of two clients. */
 #import <Foundation/Foundation.h>
 #include "net_native.h"
 #include <assert.h>
@@ -52,6 +53,8 @@ int main(int argc, char **argv){
             assert(m->generation == 2);
         }
         if (argc > 2 && !strcmp(argv[2], "big")) assert(m->generation == 1);
+        if (argc > 2 && !strcmp(argv[2], "claim")) assert(native_net_has_claim() && !getenv("NFSU2_CLAIM_FD"));
+        else assert(!native_net_has_claim());
         if (argc > 2 && !strcmp(argv[2], "burst")){
             net_mailbox *other = native_net_mailbox(NET_MODE_LAN); assert(other);
             __atomic_store_n(&other->want, 1, __ATOMIC_SEQ_CST);

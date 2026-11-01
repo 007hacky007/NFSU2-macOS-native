@@ -23,8 +23,11 @@ struct VaultConflict: LocalizedError {
     var errorDescription: String? { "The cloud changed since you checked. Check again before choosing which copy to use." }
 }
 
-/// One bounded request per instance; no cookies, credentials or cache.
-private final class VaultRequest: NSObject, URLSessionDataDelegate {
+/// One bounded request per instance (the answer read up to `limit` bytes); no
+/// cookies, credentials or cache.  Also the claimed names' (NameClaims.swift).
+final class VaultRequest: NSObject, URLSessionDataDelegate {
+    private let limit: Int
+    init(limit: Int = VaultCrypto.maxBox) { self.limit = limit }
     private let done = DispatchSemaphore(value: 0)
     private var bytes = Data()
     private var response: HTTPURLResponse?
@@ -42,14 +45,14 @@ private final class VaultRequest: NSObject, URLSessionDataDelegate {
         return (response, bytes)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse, response.expectedContentLength <= VaultCrypto.maxBox else {
+        guard let http = response as? HTTPURLResponse, response.expectedContentLength <= limit else {
             failure = SaveError("The cloud server's response is too large."); completionHandler(.cancel); return
         }
         self.response = http; completionHandler(.allow)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard failure == nil else { return }
-        guard bytes.count + data.count <= VaultCrypto.maxBox else { failure = SaveError("The cloud server's response is too large."); dataTask.cancel(); return }
+        guard bytes.count + data.count <= limit else { failure = SaveError("The cloud server's response is too large."); dataTask.cancel(); return }
         bytes.append(data)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

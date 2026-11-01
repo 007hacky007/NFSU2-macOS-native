@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -45,6 +46,27 @@ void native_net_wait(int *word, int expected, int64_t ns){
     struct timespec t = { ns / 1000000000, ns % 1000000000 };
     nanosleep(&t, NULL);
 }
+/* The claimed name's token (launcher/NameClaims.swift): 43 characters of base64url
+ * from a pipe the launcher wrote and closed before the engine started
+ * (NFSU2_CLAIM_FD).  Read once as the engine loads, the variable dropped; the
+ * switch's hello names it ("claim") so the server knows whose claimed name this
+ * player may play under.  Never logged. */
+static char claim_token[44];
+__attribute__((constructor)) static void read_claim_token(void){
+    const char *v = getenv("NFSU2_CLAIM_FD");
+    if (!v || !*v) return;
+    char *end; long fd = strtol(v, &end, 10);
+    unsetenv("NFSU2_CLAIM_FD");
+    struct stat sb;
+    if (*end || fd < 3 || fd > 65535 || fstat((int)fd, &sb) != 0 || !S_ISFIFO(sb.st_mode)) return;
+    char b[64]; ssize_t n = read((int)fd, b, sizeof b - 1); close((int)fd);
+    if (n > 0 && b[n - 1] == '\n') n--;
+    int ok = n == 43;
+    for (ssize_t i = 0; ok && i < n; i++){ char c = b[i]; ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; }
+    if (ok){ memcpy(claim_token, b, 43); claim_token[43] = 0; }
+    memset(b, 0, sizeof b);
+}
+int native_net_has_claim(void){ return claim_token[0] != 0; }
 static char native_queue_key;
 static uint32_t ld(const uint32_t *p){ return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
 static void st(uint32_t *p, uint32_t v){ __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
@@ -90,6 +112,7 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
         if (!url || !name.length || name.length > 64){
             fprintf(stderr, "[network] online needs a valid server URL and an explicit player name\n"); stopped = YES;
         }
+        if (claim_token[0]) fprintf(stderr, "[network] playing with the keyphrase's claim on the name (from the launcher)\n");
         NSOperationQueue *ops = [NSOperationQueue new]; ops.maxConcurrentOperationCount = 1; ops.underlyingQueue = queue;
         NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
         cfg.HTTPShouldSetCookies = NO; cfg.HTTPCookieStorage = nil; cfg.URLCredentialStorage = nil;
@@ -141,6 +164,7 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
     NSMutableDictionary *hello = [@{ @"t": @"hello", @"name": name, @"lan": @((int)lanSent) } mutableCopy];
     if (vip && token.length){ hello[@"vip"] = [NSString stringWithFormat:@"%u.%u.%u.%u", vip >> 24, (vip >> 16) & 255, (vip >> 8) & 255, vip & 255]; hello[@"token"] = token; }
     if (ticket.length) hello[@"ticket"] = ticket;
+    if (claim_token[0]) hello[@"claim"] = @(claim_token);
     [self sendJSON:hello]; [self receive];
 }
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task didCloseWithCode:(NSURLSessionWebSocketCloseCode)code reason:(NSData *)reason {

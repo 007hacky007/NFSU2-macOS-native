@@ -392,6 +392,9 @@ struct MultiplayerCard: View {
                 }
                 if let err = model.onlineError {
                     Text(err).font(.system(size: 11)).foregroundColor(.orange)
+                } else {
+                    NameClaimRow(model: model, names: model.names)     // NameClaims.swift
+                        .onAppear { model.recheckName() }
                 }
                 PlayerCountsRow(model: model, counts: model.counts)     // PlayerCounts.swift
             }

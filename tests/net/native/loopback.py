@@ -3,11 +3,13 @@
 
 A relay server of its own on 127.0.0.1 and tests/net/native/transport.m as the
 client (runtime/net_native.m): relay, resume, queue, two clients, idle,
-burst, a peer list of a full server and exit at process end.  tests/net_harness.sh runs it inside the
+burst, a peer list of a full server, the launcher's claim token and exit at
+process end.  tests/net_harness.sh runs it inside the
 loopback-only sandbox profile (tests/net/loopback-only.sb).
 """
 import base64
 import hashlib
+import os
 import json
 from pathlib import Path
 import socket
@@ -18,6 +20,10 @@ import tempfile
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
+
+
+CLAIM = "fixture-claim-token-0123456789abcdefABCDEF_"
+CLAIM_EXPECTED = [None]
 
 
 def exact(conn, size):
@@ -75,6 +81,7 @@ def handshake(conn):
     hello = json.loads(data)
     assert kind == 1 and hello["t"] == "hello" and hello["name"] == "fixture-player"
     assert not hello.get("bundle") and not hello.get("compact")
+    assert hello.get("claim") == CLAIM_EXPECTED[0], "the hello names the launcher's claim token, and only then"
     return hello, path
 
 
@@ -186,13 +193,14 @@ def main():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(2)
-        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "atexit"):
+        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "atexit"):
             failure = []
             def worker():
                 try:
                     serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst", big=scenario == "big")
                 except BaseException as error:
                     failure.append(error)
+            CLAIM_EXPECTED[0] = CLAIM if scenario == "claim" else None
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
             url = f"ws://127.0.0.1:{listener.getsockname()[1]}/lan"
@@ -203,6 +211,14 @@ def main():
                 second = subprocess.Popen([binary, url, "second"])
                 assert first.wait(timeout=20) == 0
                 assert second.wait(timeout=20) == 0
+            elif scenario == "claim":
+                # the launcher's pipe: written and its write end closed before the engine starts
+                read_end, write_end = os.pipe()
+                os.write(write_end, (CLAIM + "\n").encode())
+                os.close(write_end)
+                result = subprocess.run([binary, url, "claim"], timeout=20, pass_fds=(read_end,), env={**os.environ, "NFSU2_CLAIM_FD": str(read_end)})
+                os.close(read_end)
+                assert result.returncode == 0
             else:
                 result = subprocess.run([binary, url] + ([scenario] if scenario in ("resume", "idle", "burst", "big", "atexit") else []), timeout=20)
                 assert result.returncode == 0

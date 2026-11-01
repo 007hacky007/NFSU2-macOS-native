@@ -1,6 +1,7 @@
 // The launcher's free-roam names and player counts without a window: the room
 // and crew rules (runtime/names.h, the engine's own name check), the engine's
-// room hash, and the counts' address following the server.
+// room hash, the counts' address following the server, and the claimed names'
+// Online form, digits name and address (NameClaims.swift).
 // tests/launcher_online.sh builds it with the launcher's sources.
 import Foundation
 
@@ -49,6 +50,29 @@ struct LauncherOnlineTests {
         assert(QuickChat.groups(["a", "b"]) == QuickChat.defaultGroups && QuickChat.groups(["a", "b", "c", "d"]) == ["a", "b", "c", "d"])
         assert(QuickChat.phraseIDs(Array(repeating: 152, count: 16)) == QuickChat.defaultPhrases)
         assert(!QuickChat.validGroup("a,b") && QuickChat.validGroup("Racing"))
-        print("launcher online: room and crew rules, room hash, counts address and quick chat groups passed")
+        // claimed names (NameClaims.swift): the Online form and the digits name as the browser makes them
+        // (values from web/src/app/claim.ts onlineName and digitsFor, run with node)
+        assert(NameClaims.onlineName("Hacky") == "Hacky")
+        assert(NameClaims.onlineName("ab") == "ab_")
+        assert(NameClaims.onlineName("a b!c") == "a_b_c")
+        assert(NameClaims.onlineName("!!") == nil)
+        assert(NameClaims.onlineName("Ölwagen") == "lwagen")
+        assert(NameClaims.digits(for: "Hacky", seed: "seed-1") == "Hacky7922")
+        assert(NameClaims.digits(for: "Hacky", seed: "seed-2") == "Hacky4916")
+        assert(NameClaims.digits(for: "SuperLongName15", seed: "abc") == "SuperLongNa2518")
+        assert(NameClaims.digits(for: "NAME", seed: "x") == "NAME5434")
+        assert(NameClaims.digits(for: "ab", seed: "x") == "ab_3877")
+        assert(NameClaims.digits(for: "a b!c", seed: "x") == "a_b_c2662")
+        assert(OnlineSettings.validName(NameClaims.digits(for: "SuperLongName15", seed: "abc")))
+        // the names' address follows the server; the token is the vault's (43 characters of base64url)
+        assert(NameClaims.endpoint(for: "wss://nfsu2.xyz/lan")?.absoluteString == "https://nfsu2.xyz/names")
+        assert(NameClaims.endpoint(for: "ws://127.0.0.1:18093/lan")?.absoluteString == "http://127.0.0.1:18093/names")
+        assert(NameClaims.endpoint(for: "ws://example.com/lan") == nil)
+        assert(NameClaims.validToken(String(repeating: "aZ0-_", count: 8) + "abc"))
+        assert(!NameClaims.validToken(String(repeating: "a", count: 42)))
+        assert(!NameClaims.validToken(String(repeating: "a", count: 42) + "="))
+        assert(NameClaims.refusal("soon", next: nil, name: "X").contains("once a week"))
+        assert(NameClaims.refusal("whatever", next: nil, name: "X").contains("did not take"))
+        print("launcher online: room and crew rules, room hash, counts address, quick chat groups and name claims passed")
     }
 }

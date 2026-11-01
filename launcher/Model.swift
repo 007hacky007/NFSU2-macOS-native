@@ -99,18 +99,21 @@ final class LauncherModel: ObservableObject {
     @Published var seedRegistry: Bool { didSet { defaults.set(seedRegistry, forKey: Prefs.seedRegistry) } }   // EngineOptions.swift
     @Published var lanTiming: String { didSet { defaults.set(lanTiming, forKey: Prefs.lanTiming) } }
     @Published var discordImage: String { didSet { defaults.set(discordImage, forKey: Prefs.discordImage) } }   // DiscordImage.swift
-    @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online) } }
+    @Published var online: Bool { didSet { defaults.set(online, forKey: Prefs.online); recheckName() } }
     @Published var server: String {
         didSet {
             defaults.set(server, forKey: Prefs.server)
             // the player counts' address follows the server until it is set by hand
             if countsURL == PlayerCounts.address(for: oldValue) { countsURL = PlayerCounts.address(for: server) }
-            counts.clear()
+            counts.clear(); recheckName()
         }
     }
     @Published var countsURL: String { didSet { defaults.set(countsURL, forKey: Prefs.countsURL); counts.clear() } }
     let counts = PlayerCountsCheck()     // Check Player Counts (PlayerCounts.swift): nothing asked until pressed
-    @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName) } }
+    @Published var playerName: String { didSet { defaults.set(playerName, forKey: Prefs.playerName); recheckName() } }
+    /// Claimed names (NameClaims.swift): the name checked while Settings shows it and before Play
+    lazy var names = NameClaimModel(defaults: defaults)
+    func recheckName() { names.schedule(name: playerName, server: server, online: online) }
     @Published var freeRoam: FreeRoam { didSet { defaults.set(freeRoam.rawValue, forKey: Prefs.freeRoam) } }
     @Published var roamRoom: String { didSet { defaults.set(roamRoom, forKey: Prefs.roamRoom) } }
     @Published var roamCrew: String { didSet { defaults.set(roamCrew, forKey: Prefs.roamCrew) } }
@@ -307,6 +310,14 @@ final class LauncherModel: ObservableObject {
     func play() {
         guard case .ready(let loc) = game else { return }
         if let err = onlineError { alert("Online play is not set up", err); return }
+        // a name another player claimed: asked about once (NameClaims.swift); not in the settings tests
+        if online && LauncherModel.testSpawn == nil {
+            switch names.gate(name: playerName, server: server, retry: { [weak self] in self?.play() }) {
+            case .wait, .cancel: return
+            case .rename(let alt): playerName = alt
+            case .play: break
+            }
+        }
         let env = ProcessInfo.processInfo.environment
         // Data mods: their files must be built for this game folder first.
         let mods = activeMods
@@ -434,10 +445,25 @@ final class LauncherModel: ObservableObject {
         // A child process, not exec(): macOS attributes the child's file access to
         // this launcher (the "responsible" process), so folder permissions the
         // player granted here (Downloads, Documents...) are not asked for again.
+        // The claimed name's token (NameClaims.swift): through a pipe the engine reads once at start
+        // (runtime/net_native.m), never in the environment or on the command line; written and its
+        // write end closed before the engine starts.
+        var claimFD: Int32 = -1
+        unsetenv("NFSU2_CLAIM_FD")
+        if online && names.playsWithClaim, let token = names.claimToken() {
+            var fds: [Int32] = [-1, -1]
+            if pipe(&fds) == 0 {
+                let bytes = Array((token + "\n").utf8)
+                let written = bytes.withUnsafeBytes { write(fds[1], $0.baseAddress, $0.count) }
+                close(fds[1])
+                if written == bytes.count { claimFD = fds[0]; setenv("NFSU2_CLAIM_FD", String(fds[0]), 1) } else { close(fds[0]) }
+            }
+        }
         var pid: pid_t = 0
         var argv: [UnsafeMutablePointer<CChar>?] = [strdup(path), nil]
         let rc = posix_spawn(&pid, path, nil, nil, &argv, environ)
         free(argv[0])
+        if claimFD >= 0 { close(claimFD); unsetenv("NFSU2_CLAIM_FD") }
         guard rc == 0 else {
             alert("The game could not be started", "\(path)\n\n\(String(cString: strerror(rc)))")
             return
