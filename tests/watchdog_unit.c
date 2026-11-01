@@ -126,6 +126,8 @@ int main(void){
     wait_ms(1500);
     atomic_store(&g_wd_present_us, wd_now_us() - 25000000u);
     for (int i = 0; i < 30 && watchdog_reports() < 2; i++) wait_ms(100);
+    /* the count goes up before the report is written: wait for its last line */
+    for (int i = 0; i < 20 && !strstr(err_since(), "[watchdog] end of report"); i++) wait_ms(100);
     CHECK(watchdog_reports() == 2 && strstr(err_since(), "no Present for 2"),
           "rearm: after a Present the next stall reports again (%llu reports)", (unsigned long long)watchdog_reports());
 
