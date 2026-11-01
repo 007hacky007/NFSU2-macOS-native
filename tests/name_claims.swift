@@ -25,12 +25,17 @@ struct NameClaimsTests {
         // the model: its seed is kept, the digits follow it, a taken name is offered the digits
         let defaults = UserDefaults(suiteName: "nfsu2-name-claims-test-\(getpid())")!
         let model = NameClaimModel(defaults: defaults)
-        model.keyphraseSource = { phrase }
+        model.keyphraseSource = { (phrase, VaultAPI.defaultEndpoint(server: server)) }
+        // the token goes only to the server the keyphrase was remembered with
+        assert(model.claimToken(server: server) == token)
+        assert(model.claimToken(server: "wss://elsewhere.example/lan") == nil)
+        assert(NameClaimModel.origin("wss://nfsu2.xyz/lan") == NameClaimModel.origin("https://nfsu2.xyz/vault"))
+        assert(NameClaimModel.origin("wss://nfsu2.xyz/lan") != NameClaimModel.origin("wss://nfsu2.xyz:8443/lan"))
         assert(model.seed == model.seed && model.digits(for: "Hacky").hasPrefix("Hacky"))
         var done = false
         model.check(name: "Hacky", server: server) { _ in done = true }
         wait { done }
-        assert(model.claimedByOther("Hacky") && model.canClaim("Hacky") && !model.playsWithClaim)
+        assert(model.claimedByOther("Hacky") && model.canClaim("Hacky") && !model.playsWithClaim(server: server))
         assert(model.line(for: "Hacky")!.text.contains(model.digits(for: "Hacky")))
         if step == "before" {
             // a claim from a keyphrase without cloud saves is refused (the launcher asks to send them first)
@@ -45,7 +50,8 @@ struct NameClaimsTests {
             done = false
             model.check(name: "Mine", server: server) { _ in done = true }
             wait { done }
-            assert(model.info?.state == .yours && model.playsWithClaim && model.claimToken() == token)
+            assert(model.info?.state == .yours && model.playsWithClaim(server: server) && model.claimToken(server: server) == token)
+            assert(!model.playsWithClaim(server: "wss://elsewhere.example/lan"))
             assert(model.line(for: "Mine")!.tone == .good)
         }
         defaults.removePersistentDomain(forName: "nfsu2-name-claims-test-\(getpid())")

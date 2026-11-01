@@ -159,15 +159,16 @@ final class NameClaimModel: ObservableObject {
     private var pending: DispatchWorkItem?
     private var asked = 0
     private var checkedAt = Date.distantPast
-    /// the remembered keyphrase's token, once made (nil: none remembered, or not looked for yet)
-    private var token: String?
+    /// the remembered keyphrase's token and the origin it was remembered for, once made
+    private var token: (value: String, origin: String)?
     private var tokenLooked = false
     /// "Play anyway" for a name another player claimed, this run of the launcher
     private var acknowledged = Set<String>()
-    var keyphraseSource: () throws -> String? = { (try? VaultKeychain.recall())?.phrase }
+    /// the remembered keyphrase and the vault it was remembered with (the cloud saves' Keychain link)
+    var keyphraseSource: () throws -> (phrase: String, endpoint: String)? = { try? VaultKeychain.recall() }
 
     static let seedKey = "LauncherNameSeed"
-    static let claimKey = "LauncherNameClaim"   // true: the game plays with the remembered keyphrase's claim
+    static let claimKey = "LauncherNameClaims"  // [origin]: the servers where the game plays with the keyphrase's claim
     init(defaults: UserDefaults) { self.defaults = defaults }
 
     /// this Mac's seed for the digits name (one random value, kept)
@@ -176,16 +177,32 @@ final class NameClaimModel: ObservableObject {
         let s = UUID().uuidString; defaults.set(s, forKey: Self.seedKey); return s
     }
     func digits(for name: String) -> String { NameClaims.digits(for: name, seed: seed) }
-    var playsWithClaim: Bool { defaults.bool(forKey: Self.claimKey) }
-
-    /// The remembered keyphrase's token (the Keychain link of cloud saves); nil: none.  Made once per launcher run.
-    func claimToken() -> String? {
-        if tokenLooked { return token }
-        tokenLooked = true
-        guard let phrase = try? keyphraseSource(), let keys = try? VaultCrypto.keys(phrase) else { return nil }
-        token = keys.token; return token
+    /// scheme://host:port of an address, in lower case ("" for none): what a token is bound to
+    static func origin(_ text: String) -> String {
+        guard let c = URLComponents(string: text), var scheme = c.scheme?.lowercased(), let host = c.host?.lowercased(), !host.isEmpty else { return "" }
+        if scheme == "wss" { scheme = "https" } else if scheme == "ws" { scheme = "http" }
+        return "\(scheme)://\(host):\(c.port ?? (scheme == "https" ? 443 : 80))"
     }
-    func forgetToken() { token = nil; tokenLooked = false }
+    func playsWithClaim(server: String) -> Bool {
+        let o = Self.origin(server)
+        return !o.isEmpty && (defaults.stringArray(forKey: Self.claimKey) ?? []).contains(o)
+    }
+    private func setPlaysWithClaim(server: String) {
+        let o = Self.origin(server); guard !o.isEmpty else { return }
+        var all = defaults.stringArray(forKey: Self.claimKey) ?? []
+        if !all.contains(o) { all.append(o); defaults.set(all, forKey: Self.claimKey) }
+    }
+
+    /// The remembered keyphrase's token for `server`: only for the server the keyphrase was remembered with (the
+    /// token also opens its cloud saves, so it never goes to another host); nil otherwise or with none remembered.
+    func claimToken(server: String) -> String? {
+        if !tokenLooked {
+            tokenLooked = true
+            if let link = try? keyphraseSource(), let keys = try? VaultCrypto.keys(link.phrase) { token = (keys.token, Self.origin(link.endpoint)) }
+        }
+        guard let t = token, !t.origin.isEmpty, t.origin == Self.origin(server) else { return nil }
+        return t.value
+    }
 
     /// The name as Settings shows it changed (or the row appeared): checked after a pause in typing.
     func schedule(name: String, server: String, online: Bool) {
@@ -206,7 +223,7 @@ final class NameClaimModel: ObservableObject {
         busy = true; note = nil
         let alt = digits(for: name)
         DispatchQueue.global(qos: .userInitiated).async {
-            let token = self.claimToken()
+            let token = self.claimToken(server: server)
             let result = Result { try NameClaims.check(url, name: name, alt: alt, token: token) }
             DispatchQueue.main.async {
                 guard mine == self.asked else { then?(nil); return }
@@ -215,7 +232,7 @@ final class NameClaimModel: ObservableObject {
                 case .success(let info):
                     self.noClaims = info == nil
                     self.info = info; self.about = (name, server); self.checkedAt = Date()
-                    if let i = info, i.state == .yours || i.state == .old, token != nil { self.defaults.set(true, forKey: Self.claimKey) }
+                    if let i = info, i.state == .yours || i.state == .old, token != nil { self.setPlaysWithClaim(server: server) }
                 case .failure(let e):
                     self.info = nil; self.about = nil
                     self.note = (e.localizedDescription, .bad)
@@ -294,10 +311,11 @@ final class NameClaimModel: ObservableObject {
     /// server asks for it, the saves sent once when the cloud has none for the keyphrase (asked first).
     func claim(name: String, server: String) {
         guard let url = NameClaims.endpoint(for: server), OnlineSettings.validName(name), !busy else { return }
-        var token = claimToken()
+        var token = claimToken(server: server)
         if token == nil {
+            // none remembered, or one remembered for another server: asked for (and remembered) for this one
             guard let phrase = askKeyphrase(server: server) else { return }
-            do { token = try VaultCrypto.keys(phrase).token; self.token = token; tokenLooked = true }
+            do { token = try VaultCrypto.keys(phrase).token; self.token = (token!, Self.origin(server)); tokenLooked = true }
             catch { note = (error.localizedDescription, .bad); return }
         }
         guard let t = token else { return }
@@ -350,14 +368,14 @@ final class NameClaimModel: ObservableObject {
         }
     }
     private func done(name: String, server: String, text: String) {
-        busy = false; defaults.set(true, forKey: Self.claimKey)
+        busy = false; setPlaysWithClaim(server: server)
         about = nil
         check(name: name, server: server) { _ in self.note = (text, .good) }
     }
     /// The careers, encrypted on this Mac, as the cloud's first version for the keyphrase (VaultModel's send).
     private func sendSaves(server: String) throws {
-        guard let phrase = try keyphraseSource() else { throw SaveError("No keyphrase is remembered.") }
-        let keys = try VaultCrypto.keys(phrase)
+        guard let link = try keyphraseSource(), Self.origin(link.endpoint) == Self.origin(server) else { throw SaveError("No keyphrase is remembered for this server.") }
+        let keys = try VaultCrypto.keys(link.phrase)
         let api = VaultAPI(endpoint: try VaultAPI.endpoint(VaultAPI.defaultEndpoint(server: server)), token: keys.token)
         let entries = VaultPayload.filtered(try SaveStore(saves: Paths.saves, registry: Paths.registry).snapshot())
         _ = try api.put(VaultCrypto.pack(entries, keys: keys), revision: nil)

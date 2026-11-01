@@ -450,7 +450,7 @@ final class LauncherModel: ObservableObject {
         // write end closed before the engine starts.
         var claimFD: Int32 = -1
         unsetenv("NFSU2_CLAIM_FD")
-        if online && names.playsWithClaim, let token = names.claimToken() {
+        if online && names.playsWithClaim(server: server), let token = names.claimToken(server: server) {
             var fds: [Int32] = [-1, -1]
             if pipe(&fds) == 0 {
                 let bytes = Array((token + "\n").utf8)

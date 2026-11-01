@@ -345,12 +345,45 @@ enum OnlineSettings {
      * of the UTF-8 without spaces, A-Z as a-z; 0: none */
     static func roomHash(_ name: String) -> UInt32 {
         var h: UInt32 = 0x811C_9DC5, kept = 0
-        for var b in name.utf8 {
-            if b == 0x20 || (0x09...0x0d).contains(b) { continue }
-            if (0x41...0x5a).contains(b) { b += 0x20 }
-            h = (h ^ UInt32(b)) &* 0x0100_0193; kept += 1
+        for scalar in name.unicodeScalars {
+            let c = roomFold(scalar.value)
+            if c == 0 { continue }
+            for b in String(UnicodeScalar(c).map(Character.init) ?? Character(scalar)).utf8 { h = (h ^ UInt32(b)) &* 0x0100_0193 }
+            kept += 1
         }
         return kept == 0 ? 0 : (h == 0 ? 1 : h)
+    }
+    /* runtime/roam_core.c room_fold, character for character: blanks and invisible
+     * characters left out (0), capitals small (Latin, Greek, Cyrillic), full width
+     * ASCII as ASCII, so friends who type a room a little differently still meet */
+    static func roomFold(_ c0: UInt32) -> UInt32 {
+        var c = c0
+        if c == 0x20 || (0x09...0x0D).contains(c) || c == 0xA0 || c == 0xAD || c == 0x1680 || (0x2000...0x200D).contains(c) ||
+            c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x2060 || c == 0x3000 || c == 0xFEFF { return 0 }
+        if (0xFF01...0xFF5E).contains(c) { c -= 0xFEE0 }
+        if (0x41...0x5A).contains(c) { return c + 32 }
+        if c < 0xC0 { return c }
+        if c <= 0xDE { return c == 0xD7 ? c : c + 32 }
+        if (0x100...0x17F).contains(c) {
+            if c == 0x130 || c == 0x131 { return 0x69 }
+            if c == 0x178 { return 0xFF }
+            if c <= 0x137 || (0x14A...0x177).contains(c) { return c | 1 }
+            if (0x139...0x148).contains(c) || (0x179...0x17E).contains(c) { return c & 1 == 1 ? c + 1 : c }
+            return c
+        }
+        if (0x218...0x21F).contains(c) { return c | 1 }
+        if (0x391...0x3AB).contains(c) { return c == 0x3A2 ? c : c + 32 }
+        if c == 0x386 { return 0x3AC }
+        if (0x388...0x38A).contains(c) { return c + 37 }
+        if c == 0x38C { return 0x3CC }
+        if c == 0x38E || c == 0x38F { return c + 63 }
+        if c == 0x3C2 { return 0x3C3 }
+        if (0x400...0x40F).contains(c) { return c + 80 }
+        if (0x410...0x42F).contains(c) { return c + 32 }
+        if (0x460...0x481).contains(c) || (0x48A...0x4BF).contains(c) || (0x4D0...0x52F).contains(c) { return c | 1 }
+        if c == 0x4C0 { return 0x4CF }
+        if (0x4C1...0x4CE).contains(c) { return c & 1 == 1 ? c + 1 : c }
+        return c
     }
 }
 
