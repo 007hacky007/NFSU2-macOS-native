@@ -649,9 +649,14 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   prize goes into the career.  Two players near each other can challenge
   each other to an outrun.  **Room**: only players with the same room name
   see each other; **Crew**: names and arrows of your crew in its colour at
-  any distance.
+  any distance.  **Outrun tuners with other players** (on by default, as in
+  the original game): the game's own tuners still come out to challenge you
+  while other players are around, so their outruns and unique parts are there
+  online too; within 30 m of you a tuner comes first, and at a door or an
+  event no tuner challenges you.  Off: they stay away while another player's
+  car is in your world.
   Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
-  `NFSU2_ROAM_CREW`.
+  `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`.
 - **Horns and the other players' car sounds** (with Play online; both off by
   default, as in the original game, which has no horn): the launcher's
   **Horn** picker gives the player a horn (dual, single, truck, train, klaxon,

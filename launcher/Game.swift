@@ -139,6 +139,7 @@ enum Prefs {
     static let netStats = "LauncherNetStats"       // NFSU2_NET_STATS=1: the engine's Online statistics panel (runtime/netstats.m)
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
+    static let roamTuners = "LauncherRoamTuners"   // false: NFSU2_ROAM_TUNERS=0 (RoamExtras.swift)
     static let music = "LauncherMusic"             // "game" | "folder": EA Trax plays a music folder (Music.swift)
     static let musicFolder = "LauncherMusicFolder"
     static let seedRegistry = "LauncherSeedRegistry" // NFSU2_SEED_REGISTRY=1: highest graphics on the first launch
@@ -177,6 +178,7 @@ enum Prefs {
         OriginalValue(\.netStats, false),
         OriginalValue(\.freeRoam, .off),
         OriginalValue(\.hearCars, false),
+        OriginalValue(\.roamTuners, true),
         OriginalValue(\.quickChat, false),
         OriginalValue(\.horn, .off),
         OriginalValue(\.allCars, false),
