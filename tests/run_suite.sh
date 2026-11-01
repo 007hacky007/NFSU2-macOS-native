@@ -88,6 +88,7 @@ hornpause:pause_horn.txt:parts as SLIDER_BASE_8 SLIDER_KNOB_8 SLIDER_HANDLE_8 SL
 powerunits:options_units.txt:units: power in bhp:
 eucars:qr_eucars.txt:[expect] PASS:EUCARS_RIGHT=$EUCARS_RIGHT
 replay:replay_pause.txt:LOG back_to_pause:
+replay240:replay_sync.txt:LOG back_to_pause:NFSU2_FPS=240
 photo:photo_mode.txt:[expect] PASS:NFSU2_PHOTO=1
 headlights:native_headlights.txt:[expect] PASS:NFSU2_PHOTO=1 NFSU2_FPS=120
 watchdog:watchdog_loading.txt:no Present for:ALARM=400

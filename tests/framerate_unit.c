@@ -7,7 +7,11 @@
  *   framerate_unit net <race rate> <ticks/timer on>
  *                              a network race (NFSU2_LAN_TIMING): the rate,
  *                              the clock fixes, and the World constructor's
- *                              30 fps request undone */
+ *                              30 fps request undone
+ *   framerate_unit replay <rate>
+ *                              the timer fix's WorldTimer: exact over a race,
+ *                              and a replay from a snapshot ticks as the race
+ *                              did (the game's own clock, no carry of ours) */
 #include "../runtime/framerate.c"
 #include <assert.h>
 
@@ -18,6 +22,20 @@ void guest_sleep_ns(long ns){ (void)ns; }
 uint64_t spin_slept_us(void){ return 0; }
 long metal_frames(void){ return 0; }
 void sub_005ff4a0_orig(CPU *c){ (void)c; MRF32(A_CAP) = 1.f / 30.f; }   /* the World constructor of a network race */
+/* the game's WorldTimer advance (0x57A0F0) as the lift has it: WorldTimeFrames and their remainder from the world
+ * dt, WorldTimer += round(dt x 4000), the dt cleared */
+void sub_0057a0f0_orig(CPU *c){
+    (void)c;
+    float dt = MRF32(A_WORLDDT);
+    if (dt == 0.f) return;
+    double x = (double)MRF32(A_WTF_REST) + (double)dt;
+    int32_t n = (int32_t)(x * 60.0);
+    MR32(A_WTF) = (uint32_t)((int32_t)MR32(A_WTF) + n);
+    MRF32(A_WTF_REST) = (float)(x - (double)n * (double)MRF32(A_FRAME60));
+    MR32(A_WORLDTIMER) += (uint32_t)(int32_t)((double)dt * 4000.0 + 0.5);
+    MRF32(A_WORLD_S) = (float)((double)(int32_t)MR32(A_WORLDTIMER) * (double)MRF32(A_U4000));
+    MRF32(A_WORLDDT) = 0.f;
+}
 
 #define CHECK(c, ...) do { if (!(c)){ fprintf(stderr, "FAIL line %d: ", __LINE__); \
     fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); return 1; } } while (0)
@@ -68,8 +86,39 @@ static int net(int want_rate, int clocks){
     return 0;
 }
 
+/* a race at <rate> with the timer fix: WorldTimer exact; then a snapshot of the game's WorldTime block (WorldTimer,
+ * WorldTimeFrames, the remainder: 0x57BBB0) restored, as a replay does, ticks as the race did from it */
+static int replay(int rate){
+    g_mem = calloc(1, 0x1000000u); assert(g_mem);
+    MRF32(A_FRAME60) = 1.f / 60.f; MRF32(A_U4000) = 1.f / 4000.f;
+    g_fix = FX_TIMER;
+    CPU c; memset(&c, 0, sizeof c);
+    float dt = (float)(1.0 / rate);
+    int N = rate * 30;                         /* 30 s of race */
+    for (int i = 0; i < N; i++){ MRF32(A_WORLDDT) = dt; sub_0057a0f0(&c); }
+    double wt = (int32_t)MR32(A_WORLDTIMER) / 4000.0, sim = (double)N * dt;
+    CHECK(fabs(wt / sim - 1.0) < 1e-4, "WorldTimer/sim %.5f after 30 s at %d fps", wt / sim, rate);
+    /* the crash slow motion: a world dt that is no whole number of ticks */
+    for (int i = 0; i < rate; i++){ MRF32(A_WORLDDT) = dt * 0.37f; sub_0057a0f0(&c); }
+    uint32_t snap_wt = MR32(A_WORLDTIMER), snap_wtf = MR32(A_WTF), snap_rest = MR32(A_WTF_REST);
+    enum { K = 240 };
+    uint32_t race[K], again[K];
+    for (int i = 0; i < K; i++){ uint32_t w = MR32(A_WORLDTIMER); MRF32(A_WORLDDT) = dt; sub_0057a0f0(&c); race[i] = MR32(A_WORLDTIMER) - w; }
+    /* other frames in between (the pause menu's replay starts later), then the snapshot back */
+    for (int i = 0; i < 37; i++){ MRF32(A_WORLDDT) = dt; sub_0057a0f0(&c); }
+    MR32(A_WORLDTIMER) = snap_wt; MR32(A_WTF) = snap_wtf; MR32(A_WTF_REST) = snap_rest;
+    for (int i = 0; i < K; i++){ uint32_t w = MR32(A_WORLDTIMER); MRF32(A_WORLDDT) = dt; sub_0057a0f0(&c); again[i] = MR32(A_WORLDTIMER) - w; }
+    int first = -1;
+    for (int i = 0; i < K && first < 0; i++) if (race[i] != again[i]) first = i;
+    CHECK(first < 0, "the replay's WorldTimer left the race's at frame %d (%u, the race %u)", first, again[first], race[first]);
+    free(g_mem);
+    printf("PASS replay at %d fps: WorldTimer/sim %.5f, %d frames from a snapshot as the race ticked them\n", rate, wt / sim, K);
+    return 0;
+}
+
 int main(int argc, char **argv){
     if (argc == 2 && !strcmp(argv[1], "uncapped")) return uncapped();
+    if (argc == 3 && !strcmp(argv[1], "replay")) return replay(atoi(argv[2]));
     if (argc == 4 && !strcmp(argv[1], "net")) return net(atoi(argv[2]), atoi(argv[3]));
     if (argc != 3){ fprintf(stderr, "usage: framerate_unit <mode rate> <cutscene rate>\n"); return 2; }
     int mode = atoi(argv[1]), intro = atoi(argv[2]);

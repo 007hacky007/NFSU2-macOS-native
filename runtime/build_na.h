@@ -460,6 +460,7 @@
 #define GA_0x00865144u 0x00865148u   /* operand pair */
 #define GA_0x00865148u 0x0086514cu   /* operand pair */
 #define GA_0x00865150u 0x00865154u   /* operand pair */
+#define GA_0x00865154u 0x00865158u   /* operand pair */
 #define GA_0x00865188u 0x0086518cu   /* operand pair */
 #define GA_0x00865194u 0x00865198u   /* operand pair */
 #define GA_0x008651a8u 0x008651acu   /* operand pair */

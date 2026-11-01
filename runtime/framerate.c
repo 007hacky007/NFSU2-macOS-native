@@ -55,7 +55,9 @@
  *   ticks      exact ticks: a 1/3600 s tick base instead of 1/1800, so every
  *              supported rate is a whole number of ticks; the count comes
  *              from the pacer's slots
- *   timer      fractional carry for RealTimer / WorldTimer (1/4000 s units)
+ *   timer      RealTimer / WorldTimer (1/4000 s units) without the per-frame
+ *              rounding: RealTimer carries the fraction, WorldTimer follows
+ *              the game's own WorldTimeFrames clock (replays restore it)
  *   particles  the "Acid" effect step: the frame's real dt (at most 1/60 s,
  *              1/30 at 30 fps) instead of a constant 1/60
  *   trail      NOS / streak trail sampled every frame, its history resampled
@@ -114,6 +116,8 @@ static const char *const g_fx_name[FX_N] = { "ticks", "timer", "particles", "tra
 #define A_WORLDTIMER  GA(0x00865188u)   /* WorldTimer, 1/4000 s */
 #define A_WORLD_S     GA(0x007fb718u)   /* WorldTimer in seconds (float) */
 #define A_WTF         GA(0x007fb720u)   /* WorldTimeFrames */
+#define A_WTF_REST    GA(0x00865154u)   /* WorldTimeFrames remainder (s) (NA 0x865158) */
+#define A_FRAME60     GA(0x007875bcu)   /* 1/60 */
 #define A_U4000       GA(0x00784268u)   /* 1/4000 */
 #define A_FRAMECNT    GA(0x00870818u)   /* eFrameCounter (render) */
 #define A_STREAK_FC   GA(0x008a44ecu)   /* UpdateCarStreakingFlares: last frame */
@@ -137,7 +141,7 @@ static int    g_log = 0;
 static int    g_resolved = 0;
 static int    g_cutscenes60;
 static int    g_lan_pc = 1;         /* NFSU2_LAN_TIMING: 1 = pc, 0 = exact */
-static double g_rt_carry = 0, g_wt_carry = 0;   /* timer fix: RealTimer / WorldTimer fractions */
+static double g_rt_carry = 0;       /* timer fix: RealTimer's fraction */
 
 static uint64_t mono_ns(void){ return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 static int display_hz(void){
@@ -511,7 +515,7 @@ static void fixes_follow_rate(void){
     net_prev = net;
     if (!first && fx == g_fix) return;
     if (first || ((fx ^ g_fix) & FX_TICKS)){ set_tick_base(fx & FX_TICKS); g_tick_acc = 0; }
-    if ((fx ^ g_fix) & FX_TIMER){ g_rt_carry = 0; g_wt_carry = 0; }
+    if ((fx ^ g_fix) & FX_TIMER) g_rt_carry = 0;
     g_fix = fx; first = 0;
 }
 
@@ -619,18 +623,32 @@ void sub_0057a060(CPU *c){
     }
 }
 
-/* ---- timer: WorldTimer advance 0x57a0f0 (skipped while world dt == 0) --- */
+/* ---- timer: WorldTimer advance 0x57a0f0 (skipped while world dt == 0) ---
+ * WorldTimer += round(dt x 4000) has no carry either: 15/3600 s -> 17 units
+ * (+2 %).  The same function keeps an exact world clock of its own:
+ * WorldTimeFrames ([0x7FB720], 60ths) and their remainder ([0x865154], NA
+ * 0x865158, s), n = trunc(60 (dt + remainder)).  The timer fix moves
+ * WorldTimer by that clock's change, rounded: no fraction of ours to carry.
+ * A replay needs it so: it restores the race from a snapshot (the
+ * "WorldTime" block, 0x57BBB0 (NA 0x57BBA0), holds WorldTimer,
+ * WorldTimeFrames and the remainder, not a carry of ours), drives it again
+ * and checks every frame a checksum that includes WorldTimer (0x5FA780, NA
+ * 0x5FA770); with a carry of ours the timer ticked 17 16 17 where the race
+ * had ticked 16 17 17, and the game left the replay after a few frames
+ * above 60 fps.  After th0mk's nfsu2-web runtime/framerate.c (MIT). */
+static double world_clock(void){
+    return (double)(int32_t)MR32(A_WTF) * (double)MRF32(A_FRAME60) + (double)MRF32(A_WTF_REST);
+}
 void sub_0057a0f0_orig(CPU *c);
 void sub_0057a0f0(CPU *c){
     float wdt = MRF32(A_WORLDDT);
     uint32_t w0 = MR32(A_WORLDTIMER);
+    double x0 = world_clock();
     sub_0057a0f0_orig(c);
     if (wdt == 0.f) return;
     g_f.wdt += wdt;
     if (g_fix & FX_TIMER){
-        double ex = (double)wdt * 4000.0 + g_wt_carry;
-        double u = floor(ex + 0.5);
-        g_wt_carry = ex - u;
+        double u = floor(world_clock() * 4000.0 + 0.5) - floor(x0 * 4000.0 + 0.5);
         MR32(A_WORLDTIMER) = w0 + (uint32_t)(int32_t)u;
         MRF32(A_WORLD_S) = (float)((double)(int32_t)MR32(A_WORLDTIMER) * (double)MRF32(A_U4000));
     }

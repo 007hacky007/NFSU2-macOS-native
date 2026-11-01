@@ -32,4 +32,8 @@ runx "net 120 0" NFSU2_FPS=240
 runx "net 120 0" NFSU2_FPS=120
 runx "net 240 1" NFSU2_FPS=240 NFSU2_LAN_TIMING=exact
 runx "net 60 0" NFSU2_FPS=60
+# replays above 60 fps: WorldTimer from the game's own clock (runtime/framerate.c, sub_0057a0f0)
+runx "replay 120"
+runx "replay 240"
+runx "replay 144"
 echo "framerate: all passed"
