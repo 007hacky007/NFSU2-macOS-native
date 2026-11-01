@@ -127,7 +127,7 @@ void horn_end(void){}
 #define PEERS 3
 static uint32_t g_peer[PEERS] = { 0x0a4d0102u, 0x0a4d0202u, 0x0a4d0302u };
 static int g_npeer = PEERS, g_sent, g_n2fs;
-static struct { uint32_t ip; uint8_t m[64]; int n; } g_q[256]; static int g_qh, g_qt;
+static struct { uint32_t ip; uint8_t m[512]; int n; } g_q[256]; static int g_qh, g_qt;
 int vlan_rt_send(uint16_t port, uint32_t ip_h, const void *p, int n){ (void)port; (void)ip_h; (void)p; (void)n; g_sent++; return 0; }
 int vlan_rt_recv(uint16_t port, uint32_t *ip_h, void *p, int cap){
     (void)port;
@@ -138,9 +138,12 @@ int vlan_rt_recv(uint16_t port, uint32_t *ip_h, void *p, int cap){
 }
 int vlan_race_peers(uint32_t *ip_h, int max, uint32_t within_ms){ (void)within_ms; int n = g_npeer < max ? g_npeer : max; memcpy(ip_h, g_peer, 4u * (size_t)n); return n; }
 void racenet_heard(uint8_t *m, int n, uint32_t from){ (void)m; (void)n; (void)from; g_n2fs++; }
+static int g_n2cs, g_n2pl; static uint32_t g_n2cs_from;
+void racenet_carspam(CPU *c, const uint8_t *m, int n, uint32_t from){ (void)c; (void)m; (void)n; g_n2cs++; g_n2cs_from = from; }
+void racenet_list(const uint8_t *m, int n, uint32_t from){ (void)m; (void)n; (void)from; g_n2pl++; }
 #include "../runtime/racehorn.c"
 
-static void put(uint32_t ip, const void *m, int n){ g_q[g_qt].ip = ip; memcpy(g_q[g_qt].m, m, (size_t)(n < 64 ? n : 64)); g_q[g_qt].n = n; g_qt = (g_qt + 1) % 256; }
+static void put(uint32_t ip, const void *m, int n){ if (n > 512) n = 512; g_q[g_qt].ip = ip; memcpy(g_q[g_qt].m, m, (size_t)n); g_q[g_qt].n = n; g_qt = (g_qt + 1) % 256; }
 static void honk(uint32_t ip, const char *name, uint8_t flags){
     uint8_t m[MSG_N] = { 'N', '2', 'H', 'N', 1, flags, 0, 0 };
     memcpy(m + 8, name, strlen(name) < NAME_N ? strlen(name) : NAME_N);
@@ -166,6 +169,14 @@ int main(void){
     frame();
     int used = 0; for (int j = 0; j < NHORNS; j++) used += g_h[j].name[0] != 0;
     CHECK(used == 1 && g_n2fs == 1, "short, other version, unprintable name: none taken; N2FS to racenet (%d %d)", used, g_n2fs);
+    /* a car state straight from another joiner (not a peer of the race: racenet.c checks the creator's list),
+     * the creator's list from a peer, and one from outside the race (dropped) */
+    uint32_t drop0 = g_dropped;
+    uint8_t cs[8 + 300] = { 'N', '2', 'C', 'S', 1, 0, 44, 1 };
+    put(0x0a4d0909u, cs, (int)sizeof cs); put(g_peer[0], "N2PL\1\0\0\0", 8); put(0x0a4d0909u, "N2PL\1\0\0\0", 8);
+    frame();
+    CHECK(g_n2cs == 1 && g_n2cs_from == 0x0a4d0909u && g_n2pl == 1 && g_dropped == drop0 + 1,
+          "N2CS from another joiner to racenet, N2PL only from a peer (%d %d, dropped %u)", g_n2cs, g_n2pl, g_dropped - drop0);
     /* a name of 16 printable bytes and more: cut at 15 */
     honk(g_peer[1], "ABCDEFGHIJKLMNOPQRSTUVWX", 1); frame();
     int cut = 0; for (int j = 0; j < NHORNS; j++) cut |= !strcmp(g_h[j].name, "ABCDEFGHIJKLMNO");

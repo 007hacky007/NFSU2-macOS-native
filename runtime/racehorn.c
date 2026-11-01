@@ -26,7 +26,11 @@
  * What comes in is taken only from the race's own peers, only HEAR_MAX
  * datagrams a frame, a relayed one never by the creator, and the creator
  * passes on at most RELAY_PER_S a second of each joiner's.  The port also
- * carries the players' frame rates ("N2FS"), which go to racenet.c.
+ * carries the players' frame rates ("N2FS"), the joiners' car states
+ * straight from their games ("N2CS", which come from the other joiners, not
+ * the race's peers: racenet.c checks them against the creator's list) and
+ * the creator's list of the joiners they go to ("N2PL"), which go to
+ * racenet.c.
  * Only Online, where the server's virtual LAN is; the Mac's own LAN has no
  * such port (vlan_rt_* send and receive nothing), and only while horns are
  * on (horn.h horn_on): off, nothing is sent or passed on, and racenet.c
@@ -105,12 +109,16 @@ static int relay_ok(uint32_t from, uint32_t now){
     if (now - g_rl[j].win >= 1000u){ g_rl[j].win = now; g_rl[j].n = 0; }
     return ++g_rl[j].n <= RELAY_PER_S;
 }
-void racenet_heard(uint8_t *m, int n, uint32_t from);   /* racenet.c: the players' frame rates */
-static void got(uint8_t *m, int n, uint32_t from, uint32_t now){
+void racenet_heard(uint8_t *m, int n, uint32_t from);   /* racenet.c: the players' frame rates, */
+void racenet_carspam(CPU *c, const uint8_t *m, int n, uint32_t from);   /*   a joiner's car state straight from its game, */
+void racenet_list(const uint8_t *m, int n, uint32_t from);              /*   and the creator's list of the joiners */
+static void got(CPU *c, uint8_t *m, int n, uint32_t from, uint32_t now){
+    if (n >= 4 && !memcmp(m, "N2CS", 4)){ racenet_carspam(c, m, n, from); return; }   /* (from a joiner on the list) */
     int peer = 0;
     for (int i = 0; i < g_npeers && !peer; i++) peer = g_peers[i] == from;
     if (!peer){ g_dropped++; return; }                   /* not one of the race's games */
     if (n >= 4 && !memcmp(m, "N2FS", 4)){ racenet_heard(m, n, from); return; }
+    if (n >= 4 && !memcmp(m, "N2PL", 4)){ racenet_list(m, n, from); return; }
     if (n < MSG_N || memcmp(m, "N2HN", 4) || m[4] != 1) return;
     char name[NAME_N];
     int k = 0;
@@ -135,13 +143,12 @@ static void got(uint8_t *m, int n, uint32_t from, uint32_t now){
 
 /* every frame, on the game thread (roam.c's main-loop hook) */
 void racehorn_frame(CPU *c){
-    (void)c;
     if (!horn_on()) return;
     uint32_t now = now_ms(), from;
-    uint8_t m[64];
+    static uint8_t m[8 + 0x400];                         /* (a car state: racenet.c's N2CS, up to a bit stream's 0x400 bytes) */
     int n;
     g_npeers = vlan_race_peers(g_peers, 16, PEER_MS);
-    for (int i = 0; i < HEAR_MAX && (n = vlan_rt_recv(HORN_PORT, &from, m, sizeof m)) >= 0; i++) got(m, n, from, now);
+    for (int i = 0; i < HEAR_MAX && (n = vlan_rt_recv(HORN_PORT, &from, m, sizeof m)) >= 0; i++) got(c, m, n, from, now);
     uint32_t pl = rd32(G_PLAYER1), me = pl ? rd32(pl + 4u) : 0, w = rd32(G_WORLD);
     float dt = MRF32(G_WORLDDT);
     int racing = rd32(G_FLOW) == 6u && (rd32(G_NETMODE) & 0x208u) && ok(me, 0x9e0) && ok(w, 0x80);

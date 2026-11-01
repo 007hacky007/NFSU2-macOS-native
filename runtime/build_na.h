@@ -125,11 +125,13 @@
 #define GA_0x00575630u 0x00575620u   /* function 00575630 + 0x0 */
 #define GA_0x0057a094u 0x0057a084u   /* function 0057a060 + 0x34 */
 #define GA_0x0057ef70u 0x0057ef60u   /* function 0057ef70 + 0x0 */
+#define GA_0x00581417u 0x00581407u   /* function 005811d0 + 0x247 */
 #define GA_0x00581485u 0x00581475u   /* function 005811d0 + 0x2b5 */
 #define GA_0x00585650u 0x00585640u   /* function 00585650 + 0x0 */
 #define GA_0x0058ad30u 0x0058ad20u   /* function 0058ad30 + 0x0 */
 #define GA_0x0058d6c0u 0x0058d6b0u   /* function 0058d6c0 + 0x0 */
 #define GA_0x0058da00u 0x0058d9f0u   /* function 0058da00 + 0x0 */
+#define GA_0x0058e910u 0x0058e900u   /* operand pair */
 #define GA_0x0058fd60u 0x0058fd50u   /* function 0058fd60 + 0x0 */
 #define GA_0x00593100u 0x005930f0u   /* function 00593100 + 0x0 */
 #define GA_0x00599620u 0x00599610u   /* function 00599620 + 0x0 */
@@ -330,6 +332,8 @@
 #define GA_0x007fb720u 0x007fb720u   /* operand pair */
 #define GA_0x007fbddcu 0x007fbddcu   /* operand pair */
 #define GA_0x007fbe04u 0x007fbe04u   /* operand pair */
+#define GA_0x007fbe5cu 0x007fbe5cu   /* operand pair */
+#define GA_0x007fbe64u 0x007fbe64u   /* operand pair */
 #define GA_0x007fee8cu 0x007fee8cu   /* operand pair */
 #define GA_0x0080052cu 0x0080052cu   /* operand pair */
 #define GA_0x00803ac4u 0x00803ac4u   /* operand pair */
@@ -465,6 +469,8 @@
 #define GA_0x0086658cu 0x0086658cu   /* operand pair */
 #define GA_0x008669f4u 0x008669f4u   /* operand pair */
 #define GA_0x00866a14u 0x00866a14u   /* operand pair */
+#define GA_0x008691b4u 0x008691b4u   /* operand pair */
+#define GA_0x008691b8u 0x008691b8u   /* operand pair */
 #define GA_0x0086a858u 0x0086a858u   /* operand pair */
 #define GA_0x0086a874u 0x0086a874u   /* operand pair */
 #define GA_0x0086aa30u 0x0086aa30u   /* between pairs 0086a874 and 0086ad54 (delta +0x0) */
@@ -927,6 +933,10 @@
 #define sub_0057eae0_orig sub_0057ead0_orig
 #define sub_0057eae0_m sub_0057ead0_m
 #define sub_0057eae0_orig_m sub_0057ead0_orig_m
+#define sub_00585d60 sub_00585d50
+#define sub_00585d60_orig sub_00585d50_orig
+#define sub_00585d60_m sub_00585d50_m
+#define sub_00585d60_orig_m sub_00585d50_orig_m
 #define sub_005b2620 sub_005b2610
 #define sub_005b2620_orig sub_005b2610_orig
 #define sub_005b2620_m sub_005b2610_m

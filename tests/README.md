@@ -14,6 +14,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `framerate` | frame-rate choices (runtime/framerate.c) |
 | `keyboard_unit`, `gamepad_harness` | DirectInput keyboard and key names; GameController and the synthetic pad |
 | `horn_unit`, `radio_native` | horns, the music folder |
+| `racenet_unit` | network races: the joiners' car states straight to each other, the corrections' fade |
 | `native_scene`, `photo_gallery` | photo mode and drift panels, the Screenshots window |
 | `headlights_native` | other cars' headlights: modes, the pool, the Metal shaders (EU and NA) |
 | `shader_ps20` | ps_2_0 shader translation, original and HD |
