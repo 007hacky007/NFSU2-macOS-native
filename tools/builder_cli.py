@@ -254,8 +254,13 @@ def build(args):
     macos = app / 'Contents/MacOS'
     engines = ['nfsu2-engine', 'nfsu2-engine-hd'] if region == 'eu' else ['nfsu2-engine-na', 'nfsu2-engine-na-hd']
     missing = [e for e in engines if not (macos / e).is_file()]
-    if missing or not (ROOT / 'out/nfsu2_launcher').is_file():
-        raise BuildError('the app is incomplete: ' + ', '.join(missing or ['the launcher']) + ' missing')
+    if missing:
+        raise BuildError('the app is incomplete: ' + ', '.join(missing) + ' missing')
+    # pack.sh only warns and packs the game without its launcher window when swiftc fails
+    if not (ROOT / 'out/nfsu2_launcher').is_file():
+        raise BuildError("the launcher did not compile with this Mac's Swift. Install the latest "
+                         'Command Line Tools in System Settings > General > Software Update and try '
+                         'again. If it still fails, report it with Copy log.')
     remove_quarantine(app)
     result = subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)],
                             capture_output=True, text=True)
