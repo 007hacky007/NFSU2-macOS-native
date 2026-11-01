@@ -36,7 +36,7 @@ final class LauncherModel: ObservableObject {
 
     @Published var game: GameState = .searching {
         didSet {
-            languages = Languages.installed(in: location?.folder)
+            languages = Languages.installed(for: location)
             if location != nil && !languages.contains(language) { language = "english" }
         }
     }
@@ -51,7 +51,18 @@ final class LauncherModel: ObservableObject {
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
+    private var setLangPacks = false     // NFSU2_LANGPACKS was set by us
     @Published var allCars: Bool { didSet { defaults.set(allCars, forKey: Prefs.allCars) } }
+    /// Settings › Check for updates (UpdateCheck.swift); off: no request, no notice.
+    @Published var checkUpdates: Bool {
+        didSet { defaults.set(checkUpdates, forKey: Prefs.checkUpdates); checkForUpdates() }
+    }
+    /// A newer NFSU2 Builder than the one that made this app: the main window's notice.
+    @Published var updateNotice: UpdateCheck.Release?
+    /// The Builder version this app was made with (nil: not made by a Builder, no check).
+    var builderStamp: String? = UpdateCheck.stamp(of: Paths.bundle)
+    /// How the latest release is asked for (tests put a fake one here).
+    var fetchRelease: (URL, @escaping (Data?) -> Void) -> Void = UpdateCheck.fetch
     @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
     @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
@@ -161,7 +172,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
+        defaults.register(defaults: [Prefs.checkUpdates: true, Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -176,6 +187,7 @@ final class LauncherModel: ObservableObject {
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         allCars = defaults.bool(forKey: Prefs.allCars)
+        checkUpdates = defaults.bool(forKey: Prefs.checkUpdates)
         intro = defaults.string(forKey: Prefs.intro) ?? "skippable"
         discord = defaults.bool(forKey: Prefs.discord)
         garage = defaults.bool(forKey: Prefs.garage)
@@ -263,6 +275,8 @@ final class LauncherModel: ObservableObject {
     // MARK: game folder
 
     func chooseFolder() {
+        // The game inside this app is the one it plays; there is no folder to change.
+        if location?.embedded == true { return }
         let p = NSOpenPanel()
         p.canChooseFiles = false
         p.canChooseDirectories = true
@@ -307,6 +321,9 @@ final class LauncherModel: ObservableObject {
         if !engineForced { defaults.set(engine.rawValue, forKey: Prefs.engine) }
         defaults.synchronize()
         if !fromEnv { setenv("NFSU2_DATA", loc.exe.path, 1) }
+        // The language packs of a game inside the app are outside it (Paths.languagePacks).
+        if loc.embedded { setenv("NFSU2_LANGPACKS", Paths.outsideLanguagePacks.path, 1); setLangPacks = true }
+        else if setLangPacks { unsetenv("NFSU2_LANGPACKS"); setLangPacks = false }
         // HUD at the screen edges (engine: metal.m HUD ANCHORING).  A HUDPOS given by
         // the caller wins; otherwise it follows the switch.
         if setHUDPOS || env["HUDPOS"] == nil {
@@ -657,6 +674,50 @@ final class LauncherModel: ObservableObject {
         notice = "Every option is back as in the original game."
     }
 
+    // MARK: updates (UpdateCheck.swift)
+
+    /// At most once a day, in the background, when on and the app has a Builder stamp; the
+    /// newest release seen is kept, so the notice stays between the checks.
+    func checkForUpdates(now: Date = Date()) {
+        refreshUpdateNotice()
+        guard checkUpdates, builderStamp != nil else { return }
+        let last = (defaults.object(forKey: Prefs.updateLastCheck) as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+        guard UpdateCheck.isDue(last: last, now: now) else { return }
+        defaults.set(now.timeIntervalSince1970, forKey: Prefs.updateLastCheck)
+        fetchRelease(UpdateCheck.releasesAPI) { [weak self] data in
+            let release = data.flatMap(UpdateCheck.parse)
+            DispatchQueue.main.async {
+                guard let self = self, let r = release else { return }
+                self.defaults.set(["version": r.version, "page": r.page.absoluteString,
+                                   "download": r.download?.absoluteString ?? ""], forKey: Prefs.updateLatest)
+                self.refreshUpdateNotice()
+            }
+        }
+    }
+
+    private func refreshUpdateNotice() {
+        guard checkUpdates, let stamp = builderStamp,
+              let latest = defaults.dictionary(forKey: Prefs.updateLatest) as? [String: String],
+              let version = latest["version"], let page = latest["page"].flatMap(URL.init(string:)),
+              UpdateCheck.isNewer(version, than: stamp),
+              defaults.string(forKey: Prefs.updateDismissed).map({ UpdateCheck.isNewer(version, than: $0) }) ?? true
+        else { if updateNotice != nil { updateNotice = nil }; return }
+        let release = UpdateCheck.Release(version: version, page: page,
+                                          download: latest["download"].flatMap { $0.isEmpty ? nil : URL(string: $0) })
+        if updateNotice != release { updateNotice = release }
+    }
+
+    /// Not now: hidden until a newer version than this one is out.
+    func dismissUpdate() {
+        guard let r = updateNotice else { return }
+        defaults.set(r.version, forKey: Prefs.updateDismissed)
+        refreshUpdateNotice()
+    }
+
+    func openUpdatePage() { if let r = updateNotice { NSWorkspace.shared.open(r.page) } }
+    /// The disk image in the browser: a normal download the browser marks as such.
+    func downloadUpdate() { if let r = updateNotice { NSWorkspace.shared.open(r.download ?? r.page) } }
+
     // MARK: portable copy
 
     func makePortable() {
@@ -673,7 +734,8 @@ final class LauncherModel: ObservableObject {
             : FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
         // A checkbox for each optional folder the game has, all on: a full copy unless unticked.
         var boxes: [(String, NSButton)] = []
-        for (x, size) in PortableBuilder.extras(in: loc.folder) {
+        let packs = loc.embedded ? Paths.outsideLanguagePacks : nil
+        for (x, size) in PortableBuilder.extras(in: loc.folder, languagePacks: packs) {
             let b = NSButton(checkboxWithTitle: "Include " + x.title + " ("
                              + ByteCountFormatter.string(fromByteCount: size, countStyle: .file) + ")",
                              target: nil, action: nil)
@@ -701,11 +763,13 @@ final class LauncherModel: ObservableObject {
             alert("Choose another name", "The copy can't replace the app that is running.")
             return
         }
-        startPortable(from: loc.folder, to: dest, leaveOut: Set(boxes.filter { $0.1.state == .off }.map { $0.0 }))
+        startPortable(from: loc.folder, to: dest, leaveOut: Set(boxes.filter { $0.1.state == .off }.map { $0.0 }),
+                      languagePacks: packs)
     }
 
-    func startPortable(from game: URL, to dest: URL, leaveOut: Set<String> = []) {
-        let b = PortableBuilder(sourceApp: Paths.bundle, gameFolder: game, destination: dest, leaveOut: leaveOut)
+    func startPortable(from game: URL, to dest: URL, leaveOut: Set<String> = [], languagePacks: URL? = nil) {
+        let b = PortableBuilder(sourceApp: Paths.bundle, gameFolder: game, destination: dest, leaveOut: leaveOut,
+                                languagePacks: languagePacks)
         builder = b
         job = Job(phase: "Starting…")
         DispatchQueue.global(qos: .userInitiated).async {

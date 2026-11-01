@@ -78,7 +78,7 @@ struct GameCard: View {
                     "Choose the folder where Need for Speed Underground 2 is installed (the folder with SPEED2.EXE in it). Your own copy of the PC game is needed.")
         case .ready(let l):
             return (Theme.accent, l.embedded ? "Ready · the game is inside this app" : "Ready · \(l.build?.name ?? "supported version")",
-                    l.embedded ? "This is a portable copy: it needs no separate game folder." : l.folder.path)
+                    l.embedded ? "The game is inside this app, so it needs no game folder and can be moved anywhere." : l.folder.path)
         case .unsupported(let l, let size):
             if let b = l.build {
                 return (Theme.bad, "No engine for this version in this app",
@@ -125,6 +125,27 @@ struct GameCard: View {
                 }
             }
         }
+    }
+}
+
+/// A newer NFSU2 Builder is out (Settings › Check for updates, UpdateCheck.swift).
+struct UpdateNotice: View {
+    @ObservedObject var model: LauncherModel
+    let release: UpdateCheck.Release
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(Theme.accent).frame(width: 7, height: 7)
+            Text("NFSU2 Builder \(release.version) is available")
+                .font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.text)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Button("What's new") { model.openUpdatePage() }.buttonStyle(SecondaryButtonStyle())
+            Button("Download") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
+            Button("Not now") { model.dismissUpdate() }.buttonStyle(SecondaryButtonStyle())
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.cardBorder, lineWidth: 1))
     }
 }
 
@@ -525,6 +546,7 @@ struct LauncherView: View {
                 }
 
                 Spacer(minLength: 0)
+                if let update = model.updateNotice { UpdateNotice(model: model, release: update) }
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 2) {
                         Toggle("Show this window when the app opens", isOn: $model.showAtStartup)

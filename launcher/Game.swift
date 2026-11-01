@@ -50,6 +50,21 @@ enum Paths {
     static var registry: URL { home.appendingPathComponent(".nfsu2_registry") }
     /// The UHUD pack the launcher made from the mod (UHUDPack.swift)
     static var uhudPack: URL { home.appendingPathComponent("Library/Application Support/NFSU2/Textures/uhud.pak") }
+    /// The language packs the launcher makes when the game is inside the app: writing into the
+    /// bundle would break its signature (and fails where the app is read-only).  The engine
+    /// reads them through NFSU2_LANGPACKS (runtime/language.c).
+    static var outsideLanguagePacks: URL {
+        testLanguagePacks ?? home.appendingPathComponent("Library/Application Support/NFSU2/LanguagePacks")
+    }
+    static var testLanguagePacks: URL? = nil      // tests/launcher_settings.swift
+
+    /// Where the launcher makes the language packs (LANGPACKS/<language>, LanguagePacks.swift)
+    /// for this game: the game folder's LANGPACKS, or outsideLanguagePacks for a game inside the app.
+    static func languagePacks(for loc: GameLocation) -> URL {
+        if loc.embedded { return outsideLanguagePacks }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: loc.folder.path)) ?? []
+        return loc.folder.appendingPathComponent(names.first { $0.caseInsensitiveCompare("LANGPACKS") == .orderedSame } ?? "LANGPACKS")
+    }
     /// The game's screenshots (runtime/native_scene.m): NFSU2_APPSUPPORT/Screenshots when that is set
     static var screenshots: URL {
         let override = ProcessInfo.processInfo.environment["NFSU2_APPSUPPORT"]
@@ -88,6 +103,10 @@ enum Prefs {
     static let rumbleCrashes = "LauncherRumbleCrashes"     // NFSU2_FF_JOLT=1
     static let rumbleStrength = "LauncherRumbleStrength"   // NFSU2_FF_STRENGTH (0.1 .. 1)
     // Launcher only.
+    static let checkUpdates = "LauncherCheckUpdates"         // ask GitHub once a day for a newer Builder (UpdateCheck.swift)
+    static let updateLastCheck = "LauncherUpdateLastCheck"   // when it last asked (seconds since 1970)
+    static let updateLatest = "LauncherUpdateLatest"         // the newest release it saw: version, page, download
+    static let updateDismissed = "LauncherUpdateDismissed"   // Not now: hidden until a newer version than this
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
@@ -196,7 +215,8 @@ struct OriginalValue {
 }
 
 /// The game's languages (runtime/language.c).  One is offered when the game folder
-/// has its LANGUAGES file, or its language pack (LANGPACKS/<id>) has one.
+/// has its LANGUAGES file, or its language pack (LANGPACKS/<id>, or <id> in the
+/// launcher's packs outside an app with the game inside) has one.
 enum Languages {
     static let all: [(id: String, name: String, file: String)] = [
         ("english", "English", "English.bin"), ("french", "French", "French.bin"),
@@ -216,14 +236,19 @@ enum Languages {
             .first { $0.lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }
     }
 
-    static func installed(in game: URL?) -> [String] {
+    static func installed(in game: URL?, packs outside: URL? = nil) -> [String] {
         let retail = child("LANGUAGES", in: game)
         let packs = child("LANGPACKS", in: game)
         return all.filter { l in
             l.id == "english"
                 || (!packOnly.contains(l.id) && child(l.file, in: retail) != nil)
                 || child(l.file, in: child("LANGUAGES", in: child(l.id, in: packs))) != nil
+                || child(l.file, in: child("LANGUAGES", in: child(l.id, in: outside))) != nil
         }.map { $0.id }
+    }
+
+    static func installed(for loc: GameLocation?) -> [String] {
+        installed(in: loc?.folder, packs: loc.map(Paths.languagePacks))
     }
 }
 

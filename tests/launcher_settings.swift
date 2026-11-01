@@ -11,6 +11,10 @@
 //                  (new options are covered by that list on their own) and it stays
 //   validation     server address, player name, Discord picture (rooms and crews:
 //                  the online tests)
+//   embedded       a game inside the app: language packs are made outside the bundle,
+//                  the engine is told where (NFSU2_LANGPACKS), nothing in the bundle changes
+//   updates        Check for updates (UpdateCheck.swift): version order, once a day, off
+//                  makes no request, the notice and Not now (a fake fetcher, no network)
 import AppKit
 
 var failures = 0
@@ -29,7 +33,8 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         let launched = ["HUDPOS", "NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_FPS", "NFSU2_DISCORD", "NFSU2_DISCORD_LARGE_IMAGE",
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
-                        "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED"]
+                        "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED",
+                        "NFSU2_LANGPACKS"]
         for k in launched { unsetenv(k) }
 
         // defaults
@@ -125,6 +130,103 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.restoreOriginalGame()
         check(m.isOriginalGame && Prefs.originalGame.allSatisfy { $0.isSet(m) }, "original game: Restore sets all \(Prefs.originalGame.count) options")
         check(LauncherModel().isOriginalGame, "original game: still so at the next start")
+
+        // embedded: a game inside the app; its language packs go outside the bundle
+        let fm = FileManager.default
+        let bundle = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("nfsu2-embedded-\(getpid())/NFSU2.app")
+        let inside = bundle.appendingPathComponent("Contents/Resources/Game")
+        try? fm.createDirectory(at: inside.appendingPathComponent("LANGUAGES"), withIntermediateDirectories: true)
+        try? Data("exe".utf8).write(to: inside.appendingPathComponent("SPEED2.EXE"))
+        try? Data("english".utf8).write(to: inside.appendingPathComponent("LANGUAGES/English.bin"))
+        func listing(_ u: URL) -> [String] {
+            ((fm.enumerator(atPath: u.path)?.allObjects as? [String]) ?? []).sorted()
+        }
+        let bundleBefore = listing(bundle)
+        let embedded = GameLocation(exe: inside.appendingPathComponent("SPEED2.EXE"), embedded: true)
+        check(Paths.outsideLanguagePacks.path.hasSuffix("/Library/Application Support/NFSU2/LanguagePacks"),
+              "embedded: language packs go to Application Support, not into the app")
+        Paths.testLanguagePacks = bundle.deletingLastPathComponent().appendingPathComponent("Application Support/NFSU2/LanguagePacks")
+        let outside = Paths.languagePacks(for: embedded)
+        check(outside == Paths.testLanguagePacks && !outside.path.hasPrefix(bundle.path), "embedded: an embedded game's packs are the outside ones")
+        check(Paths.languagePacks(for: GameLocation(exe: exe, embedded: false)).path == exe.deletingLastPathComponent().appendingPathComponent("LANGPACKS").path,
+              "embedded: a game folder keeps its own LANGPACKS")
+        let pack = LanguagePacks.Pack(game: embedded.folder, lang: "french", packs: outside)
+        do { try pack.add(Data("french".utf8), "LANGUAGES/French.bin"); pack.finish() } catch { check(false, "embedded: pack written (\(error))") }
+        check(fm.fileExists(atPath: outside.appendingPathComponent("french/LANGUAGES/French.bin").path), "embedded: the pack is made outside the app")
+        check(listing(bundle) == bundleBefore, "embedded: nothing in the app changed (\(listing(bundle).count) entries)")
+        m = LauncherModel()
+        LauncherModel.testSpawn = { _ in }
+        m.game = .ready(embedded)
+        check(m.languages.contains("french"), "embedded: the outside pack's language is offered")
+        m.play()
+        check(env("NFSU2_LANGPACKS") == outside.path, "embedded: play hands the engine the outside packs (NFSU2_LANGPACKS)")
+        m.game = .ready(GameLocation(exe: exe, embedded: false))
+        m.play()
+        check(env("NFSU2_LANGPACKS") == nil, "embedded: a game folder's Play leaves no NFSU2_LANGPACKS behind")
+        LauncherModel.testSpawn = nil
+        try? fm.removeItem(at: bundle.deletingLastPathComponent())
+
+        // updates: Check for updates, with a fake fetcher
+        check(UpdateCheck.isNewer("1.10.0", than: "1.9.2") && UpdateCheck.isNewer("v2", than: "1.99")
+              && UpdateCheck.isNewer("1.0.1", than: "1.0") && !UpdateCheck.isNewer("1.0", than: "1.0.0")
+              && !UpdateCheck.isNewer("1.2.0", than: "1.10.0") && !UpdateCheck.isNewer("1.1.0", than: "1.1.0"),
+              "updates: versions compare number by number")
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        check(UpdateCheck.isDue(last: nil, now: t0) && !UpdateCheck.isDue(last: t0, now: t0.addingTimeInterval(23 * 3600))
+              && UpdateCheck.isDue(last: t0, now: t0.addingTimeInterval(24 * 3600)) && UpdateCheck.isDue(last: t0.addingTimeInterval(60), now: t0),
+              "updates: at most once a day")
+        func release(_ v: String) -> Data {
+            Data(#"{"tag_name":"v\#(v)","html_url":"https://github.com/007hacky007/NFSU2-macOS-native/releases/tag/v\#(v)","assets":[{"name":"NFSU2-Builder.dmg","browser_download_url":"https://github.com/007hacky007/NFSU2-macOS-native/releases/download/v\#(v)/NFSU2-Builder.dmg"},{"name":"NFSU2-Builder.dmg.sha256","browser_download_url":"https://example.com/x"}]}"#.utf8)
+        }
+        let parsed = UpdateCheck.parse(release("1.1.0"))
+        check(parsed?.version == "1.1.0" && parsed?.download?.lastPathComponent == "NFSU2-Builder.dmg"
+              && parsed?.page.absoluteString.hasSuffix("/tag/v1.1.0") == true, "updates: the release, its page and its disk image")
+        check(UpdateCheck.parse(Data("{}".utf8)) == nil && UpdateCheck.parse(Data("not json".utf8)) == nil, "updates: a broken answer is ignored")
+        let plist = bundle.appendingPathComponent("Contents/Info.plist")
+        try? fm.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        _ = (["NFSBuilderVersion": "1.0.0"] as NSDictionary).write(to: plist, atomically: true)
+        check(UpdateCheck.stamp(of: bundle) == "1.0.0" && UpdateCheck.stamp(of: bundle.deletingLastPathComponent()) == nil,
+              "updates: the Builder stamp in Info.plist (none: no stamp)")
+        try? fm.removeItem(at: bundle.deletingLastPathComponent())
+        func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        for k in [Prefs.updateLastCheck, Prefs.updateLatest, Prefs.updateDismissed] { d.removeObject(forKey: k) }
+        m = LauncherModel()
+        check(m.checkUpdates, "updates: Check for updates is on by default")
+        var requests: [URL] = [], answer = release("1.1.0")
+        m.fetchRelease = { url, done in requests.append(url); done(answer) }
+        m.builderStamp = nil
+        m.checkForUpdates(now: t0); settle()
+        check(requests.isEmpty && m.updateNotice == nil, "updates: no stamp, no request")
+        m.builderStamp = "1.0.0"
+        m.checkForUpdates(now: t0); settle()
+        check(requests == [UpdateCheck.releasesAPI] && m.updateNotice?.version == "1.1.0", "updates: a newer Builder shows the notice")
+        m.checkForUpdates(now: t0.addingTimeInterval(3600)); settle()
+        check(requests.count == 1 && m.updateNotice?.version == "1.1.0", "updates: one request a day, the notice stays")
+        let next = LauncherModel()
+        next.builderStamp = "1.0.0"
+        next.fetchRelease = { url, done in requests.append(url); done(nil) }
+        next.checkForUpdates(now: t0.addingTimeInterval(7200)); settle()
+        check(requests.count == 1 && next.updateNotice?.version == "1.1.0", "updates: the next start shows the notice without asking again")
+        m.dismissUpdate()
+        check(m.updateNotice == nil, "updates: Not now hides it")
+        m.checkForUpdates(now: t0.addingTimeInterval(25 * 3600)); settle()
+        check(requests.count == 2 && m.updateNotice == nil, "updates: hidden while no newer one is out")
+        answer = release("1.2.0")
+        m.checkForUpdates(now: t0.addingTimeInterval(50 * 3600)); settle()
+        check(requests.count == 3 && m.updateNotice?.version == "1.2.0", "updates: a newer one than the dismissed shows again")
+        m.builderStamp = "1.2.0"; m.checkForUpdates(now: t0.addingTimeInterval(51 * 3600)); settle()
+        check(m.updateNotice == nil, "updates: none once this app is that version")
+        m.builderStamp = "1.0.0"
+        d.removeObject(forKey: Prefs.updateLastCheck)
+        m.checkUpdates = false; settle()
+        m.checkForUpdates(now: t0.addingTimeInterval(80 * 3600)); settle()
+        check(requests.count == 3 && m.updateNotice == nil, "updates: off makes no request and shows nothing")
+        check(!LauncherModel().checkUpdates, "updates: off is kept")
+        m.restoreOriginalGame()
+        check(!m.checkUpdates, "updates: not a game option, Restore Original Game leaves it")
+        m.fetchRelease = { url, done in requests.append(url); done(nil) }
+        m.checkUpdates = true; settle()
+        check(requests.count == 4 && m.updateNotice?.version == "1.2.0", "updates: on again asks; a failed answer changes nothing")
 
         // validation
         for ok in ["wss://nfsu2.xyz/lan", "ws://127.0.0.1:8080/lan", "ws://[::1]:8080/lan", "ws://localhost/lan"] { check(OnlineSettings.validServer(ok), "server accepted: \(ok)") }

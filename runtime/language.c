@@ -75,7 +75,7 @@
 #include <string.h>
 #include <strings.h>
 
-int fileio_set_language_pack(const char *rel);
+int fileio_set_language_pack(const char *dir, const char *rel);
 
 #define FONT_SIZES  GA(0x007f6de8u)   /* 15 x { hash, size }, read by sub_004ff680 only */
 #define LATIN_FONTS GA(0x007f6e60u)   /* font blocks: the hashes, then 0 */
@@ -317,8 +317,18 @@ void language_install(void){
     if (i == n){ fprintf(stderr, "language: \"%s\" is not one of the game's, English it is\n", e); i = 0; }
     g_lang = &LANGS[i];
 
-    char pack[64]; snprintf(pack, sizeof pack, "LANGPACKS/%s", g_lang->key);
-    int files = fileio_set_language_pack(pack);
+    /* the launcher's packs outside the app when the game is inside it (NFSU2_LANGPACKS,
+     * an absolute folder), else the game folder's LANGPACKS */
+    char pack[1100]; int files = 0;
+    const char *outside = getenv("NFSU2_LANGPACKS");
+    if (outside && outside[0] == '/'){
+        snprintf(pack, sizeof pack, "%s/%s", outside, g_lang->key);
+        files = fileio_set_language_pack(outside, g_lang->key);
+    }
+    if (!files){
+        snprintf(pack, sizeof pack, "LANGPACKS/%s", g_lang->key);
+        files = fileio_set_language_pack(0, pack);
+    }
     fprintf(stderr, "language: %s (registry \"%s\"), %s: %d file%s\n", g_lang->key, g_lang->reg,
             pack, files, files == 1 ? "" : "s");
     if (!g_lang->fonts) return;

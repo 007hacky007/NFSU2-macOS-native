@@ -1,6 +1,7 @@
 // Settings › Mods › Languages: a row per language that needs a pack
 // (LanguagePacks.swift).  Download fetches what it needs from its author's page and
-// builds LANGPACKS/<language> in the game folder; Import… takes a local copy (an
+// builds LANGPACKS/<language> in the game folder (outside the app when the game is inside
+// it, Paths.languagePacks); Import… takes a local copy (an
 // archive or the folder it was unpacked to); Open Page shows where the translations
 // that cannot be fetched automatically come from.  The language itself is chosen in
 // the main window, once its pack is there.
@@ -16,11 +17,11 @@ final class LanguagePackStore: ObservableObject {
     /// The languages with a pack to make, in the picker's order.
     static var languages: [String] { Languages.all.map { $0.id }.filter { LanguagePacks.way($0) != nil } }
 
-    func refresh(_ game: URL?) {
+    func refresh(_ loc: GameLocation?) {
         var n: [String: Int] = [:]
-        if let g = game {
+        if let loc = loc {
             for l in LanguagePackStore.languages {
-                let dir = g.appendingPathComponent("LANGPACKS").appendingPathComponent(l)
+                let dir = Paths.languagePacks(for: loc).appendingPathComponent(l)
                 let files = (FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
                     .filter { !UHUDPack.isDirectory($0) }
                 if !files.isEmpty { n[l] = files.count }
@@ -30,17 +31,18 @@ final class LanguagePackStore: ObservableObject {
     }
 
     func make(_ lang: String, model: LauncherModel, from src: URL?) {
-        guard let game = model.location?.folder, busy == nil else { return }
+        guard let loc = model.location, busy == nil else { return }
+        let game = loc.folder, packs = Paths.languagePacks(for: loc)
         busy = lang
         failed.remove(lang)
         note[lang] = src == nil ? "Downloading…" : "Making the pack…"
         DispatchQueue.global(qos: .userInitiated).async {
             var res: String? = nil, err: String? = nil
             do {
-                if let s = src { res = try LanguagePacks.importCopy(lang: lang, src: s, game: game) }
+                if let s = src { res = try LanguagePacks.importCopy(lang: lang, src: s, game: game, packs: packs) }
                 else {
                     var last = Date.distantPast
-                    res = try LanguagePacks.download(lang: lang, game: game) { what, got, total in
+                    res = try LanguagePacks.download(lang: lang, game: game, packs: packs) { what, got, total in
                         guard Date().timeIntervalSince(last) > 0.2 || got >= total else { return }
                         last = Date()
                         let text = what == "Building" ? "Making the pack…"
@@ -57,8 +59,8 @@ final class LanguagePackStore: ObservableObject {
                 self.busy = nil
                 if let e = err { self.note[lang] = e; self.failed.insert(lang) }
                 else { self.note[lang] = nil; NSLog("language pack: %@", res ?? "") }
-                self.refresh(game)
-                model.languages = Languages.installed(in: game)
+                self.refresh(loc)
+                model.languages = Languages.installed(for: loc)
             }
         }
     }
@@ -110,7 +112,7 @@ struct LanguagePacksCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(LanguagePackStore.languages, id: \.self) { l in row(l) }
         }
-        .onAppear { store.refresh(model.location?.folder) }
+        .onAppear { store.refresh(model.location) }
     }
 
     private func row(_ l: String) -> some View {

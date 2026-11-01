@@ -17,7 +17,7 @@
 //   NFSU2_LAUNCHER_SNAPSHOT_SETTINGS=graphics|more|...  with the above: the Settings window on that tab
 //   NFSU2_LAUNCHER_SNAPSHOT_HEIGHT=<points>  with the above: a taller Settings window, so a long tab
 //                                fits without scrolling (README pictures)
-//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|copying|done|uhud|uhud-busy|texpacks|texpacks-window|texpacks-busy|quickchat|counts
+//   NFSU2_LAUNCHER_STATE=ready|notfound|unsupported|embedded|update|copying|done|uhud|uhud-busy|texpacks|texpacks-window|texpacks-busy|quickchat|counts
 //                                fake state for the snapshot (uhud: ready, with a UHUD pack added;
 //                                uhud-busy: downloading it; texpacks: two texture packs, one on;
 //                                texpacks-window: the Texture Packs window with them; texpacks-busy:
@@ -221,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if env["NFSU2_LAUNCHER_TEST"] == nil && env["NFSU2_LAUNCHER_STATE"] == nil { model.checkForUpdates() }
     }
 
     /// Settings… in the window and the app menu (Cmd-,).
@@ -252,6 +253,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "notfound": model.game = .notFound
         case "unsupported": model.game = .unsupported(GameLocation(exe: exe, embedded: false), 4_800_512)
         case "embedded": model.game = .ready(GameLocation(exe: exe, embedded: true))
+        case "update":
+            model.game = .ready(GameLocation(exe: exe, embedded: true))
+            model.updateNotice = UpdateCheck.Release(version: "1.1.0", page: URL(string: "https://github.com/")!, download: nil)
         case "uhud":
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.hasUHUDPack = true

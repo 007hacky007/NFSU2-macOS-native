@@ -1,5 +1,8 @@
 // Language packs: LANGPACKS/<language> in the game folder, read by the engine in
 // place of the game folder's files of the same path (runtime/language.c, fileio.c).
+// When the game is inside the app the packs go outside it instead (`packs`,
+// Paths.outsideLanguagePacks, NFSU2_LANGPACKS for the engine): nothing is written
+// into the bundle.
 // A pack holds only what differs from the game folder.  After th0mk's nfsu2-web
 // tools/langpacks.py, which builds the same packs.
 //
@@ -167,9 +170,10 @@ enum LanguagePacks {
         let game: URL, root: URL, lang: String
         private(set) var files = 0, bytes: Int64 = 0
         private var made = Set<String>()
-        init(game: URL, lang: String) {
+        /// packs: the folder that holds the packs (nil: the game folder's LANGPACKS)
+        init(game: URL, lang: String, packs: URL? = nil) {
             self.game = game; self.lang = lang
-            root = game.appendingPathComponent("LANGPACKS").appendingPathComponent(lang)
+            root = (packs ?? game.appendingPathComponent("LANGPACKS")).appendingPathComponent(lang)
         }
         func sameAsGame(_ rel: String, _ data: Data) -> Bool {
             guard let g = find(game, rel), let a = try? FileManager.default.attributesOfItem(atPath: g.path),
@@ -251,8 +255,8 @@ enum LanguagePacks {
     }
 
     /// A Multi 13 language's pack from its archives (core: may be nil when not needed).
-    static func buildMulti13(lang: String, game: URL, core: URL?, dub: URL?) throws -> String {
-        let p = Pack(game: game, lang: lang)
+    static func buildMulti13(lang: String, game: URL, core: URL?, dub: URL?, packs: URL? = nil) throws -> String {
+        let p = Pack(game: game, lang: lang, packs: packs)
         let mine = multi13Files.filter { $0.0 == lang }
         if !mine.isEmpty {
             guard let c = core else { throw Failure(message: "the mod's core archive is missing") }
@@ -359,7 +363,7 @@ enum LanguagePacks {
     }
 
     /// English's pack from the subtitles mod (its .7z or the folder it was extracted to).
-    static func buildSubtitles(mod: URL, game: URL) throws -> String {
+    static func buildSubtitles(mod: URL, game: URL, packs: URL? = nil) throws -> String {
         let (root, temp) = try unpackedFolder(mod)
         defer { if let t = temp { try? FileManager.default.removeItem(at: t) } }
         var texts: [UInt32: String] = [:]
@@ -369,7 +373,7 @@ enum LanguagePacks {
         guard !texts.isEmpty else { throw Failure(message: "\(mod.lastPathComponent) has no endscript that changes English's text: not the English Subtitles Fixed mod") }
         guard let eng = find(game, "LANGUAGES/English.bin") else { throw Failure(message: "The game folder has no LANGUAGES/English.bin.") }
         let (data, _) = try withTexts(try Data(contentsOf: eng), texts)
-        let p = Pack(game: game, lang: "english")
+        let p = Pack(game: game, lang: "english", packs: packs)
         try p.add(data, "LANGUAGES/English.bin")
         p.finish()
         return p.summary
@@ -431,10 +435,10 @@ enum LanguagePacks {
         return nil
     }
 
-    static func buildTranslation(lang: String, src: URL, game: URL) throws -> String {
+    static func buildTranslation(lang: String, src: URL, game: URL, packs: URL? = nil) throws -> String {
         let (dir, temp) = try unpackedFolder(src)
         defer { if let t = temp { try? FileManager.default.removeItem(at: t) } }
-        let p = Pack(game: game, lang: lang)
+        let p = Pack(game: game, lang: lang, packs: packs)
         if lang == "polish" {
             let files = try polishFiles(dir)
             for (s, rel) in plFiles {
@@ -552,7 +556,7 @@ enum LanguagePacks {
 
     /// Downloads what a language needs from its author's page and builds its pack.
     /// progress: (what, bytes so far of all, total bytes).
-    static func download(lang: String, game: URL, progress: @escaping (String, Int64, Int64) -> Void) throws -> String {
+    static func download(lang: String, game: URL, packs: URL? = nil, progress: @escaping (String, Int64, Int64) -> Void) throws -> String {
         let fm = FileManager.default
         let total = downloadSize(lang)
         if lang == "english" {
@@ -562,7 +566,7 @@ enum LanguagePacks {
                 throw Failure(message: "The file on nfsmods.xyz is not the release this was made for. Download the mod from its page yourself and use Import….")
             }
             progress("Building", total, total)
-            return try buildSubtitles(mod: f, game: game)
+            return try buildSubtitles(mod: f, game: game, packs: packs)
         }
         let need = archives(lang)
         guard !need.isEmpty else { throw Failure(message: "\(lang) has no download") }
@@ -584,19 +588,19 @@ enum LanguagePacks {
             before += a.size
         }
         progress("Building", total, total)
-        return try buildMulti13(lang: lang, game: game, core: got[core.name], dub: dubs[lang].flatMap { got[$0.archive.name] })
+        return try buildMulti13(lang: lang, game: game, core: got[core.name], dub: dubs[lang].flatMap { got[$0.archive.name] }, packs: packs)
     }
 
     /// Import: a local copy of what the language needs (an archive or folder).
     /// Multi 13: a folder with the archives (or the archives' files extracted), or one archive.
-    static func importCopy(lang: String, src: URL, game: URL) throws -> String {
+    static func importCopy(lang: String, src: URL, game: URL, packs: URL? = nil) throws -> String {
         if lang == "english" {
             if !UHUDPack.isDirectory(src), try sha256(src) != subtitles.sha256 {
                 throw Failure(message: "\(src.lastPathComponent) is not the release this was made for (\(subtitles.name)). Choose it as downloaded, or the folder it was unpacked to.")
             }
-            return try buildSubtitles(mod: src, game: game)
+            return try buildSubtitles(mod: src, game: game, packs: packs)
         }
-        if pages[lang] != nil { return try buildTranslation(lang: lang, src: src, game: game) }
+        if pages[lang] != nil { return try buildTranslation(lang: lang, src: src, game: game, packs: packs) }
         // Multi 13: the pinned archives in a folder, or a single archive
         var core: URL? = nil, dub: URL? = nil
         let candidates = UHUDPack.isDirectory(src)
@@ -614,6 +618,6 @@ enum LanguagePacks {
                 throw Failure(message: "\(u.lastPathComponent) is not the release this was made for (\(a.name), \(formatBytesPlain(a.size))).")
             }
         }
-        return try buildMulti13(lang: lang, game: game, core: core, dub: dub)
+        return try buildMulti13(lang: lang, game: game, core: core, dub: dub, packs: packs)
     }
 }

@@ -32,25 +32,37 @@ final class PortableBuilder {
     ]
 
     let leaveOut: Set<String>    // folder names of `extras`, upper case
+    /// The launcher's language packs outside an app with the game inside (Paths.languagePacks):
+    /// they go into the copy's Game/LANGPACKS, in place of the game's own pack of that language.
+    let languagePacks: URL?
 
-    init(sourceApp: URL, gameFolder: URL, destination: URL, leaveOut: Set<String> = []) {
+    init(sourceApp: URL, gameFolder: URL, destination: URL, leaveOut: Set<String> = [], languagePacks: URL? = nil) {
         self.sourceApp = sourceApp
         self.gameFolder = gameFolder
         self.destination = destination
         self.leaveOut = Set(leaveOut.map { $0.uppercased() })
+        self.languagePacks = languagePacks
     }
 
-    /// The extras the game folder has, with their sizes.
-    static func extras(in gameFolder: URL) -> [(Extra, Int64)] {
+    private static func size(of dir: URL) -> Int64? {
+        guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
+        var total: Int64 = 0
+        for case let u as URL in e { total += Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+        return total
+    }
+
+    /// The extras the game folder (and the language packs outside it) has, with their sizes.
+    static func extras(in gameFolder: URL, languagePacks: URL? = nil) -> [(Extra, Int64)] {
         let fm = FileManager.default
         let names = (try? fm.contentsOfDirectory(atPath: gameFolder.path)) ?? []
         return extras.compactMap { x in
-            guard let name = names.first(where: { $0.caseInsensitiveCompare(x.folder) == .orderedSame }),
-                  let e = fm.enumerator(at: gameFolder.appendingPathComponent(name),
-                                        includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
-            var total: Int64 = 0
-            for case let u as URL in e { total += Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
-            return (x, total)
+            var found = names.first(where: { $0.caseInsensitiveCompare(x.folder) == .orderedSame })
+                .flatMap { size(of: gameFolder.appendingPathComponent($0)) }
+            if x.folder == "LANGPACKS", let outside = languagePacks, fm.fileExists(atPath: outside.path),
+               let more = size(of: outside), more > 0 {
+                found = (found ?? 0) + more
+            }
+            return found.map { (x, $0) }
         }
     }
 
@@ -124,11 +136,19 @@ final class PortableBuilder {
 
         report(Progress(done: 0, total: 0, phase: "Looking at the game files…"))
         let appItems = list(sourceApp) { rel, _ in rel == "Contents/Resources/Game" || rel == "Contents/_CodeSignature" }
+        // The outside packs' languages replace the game's own pack of the same language.
+        let outside = leaveOut.contains("LANGPACKS") ? nil : languagePacks.flatMap { fm.fileExists(atPath: $0.path) ? $0 : nil }
+        let outsideLangs = Set(((outside.flatMap { try? fm.contentsOfDirectory(atPath: $0.path) }) ?? [])
+            .filter { !$0.hasPrefix(".") }.map { $0.lowercased() })
         let gameItems = list(gameFolder) { rel, level in
-            level == 1 && (Self.skippedGameItems.contains(rel)
-                           || leaveOut.contains(rel.uppercased()))
+            let parts = rel.split(separator: "/")
+            return (level == 1 && (Self.skippedGameItems.contains(rel) || leaveOut.contains(rel.uppercased())))
+                || (level == 2 && parts.count == 2 && parts[0].uppercased() == "LANGPACKS" && outsideLangs.contains(parts[1].lowercased()))
         }
-        let total = (appItems + gameItems).reduce(Int64(0)) { $0 + $1.size }
+        let packsName = ((try? fm.contentsOfDirectory(atPath: gameFolder.path)) ?? [])
+            .first { $0.caseInsensitiveCompare("LANGPACKS") == .orderedSame } ?? "LANGPACKS"
+        let packItems = outside.map { list($0) { _, _ in false } } ?? []
+        let total = (appItems + gameItems + packItems).reduce(Int64(0)) { $0 + $1.size }
 
         // Clones on the same disk need no space; on another disk the whole size is needed.
         if volumeID(parent) != volumeID(gameFolder),
@@ -151,6 +171,7 @@ final class PortableBuilder {
             try fm.createDirectory(at: temp, withIntermediateDirectories: false)
             try copy(appItems, into: temp, progress: tick)
             try copy(gameItems, into: temp.appendingPathComponent("Contents/Resources/Game"), progress: tick)
+            try copy(packItems, into: temp.appendingPathComponent("Contents/Resources/Game").appendingPathComponent(packsName), progress: tick)
             if cancelled { throw Failure.cancelled }
 
             report(Progress(done: total, total: total, phase: "Finishing…"))

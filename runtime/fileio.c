@@ -181,7 +181,8 @@ static int overlay_cannot_have(const char *win){
     return 1;
 }
 /* --- language pack (runtime/language.c) ---------------------------------
- * LANGPACKS/<language> in the game folder holds the files a language plays
+ * LANGPACKS/<language> in the game folder (or <language> in NFSU2_LANGPACKS, the
+ * launcher's packs outside an app with the game inside) holds the files a language plays
  * with in place of the game folder's: a file there is read instead of the
  * game's file of the same path (case-insensitive), as long as the save
  * layer has no copy of its own.  Its list is read once.
@@ -216,9 +217,11 @@ static void lpack_walk(const char *dir, const char *rel){
     }
     closedir(d);
 }
-/* -> how many files the pack has (0: none, or no such folder) */
-int fileio_set_language_pack(const char *rel){
-    if (!resolve_in(g_root, rel, g_lroot, sizeof g_lroot)) return 0;
+/* -> how many files the pack has (0: none, or no such folder).  `dir`: the folder
+ * that holds the packs (NFSU2_LANGPACKS, where the launcher makes them when the game
+ * is inside the app: nothing may be written into the bundle), 0: the game folder. */
+int fileio_set_language_pack(const char *dir, const char *rel){
+    if (!resolve_in(dir ? dir : g_root, rel, g_lroot, sizeof g_lroot)) return 0;
     lpack_walk(g_lroot, "");
     qsort(g_lf, (size_t)g_lnf, sizeof *g_lf, lfile_cmp);
     return g_lnf;

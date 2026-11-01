@@ -63,6 +63,17 @@ fixes it. Click a picture to see it full size.
    folder or the two disc images.
 4. Click **Build NFSU2.app**, then **Play**.
 
+The app it makes has the game inside it, so it needs no game folder and you can move
+it anywhere.
+
+**Updating.** When an app the Builder made opens, the launcher asks GitHub once a day
+whether a newer NFSU2 Builder is out and, if so, says so with **What's new** and
+**Download** (Settings > More > Check for updates turns this off; off, it makes no
+network request). Open the new Builder: it finds your `NFSU2.app`, takes the game from
+inside it, and the button reads **Update NFSU2.app** with the old and new versions. The
+old app is only read, and it is replaced only once the new one is complete. Saves and
+settings stay as they are.
+
 What you need:
 
 - **An Apple Silicon Mac** (M1 or later) with macOS 11 or later. The Builder
@@ -84,27 +95,28 @@ What you need:
 It runs the same scripts as [Build from Terminal](#build-from-terminal) from a
 copy of the sources inside the app. It builds the original and HD engines for
 your `SPEED2.EXE`'s region and puts `NFSU2.app` in `/Applications` (or a folder
-you choose). It also points the launcher at your game folder, so the first start
-goes straight to the launcher window.
-
-A game folder that already holds a supported `SPEED2.EXE` is used as it is.
-Otherwise (disc images, or a folder with another `SPEED2.EXE`) the Builder makes
-a game folder of its own, `~/Games/NFSU2` unless you change it. It fills it with
-APFS clones of your files or the unpacked discs, plus the chosen `SPEED2.EXE`.
-Your own copy, disc images and archives are only read.
+you choose), with the game inside it (`Contents/Resources/Game`, about 1.8 GB):
+your game files, or the unpacked discs, plus the supported `SPEED2.EXE`. On the
+same disk the game files are APFS clones, so they take no extra space; from
+discs or another disk they are copied. The app needs no game folder and can be
+moved anywhere. Your own copy, disc images and archives are only read. An
+existing `NFSU2.app` with the game inside can be the game data too (an update).
 
 On an M1 Pro the build takes about 3 minutes: lifting 52 s, compiling 57 s,
 linking 10 s and the launcher 60 s (a rebuild skips the launcher). The first
 time, add about 1.5 minutes for the Python download and setup. It needs about
 1.5 GB of free space while building (0.6 GB stays per region built until you
-press **Remove build files**), and 1.7 GB more when it unpacks disc images.
+press **Remove build files**), and about 1.8 GB more for the game when it cannot
+be cloned: unpacked from disc images, or copied from another disk.
 
 The Builder works in `~/Library/Application Support/NFSU2 Builder` and never
 touches your system's Python or Homebrew. It downloads only its Python
 (python-build-standalone, checked against a pinned SHA-256) and the packages in
 `requirements.txt`. It never downloads the game, a game program or a patch.
 Saves and settings live outside the app (`~/Library/Application Support/NFSU2
-Saves`, `~/.nfsu2_registry`), so building again keeps your progress.
+Saves`, `~/.nfsu2_registry`), so building again keeps your progress. Nothing is
+ever written inside the app (that would break its signature): language packs the
+launcher makes go to `~/Library/Application Support/NFSU2/LanguagePacks`.
 
 </details>
 
@@ -721,11 +733,12 @@ Not of the game app in this fork: this fork's [Releases page](https://github.com
 NFSU2 Builder, which makes `NFSU2.app` on your Mac from your own `SPEED2.EXE`
 (see [NFSU2 Builder](#nfsu2-builder)). The app it builds holds both graphics
 modes, Original and HD (MSAA, ray-traced reflections), chosen in its Settings, and
-no game files. Upstream's Releases page has upstream's own builds, without this
+your game inside it, so nothing else is needed to play. Upstream's Releases page has upstream's own builds, without this
 fork's features.
 
 **Can I carry the game to another Mac in one piece?**
-Yes. In the app's Settings (More tab), **Make Copy…** creates "NFSU2 Portable.app" with the
+Yes. An `NFSU2.app` made by NFSU2 Builder already has the game inside: move or copy it
+anywhere. In the app's Settings (More tab), **Make Copy…** creates "NFSU2 Portable.app" with the
 game files inside: about 1.4 GB, plus the movies (1.1 GB) and the language packs in `LANGPACKS` if the game folder has them. Untick those when saving it for a smaller copy. It runs on its own; saves stay in
 `~/Library/Application Support/NFSU2 Saves` on each Mac. It contains the game,
 so keep it for yourself.

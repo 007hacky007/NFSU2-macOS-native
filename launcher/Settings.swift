@@ -239,8 +239,16 @@ struct MoreSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Card {
+                SettingRow(title: "Check for updates",
+                           description: model.builderStamp == nil
+                               ? "This app was not made by NFSU2 Builder, so it is updated by building it again."
+                               : "Once a day the launcher asks GitHub whether a newer NFSU2 Builder is out; the new Builder updates this app. Off: no network request.",
+                           isOn: $model.checkUpdates)
+                    .disabled(model.builderStamp == nil)
                 SettingRow(title: "Portable copy",
-                           description: "One app with the game inside, for another Mac or a USB drive. Movies and language packs can be left out to make it smaller.") {
+                           description: model.location?.embedded == true
+                               ? "This app already has the game inside and can be moved anywhere. Make Copy makes another one, with your language packs, for another Mac or a USB drive. Movies and language packs can be left out to make it smaller."
+                               : "One app with the game inside, for another Mac or a USB drive. Movies and language packs can be left out to make it smaller.") {
                     Button("Make Copy…") { model.makePortable() }
                         .buttonStyle(SecondaryButtonStyle())
                         .disabled(!model.isReady)
