@@ -14,7 +14,7 @@ func check(_ ok: Bool, _ what: String) {
 func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
 
 @main struct LauncherRoamTests {
-    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS"]
+    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER"]
     static func clear() { for k in vars { unsetenv(k) } }
     static func main() {
         setvbuf(stdout, nil, _IOLBF, 0)
@@ -24,6 +24,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         // defaults
         var m = LauncherModel()
         check(m.roamTuners, "defaults: the game's tuners come with other players about")
+        check(m.roamMapFilter, "defaults: the world map legend's Players rows")
 
         // environment
         let exe = URL(fileURLWithPath: "/nonexistent/Need for Speed Underground 2/SPEED2.EXE")
@@ -31,11 +32,15 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.game = .ready(GameLocation(exe: exe, embedded: false))
         m.online = true; m.playerName = "Driver_1"; m.server = "ws://127.0.0.1:8080/lan"; m.freeRoam = .solid
         m.play()
-        check(env("NFSU2_ROAM") == "1" && env("NFSU2_ROAM_TUNERS") == nil, "play: everything on, nothing more for the engine")
+        check(env("NFSU2_ROAM") == "1" && env("NFSU2_ROAM_TUNERS") == nil && env("NFSU2_ROAM_MAP_FILTER") == nil, "play: everything on, nothing more for the engine")
         clear()
         m.roamTuners = false
         m.play()
-        check(env("NFSU2_ROAM_TUNERS") == "0", "play: tuners off (NFSU2_ROAM_TUNERS=0)")
+        check(env("NFSU2_ROAM_TUNERS") == "0" && env("NFSU2_ROAM_MAP_FILTER") == nil, "play: tuners off (NFSU2_ROAM_TUNERS=0)")
+        clear()
+        m.roamMapFilter = false
+        m.play()
+        check(env("NFSU2_ROAM_MAP_FILTER") == "0", "play: the legend's rows off (NFSU2_ROAM_MAP_FILTER=0)")
         clear()
         m.freeRoam = .off; m.play()
         check(env("NFSU2_ROAM") == nil && env("NFSU2_ROAM_TUNERS") == nil, "play: free roam off, none of them")
@@ -46,6 +51,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         // Restore Original Game
         m.restoreOriginalGame()
         check(m.roamTuners, "original game: the tuners come, as in the original game")
+        check(!m.roamMapFilter, "original game: no rows of ours in the world map's legend")
         LauncherModel.testSpawn = nil
 
         print(failures == 0 ? "launcher roam: all passed" : "launcher roam: \(failures) FAILED")

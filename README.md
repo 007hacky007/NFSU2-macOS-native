@@ -654,9 +654,14 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   while other players are around, so their outruns and unique parts are there
   online too; within 30 m of you a tuner comes first, and at a door or an
   event no tuner challenges you.  Off: they stay away while another player's
-  car is in your world.
+  car is in your world.  **Players in the world map's legend** (on by
+  default; off is the original game): the legend gets two rows more, Players
+  and Players' races, and Enter on one leaves the other players' markers (a
+  crew-mate's stays) or their race lobbies (yours stays) off the map; the
+  game's registry keeps the choice.  The race lobbies' labels are smaller and
+  go beside their icon where they cover no other icon.
   Environment: `NFSU2_ROAM=1`, `NFSU2_ROAM_COLLIDE`, `NFSU2_ROAM_ROOM`,
-  `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`.
+  `NFSU2_ROAM_CREW`, `NFSU2_ROAM_TUNERS=0`, `NFSU2_ROAM_MAP_FILTER=0`.
 - **Horns and the other players' car sounds** (with Play online; both off by
   default, as in the original game, which has no horn): the launcher's
   **Horn** picker gives the player a horn (dual, single, truck, train, klaxon,
