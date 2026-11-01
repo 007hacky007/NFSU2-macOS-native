@@ -1,8 +1,8 @@
 /* Native WebSocket transport (runtime/net_native.m) on loopback, driven by
  * tests/net/native/loopback.py: URL validation without arguments; with a
  * ws://127.0.0.1 URL, the handshake, the welcome, a UDP datagram each way
- * through the mailbox, and (second argument) resume, idle, burst, atexit or
- * the second of two clients. */
+ * through the mailbox, and (second argument) resume, idle, burst, big (a peer
+ * list of a full server keeps the link), atexit or the second of two clients. */
 #import <Foundation/Foundation.h>
 #include "net_native.h"
 #include <assert.h>
@@ -51,6 +51,7 @@ int main(int argc, char **argv){
             for (int i = 0; i < 1000 && __atomic_load_n(&m->generation, __ATOMIC_SEQ_CST) < 2; i++) usleep(10000);
             assert(m->generation == 2);
         }
+        if (argc > 2 && !strcmp(argv[2], "big")) assert(m->generation == 1);
         if (argc > 2 && !strcmp(argv[2], "burst")){
             net_mailbox *other = native_net_mailbox(NET_MODE_LAN); assert(other);
             __atomic_store_n(&other->want, 1, __ATOMIC_SEQ_CST);

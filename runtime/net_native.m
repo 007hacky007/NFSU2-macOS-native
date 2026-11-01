@@ -130,7 +130,9 @@ static uint64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
     if ((vip && token.length) || ticket.length) [items addObject:[NSURLQueryItem queryItemWithName:@"resume" value:nil]];
     u.queryItems = items;
     startedAt = now_ms(); queued = NO; [self publish:NET_PAGE_CONNECTING];
-    socket = [session webSocketTaskWithURL:u.URL]; socket.maximumMessageSize = 65536;
+    /* The peer list with LAN play on names every player on the server (up to 6000, a name up to 32
+     * characters): a few hundred KB on a busy server, which a 64 KB cap turned into a reconnect a second. */
+    socket = [session webSocketTaskWithURL:u.URL]; socket.maximumMessageSize = 4 << 20;
     [socket resume];
 }
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task didOpenWithProtocol:(NSString *)protocol {

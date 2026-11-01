@@ -3,7 +3,7 @@
 
 A relay server of its own on 127.0.0.1 and tests/net/native/transport.m as the
 client (runtime/net_native.m): relay, resume, queue, two clients, idle,
-burst and exit at process end.  tests/net_harness.sh runs it inside the
+burst, a peer list of a full server and exit at process end.  tests/net_harness.sh runs it inside the
 loopback-only sandbox profile (tests/net/loopback-only.sb).
 """
 import base64
@@ -49,7 +49,12 @@ def send(conn, data, binary=False):
     if not binary:
         data = json.dumps(data).encode()
     head = bytes([0x82 if binary else 0x81])
-    head += bytes([len(data)]) if len(data) < 126 else b"\x7e" + struct.pack("!H", len(data))
+    if len(data) < 126:
+        head += bytes([len(data)])
+    elif len(data) < 65536:
+        head += b"\x7e" + struct.pack("!H", len(data))
+    else:
+        head += b"\x7f" + struct.pack("!Q", len(data))
     conn.sendall(head + data)
 
 
@@ -73,7 +78,7 @@ def handshake(conn):
     return hello, path
 
 
-def serve(listener, resume=False, queued=False, idle=False, burst=False):
+def serve(listener, resume=False, queued=False, idle=False, burst=False, big=False):
     if queued:
         conn, _ = listener.accept()
         with conn:
@@ -88,6 +93,10 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False):
             assert hello["ticket"] == "fixture-only-ticket"
             assert "resume" in parse_qs(urlsplit(path).query, keep_blank_values=True)
         send(conn, {"t": "welcome", "vip": 0x0A4D0002, "mask": "255.255.255.0", "token": "fixture-only-token"})
+        if big:
+            # The whole list as the public server sends it with LAN play on: one message of every player.
+            crowd = [{"vip": 0x0A4D0100 + i, "name": f"player-{i:05}-with-a-long-name"} for i in range(4500)]
+            send(conn, {"t": "peers", "peers": crowd})
         send(conn, {"t": "peers", "peers": [{"vip": 0x0A4D0002}, {"vip": 0x0A4D0003}]})
         while True:
             kind, data = receive(conn)
@@ -177,11 +186,11 @@ def main():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(2)
-        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "atexit"):
+        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "atexit"):
             failure = []
             def worker():
                 try:
-                    serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst")
+                    serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst", big=scenario == "big")
                 except BaseException as error:
                     failure.append(error)
             thread = threading.Thread(target=worker, daemon=True)
@@ -195,7 +204,7 @@ def main():
                 assert first.wait(timeout=20) == 0
                 assert second.wait(timeout=20) == 0
             else:
-                result = subprocess.run([binary, url] + ([scenario] if scenario in ("resume", "idle", "burst", "atexit") else []), timeout=20)
+                result = subprocess.run([binary, url] + ([scenario] if scenario in ("resume", "idle", "burst", "big", "atexit") else []), timeout=20)
                 assert result.returncode == 0
             thread.join(timeout=5)
             if failure:
