@@ -170,6 +170,7 @@ Click a picture to see it full size.
 | Movie framing | Movies fit with black bars, fill the screen, or stretch. | |
 | **Career and saves** | | |
 | 10-car garage | Ten career garage slots instead of five, and Trade Car for 80% of what you paid. Old saves still load in the original game. | <a href="docs/readme/full/garage-slots-eu-na.jpg"><img src="docs/readme/thumbs/garage.jpg" width="180" alt="Garage with ten slots and Trade Car"></a> |
+| Hidden races on the map | The career's 33 hidden races on the map and the radar like the others, up to 8 races of each kind at once, as MaxHwoy's Show Hidden Races Mod (`NFSU2_SHOW_HIDDEN_RACES=1`). Off by default. | |
 | Power in bhp or kW | Choose the power unit apart from the speed unit, in Options and the pause menu. | <a href="docs/readme/full/power-units-eu-na.jpg"><img src="docs/readme/thumbs/power-units.jpg" width="180" alt="Gameplay options with Power Units"></a> |
 | Both regions' cars | With all four cars' files, buy and race the Corsa, 106, Civic and RSX in either version. | <a href="docs/readme/full/region-cars.jpg"><img src="docs/readme/thumbs/region-cars.jpg" width="180" alt="Peugeot 106 and Honda Civic in Quick Race car select"></a> |
 | Languages | Pick the game's language in the launcher, 16 in all. | <a href="docs/readme/full/language-eu-na.jpg"><img src="docs/readme/thumbs/languages.jpg" width="180" alt="Main menu in six languages"></a> |

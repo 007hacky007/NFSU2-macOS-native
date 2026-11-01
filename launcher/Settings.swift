@@ -199,6 +199,9 @@ struct GameSettings: View {
                 SettingRow(title: "10-car garage and Trade Car",
                            description: "Career slots 6-10, and trading a car in for 80% of what it cost. A save made while off loses the cars in slots 6-10. Off: as in the original game.",
                            isOn: $model.garage)
+                SettingRow(title: "Show hidden races",
+                           description: "The career's 33 hidden races on the map and the radar like the others, and up to 8 races of each kind on the map at once, as MaxHwoy's Show Hidden Races Mod. Off: as in the original game, a hidden race shows only when you drive near it.",
+                           isOn: $model.hiddenRaces)
             }
             Card("Start") {
                 SettingRow(title: "Intro movies", description: "The logos and the opening movie. Skippable: a key or pad button skips each.") {

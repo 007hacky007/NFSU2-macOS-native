@@ -34,7 +34,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
                         "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED",
-                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS", "NFSU2_NEW_PROFILE_NAME"]
+                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS", "NFSU2_NEW_PROFILE_NAME", "NFSU2_SHOW_HIDDEN_RACES"]
         for k in launched { unsetenv(k) }
 
         // defaults
@@ -45,6 +45,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(!m.discord && m.discordImage.isEmpty && !m.online && m.server == OnlineSettings.defaultServer && m.freeRoam == .off && m.horn == .off,
               "defaults: no Discord, no picture, offline, default server, no free roam, no horn")
         check(!m.netStats, "defaults: no Online statistics panel")
+        check(!m.hiddenRaces, "defaults: hidden races hidden, as in the original game")
         check(m.controller && abs(m.stickDeadzone - 0.10) < 1e-9 && m.music == "game" && m.lanTiming == "pc" && !m.seedRegistry && m.reflections == .original,
               "defaults: controller on, dead zone 0.10, game music, PC LAN timing, no registry seed, original reflections")
         check(m.picture.allSatisfy { $0 == 0 }, "defaults: every picture option as on PC")
@@ -53,7 +54,9 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.frameRate = "60"; m.fpsCounter = 2; m.discord = true; m.discordImage = "https://example.com/car.png"
         m.headlights = "all"; m.intro = "off"; m.horn = .klaxon; m.freeRoam = .ghost; m.lanTiming = "exact"; m.stickDeadzone = 0.2
         m.picture = [1, 1, 1, 2]; m.reflections = .sharp; m.wideHUD = true; m.garage = false; m.netStats = true
+        m.hiddenRaces = true
         m = LauncherModel()
+        check(m.hiddenRaces, "persistence: Show hidden races")
         check(m.netStats, "persistence: Online statistics")
         check(m.frameRate == "60" && m.fpsCounter == 2 && m.discord && m.discordImage == "https://example.com/car.png", "persistence: frame rate, counter, Discord and its picture")
         check(m.headlights == "all" && m.intro == "off" && m.horn == .klaxon && m.freeRoam == .ghost && m.lanTiming == "exact", "persistence: headlights, intro, horn, free roam, LAN timing")
@@ -89,6 +92,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(env("NFSU2_CUTSCENE_BORDERS") == "off" && env("BOOTMOVIES") == "off" && env("NFSU2_ALL_CARS") == "0" && env("NFSU2_GARAGE") == "off",
               "play: cutscene bars, intro, original cars and garage")
         check(env("MTL_HUD_ENABLED") == "1", "play: the Metal performance overlay")
+        check(env("NFSU2_SHOW_HIDDEN_RACES") == nil, "play: hidden races off, no NFSU2_SHOW_HIDDEN_RACES")
         check(["1", "hotplug"].contains(env("NFSU2_PAD") ?? "") && env("NFSU2_PAD_DEADZONE") == "0.15" && env("NFSU2_HEADLIGHTS") == "off", "play: controller, dead zone, headlights")
         check(env("NFSU2_NET") == nil && env("NFSU2_SERVER_URL") == nil && env("NFSU2_ROAM") == nil, "play: offline sets no network variable")
         check(env("NFSU2_NET_STATS") == nil, "play: offline, no Online statistics even with the switch on")
@@ -108,7 +112,9 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.discordImage = "bad picture"; m.play()
         check(env("NFSU2_DISCORD_LARGE_IMAGE") == nil, "an invalid Discord picture is never handed to the engine")
         for k in launched { unsetenv(k) }
-        m.discord = false; m.discordImage = "my_car"; m.metalHUD = false; m.play()
+        m.discord = false; m.discordImage = "my_car"; m.metalHUD = false; m.hiddenRaces = true; m.play()
+        check(env("NFSU2_SHOW_HIDDEN_RACES") == "1", "play: Show hidden races (NFSU2_SHOW_HIDDEN_RACES=1)")
+        m.hiddenRaces = false
         check(env("NFSU2_DISCORD") == nil && env("NFSU2_DISCORD_LARGE_IMAGE") == nil, "Discord off: no Discord variable, picture or not")
         check(env("MTL_HUD_ENABLED") == nil, "Metal performance overlay off: no MTL_HUD_ENABLED")
         for k in launched { unsetenv(k) }
@@ -155,12 +161,13 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.headlights = "all"; m.reflections = .sharpest; m.reflectSky = true; m.reflectLights = true; m.reflectDetail = true
         m.picture = PictureOptions.all.map { $0.choices.count - 1 }; m.online = true; m.freeRoam = .ghost; m.hearCars = true
         m.horn = .train; m.allCars = true; m.garage = true; m.intro = "skippable"; m.discord = true; m.discordImage = "x"
-        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true
+        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true; m.hiddenRaces = true
         let changed = Prefs.originalGame.filter { !$0.isSet(m) }.count
         check(!m.isOriginalGame && changed >= 20, "original game: \(changed) of \(Prefs.originalGame.count) options changed")
         m.restoreOriginalGame()
         check(m.isOriginalGame && Prefs.originalGame.allSatisfy { $0.isSet(m) }, "original game: Restore sets all \(Prefs.originalGame.count) options")
         check(!m.netStats && !LauncherModel().netStats, "original game: Online statistics off, and kept off")
+        check(!m.hiddenRaces, "original game: hidden races hidden")
         check(LauncherModel().isOriginalGame, "original game: still so at the next start")
 
         // embedded: a game inside the app; its language packs go outside the bundle

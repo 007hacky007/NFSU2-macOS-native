@@ -36,7 +36,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
 if [ "${1:-}" != --game ]; then
-  UNITS="${UNITS:-hle_unit watchdog_unit heap_stress windows_waits framerate keyboard_unit horn_unit racenet_unit gamepad_harness
+  UNITS="${UNITS:-hle_unit watchdog_unit heap_stress windows_waits framerate hiddenraces_unit keyboard_unit horn_unit racenet_unit gamepad_harness
     radio_native native_scene headlights_native shader_ps20 save_paths texture_unit game_folder_tools
     net_harness roam_unit native_controls photo_gallery save_manager display_options language_packs texture_packs
     launcher_online name_claims netstats_unit ff_unit rumble_unit discord_unit launcher_settings vault}"

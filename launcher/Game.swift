@@ -116,6 +116,7 @@ enum Prefs {
     static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
     static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
     static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
+    static let hiddenRaces = "LauncherHiddenRaces" // NFSU2_SHOW_HIDDEN_RACES=1: the career's hidden races on the map
     static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
     static let dataMods = "LauncherDataMods"       // ids of the turned-on data mods (DataMods.swift)
     static let reflections = "LauncherReflections" // NFSU2_REFLECTIONS: "original" | "sharp" | "sharpest"
@@ -181,6 +182,7 @@ enum Prefs {
         OriginalValue(\.horn, .off),
         OriginalValue(\.allCars, false),
         OriginalValue(\.garage, false),
+        OriginalValue(\.hiddenRaces, false),
         OriginalValue(\.intro, "original"),
         OriginalValue(\.discord, false),
         OriginalValue(\.uhud, false),

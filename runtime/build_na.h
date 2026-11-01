@@ -381,6 +381,8 @@
 #define GA_0x008383f4u 0x008383f4u   /* operand pair */
 #define GA_0x00838408u 0x00838408u   /* operand pair */
 #define GA_0x0083840cu 0x0083840cu   /* operand pair */
+#define GA_0x00838418u 0x00838418u   /* operand pair */
+#define GA_0x0083841cu 0x0083841cu   /* operand pair */
 #define GA_0x00838428u 0x00838428u   /* operand pair */
 #define GA_0x0083848cu 0x0083848cu   /* operand pair */
 #define GA_0x00838494u 0x00838494u   /* operand pair */
