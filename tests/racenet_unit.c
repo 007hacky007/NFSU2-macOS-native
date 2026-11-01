@@ -44,6 +44,8 @@ int vlan_rt_recv(uint16_t port, uint32_t *ip_h, void *p, int cap){
     return n;
 }
 int vlan_race_peers(uint32_t *ip_h, int max, uint32_t within_ms){ (void)within_ms; int n = g_npeer < max ? g_npeer : max; memcpy(ip_h, g_peer, 4u * (size_t)n); return n; }
+static uint32_t g_sentto[4]; static int g_nsentto;    /* the addresses the game's race link sends to */
+int vlan_race_sent_to(uint32_t ip_h, uint32_t within_ms){ (void)within_ms; for (int i = 0; i < g_nsentto; i++) if (g_sentto[i] == ip_h) return 1; return 0; }
 /* the lifted functions racenet.c wraps */
 static int g_orig_send, g_orig_state;
 void sub_005f8d50_orig(CPU *c){ (void)c; }
@@ -133,12 +135,23 @@ int main(void){
     for (int b = 0; b < 4; b++){ pl[8 + b] = (uint8_t)(j2 >> (8 * b)); pl[12 + b] = (uint8_t)(j3 >> (8 * b)); }
     racenet_list(pl, 16, stranger);
     CHECK(g_pl.n == 0, "a list from outside the race: not taken");
+    g_peer[1] = stranger; g_npeer = 2;                   /* a datagram to our UDP 3658 makes anyone a race peer */
+    g_nsentto = 1; g_sentto[0] = creator;                /* the game's race link sends only to its creator */
+    racenet_list(pl, 16, stranger);
+    CHECK(g_pl.n == 0 && R.pl_refused == 2, "a list from a race peer the game does not send to: refused (%u)", R.pl_refused);
     pl[6] = 9; racenet_list(pl, 16, creator); pl[6] = 2;
     CHECK(g_pl.n == 0, "a list longer than NPL or than its bytes: not taken");
     g_in[0].ip = creator; memcpy(g_in[0].m, pl, 16); g_in[0].n = 16; g_inh = 0; g_int = 1;
     frame();                                             /* through the port, as it comes */
     CHECK(g_pl.n == 2 && g_pl.ip[0] == j2 && g_pl.ip[1] == j3 && g_pl.from == creator, "the creator's list taken from the port (%u)", g_pl.n);
     CHECK(g_nout == 0, "a joiner sends no list (%d)", g_nout);
+    g_nsentto = 2; g_sentto[1] = stranger;
+    uint8_t pl2[12] = { 'N', '2', 'P', 'L', 1, 0, 1, 0 };
+    for (int b = 0; b < 4; b++) pl2[8 + b] = (uint8_t)(stranger >> (8 * b));
+    racenet_list(pl2, 12, stranger);
+    CHECK(g_pl.n == 2 && g_pl.from == creator && g_pl.ip[0] == j2 && R.pl_refused == 3,
+          "a second list from another address the game sends to: refused, the first creator's kept");
+    g_nsentto = 1; g_npeer = 1;
 
     /* our car state (0x585D60: kind 2, the bit stream) also goes to the joiners on the list */
     for (uint32_t i = 0; i < 13; i++) MR8(BS + i) = (uint8_t)(i ? 0x10 + i : MSG_CARSPAM);
@@ -175,6 +188,11 @@ int main(void){
     CHECK(g_calls == 1 && R.cs_refused == 3, "for the creator's slot: refused");
     n = carspam(m, 7, 20); racenet_carspam(&g_c, m, n, j2);
     CHECK(g_calls == 1 && R.cs_refused == 4, "a slot past 5: refused");
+    n = carspam(m, 2, 20); racenet_carspam(&g_c, m, n, j2);
+    CHECK(g_calls == 1 && R.cs_refused == 5, "j2 naming another slot than its first: refused");
+    n = carspam(m, 3, 20); racenet_carspam(&g_c, m, n, j3);
+    CHECK(g_calls == 1 && R.cs_refused == 6, "j3 naming j2's slot: refused");
+    R.cs_refused -= 2;
     n = carspam(m, 3, 20); m[CS_HDR] = 4; racenet_carspam(&g_c, m, n, j2);
     CHECK(g_calls == 1 && R.cs_refused == 5, "another message: refused");
     n = carspam(m, 3, 20); racenet_carspam(&g_c, m, n - 1, j2);
@@ -224,6 +242,7 @@ int main(void){
     racenet_prestep(&g_c);
     MR32(RC) = 0; frame();
     CHECK(g_fade_world == 0 && !fade_of(CAR_A, 0) && MRF32(CAR_A + CAR_POS) == x, "the race over: no fade left");
+    CHECK(g_pl.n == 0 && g_pl.from == 0 && g_nbind == 0, "the race over: no list, no slots (%u %d)", g_pl.n, g_nbind);
     racenet_carspam(&g_c, m, n, j2);
     CHECK(g_calls == 2, "out of the race: no car state taken");
 
