@@ -42,8 +42,10 @@ int winsock_call(CPU *c, const char *dll, const char *n, uint32_t *out);
 void winsock_test_reset(void);
 uint64_t winsock_blocked_count(void);
 
-/* winsock.c overrides the lifted NetTick (sub_0074b730); not used here */
+/* winsock.c overrides the lifted NetTick (sub_0074b730): its own clock is
+ * checked below (t_nettick), the lifted one is never reached */
 void sub_0074b730_orig(CPU *c){ (void)c; }
+void sub_0074b730(CPU *c);
 /* The protocol observers do not participate in socket semantics. */
 void online_lobby_read(uint32_t link, const uint8_t *p, int n){ (void)link; (void)p; (void)n; }
 void olfilter_lobby_mark(uint32_t link, uint8_t *p, int n){ (void)link; (void)p; (void)n; }
@@ -1246,6 +1248,39 @@ static void t_loop_peer(void){
     W("WSAStartup", 2, 0x0002u, galloc(400));
 }
 
+/* NetTick never steps back between threads (winsock.c nettick_never_back):
+ * with NFSU2_TEST_NETTICK_SKEW every second thread to call it reads its clock
+ * that far ahead, as a browser worker set off by that much */
+static uint32_t nettick(Th *t){
+    CPU *c = &t->cpu;
+    c->esp = t->stack - 0x400u; MR32(c->esp) = 0x00C0FFEEu; c->eip = 0;
+    sub_0074b730(c);
+    return c->eip == 0x00C0FFEEu && c->esp == t->stack - 0x3FCu ? c->eax : 0xDEADDEADu;
+}
+typedef struct { Th *t; uint32_t v; } NtArg;
+static void *nettick_th(void *p){ NtArg *a = p; a->v = nettick(a->t); return 0; }
+static void t_nettick(void){
+    section("NetTick: real milliseconds, never back between threads");
+    setenv("NFSU2_TEST_NETTICK_SKEW", "1000", 1);          /* read once, at the first call */
+    uint32_t a = nettick(&T[0]);                          /* the first thread to call: its own clock */
+    NtArg na = { &T[1], 0 };
+    pthread_t th; pthread_create(&th, 0, nettick_th, &na); pthread_join(th, 0);   /* the second: 1000 ms ahead */
+    uint32_t b = nettick(&T[0]);
+    check("NetTick returns to its caller (ret, eax)", a != 0xDEADDEADu && na.v != 0xDEADDEADu && b != 0xDEADDEADu, 0);
+    check("a thread 1000 ms ahead: its answer ahead", (int32_t)(na.v - a) >= 990, "%u then %u", a, na.v);
+    check("the thread behind it next gets that answer, not less", (int32_t)(b - na.v) >= 0 && (int32_t)(b - na.v) < 50, "%u then %u", na.v, b);
+    int back = 0; uint32_t prev = b;
+    for (int i = 0; i < 40; i++){
+        NtArg x = { &T[1 + i % 3], 0 };
+        pthread_create(&th, 0, nettick_th, &x); pthread_join(th, 0);
+        uint32_t y = nettick(&T[0]);
+        back += (int32_t)(x.v - prev) < 0 || (int32_t)(y - x.v) < 0;
+        prev = y;
+    }
+    check("40 rounds on threads 1000 ms apart: never back", back == 0, "%d steps back", back);
+    unsetenv("NFSU2_TEST_NETTICK_SKEW");
+}
+
 int main(int argc, char **argv){
     setenv("NFSU2_NET_HARNESS", "1", 1);                  /* never the real network */
     unsetenv("NFSU2_NET_ADDR"); unsetenv("NFSU2_NET_MAC"); unsetenv("NFSU2_NET_IFACE"); unsetenv("NFSU2_NET_NAME");
@@ -1269,6 +1304,7 @@ int main(int argc, char **argv){
     if (!only || strstr(only, "ident")) t_lan_identity();
     if (!only || strstr(only, "ident") || strstr(only, "choice")) t_lan_choice();
     if (!only || strstr(only, "looppeer")) t_loop_peer();
+    if (!only || strstr(only, "nettick")) t_nettick();
     if (argc >= 4 && !strcmp(argv[1], "--vlan-hub") && (!only || strstr(only, "vlan"))) t_vlan(argv[2], argv[3]);
     else printf("vlan: skipped (needs --vlan-hub <python> <tools/vlanhub.py>)\n");
     pthread_mutex_unlock(&g_gil);

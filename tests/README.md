@@ -21,7 +21,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `save_paths` | where saves go, the old folder's move, NFSU2_SAVEDIR |
 | `texture_unit`, `texture_packs` | texture pack reading, drawing, the launcher's builder |
 | `game_folder_tools` | tools/writewatch.c and tools/manifest.py (the game-folder proof's tools) |
-| `net_harness` | the Winsock / Netbios HLE (240 checks with the virtual LAN hub tools/vlanhub.py), the native WebSocket relay fixtures (tests/net/native) |
+| `net_harness` | the Winsock / Netbios HLE and NetTick (244 checks with the virtual LAN hub tools/vlanhub.py), the native WebSocket relay fixtures (tests/net/native) |
 | `roam_unit` | the free-roam core (287 checks) and a loopback stand-in friend (roam_fakepeer, roam_recv) |
 | `native_controls`, `launcher_online` | Game Tools and quick chat; the launcher's online settings |
 | `ff_unit`, `rumble_unit` | force feedback effects and the controller's motors |
