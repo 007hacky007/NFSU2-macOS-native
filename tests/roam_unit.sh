@@ -45,11 +45,12 @@ tail -n 2 "$T/recv.txt"
 [ $frc -eq 0 ] && pass "the stand-in ran and left (exit 0)" || fail "the stand-in exited with $frc"
 grep -aq "JOIN" "$T/fake.txt" && pass "the stand-in saw the viewer join" || fail "the stand-in saw no join"
 grep -aq "^\[recv\] event 1 .*Carol" "$T/recv_err.txt" && pass "the viewer saw the stand-in join" || fail "the viewer saw no join"
-# the car is shown every second (interpolated or extrapolated frames), it
-# moves, and it never jumps: no clock re-sync, no correction over 5 m
-n=$(awk '/interp/ {for (i = 1; i < NF; i++){ if ($i == "interp") a = $(i + 1); if ($i == "extrap") b = $(i + 1) }
-                    if (a + b >= 30) k++} END{print k+0}' "$T/recv.txt")
-[ "$n" -ge 3 ] && pass "the viewer shows the car ($n reports with 30 frames or more)" || fail "the viewer shows the car too rarely ($n reports)"
+# the car is shown every second (interpolated or extrapolated frames, in at least 60%
+# of the viewer's own frames, which run about 90 a second on an M1 and about 35 on a
+# busy CI runner), it moves, and it never jumps: no clock re-sync, no correction over 5 m
+n=$(awk '/interp/ {for (i = 1; i < NF; i++){ if ($i == "interp") a = $(i + 1); if ($i == "extrap") b = $(i + 1); if ($i == "hold") c = $(i + 1) }
+                    if (a + b >= 15 && (a + b) >= 0.6 * (a + b + c)) k++} END{print k+0}' "$T/recv.txt")
+[ "$n" -ge 3 ] && pass "the viewer shows the car ($n reports with it in 60% of the frames or more)" || fail "the viewer shows the car too rarely ($n reports)"
 m=$(awk '/shown/ {for (i = 1; i <= NF; i++) if ($i == "shown") s = $(i + 1)} END{print (s + 0 > 5) ? 1 : 0}' "$T/recv.txt")
 [ "$m" = 1 ] && pass "the shown car moves" || fail "the shown car does not move"
 j=$(grep -a -c -E "re-syncs \+[1-9]|snaps>5m \+[1-9]" "$T/recv.txt")

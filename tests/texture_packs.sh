@@ -57,8 +57,18 @@ done
 if command -v python3 >/dev/null; then
     mkdir -p "$T/www"; (cd "$T/plain" && zip -qr "$T/www/pack.zip" .)
     PORT=$((20000 + RANDOM % 20000))
-    (cd "$T/www" && exec python3 -I -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1) & SRV=$!
-    sleep 1
+    # Not "python3 -m http.server": it looks up the host's name between bind() and
+    # listen(), and macOS drops connections to a socket in that state, so a slow DNS
+    # (as on CI runners) leaves the download hanging until it times out.
+    (cd "$T/www" && exec python3 -I -c '
+import http.server, socketserver, sys
+class Server(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+Server(("127.0.0.1", int(sys.argv[1])), http.server.SimpleHTTPRequestHandler).serve_forever()
+' "$PORT" >/dev/null 2>&1) & SRV=$!
+    for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/pack.zip" && break; sleep 0.2; done
     SUM="$(shasum -a 256 "$T/www/pack.zip" | cut -c1-64)"; SIZE=$(wc -c < "$T/www/pack.zip" | tr -d " ")
     for case in right wrong; do
         H="$SUM"; [ $case = wrong ] && H="$(printf '%064d' 0)"
