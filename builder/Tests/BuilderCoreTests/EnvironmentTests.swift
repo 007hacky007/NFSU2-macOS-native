@@ -243,7 +243,7 @@ final class EnvironmentTests: XCTestCase {
         try write("", to: paths.venvPython(version: "1"))
         try write(try sha256Hex(of: req) + "\n", to: ws.appendingPathComponent(".venv/.build-requirements-sha256"))
         // Venv fine, Python missing.
-        XCTAssertEqual(buildToolsCheck(paths: paths, version: "1"), .blocked("A private Python and the lifter's packages, about 45 MB download"))
+        XCTAssertEqual(buildToolsCheck(paths: paths, version: "1"), .blocked("A private Python and the lifter's packages, about 32 MB download"))
         try fakePython(paths, marker: PythonRuntime.sha256)
         XCTAssertTrue(buildToolsCheck(paths: paths, version: "1").isReady)
         // Python present, hash mismatch: only the packages are fetched again.
