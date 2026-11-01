@@ -18,6 +18,9 @@
 #include <string.h>
 #include <math.h>
 
+/* the sum of every character's room hash (t_layout; web/test/players.test.mjs has the same number) */
+#define ROOM_FOLD_SUM 0x198373D3u
+
 static int g_fail, g_pass;
 #define CHECK(cond, ...) do{ if (cond) g_pass++; else { g_fail++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } }while(0)
 
@@ -102,11 +105,45 @@ static void t_layout(void){
 
     /* CRC-32 check value */
     CHECK(rc_crc32((const uint8_t *)"123456789", 9) == 0xCBF43926u, "CRC-32 check value");
-    /* the room's hash: capitals and spaces do not count (the start page's roomHash has the same value) */
+    /* the room's hash: capitals, blanks and invisible characters do not count (the start page's roomHash has the same
+     * value: web/test/players.test.mjs checks the same names and the same sum over every character) */
     CHECK(rc_room_hash("blueroom") == 0x160FBA32u && rc_room_hash(" Blue Room\t") == 0x160FBA32u && rc_fnv1a("blueroom") == 0x160FBA32u,
           "room hash %08x", rc_room_hash(" Blue Room\t"));
-    CHECK(rc_room_hash("") == 0 && rc_room_hash("  ") == 0 && rc_room_hash(0) == 0 && rc_room_hash("Zo\xc3\xab") != rc_room_hash("zo\xc3\x8b"),
-          "no room for spaces only; only A-Z made small");
+    CHECK(rc_room_hash("") == 0 && rc_room_hash("  ") == 0 && rc_room_hash(0) == 0 && rc_room_hash("\xc2\xa0\xe2\x80\x8b\xe3\x80\x80") == 0,
+          "no room for blanks only");
+    {
+        /* each line: names that are one room (UTF-8): Unicode's blanks, zero-width characters, full-width letters,
+         * capitals of Latin-1, Extended-A, Greek and Cyrillic, Turkish i, final sigma */
+        static const char *same[][4] = {
+            { "blueroom", "Blue\xc2\xa0Room", "Blue\xe2\x80\x8bRoom\xef\xbb\xbf", "\xef\xbc\xa2\xef\xbc\xac\xef\xbc\xb5\xef\xbc\xa5\xe3\x80\x80\xef\xbc\xb2\xef\xbd\x8f\xef\xbd\x8f\xef\xbd\x8d" },
+            { "\xd0\xba\xd0\xbe\xd0\xbc\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0", "\xd0\x9a\xd0\x9e\xd0\x9c\xd0\x9d\xd0\x90\xd0\xa2\xd0\x90", "\xd0\x9a\xd0\xbe\xd0\xbc\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0", "\xd0\xba\xd0\xbe\xd0\xbc \xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0" },
+            { "zo\xc3\xab", "ZO\xc3\x8b", "Zo\xc3\xab", "z o \xc3\xab" },
+            { "istanbul", "\xc4\xb0STANBUL", "\xc4\xb1stanbul", "Istanbul" },
+            { "\xce\xbf\xce\xbc\xce\xb1\xce\xb4\xce\xb1\xcf\x83", "\xce\x9f\xce\x9c\xce\x91\xce\x94\xce\x91\xce\xa3", "\xce\xbf\xce\xbc\xce\xb1\xce\xb4\xce\xb1\xcf\x82", "\xce\x9f\xce\x9c\xce\x91\xc2\xad\xce\x94\xce\x91\xce\xa3" },
+            { "\xc5\x82\xc3\xb3\xc5\xba", "\xc5\x81\xc3\x93\xc5\xb9", "\xc5\x81\xc3\xb3\xc5\xba", "\xc5\x82\xc3\xb3\xc5\xba" },
+        };
+        for (int i = 0; i < (int)(sizeof same / sizeof same[0]); i++){
+            uint32_t h0 = rc_room_hash(same[i][0]);
+            for (int k = 1; k < 4; k++)
+                CHECK(rc_room_hash(same[i][k]) == h0, "names of one room, line %d: %08x %08x", i, rc_room_hash(same[i][k]), h0);
+            CHECK(h0 == rc_fnv1a(same[i][0]), "a name already small and without blanks: its bytes' FNV-1a (line %d)", i);
+        }
+        CHECK(rc_room_hash("Zoe") != rc_room_hash("Zo\xc3\xab") && rc_room_hash("stra\xc3\x9f" "e") != rc_room_hash("strasse") &&
+              rc_room_hash("\xce\x8c") == rc_room_hash("\xcf\x8c"), "accents and sharp s count, accented capitals are small");
+        CHECK(rc_room_hash("\xff\xfe") == rc_fnv1a("\xff\xfe") && rc_room_hash("\xc3") != 0, "bytes that are not UTF-8: as they are");
+        /* every character from U+0001 to U+2FFFF (but the surrogates) alone, its hash summed: the same sum as the page's */
+        uint32_t sum = 0;
+        for (uint32_t c = 1; c < 0x30000; c++){
+            if (c >= 0xD800 && c <= 0xDFFF) continue;
+            char u[5] = {0};
+            if (c < 0x80) u[0] = (char)c;
+            else if (c < 0x800){ u[0] = (char)(0xC0 | c >> 6); u[1] = (char)(0x80 | (c & 0x3F)); }
+            else if (c < 0x10000){ u[0] = (char)(0xE0 | c >> 12); u[1] = (char)(0x80 | (c >> 6 & 0x3F)); u[2] = (char)(0x80 | (c & 0x3F)); }
+            else { u[0] = (char)(0xF0 | c >> 18); u[1] = (char)(0x80 | (c >> 12 & 0x3F)); u[2] = (char)(0x80 | (c >> 6 & 0x3F)); u[3] = (char)(0x80 | (c & 0x3F)); }
+            sum = sum * 31u + rc_room_hash(u);
+        }
+        CHECK(sum == ROOM_FOLD_SUM, "every character's hash: sum %08x", sum);
+    }
     /* a fixed message: the exact bytes (regression of the format) */
     memset(&m, 0, sizeof m); m.h.type = RC_MSG_PING; m.h.sender = 0x01020304u; m.h.seq = 1; m.u.ping.t0 = 0x0A0B0C0Du;
     n = rc_encode(&m, b, sizeof b);
@@ -323,17 +360,18 @@ static void t_roundtrip(void){
 
 /* ---- 3. hostile datagrams ----------------------------------------------------------------- */
 static void t_fuzz(long iters){
-    uint8_t b[1600], base[16][RC_MAX_DGRAM]; int bn[16];
+    uint8_t b[1600], base[17][RC_MAX_DGRAM]; int bn[17];
     rc_msg m;
     /* one valid datagram of each type, to mutate */
-    for (int t = 1; t <= 16; t++){
+    for (int t = 1; t <= 17; t++){
         memset(&m, 0, sizeof m); m.h.type = (uint8_t)t; m.h.sender = 9;
         if (t == RC_MSG_HELLO){ strcpy(m.u.hello.name, "abc"); m.u.hello.n_seen = 2; }
         if (t == RC_MSG_PEERS){ m.u.peers.n = 2; m.u.peers.e[0].ip = 0x7f000001u; m.u.peers.e[0].port = 1; m.u.peers.e[0].id = 1; m.u.peers.e[1] = m.u.peers.e[0]; }
         if (t == RC_MSG_SNAP){ m.u.snap.n = 3; for (int k = 0; k < 3; k++) m.u.snap.s[k].q[3] = 1; }
         static uint8_t d[1000]; if (t == RC_MSG_CFG){ m.u.cfg.nfrag = 1; m.u.cfg.total = 100; m.u.cfg.dlen = 100; m.u.cfg.data = d; }
         if (t == RC_MSG_DUEL){ m.u.duel.op = RC_DUEL_OFFER; m.u.duel.to = 1; m.u.duel.duel = 5; }
-        if (t == RC_MSG_MAP){ m.u.map.nparts = 1; }
+        static const uint8_t me[RC_MAPD_PLACE + 2] = { 3, 0, 10, 0, 20, 0, 64, 5, 0xfb, 4, 0x80 };
+        if (t == RC_MSG_MAPD){ m.u.mapd.nparts = 1; m.u.mapd.n = 2; m.u.mapd.len = sizeof me; m.u.mapd.data = me; }
         if (t == RC_MSG_LOBBY){ m.u.lobby.op = RC_LOBBY_JOIN; m.u.lobby.to = 1; m.u.lobby.lobby = 5; m.u.lobby.race = 6; m.u.lobby.max = 4;
                                 m.u.lobby.n = 2; m.u.lobby.ids[0] = 9; m.u.lobby.ids[1] = 10; }
         static uint8_t le[RC_LOBBIES_ENTRY] = { 1, 0, 2, 0, 1, 2, 3, 4, 2, 6, 0 };
@@ -356,7 +394,8 @@ static void t_fuzz(long iters){
         int kind = (int)(rnd() % 4);
         if (kind == 0){ len = (int)(rnd() % 1300); for (int i = 0; i < len; i++) b[i] = (uint8_t)rnd(); }
         else {
-            int t = (int)(rnd() % 16); len = bn[t]; memcpy(b, base[t], (size_t)len);
+            int t = (int)(rnd() % 17); if (bn[t] < 0) t = 0;   /* (no type 11: MAP is gone) */
+            len = bn[t]; memcpy(b, base[t], (size_t)len);
             int nm = 1 + (int)(rnd() % 6);
             for (int k = 0; k < nm; k++) b[rnd() % (uint32_t)len] = (uint8_t)rnd();
             if (kind == 2) len = (int)(rnd() % (uint32_t)(len + 1));
@@ -415,6 +454,9 @@ static uint16_t node_port(int i){ return (uint16_t)(50000 + i); }
 static int node_of(uint32_t ip, uint16_t port){ if (ip != 0x7f000001u) return -1; for (int i = 0; i < NN; i++) if (node_port(i) == port) return i; return -1; }
 static int g_bcast_calls;
 static int g_cfg_tx[NN];                    /* CFG datagrams each node sent */
+static int g_ping_tx[NN][NN], g_hello_tx[NN][NN];   /* PINGs and HELLOs each node sent each other one */
+static int g_hello_one[NN][NN], g_hello_none[NN][NN], g_hello_more[NN][NN];   /* ...those HELLOs naming the receiver alone, no id, others */
+static uint16_t g_hello_core[NN];          /* the core version each node's HELLOs give */
 /* a stand-in for the server's free-roam hub (web/server-rs/crates/roam): it
  * counts what each node sends it and, while on, lists g_hub_link[i] for node
  * i every second */
@@ -424,11 +466,16 @@ static int g_hub_on, g_hub_link[NN][NN], g_hub_hello[NN], g_hub_snap[NN], g_hub_
 static int g_hub_ncrews[NN]; static uint32_t g_hub_crews[NN][RC_CREW_MAX];   /* each node's crews, as its last HELLO to the hub had them */
 static uint16_t g_hub_flags[NN];            /* ...and its flags: with RC_HF_HUBCREW its lists end in crew marks */
 static rc_lobby g_hub_lobby_last[NN];
+static int g_hub_hello_n[NN]; static uint32_t g_hub_hello_ids[NN][RC_MAX_PEERS];   /* the ids of each node's last HELLO to the hub */
+static int g_hub_mapreq[NN]; static uint16_t g_hub_mapreq_last[NN][3];   /* MAPREQs each node sent the hub, the last one's req, max, base */
 static int64_t g_hub_next;
 static void hub_in(int from, const uint8_t *b, int len){
     rc_msg m; if (rc_decode(b, len, &m) != RC_OK) return;
     if (m.h.type == RC_MSG_HELLO){ g_hub_hello[from]++; g_hub_flags[from] = m.h.flags;
-                                   g_hub_ncrews[from] = m.u.hello.n_crews; memcpy(g_hub_crews[from], m.u.hello.crews, sizeof g_hub_crews[from]); }
+                                   g_hub_ncrews[from] = m.u.hello.n_crews; memcpy(g_hub_crews[from], m.u.hello.crews, sizeof g_hub_crews[from]);
+                                   g_hub_hello_n[from] = m.u.hello.n_seen; memcpy(g_hub_hello_ids[from], m.u.hello.seen, sizeof g_hub_hello_ids[from]); }
+    else if (m.h.type == RC_MSG_MAPREQ){ g_hub_mapreq[from]++; g_hub_mapreq_last[from][0] = m.u.mapreq.req;
+                                         g_hub_mapreq_last[from][1] = m.u.mapreq.max; g_hub_mapreq_last[from][2] = m.u.mapreq.base; }
     else if (m.h.type == RC_MSG_SNAP){ g_hub_snap[from]++; if (m.h.flags & RC_HF_STATEX) g_hub_snapx[from]++; }
     else if (m.h.type == RC_MSG_BYE) g_hub_bye[from]++;
     else if (m.h.type == RC_MSG_LOBBY){ g_hub_lobby[from]++; g_hub_lobby_last[from] = m.u.lobby; }
@@ -437,6 +484,17 @@ static void net_send(void *u, uint32_t ip, uint16_t port, const uint8_t *buf, in
     if (ip == HUB_IP && port == HUB_PORT){ hub_in((int)(intptr_t)u, buf, len); return; }
     int from = (int)(intptr_t)u, to = node_of(ip, port);
     if (len > 5 && buf[5] == RC_MSG_CFG) g_cfg_tx[from]++;
+    if (to >= 0 && len > 5 && buf[5] == RC_MSG_PING) g_ping_tx[from][to]++;
+    if (to >= 0 && len > 5 && buf[5] == RC_MSG_HELLO){
+        g_hello_tx[from][to]++;
+        rc_msg d;
+        if (rc_decode(buf, len, &d) == RC_OK){
+            g_hello_core[from] = d.u.hello.core_ver;
+            if (!d.u.hello.n_seen) g_hello_none[from][to]++;
+            else if (d.u.hello.n_seen == 1 && d.u.hello.seen[0] == g_n[to].conf.self_id) g_hello_one[from][to]++;
+            else g_hello_more[from][to]++;
+        }
+    }
     if (to >= 0 && len > 15 && buf[5] == RC_MSG_SNAP){ if (buf[14] & RC_HF_STATEX) g_snapx_rx[to]++; else g_snap_rx[to]++; }
     if (to < 0 || g_drop[from][to]) return;
     if (to == g_nocrew_from && len > 15 && buf[5] == RC_MSG_HELLO){ rc_msg d; if (rc_decode(buf, len, &d) == RC_OK && d.u.hello.n_crews) g_crew_to_old++; }
@@ -677,6 +735,55 @@ static void t_hub(void){
     CHECK(g_n[0].hub_was == 2, "hub back: answering again");
     rc_shutdown(&g_n[3], 0);
     CHECK(g_hub_bye[3] == 1, "hub: a BYE when we stop");
+    g_hub_on = 0;
+}
+
+/* ---- 4d. friends far away: their HELLOs and pings as much rarer as their snapshots -- */
+static void drive_at(int n, int64_t until, const float *x, int still){
+    /* as drive, each node at x[i] m; node `still` sends no snapshot (in a menu) */
+    while (g_now < until){
+        for (int i = 0; i < n; i++){
+            if (i == still) continue;
+            rc_state st; memset(&st, 0, sizeof st); st.q[3] = 1; st.t_us = (uint32_t)g_now; st.p[0] = x[i];
+            rc_set_status(&g_n[i], RC_ST_ROAM); rc_push_state(&g_n[i], &st, g_now);
+        }
+        net_run(g_now + 10000, n);
+    }
+}
+static void t_far(void){
+    mesh(4, 8);
+    g_hub_on = 1; g_hub_next = 0; memset(g_hub_link, 0, sizeof g_hub_link);
+    for (int i = 0; i < 4; i++){ g_n[i].conf.hub_ip = HUB_IP; g_n[i].conf.hub_port = HUB_PORT; }
+    hub_links(0, 1); hub_links(0, 2); hub_links(0, 3);
+    uint32_t id[4]; for (int i = 0; i < 4; i++) id[i] = g_n[i].conf.self_id;
+    float x[4] = { 0.f, 1.f, 500.f, 1500.f };            /* near, far (every 4th), very far (every 10th) */
+    drive_at(4, g_now + 4000000, x, -1);
+    CHECK(est(0) == 3, "far: all three established (%d)", est(0));
+    memset(g_ping_tx, 0, sizeof g_ping_tx); memset(g_hello_tx, 0, sizeof g_hello_tx);
+    int lv = g_leave[0] + g_leave[1] + g_leave[2] + g_leave[3];
+    drive_at(4, g_now + 20000000, x, -1);
+    int *pg = g_ping_tx[0], *hl = g_hello_tx[0];
+    CHECK(pg[1] >= 19 && pg[1] <= 21 && hl[1] >= 9 && hl[1] <= 11, "far: a friend near is pinged every second and gets a HELLO every 2 s, as ever (%d, %d in 20 s)", pg[1], hl[1]);
+    CHECK(pg[2] >= 4 && pg[2] <= 6 && hl[2] >= 2 && hl[2] <= 3, "far: one past 300 m every 4 s and 8 s (%d, %d)", pg[2], hl[2]);
+    CHECK(pg[3] >= 1 && pg[3] <= 3 && hl[3] >= 1 && hl[3] <= 2, "far: one past 1 km every 10 s and 20 s (%d, %d)", pg[3], hl[3]);
+    CHECK(g_ping_tx[2][0] >= 4 && g_ping_tx[2][0] <= 6, "far: the far one pings us as rarely (%d)", g_ping_tx[2][0]);
+    int ok = 1;
+    for (int k = 1; k < 4; k++){ int j = peer_of(k, id[0]), i = peer_of(0, id[k]);
+        if (j < 0 || i < 0 || g_n[k].peer[j].state != RC_PS_EST || g_n[k].peer[j].lost || g_n[0].peer[i].lost || g_n[0].peer[i].rtt_us <= 0) ok = 0; }
+    CHECK(ok && g_leave[0] + g_leave[1] + g_leave[2] + g_leave[3] == lv, "far: every link stays, nobody lost, each round trip known");
+    /* the far one comes near: pinged at once, then every second */
+    x[2] = 50.f;
+    int64_t t = g_now; int before = pg[2], at = 0;
+    while (g_now < t + 3000000){ drive_at(4, g_now + 10000, x, -1); if (!at && pg[2] > before) at = (int)(g_now - t); }
+    CHECK(at > 0 && at <= 150000 && pg[2] - before >= 3, "far: one come near is pinged within %d ms, then every second (%d in 3 s)", at / 1000, pg[2] - before);
+    /* no snapshots from us (a menu): the far ones' HELLOs and pings as ever, they keep the link */
+    memset(g_ping_tx, 0, sizeof g_ping_tx); memset(g_hello_tx, 0, sizeof g_hello_tx);
+    drive_at(4, g_now + 2000000, x, 0);
+    memset(g_ping_tx, 0, sizeof g_ping_tx); memset(g_hello_tx, 0, sizeof g_hello_tx);
+    drive_at(4, g_now + 10000000, x, 0);
+    int j3 = peer_of(3, id[0]);
+    CHECK(pg[3] >= 9 && hl[3] >= 4 && j3 >= 0 && g_n[3].peer[j3].state == RC_PS_EST,
+          "far: without our snapshots one past 1 km is pinged every second again, HELLOs every 2 s, the link kept (%d, %d)", pg[3], hl[3]);
     g_hub_on = 0;
 }
 
@@ -1086,12 +1193,13 @@ static void t_bigmesh(void){
         if ((t - now) % 1000000 == 0) big_hellos(&s, t);
         rc_tick(&s, t);
     }
-    int ok_new = 1, ok_old = g_big[OLD].hellos > 0 && g_big[OLD].hello_n <= RC_PEERS_V1 && g_big[OLD].hello_self &&
+    /* a HELLO to one player names that player alone (core 9: all a receiver reads of the ids is its own among them) */
+    int ok_new = 1, ok_old = g_big[OLD].hellos > 0 && g_big[OLD].hello_n == 1 && g_big[OLD].hello_self &&
                              g_big[OLD].peers > 0 && g_big[OLD].peers_n == RC_PEERS_V1;
-    for (int i = 0; i < NP; i++) if (i != OLD && (!g_big[i].hellos || g_big[i].hello_n != NP || !g_big[i].hello_self || g_big[i].peers_n != NP)) ok_new = 0;
-    CHECK(ok_new, "a group of %d: HELLOs and PEERS lists of all %d to cores of version %d (to player 0: %d ids, %d peers)", NP + 1, NP, RC_CORE_VER,
-          g_big[0].hello_n, g_big[0].peers_n);
-    CHECK(ok_old, "the player of core version 1: HELLOs of at most 7 ids with its own (%d, %s), PEERS of 7 (%d)",
+    for (int i = 0; i < NP; i++) if (i != OLD && (!g_big[i].hellos || g_big[i].hello_n != 1 || !g_big[i].hello_self || g_big[i].peers_n != NP)) ok_new = 0;
+    CHECK(ok_new, "a group of %d: HELLOs naming their receiver alone and PEERS lists of all %d to cores of version %d (to player 0: %d ids, %d peers)",
+          NP + 1, NP, RC_CORE_VER, g_big[0].hello_n, g_big[0].peers_n);
+    CHECK(ok_old, "the player of core version 1: HELLOs naming it alone (%d, %s), PEERS of 7 (%d)",
           g_big[OLD].hello_n, g_big[OLD].hello_self ? "with it" : "WITHOUT it", g_big[OLD].peers_n);
     /* snapshots by distance: player i is i * 100 + 50 m away; 20 a second
      * within 300 m, 5 to 1000 m, 2 past that */
@@ -1417,6 +1525,195 @@ static void t_crews(void){
     memset(g_hub_ncrews, 0, sizeof g_hub_ncrews); memset(g_hub_flags, 0, sizeof g_hub_flags);
 }
 
+/* ---- 4h. core 9: a HELLO to one peer names that peer alone, the hub's every one we hear ------------ */
+static void t_hello_one(void){
+    CHECK(RC_CORE_VER == 9, "core version 9 (the hub's on nfsu2.xyz since 2026-10-31)");
+    mesh(3, 8);
+    g_hub_on = 1; g_hub_next = 0; memset(g_hub_link, 0, sizeof g_hub_link); memset(g_hub_hello_n, 0, sizeof g_hub_hello_n);
+    for (int i = 0; i < 3; i++){ g_n[i].conf.hub_ip = HUB_IP; g_n[i].conf.hub_port = HUB_PORT; }
+    hub_links(0, 1); hub_links(0, 2); hub_links(1, 2);
+    uint32_t id[3]; for (int i = 0; i < 3; i++) id[i] = g_n[i].conf.self_id;
+    drive(3, g_now + 4000000);
+    CHECK(est(0) == 2 && est(1) == 2 && est(2) == 2, "hello: everyone the hub lists established (%d %d %d)", est(0), est(1), est(2));
+    memset(g_hello_one, 0, sizeof g_hello_one); memset(g_hello_none, 0, sizeof g_hello_none); memset(g_hello_more, 0, sizeof g_hello_more);
+    drive(3, g_now + 6000000);
+    int one = 1, any = 1;
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++){
+        if (i == j) continue;
+        if (!g_hello_one[i][j]) any = 0;
+        if (g_hello_none[i][j] || g_hello_more[i][j]) one = 0;
+    }
+    CHECK(any && one, "hello: every HELLO to a peer names that peer alone (0 to 1: %d alone, %d none, %d more)",
+          g_hello_one[0][1], g_hello_none[0][1], g_hello_more[0][1]);
+    CHECK(g_hello_core[0] == 9 && g_hello_core[1] == 9, "hello: the HELLOs say core 9 (%u)", g_hello_core[0]);
+    int h1 = 0, h2 = 0;
+    for (int k = 0; k < g_hub_hello_n[0]; k++){ h1 |= g_hub_hello_ids[0][k] == id[1]; h2 |= g_hub_hello_ids[0][k] == id[2]; }
+    CHECK(g_hub_hello_n[0] == 2 && h1 && h2, "hello: the HELLO to the hub names every peer we hear (%d ids)", g_hub_hello_n[0]);
+    /* the group full (max_players 2): a peer heard but not in it gets a HELLO naming nobody, the one in it its own id */
+    mesh(3, 2); memset(g_hub_link, 0, sizeof g_hub_link);
+    for (int i = 0; i < 3; i++){ g_n[i].conf.hub_ip = HUB_IP; g_n[i].conf.hub_port = HUB_PORT; }
+    hub_links(0, 1); hub_links(0, 2);
+    drive(3, g_now + 4000000);
+    int k1 = peer_of(0, id[1]), k2 = peer_of(0, id[2]);
+    int in = k1 >= 0 && g_n[0].peer[k1].state == RC_PS_EST ? 1 : k2 >= 0 && g_n[0].peer[k2].state == RC_PS_EST ? 2 : 0, out = 3 - in;
+    CHECK(est(0) == 1 && in, "hello, full: node 0 takes one of the two (%d, node %d)", est(0), in);
+    memset(g_hello_one, 0, sizeof g_hello_one); memset(g_hello_none, 0, sizeof g_hello_none); memset(g_hello_more, 0, sizeof g_hello_more);
+    drive(3, g_now + 6000000);
+    CHECK(in && g_hello_one[0][in] > 0 && !g_hello_none[0][in] && !g_hello_more[0][in] && g_hello_none[0][out] > 0 && !g_hello_one[0][out] &&
+          !g_hello_more[0][out], "hello, full: node %d gets its own id (%d), node %d no id (%d none, %d with one)",
+          in, g_hello_one[0][in], out, g_hello_none[0][out], g_hello_one[0][out]);
+    CHECK(est(0) == 1 && est(out) == 0, "hello, full: the one left out never takes us as established (%d)", est(out));
+    g_hub_on = 0; for (int i = 0; i < 3; i++) g_n[i].conf.hub_ip = 0;
+}
+
+/* ---- 4i. the world map's players from the hub: MAPREQ, MAPD, what changed since the answer held --- */
+typedef struct { uint16_t key; int16_t x, y; uint8_t h; int8_t vx, vy; } MapIn;
+/* a MAPD datagram of the hub's (entries' bytes as web/server-rs/crates/roam/src/hub.rs map_diff writes them); its
+ * header says say entries (-1: n) */
+static int mapd_make_n(uint8_t *b, uint16_t req, uint16_t base, int part, int nparts, uint16_t total, const MapIn *e, int n, int say){
+    static uint8_t d[RC_MAPD_BYTES + 2 * RC_MAPD_PLACE];
+    int len = 0;
+    for (int k = 0; k < n && len + RC_MAPD_PLACE <= (int)sizeof d; k++){
+        d[len++] = (uint8_t)e[k].key; d[len++] = (uint8_t)(e[k].key >> 8);
+        if (e[k].key & RC_MAPD_GONE) continue;
+        d[len++] = (uint8_t)e[k].x; d[len++] = (uint8_t)((uint16_t)e[k].x >> 8);
+        d[len++] = (uint8_t)e[k].y; d[len++] = (uint8_t)((uint16_t)e[k].y >> 8);
+        d[len++] = e[k].h; d[len++] = (uint8_t)e[k].vx; d[len++] = (uint8_t)e[k].vy;
+    }
+    rc_msg m; memset(&m, 0, sizeof m); m.h.type = RC_MSG_MAPD; m.h.sender = 0xB0B;
+    m.u.mapd.req = req; m.u.mapd.base = base; m.u.mapd.part = (uint8_t)part; m.u.mapd.nparts = (uint8_t)nparts;
+    m.u.mapd.total = total; m.u.mapd.n = (uint8_t)(say < 0 ? n : say); m.u.mapd.len = (uint16_t)len; m.u.mapd.data = d;
+    return rc_encode(&m, b, RC_MAX_DGRAM);
+}
+static int mapd_make(uint8_t *b, uint16_t req, uint16_t base, int part, int nparts, uint16_t total, const MapIn *e, int n){
+    return mapd_make_n(b, req, base, part, nparts, total, e, n, -1);
+}
+static const rc_mapent *map_of(const rc_session *s, uint16_t id){
+    for (int i = 0; i < s->map_n; i++) if (s->map_e[i].id == id) return &s->map_e[i];
+    return 0;
+}
+static int map_sorted(const rc_session *s){
+    for (int i = 1; i < s->map_n; i++) if (s->map_e[i - 1].id >= s->map_e[i].id) return 0;
+    return 1;
+}
+static void t_mapd(void){
+    uint8_t b[RC_MAX_DGRAM]; rc_msg m, d; int n;
+    /* the wire: MAPREQ's req, max, base; MAPD's entries placed (9 bytes) and gone (2) */
+    memset(&m, 0, sizeof m); m.h.type = RC_MSG_MAPREQ; m.h.sender = 1;
+    m.u.mapreq.req = 7; m.u.mapreq.max = RC_MAP_MAX; m.u.mapreq.base = 5;
+    n = rc_encode(&m, b, sizeof b);
+    CHECK(n == RC_HDR + 6 + 4 && rc_decode(b, n, &d) == RC_OK && d.u.mapreq.req == 7 && d.u.mapreq.max == RC_MAP_MAX && d.u.mapreq.base == 5,
+          "MAPREQ: req, max, base (%d bytes, as the hub reads it: 6 after the header)", n);
+    static const MapIn two[2] = { { 3, 10, -20, 64, 5, -5 }, { 4 | RC_MAPD_GONE, 0, 0, 0, 0, 0 } };
+    n = mapd_make(b, 9, 8, 1, 2, 300, two, 2);
+    CHECK(n > 0 && rc_decode(b, n, &d) == RC_OK && d.h.type == RC_MSG_MAPD && d.u.mapd.req == 9 && d.u.mapd.base == 8 && d.u.mapd.part == 1 &&
+          d.u.mapd.nparts == 2 && d.u.mapd.total == 300 && d.u.mapd.n == 2 && d.u.mapd.len == RC_MAPD_PLACE + 2 &&
+          d.u.mapd.data[0] == 3 && d.u.mapd.data[2] == 10 && d.u.mapd.data[4] == 0xec && d.u.mapd.data[5] == 0xff &&
+          d.u.mapd.data[9] == 4 && d.u.mapd.data[10] == 0x80, "MAPD: one placed, one gone (%d bytes)", n);
+    memset(&m, 0, sizeof m); m.h.type = RC_MSG_MAPD; m.h.sender = 1; m.u.mapd.n = 0; m.u.mapd.data = b;
+    m.u.mapd.nparts = RC_MAPD_PARTS + 1; int x1 = rc_encode(&m, b + 600, 600);
+    m.u.mapd.nparts = 2; m.u.mapd.part = 2; int x2 = rc_encode(&m, b + 600, 600);
+    m.u.mapd.part = 0; m.u.mapd.len = RC_MAPD_BYTES + 1; int x3 = rc_encode(&m, b + 600, 600);
+    CHECK(x1 < 0 && x2 < 0 && x3 < 0, "MAPD: more than %d parts, a part past them, more than %d bytes: not encoded", RC_MAPD_PARTS, RC_MAPD_BYTES);
+    n = mapd_make_n(b, 9, 0, 0, 1, 3, two, 2, 3);         /* (three entries said, the bytes of two) */
+    CHECK(n > 0 && rc_decode(b, n, &d) == RC_E_SHORT, "MAPD: entries past its bytes are refused");
+    MapIn many[RC_MAPD_BYTES / RC_MAPD_PLACE + 1];
+    for (int k = 0; k < (int)(sizeof many / sizeof many[0]); k++){ many[k].key = (uint16_t)k; many[k].x = many[k].y = 1; many[k].h = 0; many[k].vx = many[k].vy = 0; }
+    n = mapd_make(b, 9, 0, 0, 1, 200, many, RC_MAPD_BYTES / RC_MAPD_PLACE);
+    CHECK(n > 0 && n <= RC_MAX_DGRAM && rc_decode(b, n, &d) == RC_OK && d.u.mapd.len == RC_MAPD_BYTES,
+          "MAPD: %d placed fill a datagram (%d bytes, at most %d)", RC_MAPD_BYTES / RC_MAPD_PLACE, n, RC_MAX_DGRAM);
+
+    /* a session asks the hub; the answer from nothing, its parts in any order */
+    mesh(2, 8);
+    g_hub_on = 1; g_hub_next = 0; memset(g_hub_link, 0, sizeof g_hub_link); memset(g_hub_mapreq, 0, sizeof g_hub_mapreq);
+    for (int i = 0; i < 2; i++){ g_n[i].conf.hub_ip = HUB_IP; g_n[i].conf.hub_port = HUB_PORT; }
+    hub_links(0, 1);
+    rc_session *s = &g_n[0];
+    CHECK(rc_ask_map(s, g_now, 100) == 0, "map: not asked before the hub answers");
+    drive(2, g_now + 2000000);
+    CHECK(rc_ask_map(s, g_now, 5000) == 1 && g_hub_mapreq[0] == 1 && g_hub_mapreq_last[0][1] == RC_MAP_MAX && g_hub_mapreq_last[0][2] == 0,
+          "map: asked for %d at most (5000 asked), holding no answer (base %u)", g_hub_mapreq_last[0][1], g_hub_mapreq_last[0][2]);
+    CHECK(rc_ask_map(s, g_now, 100) == 1 && g_hub_mapreq[0] == 2 && g_hub_mapreq_last[0][0] == s->map_req && g_hub_mapreq_last[0][1] == 100,
+          "map: asked again, its own number (%u), as many as the map has room for (%u)", g_hub_mapreq_last[0][0], g_hub_mapreq_last[0][1]);
+    uint16_t q1 = s->map_req; uint32_t gen = s->map_gen;
+    static const MapIn a0[2] = { { 2, 100, 200, 10, 0, 0 }, { 5, -300, 40, 20, 10, -3 } },
+                       a1[2] = { { 7, 1000, -1000, 30, 0, 0 }, { 9, 5, 5, 40, -127, 127 } };
+    n = mapd_make(b, (uint16_t)(q1 - 1), 0, 0, 1, 1, a0, 1);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    CHECK(s->map_gen == gen, "map: an answer to the question before is ignored");
+    n = mapd_make(b, q1, 0, 1, 2, 4, a1, 2);
+    rc_receive(s, node_ip(1), node_port(1), b, n, g_now);
+    CHECK(s->map_gen == gen && s->map_mask == 0, "map: a MAPD from a player, not the hub, is ignored");
+    int64_t t1 = g_now;
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, t1);
+    CHECK(s->map_gen == gen, "map: half an answer changes nothing");
+    n = mapd_make(b, q1, 0, 0, 2, 4, a0, 2);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, t1);
+    const rc_mapent *e5 = map_of(s, 5), *e9 = map_of(s, 9);
+    CHECK(s->map_gen == gen + 1 && s->map_n == 4 && s->map_total == 4 && s->map_held == q1 && map_sorted(s) && s->map_e[0].id == 2 &&
+          e5 && e5->x == -300 && e5->y == 40 && e5->heading == 20 && e5->vx == 10 && e5->vy == -3 && e5->at_us == t1 &&
+          e9 && e9->vx == -127 && e9->vy == 127, "map: both parts, %d players by key, each where and how it moves (held %u)", s->map_n, s->map_held);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, t1);
+    CHECK(s->map_gen == gen + 1, "map: a part again once answered changes nothing");
+
+    /* the next question names the answer held; the hub's answer is what changed: placed again, gone, come */
+    g_now += 250000;
+    CHECK(rc_ask_map(s, g_now, 100) == 1 && g_hub_mapreq_last[0][2] == q1, "map: the next question names the answer held (%u)", g_hub_mapreq_last[0][2]);
+    uint16_t q2 = s->map_req; int64_t t2 = g_now;
+    static const MapIn ch[3] = { { 2, 110, 205, 12, 1, 1 }, { 5 | RC_MAPD_GONE, 0, 0, 0, 0, 0 }, { 6, 60, 60, 60, 6, 6 } };
+    n = mapd_make(b, q2, q1, 0, 1, 4, ch, 3);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, t2);
+    const rc_mapent *e2 = map_of(s, 2), *e6 = map_of(s, 6), *e7 = map_of(s, 7);
+    CHECK(s->map_gen == gen + 2 && s->map_n == 4 && map_sorted(s) && !map_of(s, 5) && e2 && e2->x == 110 && e2->at_us == t2 &&
+          e6 && e6->x == 60 && e6->at_us == t2 && e7 && e7->x == 1000 && e7->at_us == t1 && map_of(s, 9) && s->map_held == q2,
+          "map: one placed again, one gone, one come, the others kept as they were (%d players: %u %u %u %u)",
+          s->map_n, s->map_e[0].id, s->map_e[1].id, s->map_e[2].id, s->map_e[3].id);
+    /* an answer from an answer we do not hold changes nothing, and the next question names ours */
+    g_now += 250000;
+    rc_ask_map(s, g_now, 100);
+    uint16_t q3 = s->map_req;
+    n = mapd_make(b, q3, (uint16_t)(q2 + 50), 0, 1, 4, ch + 1, 1);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    CHECK(s->map_gen == gen + 2 && s->map_n == 4 && map_of(s, 2) && s->map_held == q2, "map: what changed since an answer not held is ignored");
+    g_now += 250000;
+    CHECK(rc_ask_map(s, g_now, 100) == 1 && g_hub_mapreq_last[0][2] == q2, "map: ...and the next question names the one held (%u)", g_hub_mapreq_last[0][2]);
+    /* base 0 (the hub forgot ours): from nothing, the list replaced */
+    n = mapd_make(b, s->map_req, 0, 0, 1, 1, ch + 2, 1);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    CHECK(s->map_gen == gen + 3 && s->map_n == 1 && s->map_e[0].id == 6 && s->map_total == 1, "map: an answer from nothing replaces the list (%d)", s->map_n);
+
+    /* a full answer: RC_MAPD_PARTS datagrams, RC_MAP_MAX players; one come past them is left out */
+    static MapIn all[RC_MAP_MAX];
+    for (int k = 0; k < RC_MAP_MAX; k++){ all[k].key = (uint16_t)(2 * k + 1); all[k].x = (int16_t)k; all[k].y = (int16_t)-k; all[k].h = (uint8_t)k; all[k].vx = 1; all[k].vy = -1; }
+    g_now += 250000; rc_ask_map(s, g_now, RC_MAP_MAX);
+    int per = RC_MAP_MAX / RC_MAPD_PARTS, bad = 0;
+    for (int p = RC_MAPD_PARTS - 1; p >= 0; p--){
+        n = mapd_make(b, s->map_req, 0, p, RC_MAPD_PARTS, 3000, all + p * per, per);
+        if (n <= 0 || n > RC_MAX_DGRAM) bad = 1; else rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    }
+    const rc_mapent *last = map_of(s, (uint16_t)(2 * (RC_MAP_MAX - 1) + 1));
+    CHECK(!bad && s->map_gen == gen + 4 && s->map_n == RC_MAP_MAX && s->map_total == 3000 && map_sorted(s) && last && last->x == RC_MAP_MAX - 1,
+          "map: %d datagrams of %d, %d players (%d known to the hub)", RC_MAPD_PARTS, per, s->map_n, s->map_total);
+    uint16_t held = s->map_req;
+    g_now += 250000; rc_ask_map(s, g_now, RC_MAP_MAX);
+    static const MapIn more[2] = { { 1 | RC_MAPD_GONE, 0, 0, 0, 0, 0 }, { 2, 7, 7, 0, 0, 0 } };   /* (by key, as the hub sends them) */
+    n = mapd_make(b, s->map_req, held, 0, 1, 3000, more, 2);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    CHECK(s->map_gen == gen + 5 && s->map_n == RC_MAP_MAX && map_sorted(s) && !map_of(s, 1) && map_of(s, 2) && map_of(s, 3),
+          "map: one gone and one come keep %d players, sorted by key", s->map_n);
+    held = s->map_req;
+    g_now += 250000; rc_ask_map(s, g_now, RC_MAP_MAX);
+    static const MapIn past[1] = { { 0x7ffe, 1, 1, 0, 0, 0 } };
+    n = mapd_make(b, s->map_req, held, 0, 1, 3000, past, 1);
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    CHECK(s->map_n == RC_MAP_MAX && !map_of(s, 0x7ffe) && map_sorted(s), "map: one past %d is left out", RC_MAP_MAX);
+    /* a MAPD never asked for (the answer is in): nothing */
+    gen = s->map_gen;
+    rc_receive(s, HUB_IP, HUB_PORT, b, n, g_now);
+    CHECK(s->map_gen == gen, "map: an answer again, not asked for, changes nothing");
+    g_hub_on = 0; for (int i = 0; i < 2; i++) g_n[i].conf.hub_ip = 0;
+}
+
 /* ---- 4e. race lobbies: LOBBY only to a peer that takes them, only for us; the hub's LOBBIES -- */
 static void t_lobby(void){
     mesh(3, 8);
@@ -1465,7 +1762,7 @@ static void t_lobby(void){
     l.to = 0; l.lobby = 0xAB;
     CHECK(rc_send_lobby(&g_n[0], &l) == 1 && g_hub_lobby[0] == 1 && g_hub_lobby_last[0].race == 0x1234 && g_hub_lobby_last[0].x == 100,
           "the advert reaches the hub (%d)", g_hub_lobby[0]);
-    CHECK(rc_ask_map(&g_n[0], g_now) == 1, "the map is asked for");
+    CHECK(rc_ask_map(&g_n[0], g_now, RC_MAP_MAX) == 1, "the map is asked for");
     static const uint8_t le[3 * RC_LOBBIES_ENTRY] = { 10, 0, 20, 0, 0x34, 0x12, 0, 0, 2, 6, RC_LS_OPEN,
                                                       1, 0, 1, 0, 0, 0, 0, 0, 1, 4, 0,              /* no race: skipped */
                                                       0xf6, 0xff, 5, 0, 1, 0, 0, 0, 4, 4, RC_LS_STARTING };
@@ -1524,8 +1821,11 @@ int main(int argc, char **argv){
     t_session();
     t_review();
     t_hub();
+    t_far();
     t_duel();
     t_lobby();
+    t_hello_one();
+    t_mapd();
     t_say();
     t_statex();
     t_crews();
