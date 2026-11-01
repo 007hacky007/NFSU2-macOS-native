@@ -43,15 +43,30 @@ public func macCheck(isAppleSilicon: Bool, version: OperatingSystemVersion) -> C
 
 /// Free space the build needs on the workspace volume: the private Python, the build tools,
 /// the translated code and the compiled engines (measured on a European build: 0.63 GB, the
-/// built NFSU2.app 89 MB), with room to spare.
+/// built NFSU2.app without the game 89 MB), with room to spare.
 public let requiredBuildBytes: Int64 = 1_500_000_000
-/// A game folder unpacked from the discs (about 1.7 GB) when it goes on the same volume.
-public let gameFolderBytes: Int64 = 2_000_000_000
+/// The app around the game: launcher and engines (89 MB), with room to spare.
+public let appBytes: Int64 = 150_000_000
 
-public func diskSpaceCheck(available: Int64, required: Int64 = requiredBuildBytes) -> CheckState {
+/// Bytes each volume needs for a build that puts `gameBytes` of game data inside the app.
+/// APFS clones cost nothing: a game folder (or an older NFSU2.app) on the workspace volume is
+/// cloned into the app, and the app moved to a destination on the same volume. What cannot be
+/// cloned is counted: the game data copied or unpacked (discs) into the workspace, and the
+/// whole app copied to a destination on another volume.
+public func spaceNeeds(gameBytes: Int64, discs: Bool, source: UInt64?, workspace: UInt64, destination: UInt64?) -> [UInt64: Int64] {
+    var needs: [UInt64: Int64] = [workspace: requiredBuildBytes]
+    if discs || source != workspace { needs[workspace, default: 0] += gameBytes }
+    if let destination = destination, destination != workspace {
+        needs[destination, default: 0] += gameBytes + appBytes
+    }
+    return needs
+}
+
+public func diskSpaceCheck(available: Int64, required: Int64 = requiredBuildBytes, disk: String? = nil) -> CheckState {
     let gb = { (b: Int64) in String(format: "%.1f GB", Double(b) / 1_000_000_000) }
     if available >= required {
         return .ready("\(gb(available)) free")
     }
-    return .blocked("Only \(gb(available)) free, \(gb(required)) needed")
+    let on = disk.map { " on \($0)" } ?? ""
+    return .blocked("Only \(gb(available)) free\(on), \(gb(required)) needed")
 }

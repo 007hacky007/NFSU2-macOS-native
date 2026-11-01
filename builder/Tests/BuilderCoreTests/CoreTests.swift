@@ -23,10 +23,10 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"step":"lift","title":"Translating"}"#), .step(id: "lift", title: "Translating"))
         XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"progress": 0.25}"#), .progress(0.25))
         XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"progress": 1}"#), .progress(1))
-        XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"done":"/w/out/NFSU2.app","game":"/Users/x/Games/NFSU2"}"#),
-                       .done(app: URL(fileURLWithPath: "/w/out/NFSU2.app"), game: URL(fileURLWithPath: "/Users/x/Games/NFSU2")))
+        XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"done":"/w/out/personal/NFSU2.app"}"#),
+                       .done(app: URL(fileURLWithPath: "/w/out/personal/NFSU2.app")))
         XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"error":"bad"}"#), .error("bad"))
-        XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"done":"/w/out/NFSU2.app"}"#), .log(#"NFSU2-EVENT {"done":"/w/out/NFSU2.app"}"#))
+        XCTAssertEqual(parsePipelineLine(#"NFSU2-EVENT {"done":7}"#), .log(#"NFSU2-EVENT {"done":7}"#))
         XCTAssertEqual(parsePipelineLine("NFSU2-EVENT {broken"), .log("NFSU2-EVENT {broken"))
         XCTAssertEqual(parsePipelineLine("plain"), .log("plain"))
     }
@@ -41,18 +41,24 @@ final class CoreTests: XCTestCase {
         if case .blocked = diskSpaceCheck(available: requiredBuildBytes - 1) {} else { XCTFail() }
         if case .ready = diskSpaceCheck(available: requiredBuildBytes) {} else { XCTFail() }
         XCTAssertEqual(diskSpaceCheck(available: 4_000_000_000, required: 5_000_000_000), .blocked("Only 4.0 GB free, 5.0 GB needed"))
+        XCTAssertEqual(diskSpaceCheck(available: 1_000_000_000, required: 2_000_000_000, disk: "USB"),
+                       .blocked("Only 1.0 GB free on USB, 2.0 GB needed"))
+        XCTAssertEqual(gameBundleID, "org.nfsu2.nativeport")
     }
 
-    func testLauncherGameFolderSetting() {
-        let domain = "org.nfsu2.builder.test-\(UUID().uuidString)"
-        defer {
-            CFPreferencesSetAppValue(launcherGameFolderKey as CFString, nil, domain as CFString)
-            CFPreferencesAppSynchronize(domain as CFString)
-        }
-        XCTAssertNil(launcherGameFolder(domain: domain))
-        XCTAssertTrue(setLauncherGameFolder(URL(fileURLWithPath: "/Users/x/Games/NFSU2 \"copy\""), domain: domain))
-        XCTAssertEqual(launcherGameFolder(domain: domain), "/Users/x/Games/NFSU2 \"copy\"")
-        XCTAssertEqual(launcherGameFolderKey, "OyunDizini")
-        XCTAssertEqual(gameBundleID, "org.nfsu2.nativeport")
+    /// The game data costs space only where it cannot be cloned.
+    func testSpaceNeedsCountTheGameOnlyWhereItCannotBeCloned() {
+        let game: Int64 = 1_800_000_000
+        // A folder (or an older NFSU2.app) on the workspace volume, the app to the same volume: clones only.
+        XCTAssertEqual(spaceNeeds(gameBytes: game, discs: false, source: 1, workspace: 1, destination: 1), [1: requiredBuildBytes])
+        // Discs are unpacked into the workspace.
+        XCTAssertEqual(spaceNeeds(gameBytes: game, discs: true, source: 1, workspace: 1, destination: 1), [1: requiredBuildBytes + game])
+        // A folder on another disk is copied into the workspace.
+        XCTAssertEqual(spaceNeeds(gameBytes: game, discs: false, source: 2, workspace: 1, destination: 1), [1: requiredBuildBytes + game])
+        // A destination on another disk gets a copy of the whole app.
+        XCTAssertEqual(spaceNeeds(gameBytes: game, discs: false, source: 1, workspace: 1, destination: 3),
+                       [1: requiredBuildBytes, 3: game + appBytes])
+        XCTAssertEqual(spaceNeeds(gameBytes: game, discs: false, source: 3, workspace: 1, destination: 3),
+                       [1: requiredBuildBytes + game, 3: game + appBytes])
     }
 }

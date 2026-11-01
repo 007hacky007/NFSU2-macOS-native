@@ -13,17 +13,22 @@
 #   ./pack.sh                 the port only (~70 MB, both engines) -- the game data is the user's
 #   ./pack.sh --with-data     also copy the game data next to it (~1.5 GB)
 #   ./pack.sh --zip           also produce NFSU2.zip for distribution
-#   ./pack.sh --embed         PERSONAL single-piece app: the game data is embedded
-#                             INSIDE the bundle (out/personal/, ~1.4 GB).  Since it
-#                             contains the game itself it
-#                             CANNOT BE DISTRIBUTED; no distribution folder / zip is made.
+#   ./pack.sh --embed         one app with the game data INSIDE the bundle
+#                             (out/personal/NFSU2.app, ~1.8 GB, Contents/Resources/Game):
+#                             it needs no game folder and can be moved anywhere.  It
+#                             contains the game, so keep it for yourself; no distribution
+#                             folder / zip is made.  GAME_DIR= names the game folder
+#                             (default: the Clean Edition folder in the repository);
+#                             NFSU2 Builder always builds this way.
 #   ./pack.sh --hd            "NFSU2 HD.app" with the HD engine only (the older
 #                             two-app layout; separate bundle id, sits next to NFSU2.app)
 #   ./pack.sh --original-only NFSU2.app with the original engine only
 #   ./pack.sh --region eu|na  NFSU2.app with only that executable's engines (NFSU2 Builder
 #                             builds one region: European or North American v1.2)
+#   BUILDER_VERSION=1.1.0     recorded in Info.plist as NFSBuilderVersion (NFSU2 Builder
+#                             shows "1.0.0 -> 1.1.0" when it updates an app it made)
 #
-# The game data does NOT go into the bundle BY DEFAULT: the app asks for the
+# Without --embed the game data does NOT go into the bundle: the app asks for the
 # folder on first launch and remembers the choice.  That keeps the bundle small
 # and everyone runs it with their own installation.
 #
@@ -65,7 +70,7 @@ esac
 [ -x "$BIN" ] || { echo "build first: ./build.sh && ./link.sh  ($BIN missing)"; exit 1; }
 
 if [ "$EMBED" = 1 ] && { [ "$WITH_DATA" = 1 ] || [ "$MAKE_ZIP" = 1 ]; }; then
-  echo "--embed is for personal use; it can't be combined with --with-data / --zip"; exit 1
+  echo "--embed puts the game inside the app; it can't be combined with --with-data / --zip"; exit 1
 fi
 OUTDIR="$ROOT/out"; [ "$EMBED" = 1 ] && OUTDIR="$ROOT/out/personal"
 mkdir -p "$OUTDIR"
@@ -124,24 +129,46 @@ else
 fi
 
 # --- embedded game data (--embed only) ---
-# cp -c: APFS clone.  Takes NO extra space on the same disk and finishes
-# instantly; if cloning isn't supported cp falls back to a normal copy by itself.
+# /bin/cp -c: APFS clones.  Take NO extra space on the same disk and finish
+# instantly; on another disk (or one that can't clone) it is a normal copy.  The
+# source is only read.  Left out: Windows-only plugins and scripts the native port
+# never loads (as the launcher's portable copy, launcher/Portable.swift) and
+# Finder's .DS_Store files.  server.dll and server.cfg stay: hosting a LAN game
+# loads them.
 if [ "$EMBED" = 1 ]; then
-  SRC="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2"
-  [ -f "$SRC/SPEED2.EXE" ] || { echo "game data not found: $SRC"; exit 1; }
+  SRC="${GAME_DIR:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2}"
+  [ -f "$SRC/SPEED2.EXE" ] || [ -f "$SRC/speed2.exe" ] || [ -f "$SRC/Speed2.exe" ] \
+    || { echo "game data not found: $SRC"; exit 1; }
   echo "embedding the game data in the bundle..."
-  cp -Rc "$SRC" "$APP/Contents/Resources/Game"
-  # MOVIES: no VP6 decoder, the game skips them anyway (~249 MB).
-  # dinput8.dll / SCRIPTS / server.*: Windows plugins, not loaded by the native port.
-  rm -rf "$APP/Contents/Resources/Game/MOVIES" "$APP/Contents/Resources/Game/SCRIPTS" \
-         "$APP/Contents/Resources/Game/dinput8.dll" "$APP/Contents/Resources/Game/server.dll" \
-         "$APP/Contents/Resources/Game/server.cfg" "$APP/Contents/Resources/Game/SafeMode.bat"
-  find "$APP/Contents/Resources/Game" -name .DS_Store -delete
+  GAME="$APP/Contents/Resources/Game"
+  mkdir -p "$GAME"
+  for item in "$SRC"/*; do
+    [ -e "$item" ] || [ -L "$item" ] || continue
+    name="$(basename "$item")"
+    case "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" in
+      .*|scripts|dinput8.dll|safemode.bat) continue ;;
+    esac
+    /bin/cp -Rc "$item" "$GAME/$name" 2>/dev/null || { rm -rf "$GAME/$name"; /bin/cp -R "$item" "$GAME/$name"; } \
+      || { echo "could not copy $name into the app"; exit 1; }
+  done
+  find "$GAME" -name .DS_Store -delete
 fi
 
 VER="$(date +%Y.%m.%d)"
 # Version tracking (see link.sh): shows in Finder like "2.0 (2026.10.18)".
 VERSION="$(tr -cd '0-9' < "$ROOT/VERSION" 2>/dev/null)"; VERSION="${VERSION:-0}"
+# Builder version (NFSBuilderVersion) and the copyright line about the game data
+BUILDER_KEY=""
+case "${BUILDER_VERSION:-}" in
+  "") ;;
+  *[!0-9A-Za-z.+-]*) echo "BUILDER_VERSION must be a version like 1.1.0"; exit 1 ;;
+  *) BUILDER_KEY="<key>NFSBuilderVersion</key>       <string>${BUILDER_VERSION}</string>" ;;
+esac
+if [ "$EMBED" = 1 ]; then
+  GAME_NOTE="The game data inside this bundle comes from the player's own copy of the game."
+else
+  GAME_NOTE="The game itself is not included in this bundle."
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -159,6 +186,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key>      <string>11.0</string>
   <key>LSApplicationCategoryType</key>   <string>public.app-category.racing-games</string>
   <key>LSArchitecturePriority</key>      <array><string>arm64</string></array>
+  ${BUILDER_KEY}
   <!-- Retina: without this key the window is drawn at 1x and scaled up
        by WindowServer (blurry image). -->
   <key>NSHighResolutionCapable</key>     <true/>
@@ -175,10 +203,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSLocalNetworkUsageDescription</key>
     <string>To play LAN races with other players on this network.</string>
   <key>NSHumanReadableCopyright</key>
-    <string>x86 -> ARM64 static recompilation port. The game itself is not included in this bundle.</string>
+    <string>x86 -> ARM64 static recompilation port. ${GAME_NOTE}</string>
 </dict>
 </plist>
 PLIST
+
+# Extended attributes from the source tree or the game copy (quarantine, Finder
+# info, resource forks) off before signing: codesign --strict refuses resource
+# forks and Finder info inside a bundle.
+xattr -cr "$APP" 2>/dev/null || true
 
 # --- signature ---
 # If SIGN_ID is given, sign with a real certificate (for those with an Apple
@@ -207,7 +240,7 @@ SZ="$(du -sh "$APP" | cut -f1)"
 echo "ready: $APP  ($SZ)"
 
 if [ "$EMBED" = 1 ]; then
-  echo "personal single-piece app ready (DON'T DISTRIBUTE: it contains the game itself)."
+  echo "the game is inside the app: it can be moved anywhere (it contains the game, so keep it for yourself)."
   echo "saves: ~/Library/Application Support/NFSU2 Saves"
   exit 0
 fi

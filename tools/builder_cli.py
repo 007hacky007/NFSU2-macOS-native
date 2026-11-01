@@ -3,17 +3,19 @@
 
   python3 tools/builder_cli.py setup
       .venv with requirements.txt, for the Python that runs it (the Builder's private one)
-  .venv/bin/python tools/builder_cli.py build --exe SPEED2.EXE --game DIR [--data PATH ...]
-      the same steps as the Terminal build: tools/gen_v2.sh, build.sh, link.sh, pack.sh
-      (README, "Build from Terminal") for the one region SPEED2.EXE belongs to.
-      With --data, DIR is made first: from a game folder (APFS clones) or the two disc
-      images (tools/install_from_discs.py), with SPEED2.EXE put in. Without, DIR is the
-      player's own folder and must already hold a supported SPEED2.EXE. The sources are
-      never written to.
+  .venv/bin/python tools/builder_cli.py build --exe SPEED2.EXE --data PATH [--data PATH] [--version V]
+      the same steps as the Terminal build: tools/gen_v2.sh, build.sh, link.sh, pack.sh --embed
+      (README, "Build from Terminal") for the one region SPEED2.EXE belongs to. The app has
+      the game inside (Contents/Resources/Game). The game data (--data) is a game folder, an
+      NFSU2.app with the game inside (an update), or the two disc images. It is staged in
+      out/game first (APFS clones of a folder, tools/install_from_discs.py for discs) with
+      SPEED2.EXE put in, cloned into the app by pack.sh, and the staging copy is removed.
+      The sources are never written to. --version goes into the app's Info.plist
+      (NFSBuilderVersion).
 
 Every other output line is plain log text. Events: {"step": ID, "title": TEXT} before each
 step (prepare, lift, compile, link, package, sign), {"progress": 0..1} within a step,
-{"done": APP, "game": DIR} at the end, {"error": TEXT} on failure (exit 1).
+{"done": APP} at the end, {"error": TEXT} on failure (exit 1).
 """
 import argparse
 import hashlib
@@ -25,12 +27,13 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = 'NFSU2-EVENT '
-MARKER = '.nfsu2-builder.json'
+# Where the game data is staged while building, and where pack.sh --embed puts the app.
+STAGING = 'out/game'
+APP = 'out/personal/NFSU2.app'
 # The two executables tools/gen_v2.sh accepts (README, "Game versions").
 SUPPORTED = {
     '8f6a9ae2c4cfa01181d2fd755d99c6f4b7103f60273908ea1de1e719dfe2a297': 'eu',
@@ -89,13 +92,24 @@ def setup():
     stamp.write_text(digest)
 
 
-# --- the game folder -----------------------------------------------------------------------
+# --- the game data -------------------------------------------------------------------------
 
 def same_volume(a, b):
     a = Path(a)
     while not a.exists():
         a = a.parent
     return os.stat(a).st_dev == os.stat(b).st_dev
+
+
+def game_source(path):
+    """The game folder inside an NFSU2.app (Contents/Resources/Game), or `path` itself."""
+    path = Path(path)
+    if path.suffix.lower() == '.app':
+        inner = path / 'Contents/Resources/Game'
+        if not inner.is_dir():
+            raise BuildError(f'{path.name} has no game inside it; choose your game folder or the discs')
+        return inner
+    return path
 
 
 def copy_tree(source, target):
@@ -109,70 +123,46 @@ def copy_tree(source, target):
         result = subprocess.run(['/bin/cp', *flags, '-R', str(src), str(target / name)],
                                 capture_output=True, text=True)
         if result.returncode and flags:
+            shutil.rmtree(target / name, ignore_errors=True)
             result = subprocess.run(['/bin/cp', '-R', str(src), str(target / name)], capture_output=True, text=True)
         if result.returncode:
-            raise BuildError(f'could not copy {name} from the game folder: {result.stderr.strip()}')
+            raise BuildError(f'could not copy {name} from the game data: {result.stderr.strip()}')
 
 
 def remove_quarantine(path):
     """Only for what the Builder verified or produced itself: the SPEED2.EXE that matched a
-    supported checksum and the built NFSU2.app. Copied game data keeps its attributes (the
-    game only reads it, and quarantine does not stop reading)."""
+    supported checksum and the built NFSU2.app."""
     subprocess.run(['/usr/bin/xattr', '-dr', 'com.apple.quarantine', str(path)], capture_output=True)
 
 
-def prepare_game(game, exe, data):
-    """Makes `game` from `data` with `exe` as SPEED2.EXE, or reuses an identical earlier one."""
+def stage_game(staging, exe, data):
+    """Makes `staging` from `data` (a game folder, an NFSU2.app or the discs) with `exe` as
+    its SPEED2.EXE. The data is only read; `staging` is made anew."""
     exe_sha = sha256(exe)
-    record = {'sources': [str(Path(p).resolve()) for p in data], 'exe_sha256': exe_sha, 'version': 1}
-    marker = game / MARKER
-    if game.exists():
-        if not marker.is_file():
-            if any(not n.startswith('.') for n in os.listdir(game)):
-                raise BuildError(f'{game} already exists and was not made by NFSU2 Builder. '
-                                 'Choose another place for the game folder.')
-        else:
-            try:
-                saved = json.loads(marker.read_text())
-            except ValueError:
-                saved = {}
-            current = find_exe(game)
-            if saved == record and current and sha256(current) == exe_sha:
-                print(f'Reusing the game folder made earlier: {game}', flush=True)
-                return
-    parent = game.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    work = parent / f'.{game.name}.tmp-{uuid.uuid4().hex}'
-    try:
-        if len(data) == 1 and Path(data[0]).is_dir() and not any(
-                n.lower() == 'compressed.zip' for n in os.listdir(data[0])):
-            print(f'Copying the game folder (APFS clones where possible): {data[0]}', flush=True)
-            copy_tree(Path(data[0]), work)
-        else:
-            print('Unpacking the discs with tools/install_from_discs.py', flush=True)
-            work.mkdir()
-            subprocess.run([sys.executable, str(ROOT / 'tools/install_from_discs.py'), str(work), *map(str, data)],
-                           check=True)
-            emit({'progress': 0.9})
-        old = find_exe(work)
-        if old:
-            old.unlink()
-        shutil.copyfile(exe, work / 'SPEED2.EXE')
-        if sha256(work / 'SPEED2.EXE') != exe_sha:
-            raise BuildError('SPEED2.EXE did not copy correctly')
-        remove_quarantine(work / 'SPEED2.EXE')   # verified against the supported checksums
-        (work / MARKER).write_text(json.dumps(record, indent=2) + '\n')
-        trash = None
-        if game.exists():
-            trash = parent / f'.{game.name}.trash-{uuid.uuid4().hex}'
-            game.rename(trash)
-        work.rename(game)
-        if trash:
-            shutil.rmtree(trash, ignore_errors=True)
-        print(f'Game folder ready: {game}', flush=True)
-    finally:
-        if work.exists():
-            shutil.rmtree(work, ignore_errors=True)
+    if staging.is_dir() and not staging.is_symlink():
+        shutil.rmtree(staging)
+    elif staging.exists() or staging.is_symlink():
+        staging.unlink()
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    sources = [game_source(p) for p in data]
+    if len(sources) == 1 and sources[0].is_dir() and not any(
+            n.lower() == 'compressed.zip' for n in os.listdir(sources[0])):
+        print(f'Copying the game data (APFS clones where possible): {sources[0]}', flush=True)
+        copy_tree(sources[0], staging)
+    else:
+        print('Unpacking the discs with tools/install_from_discs.py', flush=True)
+        staging.mkdir()
+        subprocess.run([sys.executable, str(ROOT / 'tools/install_from_discs.py'), str(staging), *map(str, sources)],
+                       check=True)
+        emit({'progress': 0.9})
+    old = find_exe(staging)
+    if old:
+        old.unlink()
+    shutil.copyfile(exe, staging / 'SPEED2.EXE')
+    if sha256(staging / 'SPEED2.EXE') != exe_sha:
+        raise BuildError('SPEED2.EXE did not copy correctly')
+    remove_quarantine(staging / 'SPEED2.EXE')   # verified against the supported checksums
+    print(f'Game data ready: {staging}', flush=True)
 
 
 # --- running the scripts -------------------------------------------------------------------
@@ -212,45 +202,53 @@ def run(command, env=None, progress=None):
 
 
 def build(args):
-    exe, game = Path(args.exe).resolve(), Path(args.game).expanduser().absolute()
+    exe = Path(args.exe).resolve()
     if not exe.is_file():
         raise BuildError('the chosen SPEED2.EXE is no longer there; choose it again')
-    region = SUPPORTED.get(sha256(exe))
+    exe_sha = sha256(exe)
+    region = SUPPORTED.get(exe_sha)
     if not region:
         raise BuildError('this SPEED2.EXE is not one of the two supported versions')
+    if args.version and not all(c.isalnum() or c in '.+-' for c in args.version):
+        raise BuildError('the Builder version is not a version number')
     if not shutil.which('clang') or not shutil.which('swiftc'):
         raise BuildError('the Xcode command line tools are missing; install them and try again')
+    data = [Path(p).expanduser().absolute() for p in args.data]
+    missing = [p for p in data if not p.exists()]
+    if missing:
+        raise BuildError(f'{missing[0].name} is no longer there; choose your game data again')
 
-    step('prepare', 'Preparing the game folder')
-    if args.data:
-        prepare_game(game, exe, [Path(p) for p in args.data])
-    else:
-        current = find_exe(game) if game.is_dir() else None
-        if not current or SUPPORTED.get(sha256(current)) != region:
-            raise BuildError('the game folder no longer holds the supported SPEED2.EXE; choose it again')
-        print(f'Using your game folder as it is: {game}', flush=True)
-    game_exe = find_exe(game)
-    env = {'BUILD': region}
-    gen, obj = ('gen/all', 'out/obj') if region == 'eu' else ('gen/na', 'out/obj_na')
+    staging = ROOT / STAGING
+    try:
+        step('prepare', 'Preparing the game data')
+        stage_game(staging, exe, data)
+        game_exe = staging / 'SPEED2.EXE'
+        env = {'BUILD': region}
+        gen, obj = ('gen/all', 'out/obj') if region == 'eu' else ('gen/na', 'out/obj_na')
 
-    step('lift', 'Translating SPEED2.EXE to C (tools/gen_v2.sh)')
-    started = time.time()
-    run(['tools/gen_v2.sh', str(game_exe)], env,
-        progress=lambda: count_new(ROOT / gen, 'shard_*.c', started) / 136)
+        step('lift', 'Translating SPEED2.EXE to C (tools/gen_v2.sh)')
+        started = time.time()
+        run(['tools/gen_v2.sh', str(game_exe)], env,
+            progress=lambda: count_new(ROOT / gen, 'shard_*.c', started) / 136)
 
-    step('compile', 'Compiling the translated code (build.sh)')
-    started = time.time()
-    shards = max(1, len(list((ROOT / gen).glob('shard_*.c'))) + 2)
-    run(['./build.sh'], env, progress=lambda: count_new(ROOT / obj, '*.o', started) / shards)
+        step('compile', 'Compiling the translated code (build.sh)')
+        started = time.time()
+        shards = max(1, len(list((ROOT / gen).glob('shard_*.c'))) + 2)
+        run(['./build.sh'], env, progress=lambda: count_new(ROOT / obj, '*.o', started) / shards)
 
-    step('link', 'Building the original and HD engines (link.sh)')
-    run(['./link.sh'], env)
+        step('link', 'Building the original and HD engines (link.sh)')
+        run(['./link.sh'], env)
 
-    step('package', 'Building the launcher and the app (pack.sh)')
-    run(['./pack.sh', '--region', region], {'ICON_EXE': str(game_exe)})
+        step('package', 'Building the launcher and the app with the game inside (pack.sh)')
+        run(['./pack.sh', '--region', region, '--embed'],
+            {'ICON_EXE': str(game_exe), 'GAME_DIR': str(staging), 'BUILDER_VERSION': args.version or ''})
+    finally:
+        # The app holds its own clones now; the staging copy goes in every case (also on Cancel).
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
     step('sign', 'Checking the signature')
-    app = ROOT / 'out/NFSU2.app'
+    app = ROOT / APP
     macos = app / 'Contents/MacOS'
     engines = ['nfsu2-engine', 'nfsu2-engine-hd'] if region == 'eu' else ['nfsu2-engine-na', 'nfsu2-engine-na-hd']
     missing = [e for e in engines if not (macos / e).is_file()]
@@ -261,13 +259,16 @@ def build(args):
         raise BuildError("the launcher did not compile with this Mac's Swift. Install the latest "
                          'Command Line Tools in System Settings > General > Software Update and try '
                          'again. If it still fails, report it with Copy log.')
+    inside = find_exe(app / 'Contents/Resources/Game') if (app / 'Contents/Resources/Game').is_dir() else None
+    if not inside or sha256(inside) != exe_sha:
+        raise BuildError('the game did not go into the app completely')
     remove_quarantine(app)
     result = subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)],
                             capture_output=True, text=True)
     if result.returncode:
         raise BuildError('the app signature does not verify: ' + result.stderr.strip())
-    print(f'\nReady: {app}\nGame folder: {game}', flush=True)
-    emit({'done': str(app), 'game': str(game)})
+    print(f'\nReady: {app} (the game is inside it)', flush=True)
+    emit({'done': str(app)})
 
 
 def main(argv=None):
@@ -275,10 +276,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('setup', help='create .venv and install requirements.txt')
-    b = commands.add_parser('build', help='build out/NFSU2.app')
+    b = commands.add_parser('build', help='build out/personal/NFSU2.app with the game inside')
     b.add_argument('--exe', required=True, help='a supported SPEED2.EXE')
-    b.add_argument('--game', required=True, help='the game folder the launcher will use')
-    b.add_argument('--data', action='append', help='make --game from this folder or disc image (twice for two discs)')
+    b.add_argument('--data', action='append', required=True,
+                   help='the game folder, an NFSU2.app with the game inside, or a disc image (twice for two discs)')
+    b.add_argument('--version', default='', help='the Builder version, for the app\'s Info.plist')
     args = parser.parse_args(argv)
     try:
         if args.command == 'setup':

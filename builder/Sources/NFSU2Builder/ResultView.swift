@@ -46,13 +46,11 @@ struct ResultView: View {
             Text("Ready").font(.title).fontWeight(.semibold)
             Text("NFSU2.app is in \(abbreviated(app.deletingLastPathComponent())).")
                 .foregroundColor(.secondary)
-            if let game = model.builtGameFolder {
-                Text("It plays the game in \(abbreviated(game)). Your saves and settings are kept outside the app.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text("The game is inside the app, so you can move it anywhere. Your saves and settings are kept outside the app.")
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([app]) }
                 Button("Play") { NSWorkspace.shared.open(app) }

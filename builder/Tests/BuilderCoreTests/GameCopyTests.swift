@@ -60,7 +60,7 @@ final class GameCopyTests: XCTestCase {
 
     // MARK: - Game data: folders
 
-    func testFolderWithSupportedProgramIsGreenAndUsedAsIs() throws {
+    func testFolderWithSupportedProgramIsGreenAndProvidesTheProgram() throws {
         let game = try makeGameFolder("Game", exe: supportedEU)
         let report = checker.check([game])
         XCTAssertEqual(report.kind, .folder)
@@ -68,7 +68,28 @@ final class GameCopyTests: XCTestCase {
         XCTAssertEqual(report.state, .ready("Game folder, matches the European test release release"))
         XCTAssertEqual(report.program, .supported(.eu, name: "European v1.2, no CD check"))
         XCTAssertEqual(report.server, "v1.0")
-        XCTAssertTrue(report.usableAsIs)
+        XCTAssertTrue(report.providesProgram)
+        XCTAssertEqual(report.bytes, Int64(files.values.reduce(0) { $0 + $1.utf8.count } + supportedEU.count + server10.count))
+    }
+
+    /// An NFSU2.app with the game inside (the update path) is checked like a folder: its
+    /// Contents/Resources/Game is the data and its SPEED2.EXE the program. Nothing is written.
+    func testInstalledAppWithTheGameInsideIsAGameSource() throws {
+        let app = tmp.appendingPathComponent("Applications/NFSU2.app")
+        let game = try makeGameFolder("Applications/NFSU2.app/Contents/Resources/Game", exe: supportedEU)
+        try write("plist", to: app.appendingPathComponent("Contents/Info.plist"))
+        let before = try snapshot(app)
+        let report = checker.check([app])
+        XCTAssertEqual(report.kind, .app)
+        XCTAssertEqual(report.sources.map { $0.standardizedFileURL.path }, [game.standardizedFileURL.path])
+        XCTAssertNil(report.blocking)
+        XCTAssertEqual(report.state, .ready("Uses the game inside your current NFSU2.app, matches the European test release release"))
+        XCTAssertTrue(report.providesProgram)
+        XCTAssertEqual(try snapshot(app), before, "the app is only read")
+
+        let empty = tmp.appendingPathComponent("Old/NFSU2.app")
+        try write("plist", to: empty.appendingPathComponent("Contents/Info.plist"))
+        XCTAssertEqual(checker.check([empty]).blocking, GameDataMessages.appWithoutGame)
     }
 
     func testParentFolderFindsTheGameInside() throws {
@@ -114,7 +135,7 @@ final class GameCopyTests: XCTestCase {
         let report = checker.check([game])
         XCTAssertEqual(report.blocking, GameDataMessages.coreMissing(["GLOBAL/GLOBALB.LZC"]))
         XCTAssertEqual(report.blocking, "This is not a complete NFSU2 game copy: GLOBAL/GLOBALB.LZC missing. Choose the folder that holds SPEED2.EXE and the GLOBAL, CARS and TRACKS folders, or the two disc images.")
-        XCTAssertFalse(report.usableAsIs)
+        XCTAssertFalse(report.providesProgram)
         let empty = tmp.appendingPathComponent("Empty")
         try fm.createDirectory(at: empty, withIntermediateDirectories: true)
         XCTAssertEqual(checker.check([empty]).blocking,
@@ -134,7 +155,7 @@ final class GameCopyTests: XCTestCase {
         let disc = checker.check([try makeGameFolder("Disc", exe: discExe)])
         XCTAssertEqual(disc.program, .refused(ProgramMessages.disc))
         XCTAssertEqual(ProgramMessages.disc, "This is the copy-protected disc version. The build needs v1.2 without the CD check.")
-        XCTAssertFalse(disc.usableAsIs)
+        XCTAssertFalse(disc.providesProgram)
         XCTAssertNil(disc.blocking)
         let patched = checker.check([try makeGameFolder("Patched", exe: patchExe)])
         XCTAssertEqual(patched.program, .refused(ProgramMessages.officialPatch))
@@ -330,6 +351,17 @@ final class GameCopyTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    /// Every path under `root` with its size, contents digest and modification date.
+    private func snapshot(_ root: URL) throws -> [String: String] {
+        var out: [String: String] = [:]
+        for case let url as URL in fm.enumerator(at: root, includingPropertiesForKeys: nil)! {
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            let data = (attributes[.type] as? FileAttributeType) == .typeRegular ? try Data(contentsOf: url) : Data()
+            out[url.path] = "\(attributes[.size] ?? 0) \(sha(data)) \(attributes[.modificationDate] ?? "")"
+        }
+        return out
+    }
 
     private func sha(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 

@@ -60,7 +60,7 @@ Facts this design rests on (verified 2026-11-01 on the EU discs, EA's UK v1.2 pa
 
 ### Step 1: game data
 
-**Choose...** (and drag and drop) accepts a game folder, or the two disc images (`.iso`, `.cue` + `.bin`, or disc folders).
+**Choose...** (and drag and drop) accepts a game folder, the two disc images (`.iso`, `.cue` + `.bin`, or disc folders), or an `NFSU2.app` with the game inside (an update, below).
 
 - **Blocking (red):** only what the build and the first start need: the core files the game loads at startup, checked by name. The builder derives the exact list from what the game opens on boot (the file-access log of a boot run is one way).
 - **Checked, never blocking:** every other file is compared with the known releases (a manifest of path, size and SHA-256 per known release, committed in the repo; the EU disc set, the EU v1.2 set and the NA set at least). Files that match are green. Files that differ or are unknown (another language, a repack, mods) give an amber note, for example: "This copy has 12 files that differ from the releases we know (another language or mods). It should work; if something looks wrong, report it with Copy details." Extra files are ignored.
@@ -73,19 +73,27 @@ Facts this design rests on (verified 2026-11-01 on the EU discs, EA's UK v1.2 pa
 - A file that matches neither checksum is refused with what it is, when known (disc version, official patch, unknown).
 - **Which copy works?** lists the two accepted executables with size and SHA-256, and says the data can come from the discs of either region.
 
-### The prepared game folder (my call)
+### The game inside the app
 
-The launcher in `NFSU2.app` needs a game folder whose `SPEED2.EXE` is a supported one (`Prefs.gameFolder`, key `OyunDizini`).
+`NFSU2.app` carries the whole game, like the owner's other ports (NFSV, NFSMW, NFSIV): `Contents/Resources/Game` holds the verified data plus the supported `SPEED2.EXE` (about 1.8 GB). The app needs no game folder and can be moved anywhere; the launcher finds the game inside it first (`Paths.embeddedGame`).
 
-- If the chosen folder already holds a supported `SPEED2.EXE`, it is used as it is, and nothing is copied.
-- Otherwise (disc images, or a folder with another executable) the Builder makes a game folder of its own, by default `~/Games/NFSU2` (**Change...** in the Destination row). Files are APFS-cloned from a source folder when on the same volume, and unpacked from disc images with `install_from_discs.py`. The chosen `SPEED2.EXE` goes in. The player's own copy is never written to.
-- After a successful build the Builder sets the launcher's game folder to that folder, so the first start goes straight to the launcher window.
+- `tools/builder_cli.py` stages the data in the workspace (`out/game`): APFS clones of a folder on the same volume (a copy from another volume), or the discs unpacked with `install_from_discs.py`, with the chosen `SPEED2.EXE` put in. `pack.sh --embed` (with `GAME_DIR`) clones the staged tree into the app, and the staging copy is removed. Windows-only items (`SCRIPTS`, `dinput8.dll`, `SafeMode.bat`) and Finder files stay out; `MOVIES` and `server.dll` go in.
+- The player's own copy is never written to. The Builder writes no launcher setting (no `OyunDizini`) and makes no `~/Games/NFSU2`.
+- On the same disk the game costs no extra space (clones). Unpacked discs, a folder on another disk, or a destination on another disk count against the free-space check.
+- Nothing may be written inside the app (it would break the ad-hoc signature): the engine writes only to its save layer (`~/Library/Application Support/NFSU2 Saves`), and the launcher makes language packs for a game inside the app in `~/Library/Application Support/NFSU2/LanguagePacks`, passed to the engine as `NFSU2_LANGPACKS`. With the game inside, the launcher offers no game folder to change.
+
+### Updates
+
+- The Builder writes its version into the app's `Info.plist` as `NFSBuilderVersion` (the same key in all four ports).
+- On start the Builder looks for an `NFSU2.app` in the saved destination, else `/Applications`. If the game inside it passes the usual checks, it is preselected as the game data (and its `SPEED2.EXE` as the program); the row says it uses the game inside the current app, and the button reads **Update NFSU2.app (old -> new)**. If the game inside is missing or changed, the row falls back to the player's own choice with a short note. Everything the pipeline needs (`SPEED2.EXE` and `server.dll`) is in the bundled tree, so no original copy is asked for.
+- The old app is only read. The new app is built completely in the workspace (its game cloned from the old one) and only then swapped in; on the same volume it is moved next to the old app and swapped in one step. If the old app is running, the Builder asks to quit it first.
+- The launcher of a stamped app asks GitHub once a day (Settings > More > **Check for updates**, on by default; off makes no request) for the latest release, with User-Agent `NFSU2-Launcher`, 5 s at most, silently on failure. A newer Builder shows a notice with **What's new**, **Download** (the DMG's address in the browser) and **Not now** (hidden until a newer version).
 
 ## The Builder app
 
 ### Window
 
-Same single-window checklist as NFSV (layout A), same status lights (green ready, amber handled or informational, red blocking, grey checking), same **Build NFSU2.app** button enabled only when nothing is red.
+Same single-window checklist as NFSV (layout A), same status lights (green ready, amber handled or informational, red blocking, grey checking), same **Build NFSU2.app** button (**Update NFSU2.app** when one is replaced) enabled only when nothing is red.
 
 | Row | Green when | Not green | Button |
 |---|---|---|---|
@@ -94,16 +102,16 @@ Same single-window checklist as NFSV (layout A), same status lights (green ready
 | Build tools (Python) | private Python + `requirements.txt` packages | Red with the download size | **Install** |
 | Game data | step 1 passed | Red until chosen or when blocking files are missing; amber notes | **Choose...** |
 | Game program | step 2 passed (or step 1 provided it) | Red until chosen | **Choose...**, **Which copy works?** |
-| Destination | `/Applications` (or the chosen folder) writable, and the game folder location writable when one is made | Red if not writable | **Change...** |
-| Free disk space | enough on the workspace volume | Red with how much is needed | none |
+| Destination | `/Applications` (or the chosen folder) writable: only where `NFSU2.app` goes | Red if not writable | **Change...** |
+| Free disk space | enough on the workspace volume (and the destination's, when another one), counting the game where it cannot be cloned | Red with how much is needed | none |
 
 ### Building
 
-Pressing **Build NFSU2.app** shows the progress view (as NFSV): prepare the game folder, lift (`tools/gen_v2.sh`), compile and link the original and HD engines (`build.sh`, `link.sh`), build the launcher and pack (`pack.sh`), sign. Only the engines for the player's executable are built (EU or NA, original and HD). Structured progress from the scripts, not scraped text; **Cancel** stops cleanly. The builder measures the real build time on an M1 Pro and puts it in the UI and README.
+Pressing **Build NFSU2.app** shows the progress view (as NFSV): stage the game data, lift (`tools/gen_v2.sh`), compile and link the original and HD engines (`build.sh`, `link.sh`), build the launcher and pack (`pack.sh`), sign. Only the engines for the player's executable are built (EU or NA, original and HD). Structured progress from the scripts, not scraped text; **Cancel** stops cleanly. The builder measures the real build time on an M1 Pro and puts it in the UI and README.
 
 ### When it finishes
 
-As NFSV: `NFSU2.app` in the destination (an older one is replaced; if it is running, ask the player to quit it first), **Play**, **Show in Finder**, **Remove build files** (keeps the private Python). Failure: the step in plain words, the log, **Copy log**, **Try again**.
+As NFSV: `NFSU2.app` in the destination (an older one is replaced once the new one is complete; if it is running, ask the player to quit it first), with the text that the game is inside the app and the app can be moved anywhere, **Play**, **Show in Finder**, **Remove build files** (keeps the private Python). Failure: the step in plain words, the log, **Copy log**, **Try again**.
 
 Saves and settings are outside the app (`~/Library/Application Support/NFSU2 Saves`, `~/.nfsu2_registry`), so replacing the app keeps the player's progress.
 
@@ -134,7 +142,7 @@ Native macOS look, light and dark. App icon as NFSV's (bright blue gradient, whi
 
 ## Open risks to verify early
 
-The NFSV list applies unchanged: Open Anyway from a mounted DMG, quarantine on files the Builder writes (the private Python, the workspace, the built app and the game folder), App Translocation, writing to `/Applications` without admin rights. Also:
+The NFSV list applies unchanged: Open Anyway from a mounted DMG, quarantine on files the Builder writes (the private Python, the workspace and the built app), App Translocation, writing to `/Applications` without admin rights. Also:
 
 - `swiftc` from the command line tools must build the launcher (it does today with `pack.sh`).
 - The v1.0 `FrontB.lzc` and v1.0 `server.dll` with a v1.2 executable: menus, a race and one LAN host-and-leave cycle, on EU and NA. If something breaks, the data step turns that file's note into a clear warning.

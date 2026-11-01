@@ -6,7 +6,7 @@ import BuilderCore
 /// with ":". NFSU2_E2E_PROGRAM is the SPEED2.EXE (or an archive) when the data has none;
 /// NFSU2_E2E_SOURCES an assembled app's Contents/Resources/BuildSources instead of the repo.
 /// Downloads the private Python and the packages, so it needs the network. The game copy is
-/// only read; a game folder is made in a temporary folder when the data needs one.
+/// only read; the built app has the game inside it.
 final class EndToEndTests: XCTestCase {
     private let fm = FileManager.default
     private let version = "0.0.0-e2e"
@@ -30,7 +30,7 @@ final class EndToEndTests: XCTestCase {
         XCTAssertNil(report.blocking, report.detailsText)
         mark("data checked: \(report.state)")
         var program = paths.program
-        if report.usableAsIs {
+        if report.providesProgram {
             program = try XCTUnwrap(try fm.contentsOfDirectory(at: report.sources[0], includingPropertiesForKeys: nil)
                 .first { $0.lastPathComponent.lowercased() == "speed2.exe" })
         } else {
@@ -39,7 +39,6 @@ final class EndToEndTests: XCTestCase {
             XCTAssertTrue(verdict.isSupported, "\(verdict)")
             mark("program checked: \(verdict)")
         }
-        let game = report.usableAsIs ? report.sources[0] : tmp.appendingPathComponent("Games/NFSU2")
 
         try prepareWorkspace(sources: sources, destination: paths.workspace(version: version), version: version)
         mark("workspace prepared")
@@ -67,8 +66,7 @@ final class EndToEndTests: XCTestCase {
         XCTAssertEqual(buildToolsCheck(paths: paths, version: version), .ready("Installed"))
         mark("setup done")
 
-        let runner = { PipelineRunner.build(paths: paths, version: self.version, program: program, game: game,
-                                            data: report.usableAsIs ? nil : report.sources) }
+        let runner = { PipelineRunner.build(paths: paths, version: self.version, program: program, data: report.sources) }
         // First build: cancel once compiling has started, then nothing from that run may survive.
         let workspace = paths.workspace(version: version).path
         var group: pid_t = 0
@@ -104,12 +102,12 @@ final class EndToEndTests: XCTestCase {
         let full = try run(runner(), timeout: 3600)
         XCTAssertEqual(full.status, 0, full.lines.suffix(40).joined(separator: "\n"))
         XCTAssertFalse(full.events.contains { if case .error = $0 { return true } else { return false } })
-        let done = full.events.compactMap { event -> (URL, URL)? in
-            if case let .done(app, game) = event { return (app, game) }
+        let done = full.events.compactMap { event -> URL? in
+            if case let .done(app) = event { return app }
             return nil
         }
         let built = try XCTUnwrap(done.first)
-        XCTAssertEqual(built.1.standardizedFileURL, game.standardizedFileURL)
+        XCTAssertNotNil(InstalledApp(built)?.game, "the game is inside the app")
         let steps = full.events.compactMap { event -> String? in
             if case let .step(id, _) = event { return id }
             return nil
@@ -119,7 +117,7 @@ final class EndToEndTests: XCTestCase {
 
         let destination = tmp.appendingPathComponent("Applications")
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-        let app = try installApp(built.0, into: destination, isRunning: { false })
+        let app = try installApp(built, into: destination, isRunning: { false })
         XCTAssertEqual(app.lastPathComponent, "NFSU2.app")
         let verify = SystemCommandRunner().run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
         XCTAssertEqual(verify.status, 0, verify.output)

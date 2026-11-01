@@ -275,11 +275,11 @@ final class PipelineRunnerTests: XCTestCase {
         let discs = [URL(fileURLWithPath: "/Volumes/D/Disc 1.cue"), URL(fileURLWithPath: "/Volumes/D/Disc 2.iso")]
         let expected: [(PipelineRunner, URL, [String])] = [
             (.setup(paths: paths, version: "1.2.0"), paths.pythonExecutable, ["tools/builder_cli.py", "setup"]),
-            (.build(paths: paths, version: "1.2.0", program: exe, game: game, data: nil), venv,
-             ["tools/builder_cli.py", "build", "--exe", exe.path, "--game", game.path]),
-            (.build(paths: paths, version: "1.2.0", program: paths.program, game: game, data: discs), venv,
-             ["tools/builder_cli.py", "build", "--exe", paths.program.path, "--game", game.path,
-              "--data", discs[0].path, "--data", discs[1].path]),
+            (.build(paths: paths, version: "1.2.0", program: exe, data: [game]), venv,
+             ["tools/builder_cli.py", "build", "--exe", exe.path, "--data", game.path, "--version", "1.2.0"]),
+            (.build(paths: paths, version: "1.2.0", program: paths.program, data: discs), venv,
+             ["tools/builder_cli.py", "build", "--exe", paths.program.path,
+              "--data", discs[0].path, "--data", discs[1].path, "--version", "1.2.0"]),
         ]
         for (runner, executable, arguments) in expected {
             XCTAssertEqual(runner.executable, executable)

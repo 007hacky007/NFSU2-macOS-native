@@ -14,7 +14,7 @@ struct ChecklistView: View {
                 if id != CheckID.allCases.last { Divider() }
             }
             Button(action: model.build) {
-                Text("Build NFSU2.app")
+                Text(model.buildTitle)
                     .fontWeight(.semibold)
                     .frame(maxWidth: .infinity)
             }
@@ -51,10 +51,6 @@ struct ChecklistView: View {
             if model.programFromData { return state?.isReady == true ? [] : [which] }
             return [which, RowButton(label: "Choose...", action: chooseProgram)]
         case (.destination, _):
-            if model.makesGameFolder {
-                return [RowButton(label: "Change...", menu: [("Where NFSU2.app goes...", chooseDestination),
-                                                             ("Where the game folder goes...", chooseGameFolder)])]
-            }
             return [RowButton(label: "Change...", action: chooseDestination)]
         default:
             return []
@@ -63,12 +59,12 @@ struct ChecklistView: View {
 
     private func chooseData() {
         let panel = NSOpenPanel()
-        panel.message = "Choose your game folder, or both disc images (.iso, .cue or disc folders) at once"
+        panel.message = "Choose your game folder, both disc images (.iso, .cue or disc folders) at once, or an NFSU2.app with the game inside"
         panel.prompt = "Choose"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = ["iso", "bin", "cue"].compactMap { UTType(filenameExtension: $0) } + [.folder]
+        panel.allowedContentTypes = ["iso", "bin", "cue"].compactMap { UTType(filenameExtension: $0) } + [.folder, .applicationBundle]
         if let current = model.dataChoice.first { panel.directoryURL = current.deletingLastPathComponent() }
         if panel.runModal() == .OK, !panel.urls.isEmpty { model.setData(panel.urls) }
     }
@@ -95,18 +91,6 @@ struct ChecklistView: View {
         panel.allowsMultipleSelection = false
         panel.directoryURL = model.destination
         if panel.runModal() == .OK, let url = panel.url { model.setDestination(url) }
-    }
-
-    private func chooseGameFolder() {
-        let panel = NSOpenPanel()
-        panel.message = "Choose where the Builder makes the NFSU2 game folder (your own copy is never changed)"
-        panel.prompt = "Choose"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = model.gameFolder.deletingLastPathComponent()
-        if panel.runModal() == .OK, let url = panel.url { model.setGameFolder(url) }
     }
 
     private func drop(_ providers: [NSItemProvider]) -> Bool {

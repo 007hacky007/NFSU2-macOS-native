@@ -65,12 +65,13 @@ public final class PipelineRunner {
                        workingDirectory: paths.workspace(version: version), environment: pipelineEnvironment())
     }
 
-    /// Builds NFSU2.app. With `data`, the game folder `game` is made from it first (a cloned
-    /// folder or the unpacked discs) with `program` as its SPEED2.EXE; without, `game` is the
-    /// player's folder and already holds a supported SPEED2.EXE.
-    public static func build(paths: BuilderPaths, version: String, program: URL, game: URL, data: [URL]?) -> PipelineRunner {
-        var arguments = ["tools/builder_cli.py", "build", "--exe", program.path, "--game", game.path]
-        for source in data ?? [] { arguments += ["--data", source.path] }
+    /// Builds NFSU2.app with the game inside it: `data` (a game folder, the game folder of an
+    /// NFSU2.app, or the discs) with `program` as its SPEED2.EXE. The data is only read.
+    /// `version` is the Builder's, recorded in the app's Info.plist.
+    public static func build(paths: BuilderPaths, version: String, program: URL, data: [URL]) -> PipelineRunner {
+        var arguments = ["tools/builder_cli.py", "build", "--exe", program.path]
+        for source in data { arguments += ["--data", source.path] }
+        arguments += ["--version", version]
         return PipelineRunner(executable: paths.venvPython(version: version), arguments: arguments,
                               workingDirectory: paths.workspace(version: version), environment: pipelineEnvironment())
     }

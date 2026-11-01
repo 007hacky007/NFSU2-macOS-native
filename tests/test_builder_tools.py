@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -42,6 +43,17 @@ def make_discs(base):
     (two / 'speed2.exe').write_text('disc exe')
     (two / '00000001.TMP').write_text('x')
     return one, two
+
+
+def manifest(folder):
+    """Every entry under `folder` with its type, size, contents, mode and times: what "never
+    written to" means."""
+    out = {}
+    for p in sorted(Path(folder).rglob('*')):
+        st = p.lstat()
+        out[str(p.relative_to(folder))] = (st.st_mode, st.st_size, st.st_mtime_ns, st.st_ino,
+                                           p.read_bytes() if p.is_file() and not p.is_symlink() else None)
+    return out
 
 
 def tree(folder):
@@ -90,49 +102,61 @@ class BuilderCliTests(unittest.TestCase):
         exe = self.tmp / 'SPEED2.EXE'
         exe.write_bytes(b'MZ not the game')
         with mock.patch.object(builder_cli, 'run') as run:
-            status, events = self.run_cli('build', '--exe', str(exe), '--game', str(self.tmp / 'g'))
+            status, events = self.run_cli('build', '--exe', str(exe), '--data', str(self.tmp / 'g'))
         self.assertEqual(status, 1)
         self.assertEqual(events, [{'error': 'this SPEED2.EXE is not one of the two supported versions'}])
         run.assert_not_called()
         self.assertFalse((self.tmp / 'g').exists())
 
     def test_missing_exe(self):
-        status, events = self.run_cli('build', '--exe', str(self.tmp / 'nope.exe'), '--game', str(self.tmp / 'g'))
+        status, events = self.run_cli('build', '--exe', str(self.tmp / 'nope.exe'), '--data', str(self.tmp / 'g'))
         self.assertEqual((status, events[-1]), (1, {'error': 'the chosen SPEED2.EXE is no longer there; choose it again'}))
 
-    def test_prepare_game_from_folder_clones_and_never_writes_the_source(self):
+    def stage(self, data, exe_bytes=b'supported exe'):
+        exe = self.tmp / 'program/SPEED2.EXE'
+        exe.parent.mkdir(exist_ok=True)
+        exe.write_bytes(exe_bytes)
+        staging = self.tmp / 'workspace/out/game'
+        with contextlib.redirect_stdout(io.StringIO()):
+            builder_cli.stage_game(staging, exe, data)
+        return staging
+
+    def test_stage_game_from_folder_clones_and_never_writes_the_source(self):
         source = self.tmp / 'My Game'
         (source / 'GLOBAL').mkdir(parents=True)
         (source / 'GLOBAL/GLOBALB.LZC').write_text('global')
         (source / 'SPEED2.EXE').write_text('disc exe')
         (source / '.DS_Store').write_text('x')
-        before = tree(source)
-        exe = self.tmp / 'program/SPEED2.EXE'
-        exe.parent.mkdir()
-        exe.write_bytes(b'supported exe')
-        game = self.tmp / 'Games/NFSU2'
-        with contextlib.redirect_stdout(io.StringIO()):
-            builder_cli.prepare_game(game, exe, [source])
-        self.assertEqual(tree(source), before)
-        self.assertEqual((game / 'SPEED2.EXE').read_bytes(), b'supported exe')
-        self.assertEqual((game / 'GLOBAL/GLOBALB.LZC').read_text(), 'global')
-        self.assertFalse((game / '.DS_Store').exists())
-        marker = json.loads((game / builder_cli.MARKER).read_text())
-        self.assertEqual(marker['exe_sha256'], hashlib.sha256(b'supported exe').hexdigest())
-        self.assertEqual([p.name for p in game.parent.iterdir()], ['NFSU2'], 'no temporary folders left')
-        # The same inputs again: reused untouched.
-        stamp = (game / 'GLOBAL/GLOBALB.LZC').stat().st_ino
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            builder_cli.prepare_game(game, exe, [source])
-        self.assertIn('Reusing', out.getvalue())
-        self.assertEqual((game / 'GLOBAL/GLOBALB.LZC').stat().st_ino, stamp)
-        # Another program: made again, still only from the source.
-        exe.write_bytes(b'other supported exe')
-        with contextlib.redirect_stdout(io.StringIO()):
-            builder_cli.prepare_game(game, exe, [source])
-        self.assertEqual((game / 'SPEED2.EXE').read_bytes(), b'other supported exe')
-        self.assertEqual(sorted(p.name for p in game.parent.iterdir()), ['NFSU2'])
+        before = manifest(source)
+        staging = self.stage([source])
+        self.assertEqual(manifest(source), before)
+        self.assertEqual((staging / 'SPEED2.EXE').read_bytes(), b'supported exe')
+        self.assertEqual((staging / 'GLOBAL/GLOBALB.LZC').read_text(), 'global')
+        self.assertFalse((staging / '.DS_Store').exists())
+        # Staged anew every time, still only from the source.
+        (staging / 'stale').write_text('x')
+        staging = self.stage([source], b'other supported exe')
+        self.assertEqual((staging / 'SPEED2.EXE').read_bytes(), b'other supported exe')
+        self.assertFalse((staging / 'stale').exists())
+        self.assertEqual(manifest(source), before)
+
+    def test_stage_game_from_an_existing_app(self):
+        """The update path: an NFSU2.app with the game inside is the game data."""
+        app = self.tmp / 'Applications/NFSU2.app'
+        game = app / 'Contents/Resources/Game'
+        (game / 'GLOBAL').mkdir(parents=True)
+        (game / 'GLOBAL/GLOBALB.LZC').write_text('global')
+        (game / 'SPEED2.EXE').write_bytes(b'supported exe')
+        (app / 'Contents/Info.plist').write_text('plist')
+        before = manifest(app)
+        staging = self.stage([app])
+        self.assertEqual(manifest(app), before)
+        self.assertEqual(tree(staging), {'GLOBAL/GLOBALB.LZC': b'global', 'SPEED2.EXE': b'supported exe'})
+        empty = self.tmp / 'Old/NFSU2.app'
+        (empty / 'Contents').mkdir(parents=True)
+        with self.assertRaises(builder_cli.BuildError) as caught:
+            self.stage([empty])
+        self.assertIn('has no game inside it', str(caught.exception))
 
     def test_unverified_files_keep_their_quarantine(self):
         source = self.tmp / 'Downloaded Game'
@@ -143,51 +167,135 @@ class BuilderCliTests(unittest.TestCase):
         flag = '0081;00000000;Browser;'
         for extra in ('GLOBAL/GLOBALB.LZC', 'Tool.app/Contents/MacOS/Tool'):
             subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', flag, str(source / extra)], check=True)
-        exe = self.tmp / 'SPEED2.EXE'
-        exe.write_bytes(b'supported exe')
-        subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', flag, str(exe)], check=True)
-        game = self.tmp / 'Games/NFSU2'
-        with contextlib.redirect_stdout(io.StringIO()):
-            builder_cli.prepare_game(game, exe, [source])
+        staging = self.stage([source])
 
         def quarantine(path):
             return subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)],
                                   capture_output=True, text=True).stdout.strip()
-        self.assertEqual(quarantine(game / 'Tool.app/Contents/MacOS/Tool'), flag)
-        self.assertEqual(quarantine(game / 'GLOBAL/GLOBALB.LZC'), flag)
-        self.assertEqual(quarantine(game / 'SPEED2.EXE'), '', 'only the verified SPEED2.EXE is cleared')
+        self.assertEqual(quarantine(staging / 'Tool.app/Contents/MacOS/Tool'), flag)
+        self.assertEqual(quarantine(staging / 'GLOBAL/GLOBALB.LZC'), flag)
+        self.assertEqual(quarantine(staging / 'SPEED2.EXE'), '', 'only the verified SPEED2.EXE is cleared')
         self.assertEqual(quarantine(source / 'Tool.app/Contents/MacOS/Tool'), flag)
 
-    def test_prepare_game_refuses_a_folder_it_did_not_make(self):
-        game = self.tmp / 'Games/NFSU2'
-        game.mkdir(parents=True)
-        (game / 'save.dat').write_text('mine')
-        exe = self.tmp / 'SPEED2.EXE'
-        exe.write_bytes(b'x')
-        source = self.tmp / 'src'
-        source.mkdir()
-        with self.assertRaises(builder_cli.BuildError) as caught:
-            builder_cli.prepare_game(game, exe, [source])
-        self.assertIn('was not made by NFSU2 Builder', str(caught.exception))
-        self.assertEqual((game / 'save.dat').read_text(), 'mine')
-
-    def test_prepare_game_from_discs(self):
+    def test_stage_game_from_discs(self):
         one, two = make_discs(self.tmp)
-        before = tree(one), tree(two)
-        exe = self.tmp / 'SPEED2.EXE'
-        exe.write_bytes(b'supported exe')
-        game = self.tmp / 'Games/NFSU2'
-        with contextlib.redirect_stdout(io.StringIO()):
-            builder_cli.prepare_game(game, exe, [one, two])
-        self.assertEqual((tree(one), tree(two)), before)
-        self.assertEqual(set(tree(game)), {'TRACKS/TRACKMAP4014.bin', 'GLOBAL/GLOBALB.LZC', 'server.dll',
-                                           'MOVIES/intro.vp6', 'SPEED2.EXE'})
-        self.assertEqual((game / 'SPEED2.EXE').read_bytes(), b'supported exe')
+        before = manifest(one), manifest(two)
+        staging = self.stage([one, two])
+        self.assertEqual((manifest(one), manifest(two)), before)
+        self.assertEqual(set(tree(staging)), {'TRACKS/TRACKMAP4014.bin', 'GLOBAL/GLOBALB.LZC', 'server.dll',
+                                              'MOVIES/intro.vp6', 'SPEED2.EXE'})
+        self.assertEqual((staging / 'SPEED2.EXE').read_bytes(), b'supported exe')
 
     def test_supported_list_matches_gen_v2(self):
         gen = (ROOT / 'tools/gen_v2.sh').read_text()
         for sha in builder_cli.SUPPORTED:
             self.assertIn(sha, gen)
+
+
+class EmbeddedBuildTests(unittest.TestCase):
+    """builder_cli.py build through the real pack.sh --embed in a made-up workspace: the
+    engines and the launcher are copies of /usr/bin/true, the lift, compile and link steps are
+    skipped. Checks what the app gets and that the game data is only read."""
+
+    EXE = b'MZ a supported test SPEED2.EXE'
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='nfsu2 embed '))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = self.tmp / 'workspace'
+        (self.root / 'out').mkdir(parents=True)
+        (self.root / 'launcher').mkdir()
+        shutil.copy(ROOT / 'pack.sh', self.root / 'pack.sh')
+        shutil.copy(ROOT / 'VERSION', self.root / 'VERSION')
+        shutil.copy(ROOT / 'launcher/texture-packs.json', self.root / 'launcher/texture-packs.json')
+        for name in ('nfsu2_boot', 'nfsu2_hd_boot', 'nfsu2_launcher'):
+            shutil.copy('/usr/bin/true', self.root / 'out' / name)
+
+    def game_folder(self, folder):
+        (folder / 'GLOBAL').mkdir(parents=True)
+        (folder / 'GLOBAL/GLOBALB.LZC').write_text('global')
+        (folder / 'MOVIES').mkdir()
+        (folder / 'MOVIES/intro.vp6').write_text('movie')
+        (folder / 'server.dll').write_text('server')
+        (folder / 'SCRIPTS').mkdir()
+        (folder / 'SCRIPTS/mod.asi').write_text('windows plugin')
+        (folder / 'dinput8.dll').write_text('windows plugin')
+        (folder / '.DS_Store').write_text('finder')
+        return folder
+
+    def build(self, exe, *data, version='1.1.0'):
+        runs = []
+
+        def run(command, env=None, progress=None):
+            runs.append(command[0])
+            if command[0] == './pack.sh':
+                subprocess.run(command, cwd=self.root, env={**os.environ, 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+                                                            **(env or {})}, check=True, capture_output=True)
+        out = io.StringIO()
+        with mock.patch.object(builder_cli, 'ROOT', self.root), \
+                mock.patch.object(builder_cli, 'run', run), \
+                mock.patch.dict(builder_cli.SUPPORTED, {hashlib.sha256(self.EXE).hexdigest(): 'eu'}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            status = builder_cli.main(['build', '--exe', str(exe), *[a for d in data for a in ('--data', str(d))],
+                                       '--version', version])
+        events = [json.loads(line[len(builder_cli.PREFIX):]) for line in out.getvalue().splitlines()
+                  if line.startswith(builder_cli.PREFIX)]
+        return status, events, runs
+
+    def test_the_app_has_the_game_inside_and_the_folder_is_only_read(self):
+        folder = self.game_folder(self.tmp / 'My Game')
+        (folder / 'SPEED2.EXE').write_bytes(b'disc exe')
+        exe = self.tmp / 'Downloads/SPEED2.EXE'
+        exe.parent.mkdir()
+        exe.write_bytes(self.EXE)
+        before = manifest(folder)
+        status, events, runs = self.build(exe, folder)
+        self.assertEqual(status, 0, events)
+        app = self.root / builder_cli.APP
+        self.assertEqual(events[-1], {'done': str(app)})
+        self.assertEqual(runs, ['tools/gen_v2.sh', './build.sh', './link.sh', './pack.sh'])
+        self.assertEqual(manifest(folder), before, 'the game folder is only read')
+        self.assertEqual(tree(app / 'Contents/Resources/Game'),
+                         {'GLOBAL/GLOBALB.LZC': b'global', 'MOVIES/intro.vp6': b'movie', 'server.dll': b'server',
+                          'SPEED2.EXE': self.EXE})
+        self.assertFalse((self.root / builder_cli.STAGING).exists(), 'the staging copy is removed')
+        with open(app / 'Contents/Info.plist', 'rb') as f:
+            info = plistlib.load(f)
+        self.assertEqual(info['NFSBuilderVersion'], '1.1.0')
+        self.assertIn('inside this bundle', info['NSHumanReadableCopyright'])
+        subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
+                       capture_output=True)
+
+    def test_update_from_an_existing_app_keeps_it_as_it_was(self):
+        """The new app is made in the workspace from the old app's game; the old app is only read
+        (installing it over the old one is BuilderCore's installApp, tested in DestinationTests)."""
+        old = self.tmp / 'Applications/NFSU2.app'
+        self.game_folder(old / 'Contents/Resources/Game')
+        shutil.rmtree(old / 'Contents/Resources/Game/SCRIPTS')
+        (old / 'Contents/Resources/Game/dinput8.dll').unlink()
+        (old / 'Contents/Resources/Game/.DS_Store').unlink()
+        (old / 'Contents/Resources/Game/SPEED2.EXE').write_bytes(self.EXE)
+        with open(old / 'Contents/Info.plist', 'wb') as f:
+            plistlib.dump({'CFBundleIdentifier': 'org.nfsu2.nativeport', 'NFSBuilderVersion': '1.0.0'}, f)
+        before = manifest(old)
+        status, events, _ = self.build(old / 'Contents/Resources/Game/SPEED2.EXE', old, version='1.2.0')
+        self.assertEqual(status, 0, events)
+        self.assertEqual(manifest(old), before, 'the old app is only read')
+        app = self.root / builder_cli.APP
+        self.assertEqual(tree(app / 'Contents/Resources/Game'), tree(old / 'Contents/Resources/Game'))
+        with open(app / 'Contents/Info.plist', 'rb') as f:
+            self.assertEqual(plistlib.load(f)['NFSBuilderVersion'], '1.2.0')
+
+    def test_a_failed_package_step_leaves_no_staging_copy(self):
+        folder = self.game_folder(self.tmp / 'My Game')
+        exe = self.tmp / 'SPEED2.EXE'
+        exe.write_bytes(self.EXE)
+        (self.root / 'pack.sh').write_text('#!/bin/sh\nexit 1\n')
+        before = manifest(folder)
+        status, events, _ = self.build(exe, folder)
+        self.assertEqual((status, events[-1]), (1, {'error': builder_cli.STEP_FAILED}))
+        self.assertFalse((self.root / builder_cli.STAGING).exists())
+        self.assertEqual(manifest(folder), before)
 
 
 class DiscTests(unittest.TestCase):

@@ -3,10 +3,12 @@ import Foundation
 
 /// What the player chose as game data, and what the Builder found in it.
 public struct GameDataReport: Equatable {
-    public enum Kind: Equatable { case folder, discs }
+    /// A game folder, the two discs, or an NFSU2.app with the game inside (an update).
+    public enum Kind: Equatable { case folder, discs, app }
 
     public let kind: Kind
-    /// The game folder, or the disc images / disc folders in the order the build unpacks them.
+    /// The game folder (for an app its Contents/Resources/Game), or the disc images / disc
+    /// folders in the order the build unpacks them.
     public let sources: [URL]
     /// Red: what is missing for the build or the first start.
     public let blocking: String?
@@ -19,14 +21,16 @@ public struct GameDataReport: Equatable {
     public let server: String?
     /// For Copy details: the files that differ or are missing.
     public let details: [String]
+    /// The size of the game data as it goes into the app (unpacked, for discs).
+    public var bytes: Int64 = 0
 
-    /// The folder is used as it is: it already holds a supported SPEED2.EXE.
-    public var usableAsIs: Bool { kind == .folder && program?.isSupported == true }
+    /// The data has a supported SPEED2.EXE, so it is the game program too.
+    public var providesProgram: Bool { program?.isSupported == true }
 
     public var state: CheckState {
         if let blocking = blocking { return .blocked(blocking) }
         if !notes.isEmpty { return .automatic(notes.joined(separator: " ")) }
-        let what = kind == .discs ? "Disc data" : "Game folder"
+        let what = kind == .discs ? "Disc data" : kind == .app ? "Uses the game inside your current NFSU2.app" : "Game folder"
         return .ready(release.map { "\(what), matches the \($0) release" } ?? what)
     }
 
@@ -47,6 +51,7 @@ extension CheckState {
 public enum GameDataMessages {
     public static let chooseOne = "Choose one game folder, or the two disc images (.iso, .cue or disc folders) together."
     public static let bothDiscs = "These are the files of one disc only. Choose both disc images together."
+    public static let appWithoutGame = "This app has no game inside it. Choose your game folder, or the two disc images."
     public static func coreMissing(_ missing: [String]) -> String {
         let first = missing.prefix(2).joined(separator: ", ")
         let more = missing.count > 2 ? " and \(missing.count - 2) more" : ""
@@ -103,10 +108,14 @@ public struct GameDataChecker {
     }
 
     /// The input as the build will read it: one game folder (looking up to two folders down for
-    /// SPEED2.EXE when the chosen one is a parent), or one or two discs with a .cue's .bin
-    /// dropped when both were chosen. Nil when the choice cannot be a game copy.
+    /// SPEED2.EXE when the chosen one is a parent), the game folder inside one NFSU2.app, or
+    /// one or two discs with a .cue's .bin dropped when both were chosen. Nil when the choice
+    /// cannot be a game copy.
     public static func classify(_ urls: [URL]) -> (GameDataReport.Kind, [URL])? {
         var urls = urls.map { $0.standardizedFileURL }
+        if urls.count == 1, urls[0].pathExtension.lowercased() == "app", isDirectory(urls[0]) {
+            return (.app, [urls[0].appendingPathComponent("Contents/Resources/Game")])
+        }
         let cues = urls.filter { $0.pathExtension.lowercased() == "cue" }
         let cueImages = Set(cues.compactMap { try? cueImage($0).standardizedFileURL.path })
         urls.removeAll { $0.pathExtension.lowercased() == "bin" && cueImages.contains($0.path) }
@@ -142,9 +151,15 @@ public struct GameDataChecker {
             return GameDataReport(kind: .folder, sources: urls, blocking: GameDataMessages.chooseOne, notes: [], release: nil,
                                   program: nil, server: nil, details: [])
         }
+        if kind == .app && !Self.isDirectory(sources[0]) {
+            return GameDataReport(kind: kind, sources: sources, blocking: GameDataMessages.appWithoutGame, notes: [],
+                                  release: nil, program: nil, server: nil, details: [])
+        }
         do {
-            let files = kind == .folder ? try folderFiles(sources[0]) : try discFiles(sources)
-            return compare(files, kind: kind, sources: sources)
+            let files = kind == .discs ? try discFiles(sources) : try folderFiles(sources[0])
+            var report = compare(files, kind: kind, sources: sources)
+            report.bytes = files.reduce(Int64(0)) { $0 + Int64($1.size) }
+            return report
         } catch {
             return GameDataReport(kind: kind, sources: sources, blocking: error.localizedDescription, notes: [], release: nil,
                                   program: nil, server: nil, details: [])

@@ -17,7 +17,8 @@ final class BuilderModel: ObservableObject {
     @Published private(set) var dataChoice: [URL]
     @Published private(set) var programChoice: URL?
     @Published private(set) var destination: URL
-    @Published private(set) var gameFolder: URL
+    /// The NFSU2.app already in the destination: the build replaces it (an update).
+    @Published private(set) var existingApp: InstalledApp? = nil
     /// True once Cancel was pressed or the app started installing, so Cancel can no longer act.
     @Published private(set) var cancelDisabled = false
     @Published private(set) var buildFilesRemoved = false
@@ -29,8 +30,9 @@ final class BuilderModel: ObservableObject {
     @Published private(set) var dataDetails: String?
     /// Whether the "Which copy works?" sheet is open. Quitting closes it first.
     @Published var showingSupported = false
-    /// The game folder the last build pointed the launcher at.
-    @Published private(set) var builtGameFolder: URL?
+    /// The game data is the NFSU2.app found in the destination, offered by the Builder
+    /// rather than chosen by the player.
+    private var dataIsInstalledApp = false
 
     let paths = BuilderPaths()
     let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0-dev"
@@ -47,6 +49,10 @@ final class BuilderModel: ObservableObject {
     private var cltTimer: Timer?
 
     private var dataReport: GameDataReport?
+    private var playerChoseData = false
+    /// An offered NFSU2.app whose game did not pass the checks: not offered again, and the
+    /// empty game row says why.
+    private var rejectedApp: URL?
     private var checkedData: [URL]?
     private var dataToken = UUID()
     private var programVerdict: ProgramVerdict?
@@ -58,7 +64,7 @@ final class BuilderModel: ObservableObject {
     private var buildStep = ""
     private var stepPart = 0.0
     private var buildError: String?
-    private var built: (app: URL, game: URL)?
+    private var built: URL?
     private var userCancelled = false
     private var flushScheduled = false
 
@@ -68,7 +74,9 @@ final class BuilderModel: ObservableObject {
         dataChoice = (saved.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }
         programChoice = saved.string(forKey: "gameProgram").map { URL(fileURLWithPath: $0) }
         destination = saved.string(forKey: "destination").map { URL(fileURLWithPath: $0) } ?? defaultDestination
-        gameFolder = saved.string(forKey: "gameFolder").map { URL(fileURLWithPath: $0) } ?? defaultGameFolder
+        // Game data given on the command line (-gameData, unattended test runs) counts as chosen.
+        playerChoseData = saved.volatileDomain(forName: UserDefaults.argumentDomain)["gameData"] != nil
+        offerInstalledApp()
     }
 
     // MARK: - Checklist
@@ -86,9 +94,25 @@ final class BuilderModel: ObservableObject {
 
     var toolsReady: Bool { states[.buildTools]?.isReady == true }
     var buildEnabled: Bool { canBuild(states) }
-    /// The data needs a game folder of the Builder's own (discs, or a folder without a supported SPEED2.EXE).
-    var makesGameFolder: Bool { dataReport.map { !$0.usableAsIs } ?? true }
-    var programFromData: Bool { dataReport?.program?.isSupported == true }
+    var programFromData: Bool { dataReport?.providesProgram == true }
+    /// "Build NFSU2.app", or "Update NFSU2.app (1.0.0 -> 1.1.0)" when one is replaced.
+    var buildTitle: String { buildButtonTitle(replacing: existingApp, version: version) }
+
+    /// An NFSU2.app with the game inside, in the destination or else in /Applications, is the
+    /// game data of an update: its game is checked like any other copy and cloned into the new
+    /// app. A choice the player made in this session is kept.
+    private func offerInstalledApp() {
+        existingApp = InstalledApp.find(in: destination)
+        let offered = [destination, defaultDestination].lazy.compactMap { InstalledApp.find(in: $0) }
+            .first { $0.game != nil && $0.url != self.rejectedApp }
+        if let app = offered, !playerChoseData {
+            dataChoice = [app.url]
+            dataIsInstalledApp = true
+        } else if dataIsInstalledApp {
+            dataChoice = (defaults.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }
+            dataIsInstalledApp = false
+        }
+    }
 
     func start() {
         refresh()
@@ -149,55 +173,48 @@ final class BuilderModel: ObservableObject {
         }
     }
 
-    /// Destination and free space depend on whether a game folder is made, so they follow the data row.
+    /// The destination is only where NFSU2.app goes; the game goes inside the app.
     private func refreshPlaces() {
-        var state = destinationCheck(destination)
-        if case .ready = state {
-            let app = "NFSU2.app goes to \(abbreviated(destination))"
-            if makesGameFolder {
-                switch gameFolderCheck(gameFolder) {
-                case .ready: state = .ready("\(app), the game folder to \(abbreviated(gameFolder))")
-                case let other: state = other
-                }
-            } else {
-                state = .ready(app)
-            }
-        }
-        states[.destination] = state
+        existingApp = InstalledApp.find(in: destination)
+        states[.destination] = destinationCheck(destination)
         states[.diskSpace] = diskSpaceState()
     }
 
+    /// The build space on the workspace volume, plus the game data wherever it cannot be cloned
+    /// (spaceNeeds): copied from another volume, unpacked from discs, or the finished app
+    /// copied to a destination on another volume.
     private func diskSpaceState() -> CheckState {
-        func volume(_ start: URL) -> URL {
+        func existing(_ start: URL) -> URL {
             var url = start
             while !FileManager.default.fileExists(atPath: url.path) && url.path != "/" { url = url.deletingLastPathComponent() }
             return url
         }
-        let support = volume(paths.support)
-        let values = try? support.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeIdentifierKey])
-        guard let available = values?.volumeAvailableCapacityForImportantUsage else {
-            return .blocked("Could not read the free space on this disk")
+        guard let workspace = volumeID(paths.support) else { return .blocked("Could not read the free space on this disk") }
+        let report = dataReport
+        let needs = spaceNeeds(gameBytes: report?.bytes ?? 0, discs: report?.kind == .discs,
+                               source: report?.sources.first.flatMap(volumeID), workspace: workspace,
+                               destination: volumeID(destination))
+        var shown: CheckState?
+        for (volume, required) in needs.sorted(by: { ($0.key != workspace ? 1 : 0) < ($1.key != workspace ? 1 : 0) }) {
+            let place = existing(volume == workspace ? paths.support : destination)
+            let values = try? place.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeNameKey])
+            guard let available = values?.volumeAvailableCapacityForImportantUsage else {
+                return .blocked("Could not read the free space on this disk")
+            }
+            let state = diskSpaceCheck(available: available, required: required,
+                                       disk: volume == workspace ? nil : values?.volumeName)
+            if state.isBlocked { return state }
+            if shown == nil { shown = state }
         }
-        var required = requiredBuildBytes
-        if makesGameFolder, let report = dataReport {
-            let folderVolume = try? volume(gameFolder).resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier as? NSObject
-            let sourceVolume = try? report.sources.first.map(volume)?.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier as? NSObject
-            let sameAsWorkspace = folderVolume == (values?.volumeIdentifier as? NSObject)
-            // Unpacked discs take space; a folder is cloned for free on its own volume.
-            if sameAsWorkspace && (report.kind == .discs || folderVolume != sourceVolume) { required += gameFolderBytes }
-        }
-        return diskSpaceCheck(available: available, required: required)
+        return shown ?? .blocked("Could not read the free space on this disk")
     }
 
     func setDestination(_ url: URL) {
         destination = url
         defaults.set(url.path, forKey: "destination")
-        refreshPlaces()
-    }
-
-    func setGameFolder(_ parent: URL) {
-        gameFolder = parent.lastPathComponent == "NFSU2" ? parent : parent.appendingPathComponent("NFSU2")
-        defaults.set(gameFolder.path, forKey: "gameFolder")
+        let before = dataChoice
+        offerInstalledApp()
+        if dataChoice != before { checkedData = nil; refreshData() }
         refreshPlaces()
     }
 
@@ -219,6 +236,8 @@ final class BuilderModel: ObservableObject {
 
     func setData(_ urls: [URL]) {
         guard phase == .checklist else { return }
+        dataIsInstalledApp = false
+        playerChoseData = true
         dataChoice = urls
         defaults.set(urls.map { $0.path }, forKey: "gameData")
         checkedData = nil
@@ -236,7 +255,8 @@ final class BuilderModel: ObservableObject {
     private func refreshData() {
         guard !dataChoice.isEmpty else {
             (dataReport, dataDetails) = (nil, nil)
-            states[.gameData] = .blocked("Choose your game folder, or the two disc images (.iso, .cue or disc folders)")
+            let note = rejectedApp == nil ? "" : "The game inside your current NFSU2.app is incomplete or changed, so it cannot be used. "
+            states[.gameData] = .blocked(note + "Choose your game folder, the two disc images (.iso, .cue or disc folders), or an NFSU2.app with the game inside")
             return updateProgramRow()
         }
         guard checkedData != dataChoice else { return }
@@ -256,6 +276,15 @@ final class BuilderModel: ObservableObject {
             let report = GameDataChecker(manifest: manifest).check(choice)
             DispatchQueue.main.async { [self] in
                 guard dataToken == token else { return }
+                if dataIsInstalledApp, report.blocking != nil || !report.providesProgram {
+                    // The game in the current app is missing files or has another SPEED2.EXE:
+                    // back to the player's own choice.
+                    rejectedApp = choice.first
+                    dataIsInstalledApp = false
+                    dataChoice = (defaults.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }
+                    checkedData = nil
+                    return refreshData()
+                }
                 dataReport = report
                 states[.gameData] = report.state
                 dataDetails = report.blocking == nil && report.notes.isEmpty ? nil : report.detailsText
@@ -427,14 +456,12 @@ final class BuilderModel: ObservableObject {
             notice = "Quit NFSU2 first, then try again."
             return
         }
-        let runner: PipelineRunner
-        if report.usableAsIs {
-            let exe = ((try? FileManager.default.contentsOfDirectory(at: report.sources[0], includingPropertiesForKeys: nil)) ?? [])
+        var program = paths.program
+        if report.providesProgram {
+            program = ((try? FileManager.default.contentsOfDirectory(at: report.sources[0], includingPropertiesForKeys: nil)) ?? [])
                 .first { $0.lastPathComponent.lowercased() == "speed2.exe" } ?? report.sources[0].appendingPathComponent("SPEED2.EXE")
-            runner = .build(paths: paths, version: version, program: exe, game: report.sources[0], data: nil)
-        } else {
-            runner = .build(paths: paths, version: version, program: paths.program, game: gameFolder, data: report.sources)
         }
+        let runner = PipelineRunner.build(paths: paths, version: version, program: program, data: report.sources)
         (buildLog, buildStep, stepPart, buildError, built) = ([], "", 0, nil, nil)
         (userCancelled, cancelDisabled) = (false, false)
         phase = .building(stepID: "", fraction: 0, log: [])
@@ -453,7 +480,7 @@ final class BuilderModel: ObservableObject {
             case let .error(message):
                 buildError = message
                 appendLog("Error: \(message)")
-            case let .done(app, game): built = (app, game)
+            case let .done(app): built = app
             }
         }, onExit: { [self] status in
             buildRunner = nil
@@ -464,8 +491,7 @@ final class BuilderModel: ObservableObject {
                 return refresh()
             }
             if status == 0, buildError == nil, let built = built {
-                builtGameFolder = built.game
-                install(built.app)
+                install(built)
             } else {
                 fail(step: buildStepNames[buildStep] ?? "Getting ready",
                      message: buildError ?? "The build stopped unexpectedly.")
@@ -502,11 +528,11 @@ final class BuilderModel: ObservableObject {
         }
         appendLog("Installing NFSU2.app into \(destination.path)")
         flushLog()
-        let (directory, game) = (destination, builtGameFolder)
+        let directory = destination
         DispatchQueue.global(qos: .userInitiated).async {
             // Checked again here in case the game was started since; NSRunningApplication is thread safe.
+            // The old app stays as it is until the new one is complete next to it.
             let result = Result { try installApp(built, into: directory, isRunning: isGameRunning) }
-            if case .success = result, let game = game { setLauncherGameFolder(game) }
             DispatchQueue.main.async { [self] in
                 switch result {
                 case let .success(app):
