@@ -46,6 +46,7 @@ final class LauncherModel: ObservableObject {
     private var engineForced = false     // NFSU2_ENGINE: this start only, not saved
     @Published var fullscreen: Bool { didSet { defaults.set(fullscreen, forKey: Prefs.fullscreen) } }
     @Published var fpsCounter: Int { didSet { defaults.set(fpsCounter, forKey: Prefs.fpsCounter) } }
+    @Published var metalHUD: Bool { didSet { defaults.set(metalHUD, forKey: Prefs.metalHUD) } }
     @Published var headlights: String { didSet { defaults.set(headlights, forKey: Prefs.headlights) } }
     @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
@@ -170,6 +171,7 @@ final class LauncherModel: ObservableObject {
         language = defaults.string(forKey: Prefs.language) ?? "english"
         fullscreen = defaults.bool(forKey: Prefs.fullscreen)
         fpsCounter = min(max(defaults.integer(forKey: Prefs.fpsCounter), 0), 2)
+        metalHUD = defaults.bool(forKey: Prefs.metalHUD)
         headlights = defaults.string(forKey: Prefs.headlights) ?? "players"
         showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
@@ -319,6 +321,9 @@ final class LauncherModel: ObservableObject {
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
         if photoMode { setenv("NFSU2_PHOTO", "1", 0) }          // photo.c, native_scene.m; one set by hand wins
         if driftMode { setenv("NFSU2_DRIFT", "1", 0) }          // drift.c; one set by hand wins
+        // Apple's Metal Performance HUD, drawn by macOS over the game's window (no engine
+        // code).  The launcher quits with the game, so it never sticks to a later start.
+        if metalHUD { setenv("MTL_HUD_ENABLED", "1", 0) }       // one set by hand wins
         // Texture Packs that are on, highest first (engine: runtime/texrep.m).  One given by
         // the caller wins; otherwise it follows the list.
         if setTexpacks || env["NFSU2_TEXPACKS"] == nil {

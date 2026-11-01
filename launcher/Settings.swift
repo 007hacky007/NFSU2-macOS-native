@@ -109,6 +109,9 @@ struct GraphicsSettings: View {
                     }
                     .pickerStyle(SegmentedPickerStyle()).labelsHidden().fixedSize()
                 }
+                SettingRow(title: "Metal performance overlay",
+                           description: "Apple's Metal HUD in the corner: frame rate, frame times, GPU time and memory. For checking performance. Off: as in the original game.",
+                           isOn: $model.metalHUD)
             }
             FrameRateCard(model: model)
             DisplayCard(model: model)

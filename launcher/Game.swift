@@ -74,6 +74,7 @@ enum Prefs {
     static let gameFolder = "OyunDizini"          // name kept for existing installs
     static let fullscreen = "NFSUFullScreen"
     static let fpsCounter = "NFSUFpsCounter"      // 0 off, 1 on, 2 detailed (Cmd-N in the game)
+    static let metalHUD = "NFSUMetalHUD"          // Apple's Metal Performance HUD (MTL_HUD_ENABLED)
     // Launcher only; passed to the engine as NFSU2_PAD / NFSU2_PAD_DEADZONE and the
     // other NFSU2_PAD_* (Controller.swift).
     static let controller = "LauncherController"
@@ -142,6 +143,7 @@ enum Prefs {
         OriginalValue(\.engine, .original),
         OriginalValue(\.wideHUD, false),
         OriginalValue(\.fpsCounter, 0),
+        OriginalValue(\.metalHUD, false),
         OriginalValue(\.frameRate, "120"),
         OriginalValue(\.cutscenes60, false),
         OriginalValue(\.cutsceneBars, true),

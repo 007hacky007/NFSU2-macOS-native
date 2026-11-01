@@ -29,12 +29,13 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         let launched = ["HUDPOS", "NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_FPS", "NFSU2_DISCORD", "NFSU2_DISCORD_LARGE_IMAGE",
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
-                        "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE"]
+                        "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED"]
         for k in launched { unsetenv(k) }
 
         // defaults
         var m = LauncherModel()
         check(m.engine == .original && !m.wideHUD && m.fpsCounter == 0 && m.frameRate == "auto", "defaults: original engine, HUD in 4:3, no counter, frame rate auto")
+        check(!m.metalHUD, "defaults: no Metal performance overlay")
         check(m.allCars && m.garage && m.intro == "skippable" && m.headlights == "players" && m.cutsceneBars, "defaults: both releases' cars, 10-car garage, skippable intro, players' headlights, cutscene bars")
         check(!m.discord && m.discordImage.isEmpty && !m.online && m.server == OnlineSettings.defaultServer && m.freeRoam == .off && m.horn == .off,
               "defaults: no Discord, no picture, offline, default server, no free roam, no horn")
@@ -70,6 +71,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.game = .ready(GameLocation(exe: exe, embedded: false))
         m.restoreOriginalGame(); m.controller = true; m.stickDeadzone = 0.15
         m.wideHUD = true; m.frameRate = "60"; m.discord = true; m.discordImage = "my_car"; m.cutsceneBars = false; m.intro = "off"
+        m.metalHUD = true
         m.play()
         // no engine is next to the test: play() falls back from one engine to the other as it does
         check(spawned.map { $0.hasSuffix("/Contents/MacOS/nfsu2-engine") || $0.hasSuffix("/Contents/MacOS/nfsu2-engine-hd") } == true,
@@ -79,6 +81,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
               "play: HUD, frame rate, Discord and its picture")
         check(env("NFSU2_CUTSCENE_BORDERS") == "off" && env("BOOTMOVIES") == "off" && env("NFSU2_ALL_CARS") == "0" && env("NFSU2_GARAGE") == "off",
               "play: cutscene bars, intro, original cars and garage")
+        check(env("MTL_HUD_ENABLED") == "1", "play: the Metal performance overlay")
         check(["1", "hotplug"].contains(env("NFSU2_PAD") ?? "") && env("NFSU2_PAD_DEADZONE") == "0.15" && env("NFSU2_HEADLIGHTS") == "off", "play: controller, dead zone, headlights")
         check(env("NFSU2_NET") == nil && env("NFSU2_SERVER_URL") == nil && env("NFSU2_ROAM") == nil, "play: offline sets no network variable")
         // the next Play after a change: what the launcher set itself follows the switch
@@ -97,8 +100,9 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.discordImage = "bad picture"; m.play()
         check(env("NFSU2_DISCORD_LARGE_IMAGE") == nil, "an invalid Discord picture is never handed to the engine")
         for k in launched { unsetenv(k) }
-        m.discord = false; m.discordImage = "my_car"; m.play()
+        m.discord = false; m.discordImage = "my_car"; m.metalHUD = false; m.play()
         check(env("NFSU2_DISCORD") == nil && env("NFSU2_DISCORD_LARGE_IMAGE") == nil, "Discord off: no Discord variable, picture or not")
+        check(env("MTL_HUD_ENABLED") == nil, "Metal performance overlay off: no MTL_HUD_ENABLED")
         for k in launched { unsetenv(k) }
         m.online = true; m.playerName = "Driver_1"; m.server = "ws://127.0.0.1:8080/lan"; m.freeRoam = .solid; m.horn = .dual
         check(m.onlineError == nil, "online: a valid local server and name")
