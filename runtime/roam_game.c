@@ -2134,6 +2134,7 @@ static void tag_far(char *tx, int cap, const char *name, int paused, float d){
     else snprintf(ds, sizeof ds, "%.1f km", (double)d / 1000.0);
     snprintf(tx, (size_t)cap, paused ? "%s (paused, %s)" : "%s (%s)", name, ds);
 }
+static long g_tag_self = -9;       /* photo mode's frame of the names (roam_game_names): the player's own too */
 static void tags_update(CPU *c){
     uint32_t pl = rd32(G_PLAYER1), hud = pl && ok(pl, PL_HUD + 4u) ? rd32(pl + PL_HUD) : 0;
     uint32_t pkg = hud && ok(hud, 0x14) ? rd32(hud + 0x10u) : 0;
@@ -2147,11 +2148,14 @@ static void tags_update(CPU *c){
     /* the cars a name shows on: in front of the camera, within 100 m (a
      * crew's at any distance) and on the screen; the nearest TAG_N of them
      * get one */
-    struct { int k; float d2, hx, hy, z; } t[NSLOT];
+    struct { int k; float d2, hx, hy, z; } t[NSLOT + 1];
     int n = 0;
-    for (int k = 0; on && k < NSLOT; k++){
-        Slot *s = &g_sl[k];
-        if (s->st != SL_ACTIVE || s->hidden || !s->name[0] || !ok(s->car, 0x9e0)) continue;
+    Slot self = { 0 };                              /* (k == NSLOT) */
+    int with_self = rh_frame() - g_tag_self <= 1 && O.name[0] && ok(player_car(), 0x9e0);
+    if (with_self){ snprintf(self.name, sizeof self.name, "%s", O.name); self.car = player_car(); }
+    for (int k = 0; on && k < NSLOT + with_self; k++){
+        Slot *s = k < NSLOT ? &g_sl[k] : &self;
+        if (k < NSLOT && (s->st != SL_ACTIVE || s->hidden || !s->name[0] || !ok(s->car, 0x9e0))) continue;
         uint32_t car = s->car;
         float p[3], u[3], d[3];
         rd3(car + 0x60u, p); rd3(car + 0xb0u, u);
@@ -2173,7 +2177,7 @@ static void tags_update(CPU *c){
         if (i >= n){ tag_hide(c, i); continue; }
         uint32_t obj = tag_obj(c, i, pkg);
         if (!obj) continue;
-        const Slot *s = &g_sl[t[i].k];
+        const Slot *s = t[i].k < NSLOT ? &g_sl[t[i].k] : &self;
         float hx = t[i].hx, hy = t[i].hy;
         rh_hud_marker(&hx, &hy);
         char tx[TAG_TEXT_MAX];
@@ -2198,6 +2202,7 @@ static void tags_update(CPU *c){
     int64_t now = roam_plat_now_us();
     uint32_t mid[SAY_MARKS]; float mxy[3 * SAY_MARKS]; int nm = 0;
     for (int i = 0; i < n && i < TAG_N && nm < SAY_MARKS; i++){
+        if (t[i].k == NSLOT) continue;                     /* (the player's own: below) */
         const Slot *s = &g_sl[t[i].k];
         if (!say_live(s->peer, s->peer_id, now)) continue;
         float sc = 25.f / rc_sqrtf(t[i].d2);
@@ -5954,6 +5959,18 @@ void roam_game_hud(CPU *c){
     du_hud(c, roam_plat_now_us());
     mp_labels(c);
     g_cost_hud += rh_ns() - t0;
+}
+
+/* photo mode (photo.c): whether friends' names can show here, and the names over their cars, and the player's own over
+ * theirs, placed for photo mode's camera (its frame of the front end, which draws them alone): the FE objects shown */
+int roam_game_names_here(void){ return O.on && g_net_ok && O.labels && g_in_roam && MR8(G_SHOW_NAMES); }
+int roam_game_names(CPU *c, uint32_t *obj, int max){
+    if (!roam_game_names_here()) return 0;
+    g_tag_self = rh_frame();
+    tags_update(c);
+    int n = 0;
+    for (int i = 0; i < TAG_N && n < max; i++) if (g_tag.shown[i] && g_tag.obj[i]) obj[n++] = g_tag.obj[i];
+    return n;
 }
 
 /* ---- report at exit ----------------------------------------------------------------------------- */

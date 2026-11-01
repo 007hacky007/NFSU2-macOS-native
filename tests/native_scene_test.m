@@ -9,9 +9,9 @@
 #include <math.h>
 #include "native_scene.h"
 
-static int commands[12], args[12], args2[12];
+static int commands[13], args[13], args2[13];
 static unsigned char pad[272];                       /* the controller as gamepad.m fills it (DIJOYSTATE2) */
-void photo_input(int c, int a, int b) { assert(c >= 0 && c < 12); commands[c]++; args[c] = a; args2[c] = b; }
+void photo_input(int c, int a, int b) { assert(c >= 0 && c < 13); commands[c]++; args[c] = a; args2[c] = b; }
 void gamepad_fill(unsigned char *dst) { memcpy(dst, pad, sizeof pad); }
 int photo_enabled(void) { return 1; }
 int drift_enabled(void) { return 1; }
@@ -61,6 +61,14 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(!native_scene_handle_event(key(33, NO, 0)));
     assert(native_scene_handle_event(key(48, YES, 0))); assert(args[10] == 2);                                 /* Tab */
     assert(native_scene_handle_event(key(15, YES, 0))); assert(commands[11]);                                  /* R */
+    /* N: the names over the players' cars, only where photo.c says they can show (bit 16) */
+    int names = commands[12];
+    assert(native_scene_handle_event(key(45, YES, 0)) && commands[12] == names);
+    assert(!native_scene_handle_event(key(45, NO, 0)));
+    photo(2 | 16); native_scene_pump();
+    assert(native_scene_handle_event(key(45, YES, 0)) && commands[12] == names + 1 && args[12] == 2);       /* the other */
+    assert(!native_scene_handle_event(key(45, NO, 0)));
+    photo(2); native_scene_pump();
     assert(native_scene_handle_event(key(49, YES, 0))); assert(native_scene_take_capture());                   /* Space */
     assert(native_scene_handle_event(key(111, YES, 0))); assert(native_scene_take_capture()); assert(!native_scene_take_capture());
     assert(!native_scene_handle_event(key(12, YES, NSEventModifierFlagCommand)));                              /* the menu's */

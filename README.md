@@ -578,8 +578,11 @@ keeps playing after entering a shop.
 **Photo mode** (`NFSU2_PHOTO=1`; launcher: Settings > Game > Photo mode, off by
 default): while you drive offline, F12, Cmd+Shift+P or the pause menu's Photo
 Mode stops the world and the race clock, hides the HUD and frees the camera
-(orbit and free camera, field of view, tilt, reset; keys, mouse and controller,
-listed in a panel while it is on). F12 or Space saves a PNG; F12 anywhere else
+(orbit about a point up to 25 m from the car, from up to 30 m away, and a free
+camera up to 50 m out; Tab switches between them, field of view, tilt, reset;
+keys, mouse and controller, listed in a panel while it is on).  In free roam with
+other players, N (a click of the right stick) shows the names over their cars and
+your own, off at first. F12 or Space saves a PNG; F12 anywhere else
 (menus, network races) saves a screenshot without holding the game up. The
 pictures go to `~/Library/Application Support/NFSU2/Screenshots`
 (`NFSU2_APPSUPPORT=<dir>` puts them in `<dir>/Screenshots`), and the launcher's
