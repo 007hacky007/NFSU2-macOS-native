@@ -2,9 +2,11 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
-## 1.0.2 - unreleased
+## 1.0.1 - 2026-11-02
 
 ### Added
+- Settings checks your online player name on the server and lets you claim it with your cloud saves keyphrase, so nobody else can play under it there. If another player claimed the name, the launcher offers one with four digits added, or you can play under it anyway.
+- The free-roam world map shows up to 2048 players of your room, and their markers move while the map is open.
 - Online statistics: a small panel in a corner of the game shows your connection, the round trip to the server, how many play on the server, in free roam, in the Online lobby, in your room and in your crews, and how many cars are shown near you. A switch in Settings, Online; off as in the original game.
 - Friends: add players by name in the launcher, or by touching front bumpers for three seconds in free roam. Friends show in their own colour, you get a notice when one starts free roam, and Join takes you to their room. Needs a claimed name.
 - Invite links: copy a link to your free-roam room or crew and paste one in the launcher to join it. Game Tools can change the room while you play.
@@ -16,23 +18,12 @@ What each version of NFSU2 Builder brings. The newest version is first.
 - Your first profile's name starts with your player name.
 
 ### Changed
+- Free roam works with the community server's new free-roam version (core version 9).
+- Room and crew names match even when friends type them a little differently: capitals (Greek and Cyrillic too), spaces and invisible characters do not count. The launcher's player counts for your room and crews follow the same rule.
 - Drift mode in free roam uses the drift races' handling and your car's Drift tuning, and keeps your nitrous.
 - Less input lag: the controller is read after the wait for the next frame.
 - Replays above 60 fps run in step with the race.
 - The game sends the server less: it asks only for changes to the list of players, and only for the LAN broadcasts it listens for.
-
-### Fixed
-- A key held while you switch to another app and back works again on its next repeat.
-
-## 1.0.1 - unreleased
-
-### Added
-- Settings checks your online player name on the server and lets you claim it with your cloud saves keyphrase, so nobody else can play under it there. If another player claimed the name, the launcher offers one with four digits added, or you can play under it anyway.
-- The free-roam world map shows up to 2048 players of your room, and their markers move while the map is open.
-
-### Changed
-- Free roam works with the community server's new free-roam version (core version 9).
-- Room and crew names match even when friends type them a little differently: capitals (Greek and Cyrillic too), spaces and invisible characters do not count. The launcher's player counts for your room and crews follow the same rule.
 
 ### Fixed
 - Online play no longer reconnects every second on a busy server, which kept the Online menu at Connecting to lobby.
@@ -42,6 +33,7 @@ What each version of NFSU2 Builder brings. The newest version is first.
 - Your car keeps its spoiler and exhaust tips after a shop in free roam with other players.
 - A failed magazine or DVD cover save no longer garbles your profile's name.
 - LAN play's network clock can no longer step backwards.
+- A key held while you switch to another app and back works again on its next repeat.
 
 ## 1.0.0 - 2026-11-01
 
