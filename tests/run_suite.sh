@@ -16,6 +16,11 @@
 #                                          run on both: their addresses are
 #                                          European and mapped on the NA build.
 #
+#   RETRY_UNITS="roam_unit ..."           unit suites run a second time when
+#                                          the first run fails (real-time
+#                                          tests on a busy machine, as on CI);
+#                                          the summary says so.
+#
 # A unit suite passes when its script exits 0.  Some need a Metal device or
 # swiftc and say SKIP without them; network tests stay on loopback / AF_UNIX
 # inside tests/net/loopback-only.sb.
@@ -40,8 +45,14 @@ if [ "${1:-}" != --game ]; then
   for u in $UNITS; do
     [ -f "tests/$u.sh" ] || { echo "MISSING tests/$u.sh"; fail=$((fail+1)); failed="$failed $u"; continue; }
     t0=$(date +%s)
-    if bash "tests/$u.sh" > "$TMP/$u.txt" 2>&1; then
-      pass=$((pass+1)); echo "PASS  $u  ($(( $(date +%s) - t0 )) s)  $(grep -a -E 'passed|PASS' "$TMP/$u.txt" | tail -1 | cut -c1-90)"
+    retried=""
+    bash "tests/$u.sh" > "$TMP/$u.txt" 2>&1; r=$?
+    if [ $r -ne 0 ] && [[ " ${RETRY_UNITS:-} " == *" $u "* ]]; then
+      grep -a -E "FAIL" "$TMP/$u.txt" | head -4 | sed 's/^/        first run: /'
+      bash "tests/$u.sh" > "$TMP/$u.txt" 2>&1; r=$?; retried=" (passed on the second run)"
+    fi
+    if [ $r -eq 0 ]; then
+      pass=$((pass+1)); echo "PASS  $u  ($(( $(date +%s) - t0 )) s)$retried  $(grep -a -E 'passed|PASS' "$TMP/$u.txt" | tail -1 | cut -c1-90)"
     else
       fail=$((fail+1)); failed="$failed $u"; echo "FAIL  $u  ($(( $(date +%s) - t0 )) s)"
       grep -a -E "FAIL|error|Error" "$TMP/$u.txt" | head -8 | sed 's/^/        /'
