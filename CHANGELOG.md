@@ -2,6 +2,28 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.2 - unreleased
+
+### Added
+- Online statistics: a small panel in a corner of the game shows your connection, the round trip to the server, how many play on the server, in free roam, in the Online lobby, in your room and in your crews, and how many cars are shown near you. A switch in Settings, Online; off as in the original game.
+- Friends: add players by name in the launcher, or by touching front bumpers for three seconds in free roam. Friends show in their own colour, you get a notice when one starts free roam, and Join takes you to their room. Needs a claimed name.
+- Invite links: copy a link to your free-roam room or crew and paste one in the launcher to join it. Game Tools can change the room while you play.
+- The game's own outrun challengers drive in free roam with other players around, greyed on the minimap and the world map. Both have a switch in Settings.
+- The world map's legend can hide other players and their races.
+- Photo mode: a farther camera, and names over the cars (your own too) with N. Tab and N switch back.
+- Show hidden races: the career map shows the races the game hides, as the Show Hidden Races mod does. Off as in the original game.
+- Exposure and White Level in the Display options, for a picture that tires the eyes less. The original game's values by default.
+- Your first profile's name starts with your player name.
+
+### Changed
+- Drift mode in free roam uses the drift races' handling and your car's Drift tuning, and keeps your nitrous.
+- Less input lag: the controller is read after the wait for the next frame.
+- Replays above 60 fps run in step with the race.
+- The game sends the server less: it asks only for changes to the list of players, and only for the LAN broadcasts it listens for.
+
+### Fixed
+- A key held while you switch to another app and back works again on its next repeat.
+
 ## 1.0.1 - unreleased
 
 ### Added
