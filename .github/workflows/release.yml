@@ -27,6 +27,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The release's notes are its CHANGELOG.md section: a tag without one stops here,
+      # before anything is built.
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          python tools/release_notes.py "$VERSION_TAG" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
       - name: Install dependencies
         run: |
           set -euo pipefail
@@ -62,4 +71,4 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${VERSION_TAG#v}"
-          gh release create "$GITHUB_REF_NAME" dist/NFSU2-Builder.dmg dist/NFSU2-Builder.dmg.sha256 --title "NFSU2 Builder $VERSION" --generate-notes
+          gh release create "$GITHUB_REF_NAME" dist/NFSU2-Builder.dmg dist/NFSU2-Builder.dmg.sha256 --title "NFSU2 Builder $VERSION" --notes-file "$RUNNER_TEMP/notes.md"

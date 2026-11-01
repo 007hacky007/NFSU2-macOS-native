@@ -610,6 +610,19 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   `web/server-rs`).  The server stands in for EA's long-gone Online servers and
   carries the virtual LAN; the player name is the Online name.  Environment:
   `NFSU2_NET=online`, `NFSU2_SERVER_URL`, `NFSU2_ROAM_NAME`.
+- **Your name** (Settings, Online): the launcher asks the server what the player
+  name is to you as you type it and before Play.  A player can claim a name with
+  the keyphrase of cloud saves, as in the browser game; the server then keeps
+  it, and anyone else under that name is shown to nobody in free roam and gets
+  another name in the Online lobby.  For a name another player claimed, the
+  launcher offers the name with four digits in place of its end (the browser
+  game's choice).  **Claim** asks for the keyphrase (or makes one) and keeps it
+  in Keychain; the server takes a claim only from a keyphrase with cloud saves,
+  so with none yet it asks first and sends the careers once, encrypted on the
+  Mac.  Cloudflare's check appears only when the server asks for it.  At Play
+  the keyphrase's token goes to the game through a pipe, never the environment,
+  and only to the server it was remembered with (`launcher/NameClaims.swift`,
+  `runtime/net_native.m`).
 - **Free roam with other players** (with Play online; Off, the default, is free
   roam as in the original game): the players in career free roam see each
   other's cars live, with their customization and names, on the minimap and
