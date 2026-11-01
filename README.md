@@ -626,6 +626,9 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   the keyphrase's token goes to the game through a pipe, never the environment,
   and only to the server it was remembered with (`launcher/NameClaims.swift`,
   `runtime/net_native.m`).
+  With no profile in the save folder yet, the game's name box for the first
+  profile starts with the player name's letters and digits (7 at most) instead
+  of NAME; one Enter takes it (`NFSU2_NEW_PROFILE_NAME`, `runtime/gamefix.c`).
 - **Online statistics** (Settings, Online, with Play online; off by default, as
   in the original game): a small panel in the top-left corner of the game, under
   the frame-rate counter when that is on.  It shows the connection (connected,

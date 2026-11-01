@@ -97,6 +97,7 @@ heapreset:heap_resetloop.txt:[status] after_reset_8:
 padrace:pad_quickrace.txt:$FLOW:NFSU2_PAD_FAKE=PLUG=1
 padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:NFSU2_PAD_FAKE=PLUG=1
 kbprofile:kb_profile.txt:LOG Cmd-Q now:
+kbprofilefill:kb_profile_prefill.txt:[profile] a new profile's name starts as the Player name:NFSU2_NEW_PROFILE_NAME=Alex_the_Great
 kbfocus:kb_focus_mouse.txt:$FLOW:
 wscameras:ws_cameras.txt:$FLOW:
 wspause:ws_pause.txt:$FLOW:

@@ -52,6 +52,7 @@ final class LauncherModel: ObservableObject {
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     private var setLangPacks = false     // NFSU2_LANGPACKS was set by us
+    private var setNewProfile = false    // NFSU2_NEW_PROFILE_NAME was set by us
     @Published var allCars: Bool { didSet { defaults.set(allCars, forKey: Prefs.allCars) } }
     /// Settings › Check for updates (UpdateCheck.swift); off: no request, no notice.
     @Published var checkUpdates: Bool {
@@ -312,6 +313,7 @@ final class LauncherModel: ObservableObject {
     func play() {
         guard case .ready(let loc) = game else { return }
         if let err = onlineError { alert("Online play is not set up", err); return }
+        let typedName = playerName       // the first profile's name: the one typed, not the digits played under
         // a name another player claimed: asked about once (NameClaims.swift); not in the settings tests
         if online && LauncherModel.testSpawn == nil {
             switch names.gate(name: playerName, server: server, retry: { [weak self] in self?.play() }) {
@@ -342,6 +344,14 @@ final class LauncherModel: ObservableObject {
         if setHUDPOS || env["HUDPOS"] == nil {
             if wideHUD { setenv("HUDPOS", "1", 1); setHUDPOS = true }
             else if setHUDPOS { unsetenv("HUDPOS"); setHUDPOS = false }
+        }
+        // No profile in the save folder yet: the game's name box for the first one starts with the
+        // Player name instead of NAME (runtime/gamefix.c sub_004ff3b0).  One set by hand wins.
+        if setNewProfile || env["NFSU2_NEW_PROFILE_NAME"] == nil {
+            let saves = (env["NFSU2_SAVEDIR"] ?? "").isEmpty ? Paths.saves : URL(fileURLWithPath: env["NFSU2_SAVEDIR"]!)
+            let first = OnlineSettings.newProfileName(typedName)
+            if !first.isEmpty && !OnlineSettings.hasProfile(in: saves) { setenv("NFSU2_NEW_PROFILE_NAME", first, 1); setNewProfile = true }
+            else if setNewProfile { unsetenv("NFSU2_NEW_PROFILE_NAME"); setNewProfile = false }
         }
         if !allCars { setenv("NFSU2_ALL_CARS", "0", 0) }          // one set by hand wins
         if intro != "skippable" { setenv("BOOTMOVIES", intro, 0) }       // one set by hand wins

@@ -303,6 +303,27 @@ enum OnlineSettings {
             (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || $0 == 45
         }
     }
+    /* What a first profile's name box starts with instead of the game's NAME (runtime/gamefix.c
+     * sub_004ff3b0, NFSU2_NEW_PROFILE_NAME): the Player name's letters and digits, the first 7.  ""
+     * for none, for the game's names for nobody (NAME, Player) and for a name the rules turn down. */
+    static func newProfileName(_ yours: String) -> String {
+        let n = String(String.UnicodeScalarView(yours.unicodeScalars.filter {
+            (65...90).contains($0.value) || (97...122).contains($0.value) || (48...57).contains($0.value)
+        }).prefix(7))
+        if n.isEmpty || ["name", "player"].contains(n.lowercased()) { return "" }
+        if yours.withCString({ name_blocked($0) }) != 0 || n.withCString({ name_blocked($0) }) != 0 { return "" }
+        return n
+    }
+    /* a profile in a save folder ("NFS Underground 2/<name>/<name>", SaveStore.profileName) */
+    static func hasProfile(in saves: URL) -> Bool {
+        let fm = FileManager.default, root = saves.appendingPathComponent(SaveStore.profileRoot, isDirectory: true)
+        guard let dirs = try? fm.contentsOfDirectory(atPath: root.path) else { return false }
+        return dirs.contains { d in
+            var dir: ObjCBool = false
+            let f = root.appendingPathComponent(d).appendingPathComponent(d).path
+            return fm.fileExists(atPath: f, isDirectory: &dir) && !dir.boolValue
+        }
+    }
     static func error(server: String, name: String) -> String? {
         if !validServer(server) { return "Use a wss:// server address (ws:// only for a server on this Mac)." }
         if !validName(name) { return "Enter a player name: 3-15 letters, numbers, _ or -." }

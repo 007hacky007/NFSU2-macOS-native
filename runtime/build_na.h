@@ -774,6 +774,10 @@
 #define sub_004fcda0_orig sub_004fcda0_orig
 #define sub_004fcda0_m sub_004fcda0_m
 #define sub_004fcda0_orig_m sub_004fcda0_orig_m
+#define sub_004ff3b0 sub_004ff3b0
+#define sub_004ff3b0_orig sub_004ff3b0_orig
+#define sub_004ff3b0_m sub_004ff3b0_m
+#define sub_004ff3b0_orig_m sub_004ff3b0_orig_m
 #define sub_00503510 sub_00503510
 #define sub_00503510_orig sub_00503510_orig
 #define sub_00503510_m sub_00503510_m

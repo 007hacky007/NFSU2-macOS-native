@@ -34,7 +34,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
                         "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED",
-                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS"]
+                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS", "NFSU2_NEW_PROFILE_NAME"]
         for k in launched { unsetenv(k) }
 
         // defaults
@@ -125,6 +125,29 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.playerName = "x"; check(m.onlineError != nil, "online: a name that is too short is caught before Play")
         m.playerName = "Driver_1"; m.server = "ws://example.com/lan"; check(m.onlineError != nil, "online: ws:// to another machine is caught before Play")
         m.server = OnlineSettings.defaultServer; m.online = false
+        // a first profile's name box starts with the Player name (NFSU2_NEW_PROFILE_NAME, runtime/gamefix.c)
+        check(OnlineSettings.newProfileName("Alex_the_Great") == "Alexthe" && OnlineSettings.newProfileName("Driver_1") == "Driver1",
+              "first profile: the Player name's letters and digits, 7 at most")
+        check(["", "__-", "Player", "NAME", "name"].allSatisfy { OnlineSettings.newProfileName($0).isEmpty },
+              "first profile: no name, NAME or Player give none")
+        let saveDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("nfsu2-saves-\(getpid())")
+        try? FileManager.default.removeItem(at: saveDir)
+        setenv("NFSU2_SAVEDIR", saveDir.path, 1)
+        for k in launched { unsetenv(k) }
+        m.playerName = "Alex_the_Great"; m.play()
+        check(env("NFSU2_NEW_PROFILE_NAME") == "Alexthe", "first profile: no save folder, the Player name is passed")
+        let prof = saveDir.appendingPathComponent("NFS Underground 2/ALEX")
+        try? FileManager.default.createDirectory(at: prof, withIntermediateDirectories: true)
+        try? Data(count: 16).write(to: prof.appendingPathComponent("ALEX"))
+        m.play()
+        check(env("NFSU2_NEW_PROFILE_NAME") == nil, "first profile: a profile there, none passed (none left from the last Play)")
+        try? FileManager.default.removeItem(at: prof)
+        m.playerName = "Player"; m.play()
+        check(env("NFSU2_NEW_PROFILE_NAME") == nil, "first profile: the Player name Player is not passed")
+        setenv("NFSU2_NEW_PROFILE_NAME", "HAND", 1); m.playerName = "Driver_1"; m.play()
+        check(env("NFSU2_NEW_PROFILE_NAME") == "HAND", "first profile: one set by hand wins")
+        unsetenv("NFSU2_SAVEDIR"); try? FileManager.default.removeItem(at: saveDir)
+        for k in launched { unsetenv(k) }
         LauncherModel.testSpawn = nil
 
         // Restore Original Game: every option of Prefs.originalGame, and it is kept
