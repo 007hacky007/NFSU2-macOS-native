@@ -1,9 +1,11 @@
 import Foundation
 
 /// The build steps tools/builder_cli.py announces, in order, with their share of the work
-/// (measured on an M1 Pro; they add up to 100).
+/// (they add up to 100). Measured on an M1 Pro, European build: lift 52 s, compile 57 s,
+/// link 10 s, the launcher (swiftc, only the first time in a workspace) 60 s; unpacking two
+/// discs about 5 s.
 public let buildSteps: [(id: String, weight: Double)] = [
-    ("prepare", 4), ("lift", 30), ("compile", 44), ("link", 16), ("package", 5), ("sign", 1),
+    ("prepare", 3), ("lift", 29), ("compile", 32), ("link", 6), ("package", 29), ("sign", 1),
 ]
 
 /// Fraction (0...1) of total work completed when the given step begins.

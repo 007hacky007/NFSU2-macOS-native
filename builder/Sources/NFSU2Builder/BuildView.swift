@@ -13,7 +13,7 @@ let buildStepNames = [
 ]
 
 /// The measured build time on an M1 Pro (README, "Easiest way").
-let buildMinutes = 2
+let buildMinutes = 3
 
 struct BuildView: View {
     @ObservedObject var model: BuilderModel

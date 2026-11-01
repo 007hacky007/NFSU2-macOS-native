@@ -92,10 +92,11 @@ its own, `~/Games/NFSU2` unless you change it, with APFS clones of your folder's
 files or the unpacked discs, and the chosen `SPEED2.EXE`. Your own copy, disc
 images and archives are only read.
 
-On an M1 Pro the build takes about 2 minutes, plus about 1.5 minutes the first
-time for the Python download and setup. It needs about 1.5 GB of free space
-while building (the workspace is 0.6 GB; **Remove build files** frees it
-afterwards) and 1.7 GB more when it unpacks disc images. The Builder works in
+On an M1 Pro the build takes about 3 minutes (lifting 52 s, compiling 57 s, linking
+10 s, the launcher 60 s; a rebuild skips the launcher), plus about 1.5 minutes the
+first time for the Python download and setup. It needs about 1.5 GB of free space
+while building (the workspace is 0.6 GB per region built; **Remove build files**
+frees it afterwards) and 1.7 GB more when it unpacks disc images. The Builder works in
 `~/Library/Application Support/NFSU2 Builder` and never touches the Python of
 your system or Homebrew. It downloads only its Python (python-build-standalone,
 checked against a pinned SHA-256) and the packages in `requirements.txt`; never

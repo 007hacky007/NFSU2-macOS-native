@@ -35,8 +35,8 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(buildSteps.map { $0.id }, ["prepare", "lift", "compile", "link", "package", "sign"])
         XCTAssertEqual(buildSteps.reduce(0) { $0 + $1.weight }, 100)
         XCTAssertEqual(progressFraction(atStart: "prepare"), 0)
-        XCTAssertEqual(progressFraction(atStart: "compile"), 0.34, accuracy: 0.001)
-        XCTAssertEqual(progressFraction(in: "compile", part: 0.5), 0.56, accuracy: 0.001)
+        XCTAssertEqual(progressFraction(atStart: "compile"), 0.32, accuracy: 0.001)
+        XCTAssertEqual(progressFraction(in: "compile", part: 0.5), 0.48, accuracy: 0.001)
         XCTAssertEqual(progressFraction(in: "sign", part: 2), 1, accuracy: 0.001)
         if case .blocked = diskSpaceCheck(available: requiredBuildBytes - 1) {} else { XCTFail() }
         if case .ready = diskSpaceCheck(available: requiredBuildBytes) {} else { XCTFail() }
