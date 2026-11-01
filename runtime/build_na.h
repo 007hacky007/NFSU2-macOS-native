@@ -746,6 +746,10 @@
 #define sub_004dfc50_orig sub_004dfc50_orig
 #define sub_004dfc50_m sub_004dfc50_m
 #define sub_004dfc50_orig_m sub_004dfc50_orig_m
+#define sub_004e8b70 sub_004e8b70
+#define sub_004e8b70_orig sub_004e8b70_orig
+#define sub_004e8b70_m sub_004e8b70_m
+#define sub_004e8b70_orig_m sub_004e8b70_orig_m
 #define sub_004effd0 sub_004effd0
 #define sub_004effd0_orig sub_004effd0_orig
 #define sub_004effd0_m sub_004effd0_m

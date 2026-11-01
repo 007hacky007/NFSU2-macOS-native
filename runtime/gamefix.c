@@ -3,6 +3,8 @@
  *
  *   sub_00559ca0  the Performance Shop's package screen: a field its
  *                 constructor never writes (the shop locked up after Nitrous)
+ *   sub_004e8b70  the memory card screen's profile name, never written (a
+ *                 cover shoot whose save failed renamed the profile)
  *   sub_004df9c0  the car lot's list: a stock car of no car type (the game
  *                 ended as the car lot opened on a damaged profile)
  *   sub_00483e40  a positional sound's source removed: its voice requests
@@ -25,6 +27,8 @@
  *   badvoices  the next 3 positional sound removals find the voice request
  *              count 3 too high, as a removal left it in the game
  * NFSU2_SHOPFIX=0 (test aid): the package screen is left as the game makes it.
+ * NFSU2_TEST_MC_STALE=1 (test aid): the memory card screen's name holds 0xEF
+ * bytes, as a stale heap block left it (tests/scripts/career_cover_name.txt).
  *
  * Ported from th0mk's nfsu2-web runtime/overrides.c (MIT). */
 #include "cpu.h"
@@ -73,6 +77,39 @@ void sub_00559ca0(CPU *c){
         MR32(self + 0xc0u) = 0xEEEEEEEEu;
     }
     sub_00559ca0_orig(c);
+}
+
+/* --- sub_004e8b70: the memory card screen's profile name, never initialised ---
+ * The memory card screen (MC_Main.fng: constructor 0x4F3320, 0x9C bytes from
+ * operator new, then this base constructor, thiscall, ret 4) keeps a
+ * profile's name at +0x6C, 32 bytes.  The Save question shows it ("Are you
+ * sure you want to save the profile named %s?", 0x4A3C10), and the save
+ * makes it the profile's name (states 6 and 7 of 0x4E8D30: 0x4E8ED4 and
+ * 0x4E8F17 copy it into 0x83A9E0 with 0x502F40) before the file is written
+ * under it.  Most ways into the save copy the profile's name there first
+ * (0x4F3462, 0x4F35FC, 0x4FD694); those through state 2 do not (0x4FD658:
+ * message 0xDC12AF2E, which 0x4C6457 sends when a memory card operation
+ * fails; 0x4FBA5F), and the field holds what the heap block held before.
+ * The PC game's heap mostly gives the screen the block the last one left,
+ * name and all; ours does not.  A cover shoot (DVD or magazine) whose save
+ * failed (its new 1 MB cover file not written) went on to the profile's save
+ * that way: the question showed the heap's bytes as the name and Yes renamed
+ * the profile to them and saved it in a folder of that name (nfsu2-web,
+ * 2026-10-27 report; tests/scripts/career_cover_name.txt).  The field now
+ * starts as the profile's name (zeros with none loaded), as the old block
+ * held it; the ways that put another name there still do. */
+#define MC_NAME         0x6cu               /* the screen's profile name, 32 bytes */
+#define PROFILE_NAME    GA(0x0083a9e0u)     /* the profile's name, 32 bytes; +0x20 a byte, 1: a profile is loaded */
+void sub_004e8b70_orig(CPU *c);
+void sub_004e8b70(CPU *c){
+    static int stale = -1;
+    if (stale < 0){ const char *e = getenv("NFSU2_TEST_MC_STALE"); stale = e && *e == '1'; }
+    uint32_t self = c->ecx;
+    sub_004e8b70_orig(c);
+    if (!self || !mem_is_committed(self + MC_NAME) || !mem_is_committed(self + MC_NAME + 31u)) return;
+    int named = MR8(PROFILE_NAME + 0x20u) != 0;
+    for (uint32_t i = 0; i < 32u; i++)
+        MR8(self + MC_NAME + i) = stale ? 0xefu : named ? MR8(PROFILE_NAME + i) : 0u;
 }
 
 /* --- sub_004df9c0: a screen's list of the player's cars, a stock car of no type ---
