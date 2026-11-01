@@ -5287,9 +5287,9 @@ static void init_once(CPU *c){
     if (pl && *pl){ g_poselog = rh_fopen(pl); if (g_poselog) rh_fprintf(g_poselog, "kind,host_us,sync_us,id,x,y,z,speed,mode,err,fx,fy,fz,uz,rx,ry,rz\n"); }
     g_frame0 = rh_frame();
     char ids[16];
-    rlog("[roam] free-roam multiplayer ON: id %08x, port %d, %d configured peer(s), room \"%s\", up to %d players, "
+    rlog("[roam] free-roam multiplayer ON: id %08x, port %d, %d configured peer(s), room \"%s\" (%08x), up to %d players, "
                     "%d remote cars, %d Hz, %s, none shown within %d m of the new career's start, quick chat %s%s\n", cf.self_id, port, np,
-            O.room, maxp, O.max_cars, O.rate, O.collide ? "solid cars" : "ghost cars", O.spawn_m, cf.say ? "on" : "off",
+            O.room, cf.room, maxp, O.max_cars, O.rate, O.collide ? "solid cars" : "ghost cars", O.spawn_m, cf.say ? "on" : "off",
             O.test ? ", test harness (loopback only)" : "");
     (void)ids;
     for (int i = 0; i < O.ncrew; i++) rlog("[roam] crew %d: \"%s\" (%08x), colour %06x\n", i + 1, O.crew[i], cf.crews[i], O.crew_rgb[i]);
@@ -5625,6 +5625,30 @@ static void crews_follow(void){
     rlog("[roam] f=%ld crews changed (Game Tools): %d: %08x %08x %08x %08x, colours %06x %06x %06x %06x\n", rh_frame(), n,
          c[0], c[1], c[2], c[3], O.crew_rgb[0], O.crew_rgb[1], O.crew_rgb[2], O.crew_rgb[3]);
 }
+/* The room changed while the game runs (Game Tools' Room, or a friend's Join
+ * there: roam_plat_room): the session leaves the old one (its friends' cars
+ * go as when they leave) and the hub links it in the new one at its next
+ * HELLO.  Not during an outrun, a race lobby or a race: the change waits
+ * until the player is back to driving alone in free roam, where leaving
+ * everyone breaks nothing.  A name that reads as a slur is no room, as at
+ * the start. */
+static uint32_t g_room_gen;
+static void room_follow(void){
+    char name[64];
+    uint32_t gen = roam_plat_room(name);
+    if (!gen || gen == g_room_gen || g_racing || g_du.st != DU_IDLE || g_mp.st != MP_IDLE) return;
+    g_room_gen = gen;
+    name[63] = 0;
+    if (name_blocked(name)){ rlog("[roam] f=%ld the room from Game Tools reads as a slur: no room\n", rh_frame()); name[0] = 0; }
+    uint32_t h = rc_room_hash(name);
+    roam_plat_lock();
+    uint32_t was = g_s.conf.room;
+    int left = rc_set_room(&g_s, h);
+    g_alone_since = 0; g_alone_told = 0;
+    snprintf(O.room, sizeof O.room, "%s", name);
+    roam_plat_unlock();
+    rlog("[roam] f=%ld room changed (Game Tools): %08x -> %08x, %d friend(s) left with the old one\n", rh_frame(), was, h, left);
+}
 /* the player drives in free roam (quick chat's keys and stick are the
  * player's then, native_controls.m): the world runs, free roam's HUD is up with no
  * screen or dialog over it (du_hud: g_mp_hud_at), no race, no trip */
@@ -5637,6 +5661,7 @@ void roam_game_frame(CPU *c){
     if (!O.on) return;
     solid_follow();
     crews_follow();
+    room_follow();
     g_step++;
     uint64_t t0 = rh_ns();
     int64_t host = roam_plat_now_us();

@@ -6,8 +6,9 @@
  * and countdown, Open / Join / Start and Leave buttons, solid or ghost cars
  * and up to four crews with their colours (changed while the game runs:
  * roam_game.c solid_follow, crews_follow; kept in the launcher's settings, the
- * same defaults domain), a phrase to say, and a log of the notices and
- * phrases.  Always: the music folder's controls (radio_native.h): Pause /
+ * same defaults domain), the room (changed while the game runs: roam_game.c
+ * room_follow; kept in the launcher's settings too), a phrase to say, and a
+ * log of the notices and phrases.  Always: the music folder's controls (radio_native.h): Pause /
  * Resume, Next track, Shuffle, and back to the game's own soundtrack.
  *
  * Quick chat (NFSU2_ROAM_SAY=1, the launcher's Quick chat switch): four
@@ -235,6 +236,8 @@ static NSMutableArray<NSString *> *messages;
 static int solid = -1, action;
 static uint32_t crewHashes[4], crewRGB[4], crewGeneration;
 static NSString *crewNames = @"", *crewColours = @"";
+static char roomName[64];
+static uint32_t roomGeneration;
 static const uint32_t crewDefaults[4] = {0x3cd2ff, 0xff50c8, 0xa078ff, 0xff4646};   /* roam_game.c CREW_RGB */
 
 static double now_s(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
@@ -306,6 +309,11 @@ uint32_t roam_plat_crews(uint32_t h[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]){
     pthread_mutex_lock(&mu);
     for (int i = 0; i < RC_CREW_MAX; i++){ h[i] = i < 4 ? crewHashes[i] : 0; rgb[i] = i < 4 ? crewRGB[i] : 0; }
     uint32_t g = crewGeneration; pthread_mutex_unlock(&mu); return g;
+}
+uint32_t roam_plat_room(char name[64]){
+    pthread_mutex_lock(&mu);
+    memcpy(name, roomName, 64); name[63] = 0;
+    uint32_t g = roomGeneration; pthread_mutex_unlock(&mu); return g;
 }
 void roam_plat_say_marks(const uint32_t *ids, const float *xy, int count){
     pthread_mutex_lock(&mu); qMarksCount = 0; qMarksAt = now_s();
@@ -495,6 +503,40 @@ int native_controls_set_crews(const char *names, const char *colours, char *erro
     return 1;
 } }
 
+/* ---- the room ------------------------------------------------------------------------ */
+/* a typed or linked name as it is kept: composed (NFC), its blanks single spaces, the invisible characters out
+ * (the ones rc_room_hash leaves out), trimmed (nfsu2-web's invite.ts tidyName) */
+NSString *native_controls_tidy_name(NSString *s){
+    s = s.precomposedStringWithCanonicalMapping ?: @"";
+    NSMutableString *o = [NSMutableString string]; BOOL gap = NO;
+    for (NSUInteger i = 0; i < s.length; ){
+        NSRange r = [s rangeOfComposedCharacterSequenceAtIndex:i]; NSString *ch = [s substringWithRange:r]; i = NSMaxRange(r);
+        unichar u = [ch characterAtIndex:0];
+        if (u == 0xAD || (u >= 0x200B && u <= 0x200D) || u == 0x2060 || u == 0xFEFF) continue;
+        BOOL blank = [ch rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound ||
+                     u == 0xA0 || u == 0x1680 || (u >= 0x2000 && u <= 0x200A) || u == 0x2028 || u == 0x2029 || u == 0x202F || u == 0x205F || u == 0x3000;
+        if (blank){ gap = o.length > 0; continue; }
+        if (gap) [o appendString:@" "];
+        gap = NO; [o appendString:ch];
+    }
+    return o;
+}
+int native_controls_set_room(const char *name, char *error, size_t capacity){ @autoreleasepool {
+    NSString *s = native_controls_tidy_name(name ? [NSString stringWithUTF8String:name] ?: @"" : @""), *why = nil;
+    const char *u = s.UTF8String;
+    if (strlen(u) > 63) why = @"A room name has up to 63 bytes.";
+    else if ([s rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) why = @"No control characters in a room name.";
+    else if ([s hasPrefix:@"#"] || [s hasPrefix:@";"] || [s rangeOfString:@" #"].location != NSNotFound || [s rangeOfString:@" ;"].location != NSNotFound)
+        why = @"No # or ; after a space in a room name.";
+    else if (s.length && (!rc_room_hash(u) || name_blocked(u))) why = @"Choose another room name.";
+    if (why){ if (error && capacity) snprintf(error, capacity, "%s", why.UTF8String); return 0; }
+    pthread_mutex_lock(&mu);
+    snprintf(roomName, sizeof roomName, "%s", rc_room_hash(u) ? u : "");
+    if (!++roomGeneration) ++roomGeneration;
+    pthread_mutex_unlock(&mu);
+    return 1;
+} }
+
 /* ---- the overlay over the game: the picker and the lines over the cars ------------ */
 @interface GameToolsOverlay : NSView @end
 @implementation GameToolsOverlay
@@ -566,11 +608,11 @@ int native_controls_set_crews(const char *names, const char *colours, char *erro
 @interface GameTools : NSObject <NSWindowDelegate>
 @property NSPanel *panel, *chatPanel;
 @property GameToolsOverlay *overlay;
-@property NSTextField *status, *crewNote, *chatHint, *chatError, *music;
+@property NSTextField *status, *crewNote, *chatHint, *chatError, *music, *roomField;
 @property NSArray<NSTextField *> *crewFields, *groupFields;
 @property NSArray<NSColorWell *> *crewWells;
 @property NSArray<NSPopUpButton *> *groupPhrases;
-@property NSButton *engage, *leave, *collision, *say, *groups, *apply;
+@property NSButton *engage, *leave, *collision, *say, *groups, *apply, *joinRoom;
 @property NSButton *musicOn, *pause, *next, *shuffle;
 @property NSPopUpButton *phrase;
 @property NSTextView *log;
@@ -653,6 +695,16 @@ static NSColor *color_of(unsigned rgb){
     [NSUserDefaults.standardUserDefaults setObject:n forKey:@"LauncherRoamCrew"];
     [NSUserDefaults.standardUserDefaults setObject:c forKey:@"LauncherRoamCrewColours"];
     self.crewNote.stringValue = @"Crews changed. The same name is the same crew for everyone; crews are public.";
+}
+- (void)joinRoom:(id)sender {
+    (void)sender; char error[160];
+    NSString *typed = self.roomField.stringValue ?: @"";
+    if (!native_controls_set_room(typed.UTF8String, error, sizeof error)){ self.crewNote.stringValue = [NSString stringWithUTF8String:error]; return; }
+    NSString *room = native_controls_tidy_name(typed);
+    self.roomField.stringValue = room;
+    [NSUserDefaults.standardUserDefaults setObject:room forKey:@"LauncherRoamRoom"];
+    self.crewNote.stringValue = room.length ? [NSString stringWithFormat:@"Room \u201c%@\u201d: only its players see you. You leave the old room's players now (after a race or a lobby, once it is over).", room]
+                                            : @"No room: you see everyone again. You leave the old room's players now (after a race or a lobby, once it is over).";
 }
 - (void)showCrews:(NSString *)names colours:(NSString *)colours {
     NSArray *n = [names componentsSeparatedByString:@","], *c = [colours componentsSeparatedByString:@","];
@@ -740,7 +792,7 @@ static NSColor *color_of(unsigned rgb){
     self.engage.enabled = self.roam && ([v isEqual:@"spot"] || [v isEqual:@"join"] || [v isEqual:@"full"] || (host && [s[@"names"] count] >= 2));
     self.leave.enabled = self.roam && [v isEqual:@"lobby"];
     self.say.enabled = self.groups.enabled = self.phrase.enabled = net;
-    self.collision.enabled = self.apply.enabled = self.roam;
+    self.collision.enabled = self.apply.enabled = self.joinRoom.enabled = self.roomField.enabled = self.roam;
     for (NSTextField *f in self.crewFields) f.enabled = self.roam;
     for (NSColorWell *w in self.crewWells) w.enabled = self.roam;
     self.chatHint.stringValue = net ? @"Quick chat: 1-4 twice, or the right stick twice" : @"Quick chat is off (in the launcher)";
@@ -779,7 +831,8 @@ static NSColor *color_of(unsigned rgb){
  *                                                the overlay (transparent, the window's size; with DUMPFRAME at the same frame)
  *   GAMETOOLS_CLICK="<frame>:<button title>,..." the panel's button whose title starts so pressed then (spaces as _;
  *                                                a check box changes first); before Apply the crews' fields get
- *   GAMETOOLS_CREWS="<name>:<rrggbb>;..."        these names and colours */
+ *   GAMETOOLS_CREWS="<name>:<rrggbb>;..."        these names and colours
+ *   GAMETOOLS_ROOM="<name>"                      before Join room, the Room box gets it */
 - (void)testAids {
     static int init, nk, ns, nc; static long kf[32], sf[8], cf[8]; static unsigned short kc[32]; static int kup[32]; static char ct[8][32];
     if (!init){ init = 1;
@@ -813,6 +866,8 @@ static NSColor *color_of(unsigned rgb){
             if (![v isKindOfClass:NSButton.class] || ![b.title hasPrefix:want] || !b.enabled) continue;
             if (b == self.collision || b == self.musicOn || b == self.shuffle) b.state = b.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
             const char *cr = getenv("GAMETOOLS_CREWS");
+            const char *rm = getenv("GAMETOOLS_ROOM");
+            if (b == self.joinRoom && rm) self.roomField.stringValue = [NSString stringWithUTF8String:rm] ?: @"";
             if (b == self.apply && cr){
                 NSArray *rows = [[NSString stringWithUTF8String:cr] componentsSeparatedByString:@";"];
                 for (int i = 0; i < 4; i++){
@@ -872,14 +927,19 @@ void native_controls_install(NSWindow *game){
     groups_from_env();
     ui = [GameTools new];
     ui.roam = roam && *roam == '1';
-    NSPanel *p = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 520, 735) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+    NSPanel *p = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 520, 775) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                               backing:NSBackingStoreBuffered defer:NO];
     p.title = @"Game Tools"; p.delegate = ui; p.releasedWhenClosed = NO;
     p.hidesOnDeactivate = YES; p.becomesKeyOnlyIfNeeded = NO;
     p.collectionBehavior = NSWindowCollectionBehaviorFullScreenAuxiliary;
-    p.contentView = [[GameToolsView alloc] initWithFrame:NSMakeRect(0, 0, 520, 735)];
+    p.contentView = [[GameToolsView alloc] initWithFrame:NSMakeRect(0, 0, 520, 775)];
     ui.panel = p;
     NSView *v = p.contentView;
+    label(v, @"Room", NSMakeRect(20, 738, 50, 22));
+    ui.roomField = [[NSTextField alloc] initWithFrame:NSMakeRect(70, 736, 300, 24)];
+    ui.roomField.placeholderString = @"Everyone"; ui.roomField.accessibilityLabel = @"Room";
+    [v addSubview:ui.roomField];
+    ui.joinRoom = button(v, @"Join room", @selector(joinRoom:), NSMakeRect(378, 732, 128, 32));
     ui.groups = button(v, @"Quick chat groups...", @selector(configureChat:), NSMakeRect(16, 690, 190, 30));
     ui.chatHint = label(v, @"", NSMakeRect(214, 694, 290, 24));
     ui.status = label(v, @"", NSMakeRect(20, 500, 480, 175));
@@ -915,6 +975,8 @@ void native_controls_install(NSWindow *game){
     const char *crew = getenv("NFSU2_ROAM_CREW"), *rgb = getenv("NFSU2_ROAM_CREW_RGB"), *col = getenv("NFSU2_ROAM_COLLIDE");
     [ui showCrews:crew ? [NSString stringWithUTF8String:crew] ?: @"" : @"" colours:rgb ? [NSString stringWithUTF8String:rgb] ?: @"" : @""];
     ui.collision.state = !col || atoi(col) ? NSControlStateValueOn : NSControlStateValueOff;
+    const char *room = getenv("NFSU2_ROAM_ROOM");
+    ui.roomField.stringValue = room ? [NSString stringWithUTF8String:room] ?: @"" : @"";
     /* the overlay over the game's picture */
     GameToolsOverlay *o = [[GameToolsOverlay alloc] initWithFrame:game.contentView.bounds];
     o.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;

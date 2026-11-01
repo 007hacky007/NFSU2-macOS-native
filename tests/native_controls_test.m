@@ -87,6 +87,20 @@ int main(int argc, char **argv){ @autoreleasepool {
     assert(roam_plat_crews(h, rgb) == gen);
     assert(native_controls_set_crews("", "", error, sizeof error));
     assert(roam_plat_crews(h, rgb) != gen && !h[0]);
+    /* the room: tidied and checked as the launcher's Room box, a new number each change */
+    char room[64];
+    assert(roam_plat_room(room) == 0);
+    assert(native_controls_set_room("  Blue\xc2\xa0  Room\xe2\x80\x8b ", error, sizeof error));
+    uint32_t rg = roam_plat_room(room); assert(rg && !strcmp(room, "Blue Room"));
+    assert(rc_room_hash(room) == rc_room_hash("blueroom"));
+    assert(native_controls_set_room("\xd0\x9a\xd0\xbe\xd0\xbc\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0", error, sizeof error));   /* UTF-8 */
+    assert(roam_plat_room(room) != rg && !strcmp(room, "\xd0\x9a\xd0\xbe\xd0\xbc\xd0\xbd\xd0\xb0\xd1\x82\xd0\xb0"));
+    rg = roam_plat_room(room);
+    assert(!native_controls_set_room("Blue #comment", error, sizeof error) && strstr(error, "after a space"));
+    assert(!native_controls_set_room("1488", error, sizeof error));
+    { char big[80]; memset(big, 'a', 64); big[64] = 0; assert(!native_controls_set_room(big, error, sizeof error) && strstr(error, "63")); }
+    assert(roam_plat_room(room) == rg);
+    assert(native_controls_set_room("   ", error, sizeof error) && roam_plat_room(room) != rg && room[0] == 0);   /* no room */
     /* the buttons: one action, taken once */
     assert(roam_plat_action() == ROAM_ACTION_NONE);
     native_controls_action(NATIVE_CONTROL_ENGAGE); assert(roam_plat_action() == ROAM_ACTION_ENGAGE); assert(roam_plat_action() == 0);

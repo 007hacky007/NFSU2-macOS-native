@@ -464,6 +464,7 @@ static uint16_t g_hello_core[NN];          /* the core version each node's HELLO
 #define HUB_PORT 47210
 static int g_hub_on, g_hub_link[NN][NN], g_hub_hello[NN], g_hub_snap[NN], g_hub_snapx[NN], g_hub_bye[NN], g_hub_lobby[NN];
 static int g_hub_ncrews[NN]; static uint32_t g_hub_crews[NN][RC_CREW_MAX];   /* each node's crews, as its last HELLO to the hub had them */
+static uint32_t g_hub_room[NN];             /* ...and its room */
 static uint16_t g_hub_flags[NN];            /* ...and its flags: with RC_HF_HUBCREW its lists end in crew marks */
 static rc_lobby g_hub_lobby_last[NN];
 static int g_hub_hello_n[NN]; static uint32_t g_hub_hello_ids[NN][RC_MAX_PEERS];   /* the ids of each node's last HELLO to the hub */
@@ -471,7 +472,7 @@ static int g_hub_mapreq[NN]; static uint16_t g_hub_mapreq_last[NN][3];   /* MAPR
 static int64_t g_hub_next;
 static void hub_in(int from, const uint8_t *b, int len){
     rc_msg m; if (rc_decode(b, len, &m) != RC_OK) return;
-    if (m.h.type == RC_MSG_HELLO){ g_hub_hello[from]++; g_hub_flags[from] = m.h.flags;
+    if (m.h.type == RC_MSG_HELLO){ g_hub_hello[from]++; g_hub_flags[from] = m.h.flags; g_hub_room[from] = m.u.hello.room;
                                    g_hub_ncrews[from] = m.u.hello.n_crews; memcpy(g_hub_crews[from], m.u.hello.crews, sizeof g_hub_crews[from]);
                                    g_hub_hello_n[from] = m.u.hello.n_seen; memcpy(g_hub_hello_ids[from], m.u.hello.seen, sizeof g_hub_hello_ids[from]); }
     else if (m.h.type == RC_MSG_MAPREQ){ g_hub_mapreq[from]++; g_hub_mapreq_last[from][0] = m.u.mapreq.req;
@@ -1717,6 +1718,52 @@ static void t_mapd(void){
     g_hub_on = 0; for (int i = 0; i < 2; i++) g_n[i].conf.hub_ip = 0;
 }
 
+/* ---- 4g. the room changed while the sessions run (Game Tools, a friend's Join): the old room's players go, the new
+ * one's come ---- */
+static void t_room(void){
+    uint32_t blue = rc_room_hash("Blue Room");
+    /* without a hub: three nodes that know each other's addresses */
+    mesh(3, 8); g_now = 0;
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) if (i != j) rc_add_peer(&g_n[i], node_ip(j), node_port(j), 1, 0);
+    drive(3, 4000000);
+    CHECK(est(0) == 2 && est(1) == 2 && est(2) == 2, "room: everyone in no room sees everyone (%d %d %d)", est(0), est(1), est(2));
+    int left = rc_set_room(&g_n[1], blue);
+    CHECK(left == 2 && est(1) == 0 && g_n[1].conf.room == blue, "room: node 1 into Blue Room leaves its 2 friends at once (%d)", left);
+    drive(3, g_now + 4000000);
+    CHECK(est(0) == 1 && est(1) == 0 && est(2) == 1, "room: node 1 alone in Blue Room, 0 and 2 still see each other (%d %d %d)",
+          est(0), est(1), est(2));
+    CHECK(rc_set_room(&g_n[1], blue) == 0, "room: the same room again changes nothing");
+    rc_set_room(&g_n[0], rc_room_hash(" blue room "));
+    drive(3, g_now + 4000000);
+    int k01 = peer_of(0, 0x501);
+    CHECK(est(0) == 1 && est(1) == 1 && est(2) == 0 && k01 >= 0 && g_n[0].peer[k01].state == RC_PS_EST,
+          "room: node 0 joined it (typed another way): 0 and 1 see each other, 2 nobody (%d %d %d)", est(0), est(1), est(2));
+    rc_set_room(&g_n[1], 0); rc_set_room(&g_n[0], 0);
+    drive(3, g_now + 4000000);
+    CHECK(est(0) == 2 && est(1) == 2 && est(2) == 2, "room: back in no room, everyone again (%d %d %d)", est(0), est(1), est(2));
+    /* the world map's markers and the race lobbies of the old room go with it */
+    g_n[2].map_n = 3; g_n[2].map_total = 9; g_n[2].lobbies_n = 2; uint32_t mg = g_n[2].map_gen, lg = g_n[2].lobbies_gen;
+    rc_set_room(&g_n[2], blue);
+    CHECK(g_n[2].map_n == 0 && g_n[2].map_total == 0 && g_n[2].map_gen == mg + 1 && g_n[2].lobbies_n == 0 && g_n[2].lobbies_gen == lg + 1,
+          "room: the old room's map markers and lobbies gone (gens %u %u)", g_n[2].map_gen, g_n[2].lobbies_gen);
+
+    /* with the server's hub: the next HELLO to it names the new room at once (it links by it); a player the hub
+     * still lists from the old room stays a candidate, never established */
+    mesh(3, 8); g_now = 0;
+    g_hub_on = 1; g_hub_next = 0; memset(g_hub_link, 0, sizeof g_hub_link); memset(g_hub_room, 0xff, sizeof g_hub_room);
+    for (int i = 0; i < 3; i++){ g_n[i].conf.hub_ip = HUB_IP; g_n[i].conf.hub_port = HUB_PORT; }
+    hub_links(0, 1); hub_links(0, 2); hub_links(1, 2);
+    drive(3, 4000000);
+    CHECK(est(0) == 2 && est(1) == 2 && g_hub_room[1] == 0, "room, hub: everyone it lists established, node 1 in no room (%08x)", g_hub_room[1]);
+    int hellos = g_hub_hello[1];
+    rc_set_room(&g_n[1], blue);
+    drive(3, g_now + 100000);
+    CHECK(g_hub_hello[1] > hellos && g_hub_room[1] == blue, "room, hub: a HELLO with the new room within a tick (%d -> %d, %08x)", hellos, g_hub_hello[1], g_hub_room[1]);
+    drive(3, g_now + 4000000);
+    CHECK(est(1) == 0 && est(0) == 1 && est(2) == 1, "room, hub: listed but of another room, nobody established with node 1 (%d %d %d)", est(0), est(1), est(2));
+    g_hub_on = 0; for (int i = 0; i < 3; i++) g_n[i].conf.hub_ip = 0;
+}
+
 /* ---- 4e. race lobbies: LOBBY only to a peer that takes them, only for us; the hub's LOBBIES -- */
 static void t_lobby(void){
     mesh(3, 8);
@@ -1832,6 +1879,7 @@ int main(int argc, char **argv){
     t_say();
     t_statex();
     t_crews();
+    t_room();
     t_snapstates();
     t_bigmesh();
     t_interp();

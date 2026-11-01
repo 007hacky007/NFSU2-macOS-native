@@ -436,6 +436,7 @@ struct MultiplayerCard: View {
                     .font(.system(size: 11)).foregroundColor(Theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(model.freeRoam == .off ? 0.5 : 1)
+                InviteRow(model: model)                                   // Invite.swift
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Hear other players' cars").font(.system(size: 12.5)).foregroundColor(Theme.text)

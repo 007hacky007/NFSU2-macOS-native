@@ -133,9 +133,9 @@ Click a picture to see it full size.
 | **Online and free roam** | | |
 | LAN play | Race Macs and Windows PCs on the same network, and host LAN games with the game's own server. | |
 | Online play | The game's Online mode through a community server, since EA's servers are gone. Your place in a full server survives a reconnect. Off by default. | <a href="docs/readme/full/online-lobby.jpg"><img src="docs/readme/thumbs/online-lobby.jpg" width="180" alt="The game's Online lobby"></a> |
-| Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
-| Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
-| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
+| Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms (invite links to share them) and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
+| Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. The game's own tuners still challenge you with other players around. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
+| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby and changes your room while you play. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
 | Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="docs/readme/full/ph-horns-pause-audio-eu.jpg"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
 | Player counts | See how many play on the server, in your room and in your crews before you join. | <a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/f-player-counts.jpg" width="180" alt="Online settings with player counts"></a> |
 | Online statistics | A small panel in the game's corner while you play online: the connection or your place in the server queue, the round trip to the server, and how many play on the server, in free roam, in the Online lobby, in your room and crews. Off by default. | |
@@ -652,7 +652,14 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   prize goes into the career.  Two players near each other can challenge
   each other to an outrun.  **Room**: only players with the same room name
   see each other; **Crew**: names and arrows of your crew in its colour at
-  any distance.  **Outrun tuners with other players** (on by default, as in
+  any distance.  **Invite links**: **Copy Invite Link** under Room copies the
+  browser game's link to your room or to one of your crews
+  (`https://nfsu2.xyz/#room=Blue%20Room`, a crew's with your room after it),
+  and **Paste Invite Link** takes such a link from another player, asks, and
+  sets the room or adds the crew (turning free roam on where it was off).  In
+  a running game, Game Tools' **Room** changes the room at once: the old
+  room's players go and the new one's come within a second (after an outrun,
+  a lobby or a race, once it is over).  **Outrun tuners with other players** (on by default, as in
   the original game): the game's own tuners still come out to challenge you
   while other players are around, so their outruns and unique parts are there
   online too; within 30 m of you a tuner comes first, and at a door or an

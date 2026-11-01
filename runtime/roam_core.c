@@ -1134,6 +1134,26 @@ void rc_set_crews(rc_session *s, const uint32_t *crews, int n){
     s->hub_hello_tx = INT64_MIN / 4;
     if (!s->conf.hub_ip) for (int i = 0; i < RC_TABLE; i++) if (s->peer[i].state != RC_PS_FREE) s->peer[i].last_hello_tx = INT64_MIN / 4;
 }
+static void drop_peer(rc_session *s, int i, const char *why);
+int rc_set_room(rc_session *s, uint32_t room){
+    if (room == s->conf.room) return 0;
+    s->conf.room = room;
+    /* the old room's players go (a listed peer stays a candidate: its HELLO is of the other room now, so it does not
+     * come back), and so do the world map's markers and race lobbies of it until the next question */
+    int n = 0;
+    for (int i = 0; i < RC_TABLE; i++){
+        if (s->peer[i].state == RC_PS_FREE) continue;
+        n += s->peer[i].state == RC_PS_EST;
+        drop_peer(s, i, "the room changed");
+    }
+    s->map_n = 0; s->map_total = 0; s->map_held = 0; s->map_gen++;
+    s->lobbies_n = 0; s->lobbies_gen++;
+    s->noted_room = 0;
+    /* HELLOs due at the next tick: the hub links us in the new room by it; without a hub, the peers hear it */
+    s->hub_hello_tx = INT64_MIN / 4;
+    for (int i = 0; i < RC_TABLE; i++) if (s->peer[i].state != RC_PS_FREE) s->peer[i].last_hello_tx = INT64_MIN / 4;
+    return n;
+}
 int rc_peer_crew(const rc_session *s, int i){
     if (i < 0 || i >= RC_TABLE) return -1;
     const rc_peer *p = &s->peer[i];

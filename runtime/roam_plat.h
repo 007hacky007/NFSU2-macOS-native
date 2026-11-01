@@ -71,6 +71,11 @@ int      roam_plat_solid(void);
  * (0x00RRGGBB, 0: the place's default), and a number that changes with each
  * change (0: not changed, NFSU2_ROAM_CREW and NFSU2_ROAM_CREW_RGB hold) */
 uint32_t roam_plat_crews(uint32_t crews[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]);
+/* the room as the player changed it in the panel while the game runs (its
+ * Room box, or a friend's Join): its name into name (UTF-8 ending in a 0
+ * byte; "" for no room), and a number that changes with each change (0: not
+ * changed, NFSU2_ROAM_ROOM holds) */
+uint32_t roam_plat_room(char name[64]);
 /* quick chat (roam_game.c say_*): whether this platform has it (a picker and
  * the lines over the cars), the phrase the player picked since the last call
  * (-1: none), and a phrase said (by a friend, or by the player) as a JSON

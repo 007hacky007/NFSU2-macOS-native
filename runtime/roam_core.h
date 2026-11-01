@@ -611,6 +611,11 @@ int  rc_peer_crew(const rc_session *s, int i);
  * repeats left out; the hub (or without one, the peers) hears them at the
  * next tick */
 void rc_set_crews(rc_session *s, const uint32_t *crews, int n);
+/* our room changed while the session runs (rc_room_hash, 0: none): every
+ * peer of the old one goes, with the world map's markers and lobbies, and the
+ * hub (or the peers) hears the new one at the next tick.  The number of
+ * established peers that went (0 also for the same room: nothing changes) */
+int  rc_set_room(rc_session *s, uint32_t room);
 /* a DUEL message to the established peer with id `to`, if its HELLO said it
  * takes them; 1 when sent */
 int  rc_send_duel(rc_session *s, uint32_t to, uint8_t op, uint8_t arg, uint32_t duel);
