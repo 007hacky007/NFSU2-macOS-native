@@ -56,10 +56,15 @@ final class LauncherModel: ObservableObject {
     @Published var allCars: Bool { didSet { defaults.set(allCars, forKey: Prefs.allCars) } }
     /// Settings › Check for updates (UpdateCheck.swift); off: no request, no notice.
     @Published var checkUpdates: Bool {
-        didSet { defaults.set(checkUpdates, forKey: Prefs.checkUpdates); checkForUpdates() }
+        didSet { defaults.set(checkUpdates, forKey: Prefs.checkUpdates); if !checkUpdates { checkedByHand = false }; checkForUpdates() }
     }
     /// A newer NFSU2 Builder than the one that made this app: the main window's notice.
     @Published var updateNotice: UpdateCheck.Release?
+    /// Settings › Check Now: asking GitHub, and what the last asking found (nil: not asked here).
+    @Published var updateChecking = false
+    @Published var updateStatus: String?
+    /// Check Now was used: its result shows even with the daily check off.
+    private var checkedByHand = false
     /// The Builder version this app was made with (nil: not made by a Builder, no check).
     var builderStamp: String? = UpdateCheck.stamp(of: Paths.bundle)
     /// How the latest release is asked for (tests put a fake one here).
@@ -756,8 +761,36 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    /// Settings › Check Now: asks GitHub at once, whether the daily check is on or off and
+    /// however recently it asked, and brings back a notice hidden with Not now.
+    func checkForUpdatesNow(now: Date = Date()) {
+        guard builderStamp != nil, !updateChecking else { return }
+        updateChecking = true
+        updateStatus = "Asking GitHub…"
+        fetchRelease(UpdateCheck.releasesAPI) { [weak self] data in
+            let release = data.flatMap(UpdateCheck.parse)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.updateChecking = false
+                guard let r = release, let stamp = self.builderStamp else {
+                    self.updateStatus = "GitHub could not be reached. Try again later."
+                    return
+                }
+                self.defaults.set(now.timeIntervalSince1970, forKey: Prefs.updateLastCheck)
+                self.defaults.set(["version": r.version, "page": r.page.absoluteString,
+                                   "download": r.download?.absoluteString ?? ""], forKey: Prefs.updateLatest)
+                self.defaults.removeObject(forKey: Prefs.updateDismissed)
+                self.checkedByHand = true
+                self.refreshUpdateNotice()
+                self.updateStatus = UpdateCheck.isNewer(r.version, than: stamp)
+                    ? "NFSU2 Builder \(r.version) is available: Download is in the main window."
+                    : "Up to date: this app was made by NFSU2 Builder \(stamp), the newest one."
+            }
+        }
+    }
+
     private func refreshUpdateNotice() {
-        guard checkUpdates, let stamp = builderStamp,
+        guard checkUpdates || checkedByHand, let stamp = builderStamp,
               let latest = defaults.dictionary(forKey: Prefs.updateLatest) as? [String: String],
               let version = latest["version"], let page = latest["page"].flatMap(URL.init(string:)),
               UpdateCheck.isNewer(version, than: stamp),

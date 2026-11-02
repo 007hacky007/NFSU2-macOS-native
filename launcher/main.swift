@@ -256,6 +256,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "update":
             model.game = .ready(GameLocation(exe: exe, embedded: true))
             model.updateNotice = UpdateCheck.Release(version: "1.1.0", page: URL(string: "https://github.com/")!, download: nil)
+        case "update-off":   // Settings › More: the daily check off, Check Now still there
+            model.game = .ready(GameLocation(exe: exe, embedded: true))
+            model.fetchRelease = { _, done in done(nil) }
+            model.builderStamp = "1.0.1"
+            model.checkUpdates = false
+            model.updateStatus = "Up to date: this app was made by NFSU2 Builder 1.0.1, the newest one."
         case "uhud":
             model.game = .ready(GameLocation(exe: exe, embedded: false))
             model.hasUHUDPack = true

@@ -275,6 +275,28 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.fetchRelease = { url, done in requests.append(url); done(nil) }
         m.checkUpdates = true; settle()
         check(requests.count == 4 && m.updateNotice?.version == "1.2.0", "updates: on again asks; a failed answer changes nothing")
+        // Check Now: asks at once, even right after a check, and says what it found
+        m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
+        check(requests.count == 5 && !m.updateChecking && m.updateStatus?.contains("could not be reached") == true
+              && m.updateNotice?.version == "1.2.0", "updates: Check Now asks at once; a failed answer is said and changes nothing")
+        m.fetchRelease = { url, done in requests.append(url); done(answer) }
+        m.dismissUpdate()
+        m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
+        check(requests.count == 6 && m.updateNotice?.version == "1.2.0" && m.updateStatus?.contains("1.2.0 is available") == true,
+              "updates: Check Now brings back a notice hidden with Not now")
+        m.builderStamp = "1.2.0"
+        m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
+        check(requests.count == 7 && m.updateNotice == nil && m.updateStatus?.hasPrefix("Up to date") == true,
+              "updates: Check Now says when this app is the newest")
+        m.builderStamp = "1.0.0"; m.checkUpdates = false; settle()
+        check(m.updateNotice == nil, "updates: off hides a notice Check Now found")
+        let asked = requests.count
+        m.checkForUpdatesNow(now: t0.addingTimeInterval(81 * 3600)); settle()
+        check(requests.count == asked + 1 && m.updateNotice?.version == "1.2.0", "updates: Check Now works with the daily check off")
+        m.builderStamp = nil
+        m.checkForUpdatesNow(now: t0.addingTimeInterval(82 * 3600)); settle()
+        check(requests.count == asked + 1, "updates: Check Now makes no request for an app no Builder made")
+        m.builderStamp = "1.0.0"
 
         // validation
         for ok in ["wss://nfsu2.xyz/lan", "ws://127.0.0.1:8080/lan", "ws://[::1]:8080/lan", "ws://localhost/lan"] { check(OnlineSettings.validServer(ok), "server accepted: \(ok)") }
