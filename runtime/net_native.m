@@ -7,7 +7,11 @@
  * whole list every second (some 190 KB on a busy server) while LAN play is
  * open; LAN play's bound UDP ports go with the hello and {"t":"lan"} ("udp",
  * net_proto.h udp_ports), so the switch sends a LAN broadcast only where a
- * socket takes it.
+ * socket takes it.  What C queued at once goes out as one bundle (kind 32,
+ * the server's lan crate lib.rs), and the hello asks for bundles back
+ * ("bundle":1).  A kick, a ban or a name taken away (closes 4001, 4003,
+ * 4004) keeps the game off the switch for the rest of the session, with a
+ * line in the game saying why.
  *
  * The client side of th0mk's nfsu2-web server's switch (its wire format:
  * net_proto.h, MIT). */
@@ -79,9 +83,18 @@ int native_net_has_claim(void){ return claim_token[0] != 0; }
  * native_net_text.  Weak here: the tests that build this file alone have no Game Tools. */
 __attribute__((weak)) void native_controls_net_friend(const char *json){ (void)json; }
 __attribute__((weak)) void native_controls_net_welcome(int claimed){ (void)claimed; }
+/* the in-game line (Game Tools' notices); weak for the same tests */
+__attribute__((weak)) void native_controls_notice(const char *name, const char *what){ (void)name; (void)what; }
+#define NET_KIND_BUNDLE 32u
+#define NET_BUNDLE_MAX  (32u << 10)      /* bytes in one bundle we send at most (the switch takes 64 KB) */
+#define BUNDLE_MULTI    64u              /* destinations of one bundle entry at most */
+#define CLOSE_KICKED 4001
+#define CLOSE_BANNED 4003
+#define CLOSE_RENAME 4004
 static char native_queue_key;
 static uint32_t ld(const uint32_t *p){ return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
 static void st(uint32_t *p, uint32_t v){ __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
+static uint32_t be16(const uint8_t *p){ return (uint32_t)p[0] << 8 | p[1]; }
 static uint32_t be32(const uint8_t *p){ return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static void put32(uint8_t *p, uint32_t v){ p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
 static void put16(uint8_t *p, uint16_t v){ p[0] = v >> 8; p[1] = v; }
@@ -103,7 +116,7 @@ void native_net_get_status(native_net_status *o){
     NSURLSessionWebSocketTask *socket;
     dispatch_source_t timer;
     NSURLComponents *url;
-    NSString *name, *token, *ticket;
+    NSString *name, *token, *ticket, *removal;
     NSMutableSet<NSNumber *> *peers;
     NSMutableArray<NSData *> *pending;
     uint32_t vip, mask, generation;
@@ -117,6 +130,8 @@ void native_net_get_status(native_net_status *o){
 - (void)connect;
 - (void)receive;
 - (void)lost;
+- (void)stayOff:(NSString *)why;
+- (BOOL)removed:(NSInteger)code;
 - (void)publish:(uint32_t)state;
 @end
 @implementation NFSNativeNet
@@ -198,7 +213,7 @@ void native_net_get_status(native_net_status *o){
     (void)s; (void)protocol; if (socket != task) return;
     connected = YES; lanSent = lan && ld(&lan->want); udpSent = [self lanPorts];
     /* deltas: the peer list's changes after the whole list (a server that sends them to everyone ignores it) */
-    NSMutableDictionary *hello = [@{ @"t": @"hello", @"name": name, @"lan": @((int)lanSent), @"deltas": @1 } mutableCopy];
+    NSMutableDictionary *hello = [@{ @"t": @"hello", @"name": name, @"lan": @((int)lanSent), @"deltas": @1, @"bundle": @1 } mutableCopy];
     if (udpSent) hello[@"udp"] = @(udpSent);
     if (vip && token.length){ hello[@"vip"] = [NSString stringWithFormat:@"%u.%u.%u.%u", vip >> 24, (vip >> 16) & 255, (vip >> 8) & 255, vip & 255]; hello[@"token"] = token; }
     if (ticket.length) hello[@"ticket"] = ticket;
@@ -208,12 +223,20 @@ void native_net_get_status(native_net_status *o){
 - (void)URLSession:(NSURLSession *)s webSocketTask:(NSURLSessionWebSocketTask *)task didCloseWithCode:(NSURLSessionWebSocketCloseCode)code reason:(NSData *)reason {
     (void)s; (void)reason; if (closeWait) dispatch_semaphore_signal(closeWait);
     if (socket != task) return;
-    if (code == 4001 || code == 4003) stopped = YES;
-    [self lost];
+    if (![self removed:code]) [self lost];
+}
+/* the switch's close of a kick, a ban or a name taken away: off the switch for this game. NO for any other close */
+- (BOOL)removed:(NSInteger)code {
+    if (code != CLOSE_KICKED && code != CLOSE_BANNED && code != CLOSE_RENAME) return NO;
+    NSString *what = code == CLOSE_RENAME ? @"The server took your player name away. Pick another name in the launcher to play online again."
+        : code == CLOSE_BANNED ? @"The server banned this player." : @"The server removed this player.";
+    if (removal.length) what = [what stringByAppendingFormat:@" (%@)", removal];
+    [self stayOff:what];
+    return YES;
 }
 - (void)URLSession:(NSURLSession *)s task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     (void)s; (void)error; if (closeWait) dispatch_semaphore_signal(closeWait);
-    if (task == socket) [self lost];
+    if (task == socket && ![self removed:((NSURLSessionWebSocketTask *)task).closeCode]) [self lost];
 }
 - (void)lost {
     NSURLSessionWebSocketTask *old = socket; socket = nil;
@@ -226,6 +249,36 @@ void native_net_get_status(native_net_status *o){
         __atomic_add_fetch(&m->tx_offline_drop, head - tail, __ATOMIC_SEQ_CST); st(&m->tx_tail, head);
     }
     [self publish:NET_PAGE_OFFLINE]; retryAt = now_ms() + backoff; if (backoff < 5000) backoff = MIN(backoff * 2, 5000u);
+}
+/* off the switch for the rest of this game, with a line in it saying why */
+- (void)stayOff:(NSString *)why {
+    stopped = YES; removal = nil;
+    NSURLSessionWebSocketTask *old = socket; socket = nil;
+    [old cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:[@"closed" dataUsingEncoding:NSUTF8StringEncoding]];
+    [self lost]; vip = mask = 0; token = ticket = nil; [self publish:NET_PAGE_OFFLINE];
+    fprintf(stderr, "[network] off the switch for this game: %s\n", why.UTF8String);
+    native_controls_notice("", why.UTF8String);
+}
+/* one frame from the switch ("that player left" is made here from the peer list, never taken from the wire) */
+- (void)takeFrame:(NSData *)d {
+    const uint8_t *b = d.bytes;
+    if (d.length > 16 && b[0] == NET_KIND_LAN_TCP && b[16] == NET_LAN_TCP_GONE) return;
+    if (pending.count || ![self deliver:d]) [pending addObject:d];
+}
+/* what came in one binary message: a bundle's frames (kind 32: [1..3] reserved, then entries of [0] n, [2..3] the
+ * frame's length, n destinations, the frame) or one frame; a frame with no room waits in pending, and so do those
+ * after it */
+- (void)take:(NSData *)data {
+    const uint8_t *b = data.bytes; size_t len = data.length;
+    if (len < 4 || b[0] != NET_KIND_BUNDLE){ [self takeFrame:data]; return; }
+    for (size_t at = 4; at + 4 <= len;){
+        size_t n = b[at], flen = be16(b + at + 2), f = at + 4 + 4 * n;
+        if (f + flen > len) break;
+        NSData *d = [data subdataWithRange:NSMakeRange(f, flen)];
+        if (flen && ((const uint8_t *)d.bytes)[0] == NET_KIND_BUNDLE) break;       /* never a bundle in a bundle */
+        [self takeFrame:d];
+        at = f + flen;
+    }
 }
 - (BOOL)deliver:(NSData *)data {
     if (data.length < 16 || data.length > 16 + NET_MAX_PAYLOAD) return YES;
@@ -275,7 +328,15 @@ void native_net_get_status(native_net_status *o){
         }
     } else if ([type isEqual:@"friend"] && text.length <= 65536){
         native_controls_net_friend(text.UTF8String);
-    } else if ([type isEqual:@"kick"] || [type isEqual:@"ban"]){ stopped = YES; [self lost];
+    } else if ([type isEqual:@"kick"] || [type isEqual:@"ban"] || [type isEqual:@"rename"]){
+        /* its close (4001, 4003, 4004) follows */
+        removal = [m[@"msg"] isKindOfClass:NSString.class] && [m[@"msg"] length] <= 256 ? m[@"msg"] : nil;
+    } else if ([type isEqual:@"races"]){
+        /* a race ban (or its end): the switch drops this player's races from now on; free roam goes on */
+        NSString *msg = [m[@"msg"] isKindOfClass:NSString.class] && [m[@"msg"] length] <= 256 ? m[@"msg"] : @"";
+        NSString *line = [m[@"lifted"] boolValue] ? @"The server's race ban was lifted: races with others again."
+            : [NSString stringWithFormat:@"The server banned this player from races with others%@%@", msg.length ? @": " : @".", msg];
+        native_controls_notice("", line.UTF8String);
     } else if ([type isEqual:@"peers"] && [m[@"peers"] isKindOfClass:NSArray.class]){
         NSMutableSet *next = [NSMutableSet new];
         for (id p in m[@"peers"]) if ([p isKindOfClass:NSDictionary.class] && [p[@"vip"] isKindOfClass:NSNumber.class]) [next addObject:p[@"vip"]];
@@ -308,13 +369,10 @@ void native_net_get_status(native_net_status *o){
     [s receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error){
         dispatch_async(self->queue, ^{
             if (self->socket != s) return; self->receiving = NO;
-            if (error){ [self lost]; return; }
+            /* a close from the switch can reach the receive before the delegate */
+            if (error){ if (![self removed:s.closeCode]) [self lost]; return; }
             if (message.type == NSURLSessionWebSocketMessageTypeString) [self control:message.string];
-            else if (message.data.length > 16 && ((const uint8_t *)message.data.bytes)[0] == NET_KIND_LAN_TCP
-                     && ((const uint8_t *)message.data.bytes)[16] == NET_LAN_TCP_GONE){
-                /* "that player left" is made here from the server's peer list, never taken from the wire */
-            }
-            else if (![self deliver:message.data]) [self->pending addObject:message.data];
+            else [self take:message.data];
             [self receive];
         });
     }];
@@ -353,22 +411,74 @@ void native_net_get_status(native_net_status *o){
     }
     if (now >= pingAt){ pingAt = now + 2000; [self sendJSON:@{ @"t": @"ping", @"id": @(now) }]; }
     if (!welcomed || sending) return;
-    for (unsigned i = 0; i < 2; i++){
-        unsigned selected = (i + nextMailbox) % 2;
-        net_mailbox *m = selected ? roam : lan; if (!m) continue;
-        uint32_t tail = ld(&m->tx_tail); if (tail == ld(&m->tx_head)) continue;
-        net_slot *p = (net_slot *)((uint8_t *)m + m->tx_off + (tail % NET_TX_SLOTS) * NET_SLOT_BYTES);
-        if (p->len > NET_MAX_PAYLOAD || p->kind < NET_KIND_UDP || p->kind > NET_KIND_LAN_ICMP){ st(&m->tx_tail, tail + 1); continue; }
-        uint8_t frame[16 + NET_MAX_PAYLOAD] = { 0 }; frame[0] = p->kind;
-        put32(frame + 4, vip); put32(frame + 8, p->dst_ip); put16(frame + 12, p->src_port); put16(frame + 14, p->dst_port); memcpy(frame + 16, p->data, p->len);
-        NSData *d = [NSData dataWithBytes:frame length:16 + p->len]; sending = YES; nextMailbox = selected ^ 1u; NSURLSessionWebSocketTask *s = socket;
-        [s sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithData:d] completionHandler:^(NSError *error){
-            dispatch_async(self->queue, ^{ if (self->socket != s) return; self->sending = NO;
-                if (error) [self lost]; else { st(&m->tx_tail, tail + 1); [self pump]; }
-            });
-        }];
-        break;
+    /* What both mailboxes queued, one slot from each in turn, as one message: one frame alone as it is, else a
+     * bundle (kind 32). A free-roam datagram (kind 1) of the same bytes as one before it, to another destination,
+     * goes in that one's entry with its destination added (when nothing for that destination came between, so
+     * each destination gets its frames in order): free roam sends each friend the same snapshot. */
+    enum { MAXE = 256 };
+    static uint8_t frames[MAXE][16 + NET_MAX_PAYLOAD];
+    static uint32_t flen[MAXE], dsts[MAXE][BUNDLE_MULTI], ndst[MAXE];
+    uint32_t tails[2] = { lan ? ld(&lan->tx_tail) : 0, roam ? ld(&roam->tx_tail) : 0 };
+    uint32_t heads[2] = { lan ? ld(&lan->tx_head) : 0, roam ? ld(&roam->tx_head) : 0 };
+    unsigned ne = 0; size_t bytes = 4; BOOL more = YES, full = NO;
+    while (more && !full){
+        more = NO;
+        for (unsigned k = 0; k < 2 && !full; k++){
+            unsigned sel = (k + nextMailbox) % 2;
+            net_mailbox *m = sel ? roam : lan; if (!m || tails[sel] == heads[sel]) continue;
+            net_slot *p = (net_slot *)((uint8_t *)m + m->tx_off + (tails[sel] % NET_TX_SLOTS) * NET_SLOT_BYTES);
+            if (p->len > NET_MAX_PAYLOAD || p->kind < NET_KIND_UDP || p->kind > NET_KIND_LAN_ICMP){ tails[sel]++; more = YES; continue; }
+            uint8_t frame[16 + NET_MAX_PAYLOAD] = { 0 }; uint32_t fl = 16 + p->len, dst = p->dst_ip;
+            frame[0] = (uint8_t)p->kind;
+            put32(frame + 4, vip); put32(frame + 8, dst); put16(frame + 12, p->src_port); put16(frame + 14, p->dst_port); memcpy(frame + 16, p->data, p->len);
+            int merged = 0;
+            if (frame[0] == NET_KIND_UDP && dst != NET_BROADCAST){
+                unsigned from = 0;
+                for (unsigned e = 0; e < ne; e++) for (unsigned d = 0; d < ndst[e]; d++) if (dsts[e][d] == dst) from = e + 1;
+                for (unsigned e = from; e < ne && !merged; e++){
+                    if (flen[e] != fl || frames[e][0] != NET_KIND_UDP || dsts[e][0] == NET_BROADCAST || ndst[e] >= BUNDLE_MULTI) continue;
+                    if (memcmp(frames[e], frame, 8) || memcmp(frames[e] + 12, frame + 12, fl - 12)) continue;
+                    size_t grow = ndst[e] == 1 ? 8 : 4;
+                    if (bytes + grow > NET_BUNDLE_MAX){ full = YES; break; }
+                    dsts[e][ndst[e]++] = dst; bytes += grow; merged = 1;
+                }
+            }
+            if (full) break;
+            if (!merged){
+                if (ne == MAXE || bytes + 4 + fl > NET_BUNDLE_MAX){ full = YES; break; }
+                memcpy(frames[ne], frame, fl); flen[ne] = fl; dsts[ne][0] = dst; ndst[ne] = 1; ne++; bytes += 4 + fl;
+            }
+            tails[sel]++; more = YES;
+        }
     }
+    if (!ne){
+        for (unsigned k = 0; k < 2; k++){ net_mailbox *m = k ? roam : lan; if (m && tails[k] != ld(&m->tx_tail)) st(&m->tx_tail, tails[k]); }
+        return;
+    }
+    NSData *d;
+    if (ne == 1 && ndst[0] == 1) d = [NSData dataWithBytes:frames[0] length:flen[0]];
+    else {
+        NSMutableData *b = [NSMutableData dataWithLength:bytes]; uint8_t *o = b.mutableBytes; size_t at = 4;
+        o[0] = NET_KIND_BUNDLE;
+        for (unsigned e = 0; e < ne; e++){
+            uint32_t n = ndst[e] > 1 ? ndst[e] : 0;
+            o[at] = (uint8_t)n; put16(o + at + 2, (uint16_t)flen[e]);
+            for (uint32_t j = 0; j < n; j++) put32(o + at + 4 + 4 * j, dsts[e][j]);
+            memcpy(o + at + 4 + 4 * n, frames[e], flen[e]);
+            at += 4 + 4 * n + flen[e];
+        }
+        d = b;
+    }
+    sending = YES; nextMailbox ^= 1u; NSURLSessionWebSocketTask *s = socket;
+    uint32_t lanTail = tails[0], roamTail = tails[1]; net_mailbox *L = lan, *R = roam;
+    [s sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithData:d] completionHandler:^(NSError *error){
+        dispatch_async(self->queue, ^{ if (self->socket != s) return; self->sending = NO;
+            if (error){ [self lost]; return; }
+            if (L) st(&L->tx_tail, lanTail);
+            if (R) st(&R->tx_tail, roamTail);
+            [self pump];
+        });
+    }];
 }
 @end
 static NFSNativeNet *transport;

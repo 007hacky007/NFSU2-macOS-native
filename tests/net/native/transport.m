@@ -52,6 +52,33 @@ int main(int argc, char **argv){
         int second = argc > 2 && !strcmp(argv[2], "second");
         assert(m->vip == (second ? 0x0a4d0003u : 0x0a4d0002u));
         assert(m->netmask == 0xffffff00u);
+        const char *mode = argc > 2 ? argv[2] : "";
+        if (!strcmp(mode, "bundlein")){
+            for (int i = 0; i < 500 && __atomic_load_n(&m->rx_head, __ATOMIC_SEQ_CST) < 2; i++) usleep(10000);
+            assert(m->rx_head == 2);
+            net_slot *a = (net_slot *)((uint8_t *)m + m->rx_off), *b = (net_slot *)((uint8_t *)m + m->rx_off + NET_SLOT_BYTES);
+            assert(a->src_ip == 0x0a4d0003u && a->len == 3 && !memcmp(a->data, "one", 3));
+            assert(b->src_ip == 0x0a4d0004u && b->len == 3 && !memcmp(b->data, "two", 3));
+            puts("native bundle from the switch passed"); native_net_shutdown(); return 0;
+        }
+        if (!strcmp(mode, "multi")){
+            for (unsigned i = 0; i < 3; i++){
+                net_slot *t = (net_slot *)((uint8_t *)m + m->tx_off + i * NET_SLOT_BYTES);
+                memset(t, 0, sizeof *t); t->kind = NET_KIND_UDP; t->dst_ip = 0x0a4d0003u + i; t->src_port = t->dst_port = 47210;
+                t->len = 4; memcpy(t->data, "snap", 4);
+            }
+            __atomic_store_n(&m->tx_head, 3, __ATOMIC_SEQ_CST);
+            for (int i = 0; i < 500 && __atomic_load_n(&m->tx_tail, __ATOMIC_SEQ_CST) != 3; i++) usleep(10000);
+            assert(m->tx_tail == 3);
+            puts("native bundle to several players passed"); native_net_shutdown(); return 0;
+        }
+        if (!strcmp(mode, "rename")){
+            for (int i = 0; i < 500 && __atomic_load_n(&m->page_state, __ATOMIC_SEQ_CST) == NET_PAGE_ONLINE; i++) usleep(10000);
+            assert(m->page_state != NET_PAGE_ONLINE);
+            usleep(1600000);
+            assert(m->page_state != NET_PAGE_ONLINE && m->vip == 0);
+            puts("native rename close passed"); native_net_shutdown(); return 0;
+        }
         net_slot *s = (net_slot *)((uint8_t *)m + m->tx_off);
         s->kind = NET_KIND_UDP; s->dst_ip = second ? 0x0a4d0002u : 0x0a4d0003u; s->src_port = s->dst_port = 47210;
         s->len = 4; memcpy(s->data, second ? "pong" : "ping", 4);

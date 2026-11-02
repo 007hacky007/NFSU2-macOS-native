@@ -81,13 +81,95 @@ def handshake(conn):
     kind, data = receive(conn)
     hello = json.loads(data)
     assert kind == 1 and hello["t"] == "hello" and hello["name"] == "fixture-player"
-    assert not hello.get("bundle") and not hello.get("compact")
+    assert hello.get("bundle") == 1 and not hello.get("compact")
     assert hello.get("deltas") == 1, "the hello asks for the peer list's changes"
     assert hello.get("claim") == CLAIM_EXPECTED[0], "the hello names the launcher's claim token, and only then"
     return hello, path
 
 
 SET = 0x80000000
+
+
+def unbundle(data):
+    """the frames of one binary message: a bundle's (kind 32) or the frame itself"""
+    if data[0] != 32:
+        return [data]
+    out, at = [], 4
+    while at + 4 <= len(data):
+        n, size = data[at], struct.unpack("!H", data[at + 2:at + 4])[0]
+        dsts = [struct.unpack("!I", data[at + 4 + 4 * j:at + 8 + 4 * j])[0] for j in range(n)]
+        frame = data[at + 4 + 4 * n:at + 4 + 4 * n + size]
+        assert len(frame) == size
+        out += [frame[:8] + struct.pack("!I", d) + frame[12:] for d in dsts] if n else [frame]
+        at += 4 + 4 * n + size
+    assert at == len(data), "trailing bytes in a bundle"
+    return out
+
+
+def frames(conn):
+    """the next binary message's frames, answering pings"""
+    while True:
+        kind, data = receive(conn)
+        if kind == 2:
+            return unbundle(data)
+        if kind == 1:
+            control = json.loads(data)
+            if control.get("t") == "ping":
+                send(conn, {"t": "pong", "id": control["id"]})
+        if kind == 8:
+            raise EOFError("closed")
+
+
+def bundle(frames_):
+    out = bytes([32, 0, 0, 0])
+    for f in frames_:
+        out += bytes([0, 0]) + struct.pack("!H", len(f)) + f
+    return out
+
+
+def close(conn, code, reason=b""):
+    payload = struct.pack("!H", code) + reason
+    conn.sendall(b"\x88" + bytes([len(payload)]) + payload)
+
+
+def serve_extra(listener, scenario):
+    conn, _ = listener.accept()
+    with conn:
+        conn.settimeout(10)
+        handshake(conn)
+        send(conn, {"t": "welcome", "vip": 0x0A4D0002, "mask": "255.255.255.0", "token": "fixture-only-token"})
+        send(conn, {"t": "peers", "peers": [{"vip": 0x0A4D0002}, {"vip": 0x0A4D0003}]})
+        if scenario == "bundlein":
+            a = struct.pack("!B3xIIHH", 1, 0x0A4D0003, 0x0A4D0002, 47210, 47210) + b"one"
+            b = struct.pack("!B3xIIHH", 1, 0x0A4D0004, 0x0A4D0002, 47210, 47210) + b"two"
+            send(conn, bundle([a, b]), binary=True)
+        elif scenario == "multi":
+            # the same datagram to three friends: one entry, three destinations
+            got = []
+            while len(got) < 3:
+                got += frames(conn)
+            assert sorted(struct.unpack("!I", f[8:12])[0] for f in got) == [0x0A4D0003, 0x0A4D0004, 0x0A4D0005]
+            assert all(f[16:] == b"snap" for f in got)
+        elif scenario == "rename":
+            time.sleep(0.5)  # the client sees itself online first
+            send(conn, {"t": "rename", "name": "fixture-player", "msg": "fixture"})
+            close(conn, 4004, b"rename")
+            # the client stays off the switch: no new connection
+            listener.settimeout(1.5)
+            try:
+                extra, _ = listener.accept()
+                extra.close()
+                raise AssertionError("the client came back after a rename close")
+            except socket.timeout:
+                pass
+            finally:
+                listener.settimeout(None)
+            return
+        try:
+            while receive(conn)[0] != 8:
+                pass
+        except (EOFError, ConnectionResetError, socket.timeout):
+            pass
 
 
 def serve(listener, resume=False, queued=False, idle=False, burst=False, big=False, lanports=False):
@@ -129,6 +211,7 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
                     send(conn, {"t": "pong", "id": control["id"]})
                 continue
             assert kind == 2
+            data = unbundle(data)[0]
             protocol, source, destination, sport, dport = struct.unpack("!B3xIIHH", data[:16])
             assert (protocol, source, destination, sport, dport, data[16:]) == (1, 0x0A4D0002, 0x0A4D0003, 47210, 47210, b"ping")
             reply = struct.pack("!B3xIIHH", 1, destination, source, dport, sport) + b"pong"
@@ -151,10 +234,11 @@ def serve(listener, resume=False, queued=False, idle=False, burst=False, big=Fal
             counts = {1: 0, 3: 0}
             previous = None
             run = 0
+            queue = []
             for _ in range(256):
-                kind, payload = receive(conn)
-                while kind != 2:
-                    kind, payload = receive(conn)
+                while not queue:
+                    queue = frames(conn)
+                payload = queue.pop(0)
                 assert payload[16:] == b"load"
                 counts[payload[0]] += 1
                 run = run + 1 if previous == payload[0] else 1
@@ -198,10 +282,7 @@ def serve_two(listener):
         for index, conn in enumerate(clients):
             send(conn, {"t": "welcome", "vip": 0x0A4D0002 + index, "mask": "255.255.255.0", "token": "fixture-token"})
         for sender, receiver, payload in ((0, 1, b"ping"), (1, 0, b"pong")):
-            while True:
-                kind, data = receive(clients[sender])
-                if kind == 2:
-                    break
+            data = frames(clients[sender])[0]
             assert data[16:] == payload
             assert struct.unpack("!I", data[8:12])[0] == 0x0A4D0002 + receiver
             send(clients[receiver], data, binary=True)
@@ -225,10 +306,13 @@ def main():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(2)
-        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "lanports", "atexit"):
+        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "lanports", "atexit", "bundlein", "multi", "rename"):
             failure = []
             def worker():
                 try:
+                    if scenario in ("bundlein", "multi", "rename"):
+                        serve_extra(listener, scenario)
+                        return
                     serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst", big=scenario == "big", lanports=scenario == "lanports")
                 except BaseException as error:
                     failure.append(error)
@@ -252,7 +336,7 @@ def main():
                 os.close(read_end)
                 assert result.returncode == 0
             else:
-                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "lanports", "atexit") else []), timeout=20)
+                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "lanports", "atexit", "bundlein", "multi", "rename") else []), timeout=20)
                 assert result.returncode == 0
             thread.join(timeout=5)
             if failure:
