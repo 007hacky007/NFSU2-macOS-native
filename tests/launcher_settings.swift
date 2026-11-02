@@ -30,7 +30,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         let domain = ProcessInfo.processInfo.processName
         let d = UserDefaults.standard
         d.removePersistentDomain(forName: domain)
-        let launched = ["HUDPOS", "NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_FPS", "NFSU2_DISCORD", "NFSU2_DISCORD_LARGE_IMAGE",
+        let launched = ["NFSU2_UNIQUES", "HUDPOS", "NFSU2_PAD", "NFSU2_PAD_DEADZONE", "NFSU2_FPS", "NFSU2_DISCORD", "NFSU2_DISCORD_LARGE_IMAGE",
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
                         "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED",
@@ -46,6 +46,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
               "defaults: no Discord, no picture, offline, default server, no free roam, no horn")
         check(!m.netStats, "defaults: no Online statistics panel")
         check(!m.hiddenRaces, "defaults: hidden races hidden, as in the original game")
+        check(!m.uniques, "defaults: unique parts only for the car that won them, as in the original game")
         check(m.exposure == "0" && m.whiteLevel == "100", "defaults: exposure 0 and white level 100 %, the game's picture")
         check(m.controller && abs(m.stickDeadzone - 0.10) < 1e-9 && m.music == "game" && m.lanTiming == "pc" && !m.seedRegistry && m.reflections == .original,
               "defaults: controller on, dead zone 0.10, game music, PC LAN timing, no registry seed, original reflections")
@@ -119,6 +120,13 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(env("NFSU2_SHOW_HIDDEN_RACES") == "1", "play: Show hidden races (NFSU2_SHOW_HIDDEN_RACES=1)")
         m.hiddenRaces = false
         for k in launched { unsetenv(k) }
+        m.play()
+        check(env("NFSU2_UNIQUES") == nil, "play: unique parts off, no variable")
+        for k in launched { unsetenv(k) }
+        m.uniques = true; m.play()
+        check(env("NFSU2_UNIQUES") == "1", "play: unique parts for every car (NFSU2_UNIQUES=1)")
+        m.uniques = false
+        for k in launched { unsetenv(k) }
         m.exposure = "+0.5"; m.whiteLevel = "80"; m.play()
         check(env("NFSU2_EXPOSURE") == "+0.5" && env("NFSU2_WHITE_LEVEL") == "80", "play: exposure and white level")
         m.exposure = "0"; m.whiteLevel = "100"
@@ -168,7 +176,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.headlights = "all"; m.reflections = .sharpest; m.reflectSky = true; m.reflectLights = true; m.reflectDetail = true
         m.picture = PictureOptions.all.map { $0.choices.count - 1 }; m.online = true; m.freeRoam = .ghost; m.hearCars = true
         m.horn = .train; m.allCars = true; m.garage = true; m.intro = "skippable"; m.discord = true; m.discordImage = "x"
-        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true; m.hiddenRaces = true
+        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true; m.hiddenRaces = true; m.uniques = true
         m.exposure = "-1.0"; m.whiteLevel = "40"
         let changed = Prefs.originalGame.filter { !$0.isSet(m) }.count
         check(!m.isOriginalGame && changed >= 20, "original game: \(changed) of \(Prefs.originalGame.count) options changed")
@@ -176,6 +184,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.isOriginalGame && Prefs.originalGame.allSatisfy { $0.isSet(m) }, "original game: Restore sets all \(Prefs.originalGame.count) options")
         check(!m.netStats && !LauncherModel().netStats, "original game: Online statistics off, and kept off")
         check(!m.hiddenRaces, "original game: hidden races hidden")
+        check(!m.uniques, "original game: unique parts for the car that won them")
         check(m.exposure == "0" && m.whiteLevel == "100", "original game: exposure 0, white level 100 %")
         check(LauncherModel().isOriginalGame, "original game: still so at the next start")
 

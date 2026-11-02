@@ -444,6 +444,7 @@
 #define GA_0x0085ef70u 0x0085ef70u   /* operand pair */
 #define GA_0x00861e74u 0x00861e74u   /* operand pair */
 #define GA_0x00862308u 0x00862308u   /* between pairs 0086221c and 0086262c (delta +0x0) */
+#define GA_0x0086262cu 0x0086262cu   /* operand pair */
 #define GA_0x00862838u 0x00862838u   /* operand pair */
 #define GA_0x00863448u 0x00863448u   /* operand pair */
 #define GA_0x00863470u 0x00863470u   /* operand pair */
@@ -818,6 +819,10 @@
 #define sub_005114f0_orig sub_005114f0_orig
 #define sub_005114f0_m sub_005114f0_m
 #define sub_005114f0_orig_m sub_005114f0_orig_m
+#define sub_00515500 sub_00515500
+#define sub_00515500_orig sub_00515500_orig
+#define sub_00515500_m sub_00515500_m
+#define sub_00515500_orig_m sub_00515500_orig_m
 #define sub_005156f0 sub_005156f0
 #define sub_005156f0_orig sub_005156f0_orig
 #define sub_005156f0_m sub_005156f0_m

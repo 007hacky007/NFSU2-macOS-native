@@ -73,6 +73,7 @@ final class LauncherModel: ObservableObject {
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
     @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
     @Published var hiddenRaces: Bool { didSet { defaults.set(hiddenRaces, forKey: Prefs.hiddenRaces) } }
+    @Published var uniques: Bool { didSet { defaults.set(uniques, forKey: Prefs.uniques) } }
     @Published var photoMode: Bool { didSet { defaults.set(photoMode, forKey: Prefs.photoMode) } }
     @Published var driftMode: Bool { didSet { defaults.set(driftMode, forKey: Prefs.driftMode) } }
     @Published var uhud: Bool { didSet { defaults.set(uhud, forKey: Prefs.uhud) } }
@@ -210,6 +211,7 @@ final class LauncherModel: ObservableObject {
         discord = defaults.bool(forKey: Prefs.discord)
         garage = defaults.bool(forKey: Prefs.garage)
         hiddenRaces = defaults.bool(forKey: Prefs.hiddenRaces)
+        uniques = defaults.bool(forKey: Prefs.uniques)
         photoMode = defaults.bool(forKey: Prefs.photoMode)
         driftMode = defaults.bool(forKey: Prefs.driftMode)
         uhud = defaults.bool(forKey: Prefs.uhud)
@@ -381,6 +383,7 @@ final class LauncherModel: ObservableObject {
         if discord && !discordImage.isEmpty && DiscordImage.valid(discordImage) { setenv("NFSU2_DISCORD_LARGE_IMAGE", discordImage, 0) }
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
         if hiddenRaces { setenv("NFSU2_SHOW_HIDDEN_RACES", "1", 0) }   // hiddenraces.c; one set by hand wins
+        if uniques { setenv("NFSU2_UNIQUES", "1", 0) }          // uniques.c; one set by hand wins
         if photoMode { setenv("NFSU2_PHOTO", "1", 0) }          // photo.c, native_scene.m; one set by hand wins
         if driftMode { setenv("NFSU2_DRIFT", "1", 0) }          // drift.c; one set by hand wins
         // Apple's Metal Performance HUD, drawn by macOS over the game's window (no engine
