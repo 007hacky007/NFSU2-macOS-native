@@ -2,6 +2,20 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.3 - 2026-11-03
+
+### Added
+- Unique parts for every car: once Caleb is beaten, the career shops sell the unique visual parts, the wide body kits too, for every car, as the game already does in Customize mode. A switch in Settings, Game; off as in the original game.
+
+### Changed
+- The game sends the server fewer messages: what it has to send at once goes in one bundle, as the browser version does, and it asks for bundles back.
+
+### Fixed
+- Music and sound no longer cut out on busy Macs: the game's sound loops wake on time (the original project's Audiofix).
+- Other cars' headlights no longer light the street under an overpass.
+- A kick, a ban or a name taken away by the server now says so in the game and keeps the game off the server for that session, instead of reconnecting again and again.
+- A career whose saved car position was broken (a black screen under the HUD after loading) starts at the airport's car park again.
+
 ## 1.0.2 - 2026-11-02
 
 ### Added
