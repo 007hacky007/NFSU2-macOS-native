@@ -124,9 +124,26 @@ static int replay(int rate){
 
 /* the pacer's slot: waited for after Present (by default), FrameTimeUpdate then takes it without a sleep of its
  * own; with NFSU2_PACE_AT=frame FrameTimeUpdate sleeps as before.  Either way one slot a frame, the same slot. */
+/* the worst overshoot of a sleep of a quarter period on this machine (ns): a shared CI machine's can be several
+ * frames, where no pacer keeps every slot */
+static int64_t sleep_overshoot(int64_t P){
+    int64_t worst = 0;
+    for (int i = 0; i < 20; i++){
+        struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+        guest_sleep_ns((long)(P / 4));
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        int64_t d = (int64_t)(b.tv_sec - a.tv_sec) * 1000000000 + (b.tv_nsec - a.tv_nsec) - P / 4;
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
 static int present(int rate){
     int at_present = pace_at_present();
     int64_t P = (int64_t)llround(1e9 / rate);
+    /* the slot checks need sleeps that keep time; the order and count checks hold anywhere */
+    int64_t over = sleep_overshoot(P);
+    int timed = over < P / 2 && !getenv("FRAMERATE_TEST_UNTIMED");     /* (the variable: that branch tested anywhere) */
+    if (!timed) printf("NOTE pacing at %d fps: this machine's sleeps overshoot by up to %.1f ms, the slot timing checks are left out\n", rate, over / 1e6);
     uint64_t slept, missed;
     g_pace_rate = 0; g_last_slot = 0; g_taken_waits = 0;
     CHECK(pace(rate, &slept, &missed) == 1, "the first frame takes a slot");
@@ -139,13 +156,15 @@ static int present(int rate){
         if (pre) waits++;
         int n = pace(rate, &slept, &missed);
         if (slept) own++;
-        CHECK(n == 1 && missed == 0, "frame %d: %d slots, %llu missed", i, n, (unsigned long long)missed);
-        CHECK(g_last_slot == s0 + i * P, "frame %d: slot %lld, expected %lld", i, (long long)(g_last_slot - s0), (long long)(i * P));
+        if (timed){
+            CHECK(n == 1 && missed == 0, "frame %d: %d slots, %llu missed", i, n, (unsigned long long)missed);
+            CHECK(g_last_slot == s0 + i * P, "frame %d: slot %lld, expected %lld", i, (long long)(g_last_slot - s0), (long long)(i * P));
+        } else CHECK(n >= 1, "frame %d: %d slots", i, n);
         CHECK(g_pace_rate == 0, "frame %d: the wait after Present once a frame", i);
     }
     CHECK(g_taken_waits == 8, "the renderer's taking waited for after each paced Present (%d)", g_taken_waits);
-    if (at_present) CHECK(waits == 8 && own == 0, "the wait after Present slept %d times, FrameTimeUpdate %d", waits, own);
-    else CHECK(waits == 0 && own == 8, "NFSU2_PACE_AT=frame: FrameTimeUpdate slept %d times, after Present %d", own, waits);
+    if (at_present) CHECK((timed ? waits == 8 : waits >= 1) && own == 0, "the wait after Present slept %d times, FrameTimeUpdate %d", waits, own);
+    else CHECK(waits == 0 && (timed ? own == 8 : own >= 1), "NFSU2_PACE_AT=frame: FrameTimeUpdate slept %d times, after Present %d", own, waits);
     /* a Present of no paced frame (a loading screen) never waits */
     g_taken_waits = 0; hfr_after_present();
     CHECK(g_taken_waits == 0 && g_pre_target == 0, "a Present without a paced frame does not wait");

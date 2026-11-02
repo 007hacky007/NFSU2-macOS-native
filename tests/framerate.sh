@@ -39,6 +39,9 @@ tries(){ for t in 1 2 3; do if runx "$@"; then return 0; fi; echo "  (try $t of 
 tries "present 60"
 tries "present 120"
 tries "present 60" NFSU2_PACE_AT=frame
+# the checks a machine whose sleeps overshoot still runs (as on a shared CI machine)
+runx "present 120" FRAMERATE_TEST_UNTIMED=1
+runx "present 60" NFSU2_PACE_AT=frame FRAMERATE_TEST_UNTIMED=1
 # replays above 60 fps: WorldTimer from the game's own clock (runtime/framerate.c, sub_0057a0f0)
 runx "replay 120"
 runx "replay 240"
