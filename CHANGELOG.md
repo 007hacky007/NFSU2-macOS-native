@@ -2,7 +2,7 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
-## Unreleased
+## 1.0.2 - 2026-11-02
 
 ### Added
 - Check Now in Settings, More asks GitHub for a newer NFSU2 Builder at once, instead of waiting for the daily check, and says what it found. It works with the daily check off too, and brings back an update notice you hid with Not now.
