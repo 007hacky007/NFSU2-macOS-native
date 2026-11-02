@@ -226,14 +226,18 @@ clear_attrs(){
 }
 
 VER="$(date +%Y.%m.%d)"
-# Version tracking (see link.sh): shows in Finder like "2.0 (2026.10.18)".
+# The version the launcher and Finder show, like "1.0.1 (2026.11.02)": the Builder's
+# version for an app NFSU2 Builder made, else the engine generation (VERSION, see
+# link.sh) as "2.0".
 VERSION="$(tr -cd '0-9' < "$ROOT/VERSION" 2>/dev/null)"; VERSION="${VERSION:-0}"
+APP_VERSION="${VERSION}.0"
 # Builder version (NFSBuilderVersion) and the copyright line about the game data
 BUILDER_KEY=""
 case "${BUILDER_VERSION:-}" in
   "") ;;
   *[!0-9A-Za-z.+-]*) echo "BUILDER_VERSION must be a version like 1.1.0"; exit 1 ;;
-  *) BUILDER_KEY="<key>NFSBuilderVersion</key>       <string>${BUILDER_VERSION}</string>" ;;
+  *) BUILDER_KEY="<key>NFSBuilderVersion</key>       <string>${BUILDER_VERSION}</string>"
+     APP_VERSION="$BUILDER_VERSION" ;;
 esac
 if [ "$EMBED" = 1 ]; then
   GAME_NOTE="The game data inside this bundle comes from the player's own copy of the game."
@@ -251,7 +255,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>          <string>${BID}</string>
   <key>CFBundleIconFile</key>            <string>AppIcon</string>
   <key>CFBundlePackageType</key>         <string>APPL</string>
-  <key>CFBundleShortVersionString</key>  <string>${VERSION}.0</string>
+  <key>CFBundleShortVersionString</key>  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>             <string>${VER}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key>      <string>11.0</string>

@@ -348,6 +348,7 @@ class EmbeddedBuildTests(unittest.TestCase):
         with open(app / 'Contents/Info.plist', 'rb') as f:
             info = plistlib.load(f)
         self.assertEqual(info['NFSBuilderVersion'], '1.1.0')
+        self.assertEqual(info['CFBundleShortVersionString'], '1.1.0', 'the launcher and Finder show the Builder version')
         self.assertIn('inside this bundle', info['NSHumanReadableCopyright'])
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
                        capture_output=True)
