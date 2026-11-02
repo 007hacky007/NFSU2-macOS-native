@@ -1086,7 +1086,10 @@ int ps_to_msl_ex2(const VSProg *p, int id, char *out, size_t cap, unsigned cubem
             EMIT("    float hd = abs(hp.w) > 1e-8 ? hp.w : 1.0;\n");
             EMIT("    float3 h1 = s1.sample(sm1, hp.xy / hd).rgb;\n");
             EMIT("    float3 h2 = s2.sample(sm2, float2(H.s * hp.w + H.o, tc2.y)).rgb;\n");
-            EMIT("    r[%d].rgb += hp.w > 0.0 ? h1 * h2 * H.l[hk].col.rgb : float3(0.0);\n  }\n", RN(x->dst));
+            /* hp.z: the lit point's height above car k's road plane (headlights.c): no light
+             * on a street under an overpass (as nfsu2-web's vsemu_wgsl.inc W_HL) */
+            EMIT("    float road = saturate((hp.z + 3.5 + 0.06 * hp.w) / 1.5);\n");
+            EMIT("    r[%d].rgb += hp.w > 0.0 ? h1 * h2 * H.l[hk].col.rgb * road : float3(0.0);\n  }\n", RN(x->dst));
         }
     }
     /* The ps_1_x result is in r0, ps_2_0's in oC0.  Return whichever was written. */

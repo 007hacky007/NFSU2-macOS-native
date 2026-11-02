@@ -107,6 +107,10 @@ int main(void) { @autoreleasepool {
     for (int i = 0; i < 4; i++) block.l[0].t[i * 5] = 1;
     block.l[0].col[0] = 0.3f; block.l[0].col[1] = 0.4f; block.l[0].col[2] = 0.5f;
     pixel(device, lit, block, more, 0);
+    /* the lit point 10 m below the car's road plane (the z column, headlights.c): a street under an overpass, no light */
+    block.l[0].t[10] = 0; block.l[0].t[11] = -10; pixel(device, lit, block, base, 0);
+    block.l[0].t[11] = -1; pixel(device, lit, block, more, 0);    /* 1 m below: within the allowance, lit */
+    block.l[0].t[10] = 1; block.l[0].t[11] = 0;
     block.l[0].t[15] = -1; pixel(device, lit, block, base, 0);
     uint32_t unrelated[sizeof light_shader / 4]; memcpy(unrelated, light_shader, sizeof unrelated);
     unrelated[14] = 0xa0e40001; /* c1 is not the world-headlight colour c0. */
@@ -126,5 +130,5 @@ int main(void) { @autoreleasepool {
     }
     const float bounded[3] = {0.38f, 0.38f, 0.38f};
     pixel(device, lit, block, bounded, 0);
-    puts("headlights_shader: GPU pixels preserve off/unrelated shaders, add bounded lights with projector transform/falloff and reject behind-projector light");
+    puts("headlights_shader: GPU pixels preserve off/unrelated shaders, add bounded lights with projector transform/falloff reject behind-projector light and cut it below the car's road");
 } }
