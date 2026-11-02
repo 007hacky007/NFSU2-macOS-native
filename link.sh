@@ -45,7 +45,7 @@ esac
 # a stale lift links but silently skips a hook)
 "$ROOT/.venv/bin/python" tools/genlists.py check "${BUILD:-eu}" $GEN
 
-CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead regional powerunits language headlights discord garage texpack reflect visual framerate module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace horn hornmenu racehorn carsfx xpatch highfps radio gamefix hlefix watchdog regseed display lifecycle photo drift keyboard dinput_kbd dinput_pad dikeys roamfix dinput_ff autotest career hiddenraces uniques netstats_core"
+CSRC="mem dispatch genexec win32 win32_ext com debug res fileio overrides d3dx_hle vsemu enhance perflog wsfov gheap sndlead regional powerunits language headlights discord garage texpack reflect visual framerate module modheap winsock net_vlan net_relay online racenet netrace olfilter lobbyclick roam roam_core roam_bsd roam_game mprace horn hornmenu racehorn carsfx xpatch highfps radio gamefix hlefix watchdog regseed display lifecycle photo drift keyboard dinput_kbd dinput_pad dikeys roamfix dinput_ff autotest career hiddenraces uniques carspot netstats_core"
 MSRC="metal audio bundle gamepad fpscounter netstats picture texrep net_native radio_native native_scene keyboard_mac native_controls rumble"
 FW="-lm -framework Cocoa -framework Metal -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreServices -framework AudioToolbox -framework CoreAudio -framework GameController -framework AVFoundation -framework Carbon -framework CoreHaptics -framework CoreText -lz"
 SHARDS="$SOBJ/shard_*.o $SOBJ/fntab.o $SOBJ/stubs.o"

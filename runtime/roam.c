@@ -53,6 +53,7 @@ int roam_hook(CPU *c, uint32_t ip){
         racehorn_frame(c); hornmenu_frame(c);  /* with or without free roam */
         { void career_frame(CPU *); career_frame(c); }   /* career.c: the test runner's career aids */
         { void hiddenraces_frame(void); hiddenraces_frame(); }   /* hiddenraces.c: the career's hidden races on the map */
+        { void carspot_frame(void); carspot_frame(); }           /* carspot.c: a kept spot that is no place, the new career's start */
         return 1;
     }
     if (ip == HOOK_HUD){

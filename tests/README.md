@@ -13,6 +13,7 @@ Network tests stay on loopback or AF_UNIX, inside `tests/net/loopback-only.sb`.
 | `hle_unit`, `windows_waits`, `watchdog_unit`, `heap_stress` | Win32 HLE answers, waits and handles, the stall watchdog, the guest heap |
 | `framerate` | frame-rate choices (runtime/framerate.c) |
 | `hiddenraces_unit` | the career's hidden races on the map (runtime/hiddenraces.c), off and on |
+| `carspot_unit` | the career's kept spot: one that is no place on the map becomes the new career's start (runtime/carspot.c) |
 | `uniques_unit` | the unique visual parts for every car after Caleb (runtime/uniques.c), off and on |
 | `keyboard_unit`, `gamepad_harness` | DirectInput keyboard and key names; GameController and the synthetic pad |
 | `horn_unit`, `radio_native` | horns, the music folder |
