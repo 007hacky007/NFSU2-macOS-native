@@ -2,6 +2,16 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.4 - unreleased
+
+### Added
+- Everything ghost: a third choice for free roam with other players, where the game's traffic and tuners drive through your car too, and give no near-miss points. A tuner you race in an outrun stays solid, and an outrun between two players is solid only when both chose solid cars. Game Tools switches between solid, ghost and everything ghost while you play.
+- Players' cars shown in Settings, Online: 16 to 48 other players' cars near you in free roam, 32 by default.
+
+### Changed
+- Free roam speaks the community server's free-roam version 11: the server links you with as many players as you show cars, and keeps an outrun's two players linked however many others come between them, so an outrun in a crowd no longer ends with both players winning.
+- A car that stays in the air for two minutes in free roam takes its player off the server for the rest of that session, as a kick does, with a line saying why.
+
 ## 1.0.3 - 2026-11-03
 
 ### Added

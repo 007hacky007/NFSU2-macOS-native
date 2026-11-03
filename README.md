@@ -133,7 +133,7 @@ Click a picture to see it full size.
 | **Online and free roam** | | |
 | LAN play | Race Macs and Windows PCs on the same network, and host LAN games with the game's own server. | |
 | Online play | The game's Online mode through a community server, since EA's servers are gone. Your place in a full server survives a reconnect. Off by default. | <a href="docs/readme/full/online-lobby.jpg"><img src="docs/readme/thumbs/online-lobby.jpg" width="180" alt="The game's Online lobby"></a> |
-| Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms (invite links to share them) and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
+| Free roam with friends | See up to 48 other players' cars live in career free roam, as solid cars or ghosts (traffic and tuners too if you like), with rooms (invite links to share them) and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
 | Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. The game's own tuners still challenge you with other players around. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
 | Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby and changes your room while you play. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
 | Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="docs/readme/full/ph-horns-pause-audio-eu.jpg"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
@@ -659,8 +659,19 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   other's cars live, with their customization and names, on the minimap and
   the world map (which also marks up to 2048 more players of the room, moving
   while it is open), through the same server (`runtime/roam*.c`, from
-  nfsu2-web, core version 9).  **Solid cars** can touch, **ghost cars**
-  drive through each other.  At a career race's marker the race card asks
+  nfsu2-web, core version 11).  **Solid cars** can touch, **ghost cars**
+  drive through each other, and **Everything ghost** lets the game's traffic
+  and tuners drive through your car as well (no hits and no near-miss points
+  from them), except a tuner you race in an outrun; an outrun between two
+  players is solid only when both chose solid cars.  Game Tools' **Cars**
+  menu switches between the three while you play.  **Players' cars shown**
+  (16 to 48, 32 by default) sets how many other players' cars free roam
+  draws near you, the nearest first; the server links you with as many
+  players, and an outrun's other player stays linked however many players
+  come between the two.  A car that stays in the air for two minutes in free
+  roam (no wheel on the ground, upright and moving) takes its player off the
+  server for the rest of that session, as a kick does, with a line saying
+  so; the server hears why.  At a career race's marker the race card asks
   Solo or Multiplayer; Multiplayer opens a race lobby there that the others
   join with Enter, and the race is the game's own LAN race on that track,
   started in every game of the lobby at once (`runtime/mprace.c`); only its
