@@ -45,9 +45,13 @@
  *    a contact is at the same spot on both screens.  Ghost cars
  *    (NFSU2_ROAM_COLLIDE=0) have no collision body and are drawn a little in
  *    the past (NFSU2_ROAM_DELAY), smoothed through the jitter buffer; the
- *    player's own car is then passable on every friend's screen too.  The
- *    Game Tools panel switches between the two while the game runs
- *    (solid_follow, native_controls.m).
+ *    player's own car is then passable on every friend's screen too.  With
+ *    NFSU2_ROAM_COLLIDE=none (Ghost mode: Everything) the game's traffic and
+ *    tuners pass through the player's car as well (ghost_pair); the tuner of
+ *    an outrun stays solid (outrun_racer), and a friend in an outrun only
+ *    with Ghost mode Off on both sides (du_solid).  The Game Tools panel
+ *    switches between them while the game runs (solid_follow,
+ *    native_controls.m).
  *  - names over friends' cars, as the game's own LAN races show them
  *    (roam_game_hud).
  *  - the snapshots' extension carries the player's engine as the game
@@ -105,6 +109,8 @@
 #define G_CARTYPES      GA(0x008a1cccu)   /* CarTypeInfo[]: 0x890 bytes, +0 name, +0xD0 name hash */
 #define TYPE_TRAFFIC    31            /* CarTypeInfo 0..30 are the player cars, 31..45 traffic (TAXI .. BUS, HATCHBACK02), */
 #define TYPE_STOCK      46            /* ...and Unlimiter adds car types after them */
+#define DRIVER_RACER    3u            /* car +0x24 (0x5EBA30): 1 the player, 3 an AI racer, 4 traffic, 0 friends' cars */
+#define DRIVER_TRAFFIC  4u
 #define G_PARTOWNERS    GA(0x008a1cb8u)   /* CarPart byte +7 -> owner (car type) hash table */
 #define G_CARPARTDB     GA(0x008a2b68u)
 #define G_CARLOADER     GA(0x008a3288u)   /* entries on +0x58, handle at entry +0x123C */
@@ -228,6 +234,9 @@ static uint32_t gcall1(CPU *c, uint32_t fn, uint32_t ecx, uint32_t a){ return rh
 static uint32_t player_car(void){ uint32_t p = rd32(G_PLAYER1); return p ? rd32(p + 4u) : 0; }
 static uint32_t world(void){ uint32_t w = rd32(G_WORLD); return ok(w, 0x80) ? w : 0; }
 static int du_racing(uint32_t race);
+static int du_solid(uint32_t car);
+static int du_solid_peer(uint32_t id);
+static int outrun_racer(uint32_t car);
 static int em_racing(uint32_t race);
 /* free roam: the career's world with no race but free roam's own one-racer
  * one, or an outrun with a friend (du_racing) or with one of the game's
@@ -320,6 +329,9 @@ static int env_int(const char *k, int def, int lo, int hi){
 }
 static struct {
     int on, test, collide, max_cars, rate, delay_ms, extrap_ms, carpool_kb, labels, spawn_m;
+    int ghost_all;                            /* NFSU2_ROAM_COLLIDE=none (Ghost mode: Everything): friends' cars are ghosts
+                                                 (collide 0), and the game's traffic and tuners pass through the player's car
+                                                 too (ghost_pair) */
     int test_owncars;                         /* NFSU2_ROAM_TEST_OWNCARS (test aid): friends only in cars of our own (slots NOPP and up) */
     int test_outside;                         /* NFSU2_ROAM_TEST_OUTSIDE (test aid): every car of our own outside the car index */
     int hit_share;                            /* NFSU2_ROAM_HIT_SHARE: % of a hit with a friend's car the player's car keeps (roam_game_contact);
@@ -382,6 +394,7 @@ typedef struct {
     int64_t  paused_since;
     int64_t  near_since;                      /* within DU_NEAR_M of the player's car since (0: not), for an outrun */
     int      ghost;                           /* solid cars: no collision body until clear of the player's car */
+    int      duel;                            /* the outrun's opponent, solid for the outrun (du_solid; body_update) */
     int      soft;                            /* passable now (SOFT_*): no collision body, whatever the ghost rule */
     int64_t  idle_since;                      /* the friend's car stands since (0: it moves) */
     float    drawn[3];                        /* where the car was drawn last frame (+0x60) */
@@ -435,6 +448,12 @@ static int64_t g_cost_win_t0;
 /* statistics */
 static int g_joins, g_leaves;                 /* changed with the session lock held */
 static uint32_t g_teleports, g_clock_snaps, g_acquires, g_releases, g_load_fail, g_creates, g_reuses, g_restores;
+static uint32_t g_gp_n, g_gp_said, g_gp_calls;   /* Ghost mode Everything: contacts let through, cars named in the log,
+                                                    contacts looked at (ghost_pair) */
+static uint32_t g_gp_racer;                       /* ...contacts with an outrun's racer, resolved */
+static uint32_t g_nm_gone, g_nm_got;              /* near misses let go (cars passed through), and those counted in free roam
+                                                    (roam_game_near_miss) */
+static uint64_t g_gp_ns;                          /* ...and the time that took */
 static int64_t g_ready_at;                    /* the last friend's car in (roam_plat_now_us) */
 /* test aid: per-frame pose log */
 static rh_file *g_poselog;
@@ -812,12 +831,15 @@ static void body_set(CPU *c, uint32_t car, int solid){
  * tests every body against the others near it (0x5B5060, the box test
  * 0x595050), friends' cars against each other too, which two cars posed by
  * us never need; 32 of them crossing each other's paths took 3-4.5 ms a
- * frame (a crowd round the new career's start, roam-crowd --spread 10) */
+ * frame (a crowd round the new career's start, roam-crowd --spread 10).
+ * An outrun's opponent whose game keeps the two solid as ours does (du_solid:
+ * Ghost mode Off on both) is solid while it runs, a ghost until clear first */
 static void body_update(CPU *c, int k){
     Slot *s = &g_sl[k];
     uint32_t me = player_car();
-    int near = 0;
-    if (O.collide && ok(me, 0x70)){
+    int near = 0, duel = du_solid(s->car), solid = O.collide || duel;
+    if (duel != s->duel){ s->duel = duel; if (duel) s->ghost = 1; }
+    if (solid && ok(me, 0x70)){
         float dx = MRF32(s->car + 0x60u) - MRF32(me + 0x60u), dy = MRF32(s->car + 0x64u) - MRF32(me + 0x64u),
               dz = MRF32(s->car + 0x68u) - MRF32(me + 0x68u), d2 = dx * dx + dy * dy + dz * dz;
         if (s->ghost && d2 > CLEAR_M * CLEAR_M){
@@ -826,7 +848,7 @@ static void body_update(CPU *c, int k){
         }
         near = d2 < SOLID_M * SOLID_M;
     }
-    body_set(c, s->car, O.collide && !s->ghost && !s->soft && near);
+    body_set(c, s->car, solid && !s->ghost && !s->soft && near);
 }
 static void ghost_all(void){ for (int k = 0; k < NSLOT; k++) g_sl[k].ghost = 1; }
 /* Passable cars.  A friend's car has no physics of its own here: it is
@@ -1045,13 +1067,18 @@ static void soft_me(CPU *c, int64_t host, uint8_t status){
 }
 /* a shown friend's car's reasons, the player's added; leaving them makes it
  * a ghost.  The friend's own (RC_BIT_PASS): near one of their open events,
- * their cars ghosts, or what we see too; and a traffic car, said or not */
+ * their cars ghosts, or what we see too; and a traffic car, said or not.
+ * An outrun's opponent solid for it (du_solid) is passable only while either
+ * player is paused or near a door: neither player's events, hits, Ghost
+ * mode or standing count (a tuner the player races is solid when it stands
+ * too), as the friend's game leaves them out for our car */
 static void soft_update(Slot *s, const rc_pose *pose, int64_t host){
     if (!s->paused && __builtin_fabsf(pose->speed) >= IDLE_MPS) s->idle_since = 0;
     else if (!s->idle_since) s->idle_since = host;
     int soft = g_pass.me | (s->paused ? SOFT_PAUSED : 0) | (s->idle_since && host - s->idle_since >= IDLE_US ? SOFT_IDLE : 0) |
                (near_door(pose->p[0], pose->p[1]) ? SOFT_DOOR : 0) | (pose->bits & RC_BIT_PASS ? SOFT_SAYS : 0) |
                (traffic_car(s->car, 0, 0) ? SOFT_TRAFFIC : 0);
+    if (du_solid(s->car)) soft &= ~(SOFT_EVENT | SOFT_BLOCK | SOFT_SAYS | SOFT_IDLE);
     if (s->soft && !soft) s->ghost = 1;
     s->soft = soft;
 }
@@ -3232,7 +3259,7 @@ static int64_t render_delay(int i, const rc_peer *p, int64_t frame_dt){
         if (g_rd[i].n < RD_PINGS) g_rd[i].n++;
     }
     int64_t want = (int64_t)O.delay_ms * 1000;
-    if (O.collide){
+    if (O.collide || du_solid_peer(p->id)){
         int32_t m = 0;
         for (int k = 0; k < g_rd[i].n; k++) if (k == 0 || g_rd[i].rtt[k] < m) m = g_rd[i].rtt[k];
         want = -(int64_t)(m / 2 < 150000 ? m / 2 : 150000);
@@ -3330,12 +3357,33 @@ static struct {
     uint32_t icon, hud;                       /* the car the HUD's outrun icon is on (0 off), in this HUD */
     int      engage;                          /* Engage held last frame */
     int      busy;                            /* we take no outrun now (du_free): the snapshots say so (RC_BIT_BUSY) */
+    int      solid_mine, solid_theirs;        /* each game keeps the two cars solid for the outrun (du_solid) */
     char     note[TAG_DUEL_MAX]; int64_t note_until;
     uint32_t offers, races, wins, losses;     /* statistics */
 } g_du;
 static int du_racing(uint32_t race){
     return (g_du.st == DU_RACE || g_du.st == DU_OVER) && g_du.car && MR32(G_RACETYPE) == 7u && MR32(race + 0x24u) >= 2u;
 }
+/* The two cars solid for each other while the outrun runs, so it is raced
+ * as the game's own (against a tuner, whose car the player's can hit): when
+ * both games say so with their challenge, answer and start (the DUEL arg
+ * DU_ARG_SOLID: Ghost mode Off when the challenge came).  Players and
+ * Everything keep friends' cars ghosts in outruns too: Everything is more
+ * ghost than Players, and a player who picked it collided with a friend in
+ * an outrun (2026-11-02); its tuner the player races stays solid (ghost_pair,
+ * outrun_racer).  Each game then leaves out for the other's car what only
+ * one of them knows (soft_update): its player's events, hits and Ghost mode,
+ * and the cars standing.  A game of an older version says nothing (0) and
+ * ignores ours, and one that says so for Everything (6f7bb374) meets a 0
+ * from ours, so the two stay as Ghost mode has them on both screens */
+#define DU_ARG_SOLID    1u
+static int du_solid(uint32_t car){
+    uint32_t race = rd32(G_RACE);
+    return car && car == g_du.car && g_du.solid_mine && g_du.solid_theirs && ok(race, 0xc44) && du_racing(race);
+}
+static int du_solid_peer(uint32_t id){ return id && id == g_du.id && du_solid(g_du.car); }
+static uint8_t du_arg(void){ return g_du.solid_mine ? (uint8_t)DU_ARG_SOLID : 0; }
+static int du_wants_solid(void){ return O.collide; }
 /* the outrun's friend keeps the slot (assign) */
 static int du_keeps(int k){ return g_du.st != DU_IDLE && g_sl[k].peer_id == g_du.id; }
 /* our own link stood lately: no list from the hub for DU_CUT_US now, or one came after such a gap within DU_CUT_KEEP_US
@@ -3356,7 +3404,8 @@ static void du_send(int64_t host, uint8_t op, uint8_t arg){
 static void du_to(int st, int64_t host){
     if (st != g_du.st) rlog("[roam] f=%ld outrun with %s: %s -> %s\n", rh_frame(), g_du.name[0] ? g_du.name : "?", du_st[g_du.st], du_st[st]);
     g_du.st = st; g_du.since = host;
-    if (st == DU_IDLE){ g_du.id = 0; g_du.duel = 0; g_du.car = 0; g_du.won = g_du.their = 0; g_du.posted = 0; g_du.nres = 0; g_du.op = 0; }
+    if (st == DU_IDLE){ g_du.id = 0; g_du.duel = 0; g_du.car = 0; g_du.won = g_du.their = 0; g_du.posted = 0; g_du.nres = 0; g_du.op = 0;
+                        g_du.solid_mine = g_du.solid_theirs = 0; }
 }
 /* the friend's slot with a car shown, or -1 */
 static int du_slot(uint32_t id){
@@ -3527,11 +3576,12 @@ static void du_recv(CPU *c, int64_t host, uint32_t from, uint8_t op, uint8_t arg
         if (g_du.st == DU_SENT && from == g_du.id){
             /* we challenged each other: the lower id's challenge it is */
             g_du.heard = host;
+            g_du.solid_theirs = (arg & DU_ARG_SOLID) != 0;
             if (self < from){ rlog("[roam] f=%ld outrun with %s: challenged each other, ours stands\n", rh_frame(), g_du.name);
                               goto accepted; }
             rlog("[roam] f=%ld outrun with %s: challenged each other, theirs stands\n", rh_frame(), g_du.name);
             g_du.duel = duel; g_du.mine = 0;
-            du_send(host, RC_DUEL_ACCEPT, 0); du_to(DU_ACCEPTED, host);
+            du_send(host, RC_DUEL_ACCEPT, du_arg()); du_to(DU_ACCEPTED, host);
             return;
         }
         if (g_du.st != DU_IDLE || k < 0 || !du_able(k) || !du_free(in_roam, world_runs) || em_near() || du_dist(g_sl[k].car) > DU_KEEP_M){
@@ -3539,22 +3589,25 @@ static void du_recv(CPU *c, int64_t host, uint32_t from, uint8_t op, uint8_t arg
             return;
         }
         g_du.id = from; g_du.duel = duel; g_du.mine = 0; g_du.heard = host; g_du.op = 0;
+        g_du.solid_mine = du_wants_solid(); g_du.solid_theirs = (arg & DU_ARG_SOLID) != 0;
         snprintf(g_du.name, sizeof g_du.name, "%s", g_sl[k].name);
         du_to(DU_GOT, host);
         return; }
     case RC_DUEL_ACCEPT:
         if (!ours) return;
-        if (g_du.st == DU_RACE && g_du.mine){ du_send(host, RC_DUEL_START, 0); return; }   /* our START was lost */
+        if (g_du.st == DU_SENT) g_du.solid_theirs = (arg & DU_ARG_SOLID) != 0;
+        if (g_du.st == DU_RACE && g_du.mine){ du_send(host, RC_DUEL_START, du_arg()); return; }   /* our START was lost */
         if (g_du.st != DU_SENT) return;
     accepted:
         if (!du_start(c, host)){
             du_send(host, RC_DUEL_CANCEL, RC_DC_BUSY); du_note(host, "The outrun with %s could not start", g_du.name); du_to(DU_IDLE, host);
             return;
         }
-        du_send(host, RC_DUEL_START, 0); du_to(DU_RACE, host);
+        du_send(host, RC_DUEL_START, du_arg()); du_to(DU_RACE, host);
         return;
     case RC_DUEL_START:
         if (!ours || g_du.st != DU_ACCEPTED) return;
+        g_du.solid_theirs = (arg & DU_ARG_SOLID) != 0;
         if (!du_start(c, host)){
             du_send(host, RC_DUEL_CANCEL, RC_DC_LEFT); du_note(host, "The outrun with %s could not start", g_du.name); du_to(DU_IDLE, host);
             return;
@@ -3611,8 +3664,9 @@ static void du_frame(CPU *c, int64_t host, int in_roam, int world_runs, const ui
         if (best < 0 || !press) break;
         roam_plat_lock(); do g_du.duel = roam_plat_random(); while (!g_du.duel); roam_plat_unlock();
         g_du.id = g_sl[best].peer_id; g_du.mine = 1; g_du.heard = host; g_du.offers++;
+        g_du.solid_mine = du_wants_solid(); g_du.solid_theirs = 0;
         snprintf(g_du.name, sizeof g_du.name, "%s", g_sl[best].name);
-        du_send(host, RC_DUEL_OFFER, 0);
+        du_send(host, RC_DUEL_OFFER, du_arg());
         du_to(DU_SENT, host);
         break; }
     case DU_SENT:
@@ -3629,13 +3683,13 @@ static void du_frame(CPU *c, int64_t host, int in_roam, int world_runs, const ui
         if (g_du.st == DU_SENT){
             if (host - g_du.since > DU_OFFER_US){
                 du_send(host, RC_DUEL_CANCEL, RC_DC_WITHDRAWN); du_note(host, "%s did not take the outrun", g_du.name); du_to(DU_IDLE, host);
-            } else if (host - g_du.tx_at >= 500000) du_send(host, RC_DUEL_OFFER, 0);
+            } else if (host - g_du.tx_at >= 500000) du_send(host, RC_DUEL_OFFER, du_arg());
         } else if (g_du.st == DU_GOT){
             if (host - g_du.heard > 2000000 || host - g_du.since > DU_OFFER_US){ du_to(DU_IDLE, host); break; }   /* the challenge stopped */
-            if (press){ du_send(host, RC_DUEL_ACCEPT, 0); du_to(DU_ACCEPTED, host); }
+            if (press){ du_send(host, RC_DUEL_ACCEPT, du_arg()); du_to(DU_ACCEPTED, host); }
         } else {
             if (host - g_du.since > 4000000){ du_note(host, "The outrun with %s did not start", g_du.name); du_to(DU_IDLE, host); }
-            else if (host - g_du.tx_at >= 300000) du_send(host, RC_DUEL_ACCEPT, 0);
+            else if (host - g_du.tx_at >= 300000) du_send(host, RC_DUEL_ACCEPT, du_arg());
         }
         break;
     case DU_RACE: {
@@ -3657,9 +3711,7 @@ static void du_frame(CPU *c, int64_t host, int in_roam, int world_runs, const ui
             du_to(DU_OVER, host);
             break;
         }
-        if (g_du.mine && g_du.op == RC_DUEL_START && host - g_du.since < 1000000 && host - g_du.tx_at >= 300000) du_send(host, RC_DUEL_START, 0);
-        /* the friend is gone (not shown, not in free roam, no packets): its
-         * car stays where it was (the slots leave it), and we win */
+        if (g_du.mine && g_du.op == RC_DUEL_START && host - g_du.since < 1000000 && host - g_du.tx_at >= 300000) du_send(host, RC_DUEL_START, du_arg());
         const PeerView *v = du_pv(g_du.id);
         if (!v && in_roam){
             /* the session let the friend go, and the slots parked its car: the result at once, before the game's next
@@ -5368,7 +5420,11 @@ static void init_once(CPU *c){
     O.on = env_int("NFSU2_ROAM", 0, 0, 1);
     if (!O.on) return;
     O.test = roam_plat_test_mode();
-    O.collide = env_int("NFSU2_ROAM_COLLIDE", 1, 0, 1);
+    /* on (1): friends' cars are solid; off (0): ghosts (Ghost mode: Players); none: ghosts, and the game's traffic and
+     * tuners too (Ghost mode: Everything).  An engine before "none" reads it as not a number: solid cars */
+    const char *collide = opt("NFSU2_ROAM_COLLIDE");
+    O.ghost_all = collide && !strcasecmp(collide, "none");
+    O.collide = O.ghost_all ? 0 : env_int("NFSU2_ROAM_COLLIDE", 1, 0, 1);
     O.labels = env_int("NFSU2_ROAM_LABELS", 1, 0, 1);
     O.spawn_m = env_int("NFSU2_ROAM_SPAWN_M", SPAWN_M, 0, 1000);
     O.hit_share = env_int("NFSU2_ROAM_HIT_SHARE", -1, -1, 100);
@@ -5449,7 +5505,8 @@ static void init_once(CPU *c){
     char ids[16];
     rlog("[roam] free-roam multiplayer ON: id %08x, port %d, %d configured peer(s), room \"%s\" (%08x), up to %d players, "
                     "%d remote cars, %d Hz, %s, none shown within %d m of the new career's start, quick chat %s%s\n", cf.self_id, port, np,
-            O.room, cf.room, maxp, O.max_cars, O.rate, O.collide ? "solid cars" : "ghost cars", O.spawn_m, cf.say ? "on" : "off",
+            O.room, cf.room, maxp, O.max_cars, O.rate, O.collide ? "solid cars" : O.ghost_all ? "ghost cars, traffic and tuners too" : "ghost cars",
+            O.spawn_m, cf.say ? "on" : "off",
             O.test ? ", test harness (loopback only)" : "");
     (void)ids;
     for (int i = 0; i < O.ncrew; i++) rlog("[roam] crew %d: \"%s\" (%08x), colour %06x\n", i + 1, O.crew[i], cf.crews[i], O.crew_rgb[i]);
@@ -5749,13 +5806,16 @@ static void world_changed(CPU *c, uint32_t w){
  * passable on their screens (RC_BIT_PASS).  On: friends' cars are ghosts
  * until they are clear of the player's car, as when they appear, so nobody
  * is shoved out of a car that was inside theirs.  The cars slew to the other
- * rule's drawing delay (render_delay) */
+ * rule's drawing delay (render_delay).  Everything (2): ghosts, and the
+ * game's traffic and tuners pass through the player's car too (ghost_pair) */
 static void solid_follow(void){
     int v = roam_plat_solid();
-    if (v < 0 || v == O.collide) return;
-    O.collide = v;
-    if (v) ghost_all();
-    rlog("[roam] f=%ld solid cars %s (Game Tools)\n", rh_frame(), v ? "on" : "off");
+    if (v < 0) return;
+    int collide = v == 1, all = v == 2;
+    if (collide == O.collide && all == O.ghost_all) return;
+    if (collide && !O.collide) ghost_all();
+    O.collide = collide; O.ghost_all = all;
+    rlog("[roam] f=%ld solid cars %s (Game Tools)\n", rh_frame(), collide ? "on" : all ? "off, traffic and tuners pass through too" : "off");
 }
 /* Crews or their colours changed while the game runs (Game Tools:
  * roam_plat_crews): the session takes the crews (its HELLOs tell the hub and
@@ -6343,8 +6403,130 @@ int roam_game_pair_unsafe(uint32_t pair){
 #define G_CRASH_VIEW    GA(0x007a186cu)   /* float 30: the hit (t m/s) that starts the crash view */
 #define G_CRASH_CAP     GA(0x007a1860u)   /* float 40: what 0x59FB80 caps the hit at first */
 #define CRASH_VIEW_X    1.5f          /* a friend's car: the player's car's part of the hit starts it at this x the game's */
+/* Ghost mode Everything (O.ghost_all): in free roam with others on, the
+ * game's own cars -- traffic (driver 4) and its AI racers, the outrun tuners
+ * (3) -- pass through the player's car, and through friends' cars, which
+ * nothing moves on this screen (each is where its player's game has it).
+ * Their contact is let go without the game's resolve: no rewind, impulse,
+ * sparks or crash sound (0x5B2610's whole work), and the two go on through
+ * each other.  The collision step would test the pair once more in that step
+ * (pair +0x240 counts its contacts, [0x802084] = 2 at most): it is counted
+ * full, so a car passing through costs the box test a step it always had.
+ * Not in a race (roaming: the career's races, LAN races, the Dyno stay the
+ * game's), and never for an outrun's racers: the tuner the player races is
+ * solid, as in the game -- once clear of the player's car, if the outrun
+ * started with the two inside each other (g_gp: the cars let through this
+ * step or the last) */
+#define CONTACT_PAIR    0x14u         /* a contact: its pair (+0x240: the pair's contacts this step) */
+#define G_PAIR_PASSES   GA(0x00802084u)   /* int 2: contacts of one pair a step */
+#define GP_N            8
+static struct { uint32_t car[GP_N], step[GP_N]; int at; } g_gp;   /* the game's cars let through lately (a ring), and when */
+static struct { uint32_t car; int k, racer; } g_gp_log;            /* one to name in the log (after the time is taken) */
+/* a car's collision body's car (body +0x130, as its accessors 0x593B40.. read
+ * it), if that car has this body */
+static uint32_t body_car(uint32_t body){
+    uint32_t car = ok(body, 0x134) ? MR32(body + 0x130u) : 0;
+    return ok(car, 0x9e0) && MR32(car + 0x3cu) == body ? car : 0;
+}
+static int outrun_racer(uint32_t car){
+    uint32_t race = rd32(G_RACE);
+    if (rd32(G_RACETYPE) != 7u || !ok(race, 0xc44)) return 0;
+    for (uint32_t i = 0, n = MR32(race + 0x24u); i < n && i < 6u; i++) if (rd32(race + 0x30u + 0x1f0u * i) == car) return 1;
+    return 0;
+}
+static int ghost_pair(uint32_t contact){
+    if (!ok(contact, CONTACT_PAIR + 4u)) return 0;
+    uint32_t a = body_car(MR32(contact + 0xcu)), b = a ? body_car(MR32(contact + 0x10u)) : 0;
+    if (!b) return 0;
+    uint32_t da = MR32(a + 0x24u), db = MR32(b + 0x24u);
+    int ga = da == DRIVER_RACER || da == DRIVER_TRAFFIC, gb = db == DRIVER_RACER || db == DRIVER_TRAFFIC;
+    if (ga == gb) return 0;                                         /* two of the game's cars, or none */
+    uint32_t ours = ga ? b : a, theirs = ga ? a : b;
+    int k = -1;
+    if (ours != player_car()) for (int j = 0; j < NSLOT && k < 0; j++) if (g_sl[j].st == SL_ACTIVE && g_sl[j].car == ours) k = j;
+    if ((ours != player_car() && k < 0) || !roaming()) return 0;
+    int i = -1;
+    for (int j = 0; j < GP_N && i < 0; j++) if (g_gp.car[j] == theirs && g_step - g_gp.step[j] <= 1u) i = j;
+    if (i < 0 && outrun_racer(theirs)){ g_gp_racer++; return 0; }
+    if (i < 0){
+        i = g_gp.at; g_gp.at = (g_gp.at + 1) % GP_N; g_gp.car[i] = theirs;
+        if (g_gp_said++ < 16 || g_gp_said % 100u == 0){ g_gp_log.car = theirs; g_gp_log.k = k; g_gp_log.racer = (ga ? da : db) == DRIVER_RACER; }
+    }
+    g_gp.step[i] = g_step;
+    uint32_t pr = MR32(contact + CONTACT_PAIR);
+    int32_t most = (int32_t)MR32(G_PAIR_PASSES);
+    if (ok(pr, 0x244) && most > 0 && (int32_t)MR32(pr + 0x240u) < most - 1) MR32(pr + 0x240u) = (uint32_t)(most - 1);
+    g_gp_n++;
+    return 1;
+}
+/* roam.c, before roam_game_contact: 1 = the pair is let go (not resolved) */
+int roam_game_ghost_pair(uint32_t contact){
+    if (!O.ghost_all) return 0;
+    uint64_t t0 = rh_ns();
+    int r = ghost_pair(contact);
+    g_gp_ns += rh_ns() - t0; g_gp_calls++;
+    if (g_gp_log.car){                              /* a car let through for the first time (lately) */
+        char tn[20] = "";
+        int traffic = traffic_car(g_gp_log.car, tn, sizeof tn), k = g_gp_log.k;
+        rlog("[roam] f=%ld Ghost mode Everything: %s%s%s passes through %s%s (%u let through so far)\n", rh_frame(),
+             traffic ? "a traffic car, " : g_gp_log.racer ? "a tuner" : "a car of the game's", tn,
+             outrun_racer(g_gp_log.car) ? " (the outrun's, till clear)" : "", k < 0 ? "my car" : g_sl[k].name, k < 0 ? "" : "'s car", g_gp_n);
+        g_gp_log.car = 0;
+    }
+    return r;
+}
+/* Ghost mode Everything: no near miss with the game's cars that pass
+ * through.  The game's near miss (0x56F180, the style monitor's, racer
+ * +0x1DC): the player's car, at 30 mph or more, comes within 1.5 m of
+ * another (a pair of the collision step's, +0x10 the gap) at 80 mph or more
+ * between the two, and counts once they are apart without touching (the
+ * pair gone, or 1.9 m): style points (the near miss's moment, slot 21),
+ * which fill the nitrous.  A car the player's car drives through
+ * (ghost_pair) never counts as touching it (the pair's +0x244 stays 0), so
+ * driving through traffic was a near miss each time, and going by one is
+ * no risk anyway: the one the near miss watches (NM_STATE 1) is let go
+ * before it can count (NM_STATE 2, within the same call).  The airborne
+ * kind, over a car's roof (NM_OVER, slot 27), stays; so do the outrun's
+ * tuner (solid) and friends' cars.  After nfsu2-web 37a2f37 */
+#define NM_RACER        0x00u         /* the style monitor: its racer (+0 the car) */
+#define NM_MOMENTS      0x04u         /* ...the racer's style moments (racer +0x1D4): moment k at +4k */
+#define NM_STATE        0x1du         /* ...the near miss: 0 looking, 1 one near, 2 it counts (byte) */
+#define NM_OVER         0x1eu         /* ...1: in the air over the other car (byte) */
+#define NM_PAIR         0x20u         /* ...the pair, then its two bodies (+0x24, +0x28) */
+#define MOMENT_NEAR     21u           /* the near miss's style moment */
+#define MOMENT_AT       0x34u         /* a style moment: when it last counted (0x56EAC0, game ticks) */
+static uint32_t g_nm_car;                         /* the car let go last, and when (one count a pass: the game may */
+static long g_nm_at;                              /* take it up again a frame or two later) */
+/* a car of the game's the player's car passes through now (ghost_pair's rule) */
+static int gp_through(uint32_t car){
+    uint32_t d = ok(car, 0x9e0) ? MR32(car + 0x24u) : 0;
+    if (d != DRIVER_RACER && d != DRIVER_TRAFFIC) return 0;
+    for (int j = 0; j < GP_N; j++) if (g_gp.car[j] == car && g_step - g_gp.step[j] <= 1u) return 1;
+    return !outrun_racer(car);
+}
+void roam_game_near_miss(CPU *c, void (*orig)(CPU *)){
+    uint32_t nm = c->ecx, me = player_car();
+    if (!ok(nm, NM_PAIR + 0xc) || !me || rd32(rd32(nm + NM_RACER)) != me){ orig(c); return; }
+    uint32_t mo = rd32(MR32(nm + NM_MOMENTS) + 4u * MOMENT_NEAR), at = ok(mo, MOMENT_AT + 4) ? MR32(mo + MOMENT_AT) : 0;
+    if (O.ghost_all && MR8(nm + NM_STATE) == 1u && !MR8(nm + NM_OVER) && roaming()){
+        uint32_t a = body_car(MR32(nm + NM_PAIR + 4u)), b = body_car(MR32(nm + NM_PAIR + 8u)), theirs = a == me ? b : b == me ? a : 0;
+        if (theirs && gp_through(theirs)){
+            MR8(nm + NM_STATE) = 0; MR32(nm + NM_PAIR) = 0; MR32(nm + NM_PAIR + 4u) = 0; MR32(nm + NM_PAIR + 8u) = 0;
+            if ((theirs != g_nm_car || rh_frame() - g_nm_at > 120) && (++g_nm_gone <= 16 || g_nm_gone % 100u == 0)){
+                char tn[20] = "";
+                int traffic = traffic_car(theirs, tn, sizeof tn);
+                rlog("[roam] f=%ld Ghost mode Everything: no near miss with %s%s (%u so far)\n", rh_frame(),
+                     traffic ? "a traffic car, " : MR32(theirs + 0x24u) == DRIVER_RACER ? "a tuner" : "a car of the game's", tn, g_nm_gone);
+            }
+            g_nm_car = theirs; g_nm_at = rh_frame();
+        }
+    }
+    orig(c);
+    if (ok(mo, MOMENT_AT + 4) && MR32(mo + MOMENT_AT) != at && roaming() && (++g_nm_got <= 16 || g_nm_got % 100u == 0))
+        rlog("[roam] f=%ld a near miss in free roam (%u so far)\n", rh_frame(), g_nm_got);
+}
 void roam_game_contact(CPU *c, void (*orig)(CPU *)){
-    uint32_t pair = c->ecx, me = O.on && O.collide && O.hit_share != 100 ? player_car() : 0;
+    uint32_t pair = c->ecx, me = O.on && (O.collide || du_solid(g_du.car)) && O.hit_share != 100 ? player_car() : 0;
     uint32_t mb = ok(me, 0x40) ? rd32(me + 0x3cu) : 0;
     uint32_t a = mb && ok(pair, 0x14) ? MR32(pair + 0xcu) : 0, b = a ? MR32(pair + 0x10u) : 0;
     int k = -1;

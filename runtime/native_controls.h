@@ -36,7 +36,7 @@ void native_controls_forget(uint32_t id);    /* a player left: their line over t
 #define NATIVE_PHRASES 152                   /* nfsu2-web's phrases.ts (append only) */
 const char *native_controls_phrase(int phrase);   /* NULL past the list */
 int  native_controls_pick(int phrase);       /* the Say button: queue a phrase (0: full, or not one of ours) */
-void native_controls_set_solid(int solid);   /* the panel's Solid cars box */
+void native_controls_set_solid(int solid);   /* the panel's Cars menu: 1 solid, 0 ghosts, 2 everything (traffic and tuners too) */
 /* the panel's Room (and a friend's Join): the name as the launcher's Room box
  * takes it (UTF-8 up to 63 bytes after tidying, no control character, no # or
  * ; after a space, none names.h blocks; "" or blanks: no room); roam_game.c

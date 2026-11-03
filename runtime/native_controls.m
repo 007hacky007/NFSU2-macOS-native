@@ -4,6 +4,7 @@
  * With free roam with other players (NFSU2_ROAM=1, roam_game.c): the race
  * lobby at the marker the player is at (roam_game.c mp_panel), its players
  * and countdown, Open / Join / Start and Leave buttons, solid or ghost cars
+ * (or everything a ghost: traffic and tuners too)
  * and up to four crews with their colours (changed while the game runs:
  * roam_game.c solid_follow, crews_follow; kept in the launcher's settings, the
  * same defaults domain), the room (changed while the game runs: roam_game.c
@@ -319,7 +320,7 @@ int native_controls_pick(int phrase){
     return ok;
 }
 int roam_plat_solid(void){ pthread_mutex_lock(&mu); int s = solid; pthread_mutex_unlock(&mu); return s; }
-void native_controls_set_solid(int s){ pthread_mutex_lock(&mu); solid = !!s; pthread_mutex_unlock(&mu); }
+void native_controls_set_solid(int s){ pthread_mutex_lock(&mu); solid = s == 2 ? 2 : !!s; pthread_mutex_unlock(&mu); }
 uint32_t roam_plat_crews(uint32_t h[RC_CREW_MAX], uint32_t rgb[RC_CREW_MAX]){
     pthread_mutex_lock(&mu);
     for (int i = 0; i < RC_CREW_MAX; i++){ h[i] = i < 4 ? crewHashes[i] : 0; rgb[i] = i < 4 ? crewRGB[i] : 0; }
@@ -874,7 +875,8 @@ int native_controls_set_room(const char *name, char *error, size_t capacity){ @a
 @property NSArray<NSTextField *> *crewFields, *groupFields;
 @property NSArray<NSColorWell *> *crewWells;
 @property NSArray<NSPopUpButton *> *groupPhrases;
-@property NSButton *engage, *leave, *collision, *say, *groups, *apply, *joinRoom, *friendAct, *joinFriend;
+@property NSPopUpButton *collision;
+@property NSButton *engage, *leave, *say, *groups, *apply, *joinRoom, *friendAct, *joinFriend;
 @property NSPopUpButton *friendPopup;
 @property NSButton *musicOn, *pause, *next, *shuffle;
 @property NSPopUpButton *phrase;
@@ -936,10 +938,11 @@ static NSColor *color_of(unsigned rgb){
 - (void)pause:(id)sender { (void)sender; radio_native_toggle_pause(); [self refresh]; }
 - (void)next:(id)sender { (void)sender; radio_native_next(); }
 - (void)shuffle:(id)sender { (void)sender; radio_native_set_shuffle(self.shuffle.state == NSControlStateValueOn); }
+/* the Cars menu: 0 solid cars, 1 ghost cars, 2 everything passes through (traffic and tuners too) */
 - (void)collision:(id)sender {
-    (void)sender; BOOL on = self.collision.state == NSControlStateValueOn;
-    native_controls_set_solid(on);
-    [NSUserDefaults.standardUserDefaults setObject:on ? @"solid" : @"ghost" forKey:@"LauncherFreeRoam"];
+    (void)sender; NSInteger i = self.collision.indexOfSelectedItem;
+    native_controls_set_solid(i == 0 ? 1 : i == 2 ? 2 : 0);
+    [NSUserDefaults.standardUserDefaults setObject:i == 0 ? @"solid" : i == 2 ? @"everything" : @"ghost" forKey:@"LauncherFreeRoam"];
 }
 - (void)applyCrews:(id)sender {
     (void)sender; char error[160];
@@ -1156,7 +1159,8 @@ static NSColor *color_of(unsigned rgb){
         for (NSView *v in self.panel.contentView.subviews){
             NSButton *b = (NSButton *)v;
             if (![v isKindOfClass:NSButton.class] || ![b.title hasPrefix:want] || !b.enabled) continue;
-            if (b == self.collision || b == self.musicOn || b == self.shuffle) b.state = b.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+            if (b == self.musicOn || b == self.shuffle) b.state = b.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+            if (b == self.collision) [self.collision selectItemAtIndex:(self.collision.indexOfSelectedItem + 1) % self.collision.numberOfItems];
             const char *cr = getenv("GAMETOOLS_CREWS");
             const char *rm = getenv("GAMETOOLS_ROOM");
             if (b == self.joinRoom && rm) self.roomField.stringValue = [NSString stringWithUTF8String:rm] ?: @"";
@@ -1249,7 +1253,12 @@ void native_controls_install(NSWindow *game){
     ui.shuffle = checkbox(v, @"Shuffle", @selector(shuffle:), NSMakeRect(390, 416, 110, 24));
     ui.engage = button(v, @"Open lobby", @selector(engage:), NSMakeRect(16, 378, 180, 32));
     ui.leave = button(v, @"Leave lobby", @selector(leave:), NSMakeRect(204, 378, 150, 32));
-    ui.collision = checkbox(v, @"Solid cars (off: ghost cars, which drive through yours)", @selector(collision:), NSMakeRect(20, 347, 480, 24));
+    label(v, @"Cars", NSMakeRect(20, 349, 50, 22));
+    ui.collision = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(70, 345, 436, 28) pullsDown:NO];
+    [ui.collision addItemsWithTitles:@[ @"Solid cars", @"Ghost cars: other players drive through yours",
+                                        @"Everything ghost: players, traffic and tuners drive through yours" ]];
+    ui.collision.target = ui; ui.collision.action = @selector(collision:); ui.collision.accessibilityLabel = @"Cars";
+    [v addSubview:ui.collision];
     label(v, @"Crews (up to 4): a name and its colour", NSMakeRect(20, 318, 480, 22));
     NSMutableArray *fields = [NSMutableArray array], *wells = [NSMutableArray array];
     for (int i = 0; i < 4; i++){
@@ -1272,7 +1281,7 @@ void native_controls_install(NSWindow *game){
     /* what the launcher started with (roam_game.c reads the same variables) */
     const char *crew = getenv("NFSU2_ROAM_CREW"), *rgb = getenv("NFSU2_ROAM_CREW_RGB"), *col = getenv("NFSU2_ROAM_COLLIDE");
     [ui showCrews:crew ? [NSString stringWithUTF8String:crew] ?: @"" : @"" colours:rgb ? [NSString stringWithUTF8String:rgb] ?: @"" : @""];
-    ui.collision.state = !col || atoi(col) ? NSControlStateValueOn : NSControlStateValueOff;
+    [ui.collision selectItemAtIndex:col && !strcasecmp(col, "none") ? 2 : !col || atoi(col) ? 0 : 1];
     const char *room = getenv("NFSU2_ROAM_ROOM");
     ui.roomField.stringValue = room ? [NSString stringWithUTF8String:room] ?: @"" : @"";
     /* the overlay over the game's picture */

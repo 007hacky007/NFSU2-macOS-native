@@ -73,16 +73,29 @@ void sub_005f46b0(CPU *c){
     sub_005f46b0_orig(c);
 }
 /* a touching pair of collision bodies (thiscall, from the collision step
- * only): a hit between the player's car and a friend's car is shared
- * between the two (roam_game_contact) */
+ * only): with Ghost mode Everything the game's own cars pass through the
+ * player's car and friends' cars (roam_game_ghost_pair: not resolved); a
+ * hit between the player's car and a friend's car is shared between the
+ * two (roam_game_contact) */
 void sub_005b2620_orig(CPU *c);
 void roam_game_contact(CPU *c, void (*orig)(CPU *));
 int roam_game_pair_unsafe(uint32_t pair);
+int roam_game_ghost_pair(uint32_t contact);
 void sub_005b2620(CPU *c){
     if (!roam_on()){ sub_005b2620_orig(c); return; }
     /* a body without its rigid body faults in the pair's impulse: skipped (plain ret) */
     if (roam_game_pair_unsafe(c->ecx)){ POP32(c->eip); return; }
+    if (roam_game_ghost_pair(c->ecx)){ POP32(c->eip); return; }    /* thiscall, ret */
     roam_game_contact(c, sub_005b2620_orig);
+}
+/* the player's near miss (thiscall, from 0x56FF83 once a frame): with
+ * Ghost mode Everything the game's cars that pass through the player's car
+ * give none (roam_game_near_miss) */
+void sub_0056f180_orig(CPU *c);
+void roam_game_near_miss(CPU *c, void (*orig)(CPU *));
+void sub_0056f180(CPU *c){
+    if (!roam_on()){ sub_0056f180_orig(c); return; }
+    roam_game_near_miss(c, sub_0056f180_orig);
 }
 /* the race's end, for the random encounters: new goals for the AI range's
  * cars through their brains; friends' cars have none (roam_game_goals) */

@@ -64,7 +64,8 @@ const char *roam_ip_str(uint32_t ip, char *buf);   /* buf >= 16 */
  * held */
 int      roam_plat_lobby(const char *json);
 /* solid cars as the player switched them in the panel while the game runs: 1
- * on, 0 off, -1 not switched (NFSU2_ROAM_COLLIDE holds) */
+ * on, 0 off, 2 off and the game's traffic and tuners pass through too (Ghost
+ * mode: Everything), -1 not switched (NFSU2_ROAM_COLLIDE holds) */
 int      roam_plat_solid(void);
 /* the crews as the player changed them in the panel: their rc_room_hash
  * values in the player's order (0: none) into crews, their colours into rgb

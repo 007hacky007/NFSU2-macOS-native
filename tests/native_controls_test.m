@@ -77,6 +77,8 @@ int main(int argc, char **argv){ @autoreleasepool {
     assert(roam_plat_solid() == -1);
     native_controls_set_solid(1); assert(roam_plat_solid() == 1);
     native_controls_set_solid(0); assert(roam_plat_solid() == 0);
+    native_controls_set_solid(2); assert(roam_plat_solid() == 2);   /* Ghost mode Everything */
+    native_controls_set_solid(5); assert(roam_plat_solid() == 1);
     /* crews: the whole list or nothing */
     char error[160]; uint32_t h[RC_CREW_MAX], rgb[RC_CREW_MAX];
     assert(roam_plat_crews(h, rgb) == 0);
