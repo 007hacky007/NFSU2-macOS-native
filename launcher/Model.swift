@@ -69,6 +69,10 @@ final class LauncherModel: ObservableObject {
     private var updateTimer: Timer?
     /// The Builder version this app was made with (nil: not made by a Builder, no check).
     var builderStamp: String? = UpdateCheck.stamp(of: Paths.bundle)
+    /// Update: the download, the Builder and the overlay's state (Updater.swift); Play waits
+    /// while it is set.
+    let updater = Updater()
+    @Published var updateRun: Updater.Run?
     /// How the latest release is asked for (tests put a fake one here).
     var fetchRelease: (URL, @escaping (Data?) -> Void) -> Void = UpdateCheck.fetch
     @Published var intro: String { didSet { defaults.set(intro, forKey: Prefs.intro) } }
@@ -277,6 +281,7 @@ final class LauncherModel: ObservableObject {
         rumbleStrength = min(1, max(0.1, defaults.double(forKey: Prefs.rumbleStrength)))
         packs.game = { [weak self] in self?.location?.folder }
         refreshMods()
+        updater.onChange = { [weak self] run in self?.updateRun = run }
     }
 
     private func savePicture() {
@@ -338,7 +343,7 @@ final class LauncherModel: ObservableObject {
     // MARK: play
 
     func play() {
-        guard case .ready(let loc) = game else { return }
+        guard case .ready(let loc) = game, updateRun == nil, !updater.pending else { return }
         if let err = onlineError { alert("Online play is not set up", err); return }
         let typedName = playerName       // the first profile's name: the one typed, not the digits played under
         // a name another player claimed: asked about once (NameClaims.swift); not in the settings tests
@@ -765,7 +770,8 @@ final class LauncherModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self, let r = release else { return }
                 self.defaults.set(["version": r.version, "page": r.page.absoluteString,
-                                   "download": r.download?.absoluteString ?? ""], forKey: Prefs.updateLatest)
+                                   "download": r.download?.absoluteString ?? "",
+                                   "checksum": r.checksum?.absoluteString ?? ""], forKey: Prefs.updateLatest)
                 self.refreshUpdateNotice()
             }
         }
@@ -797,7 +803,8 @@ final class LauncherModel: ObservableObject {
                 }
                 self.defaults.set(now.timeIntervalSince1970, forKey: Prefs.updateLastCheck)
                 self.defaults.set(["version": r.version, "page": r.page.absoluteString,
-                                   "download": r.download?.absoluteString ?? ""], forKey: Prefs.updateLatest)
+                                   "download": r.download?.absoluteString ?? "",
+                                   "checksum": r.checksum?.absoluteString ?? ""], forKey: Prefs.updateLatest)
                 self.defaults.removeObject(forKey: Prefs.updateDismissed)
                 self.checkedByHand = true
                 self.refreshUpdateNotice()
@@ -816,7 +823,8 @@ final class LauncherModel: ObservableObject {
               defaults.string(forKey: Prefs.updateDismissed).map({ UpdateCheck.isNewer(version, than: $0) }) ?? true
         else { if updateNotice != nil { updateNotice = nil }; return }
         let release = UpdateCheck.Release(version: version, page: page,
-                                          download: latest["download"].flatMap { $0.isEmpty ? nil : URL(string: $0) })
+                                          download: latest["download"].flatMap { $0.isEmpty ? nil : URL(string: $0) },
+                                          checksum: latest["checksum"].flatMap { $0.isEmpty ? nil : URL(string: $0) })
         if updateNotice != release { updateNotice = release }
     }
 
@@ -828,8 +836,27 @@ final class LauncherModel: ObservableObject {
     }
 
     func openUpdatePage() { if let r = updateNotice { NSWorkspace.shared.open(r.page) } }
+    /// After an update the notice is gone: the release's page by its version.
+    func openUpdatePage(version: String) {
+        if let url = URL(string: "https://github.com/007hacky007/NFSU2-macOS-native/releases/tag/v\(version)") { NSWorkspace.shared.open(url) }
+    }
     /// The disk image in the browser: a normal download the browser marks as such.
     func downloadUpdate() { if let r = updateNotice { NSWorkspace.shared.open(r.download ?? r.page) } }
+
+    /// Update in the notice (Updater.swift): the release has the disk image and its checksum,
+    /// and the Builder can put the new app where this one is (it makes NFSU2.app in the folder).
+    var canUpdateInPlace: Bool {
+        guard let r = updateNotice, r.download != nil, r.checksum != nil, builderStamp != nil else { return false }
+        let app = updateHere
+        return app.lastPathComponent == "NFSU2.app"
+            && FileManager.default.isWritableFile(atPath: app.deletingLastPathComponent().path)
+    }
+    func startUpdate() {
+        guard let r = updateNotice, canUpdateInPlace, !isPlaying, job == nil else { return }
+        updater.start(r, app: updateHere)
+    }
+    /// The app Update replaces: this one (the window snapshots: another).
+    var updateHere = Paths.bundle
 
     // MARK: portable copy
 

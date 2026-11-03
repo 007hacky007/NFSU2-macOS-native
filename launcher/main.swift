@@ -166,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let snapshot = env["NFSU2_LAUNCHER_SNAPSHOT"]
         let option = NSEvent.modifierFlags.contains(.option)
-        if snapshot == nil, model.isReady, !option,
+        if snapshot == nil, model.isReady, !option, !model.updater.pending,
            env["NFSU2_SKIP_LAUNCHER"] == "1" || !model.showAtStartup {
             model.play()
             if model.isPlaying { return }      // the engine runs; nothing to show
@@ -223,7 +223,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        if env["NFSU2_LAUNCHER_TEST"] == nil && env["NFSU2_LAUNCHER_STATE"] == nil { model.checkForUpdates(); model.keepCheckingForUpdates() }
+        // tests: Update from a disk image given by its address (file:// works), printing the bar
+        if let t = env["NFSU2_LAUNCHER_TEST"], t.hasPrefix("update|") {
+            let parts = t.split(separator: "|").map(String.init)
+            guard parts.count == 4, let dmg = URL(string: parts[2]), let sum = URL(string: parts[3]) else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
+            let shown = model.updater.onChange
+            model.updater.onChange = { run in
+                print("update: " + (run.map { "\(Int($0.fraction * 100))% \($0.text) \($0.detail ?? "") \($0.failure ?? "")" } ?? "none"))
+                shown(run)
+            }
+            model.updater.start(UpdateCheck.Release(version: parts[1], page: dmg, download: dmg, checksum: sum))
+        }
+        if env["NFSU2_LAUNCHER_TEST"] == nil && env["NFSU2_LAUNCHER_STATE"] == nil {
+            model.updater.resume()      // an Update that quit this launcher to install (Updater.swift)
+            model.checkForUpdates(); model.keepCheckingForUpdates()
+        }
     }
 
     /// Settings… in the window and the app menu (Cmd-,).
@@ -258,7 +272,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "update":
             model.game = .ready(GameLocation(exe: exe, embedded: true))
             model.updateNotice = UpdateCheck.Release(version: "1.1.0", page: URL(string: "https://github.com/")!, download: nil)
-        case "update-off":   // Settings › More: the daily check off, Check Now still there
+        case "update-here", "updating", "update-failed", "updated":   // Update and its overlay (Updater.swift)
+            model.game = .ready(GameLocation(exe: exe, embedded: true))
+            model.builderStamp = "1.0.4"
+            model.updateHere = URL(fileURLWithPath: "/Applications/NFSU2.app")
+            let gh = "https://github.com/007hacky007/NFSU2-macOS-native/releases/download/v1.0.5/"
+            model.updateNotice = UpdateCheck.Release(version: "1.0.5", page: URL(string: "https://github.com/")!,
+                                                     download: URL(string: gh + "NFSU2-Builder.dmg"), checksum: URL(string: gh + "NFSU2-Builder.dmg.sha256"))
+            switch s {
+            case "updating":
+                model.updateRun = Updater.Run(version: "1.0.5", text: "Building: Compile the game", fraction: Updater.fraction(state: "building", part: 0.45),
+                                              detail: "NFSU2 Builder 1.0.5 is making the new app; this takes a few minutes.", canCancel: true, builderRunning: true)
+            case "update-failed":
+                model.updateRun = Updater.Run(version: "1.0.5", text: "", failure: "The update stopped. Free disk space: Only 0.9 GB free, 1.5 GB needed", builderRunning: true)
+            case "updated":
+                model.updateRun = Updater.Run(version: "1.0.5", text: "", fraction: 1, finished: true)
+            default: break
+            }
+        case "update-off":   // Settings › More: the regular check off, Check Now still there
             model.game = .ready(GameLocation(exe: exe, embedded: true))
             model.fetchRelease = { _, done in done(nil) }
             model.builderStamp = "1.0.1"

@@ -6,22 +6,25 @@
 // Only for an app made by NFSU2 Builder: its Info.plist has NFSBuilderVersion (pack.sh
 // BUILDER_VERSION).  One GET of the latest release, with "NFSU2-Launcher" as the
 // User-Agent and nothing else that identifies the player, in the background, 5 s at
-// most; any failure is silent.  Download opens the disk image's address in the
-// browser, so it is a normal browser download: the launcher itself never downloads
-// or runs anything.  Off: no request at all.
+// most; any failure is silent.  Update (Updater.swift) downloads the disk image, checks
+// it against the release's SHA-256 and lets the Builder in it update this app; an app it
+// cannot update in place (not named NFSU2.app, or in a folder it cannot write to) gets
+// Download, which opens the disk image's address in the browser.  Off: no request at all.
 import Foundation
 
 enum UpdateCheck {
     static let releasesAPI = URL(string: "https://api.github.com/repos/007hacky007/NFSU2-macOS-native/releases/latest")!
     static let userAgent = "NFSU2-Launcher"
     static let asset = "NFSU2-Builder.dmg"
+    static let checksumAsset = "NFSU2-Builder.dmg.sha256"
     static let interval: TimeInterval = 2 * 60 * 60
     static let stampKey = "NFSBuilderVersion"
 
     struct Release: Equatable {
         let version: String
         let page: URL            // the release's page: What's new
-        let download: URL?       // the disk image: Download
+        let download: URL?       // the disk image: Update (Updater.swift), or Download in the browser
+        var checksum: URL? = nil // its SHA-256 (the release's NFSU2-Builder.dmg.sha256)
     }
 
     /// The Builder version this app was made with, if a Builder made it.
@@ -60,9 +63,12 @@ enum UpdateCheck {
         let version = tag.hasPrefix("v") || tag.hasPrefix("V") ? String(tag.dropFirst()) : tag
         guard version.first?.isNumber == true else { return nil }
         let assets = obj["assets"] as? [[String: Any]] ?? []
-        let dmg = assets.first { ($0["name"] as? String) == asset }
-            .flatMap { $0["browser_download_url"] as? String }.flatMap(URL.init(string:))
-        return Release(version: version, page: page, download: dmg?.scheme == "https" ? dmg : nil)
+        func file(_ name: String) -> URL? {
+            let url = assets.first { ($0["name"] as? String) == name }
+                .flatMap { $0["browser_download_url"] as? String }.flatMap(URL.init(string:))
+            return url?.scheme == "https" ? url : nil
+        }
+        return Release(version: version, page: page, download: file(asset), checksum: file(checksumAsset))
     }
 
     /// One request, nothing stored (no cookies, no cache).  Calls back with the body of a 200 answer, or nil.

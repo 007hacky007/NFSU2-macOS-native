@@ -140,12 +140,73 @@ struct UpdateNotice: View {
                 .lineLimit(1)
             Spacer(minLength: 6)
             Button("What's new") { model.openUpdatePage() }.buttonStyle(SecondaryButtonStyle())
-            Button("Download") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
+            if model.canUpdateInPlace {
+                Button("Update") { model.startUpdate() }.buttonStyle(SecondaryButtonStyle())
+                    .disabled(model.isPlaying || model.job != nil)
+            } else {
+                Button("Download") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
+            }
             Button("Not now") { model.dismissUpdate() }.buttonStyle(SecondaryButtonStyle())
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.card))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.cardBorder, lineWidth: 1))
+    }
+}
+
+/// Update in progress (Updater.swift): one bar from the download to the new app, over the
+/// whole window, so nothing else (Play above all) can start meanwhile.
+struct UpdateOverlay: View {
+    @ObservedObject var model: LauncherModel
+    let run: Updater.Run
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.6)
+            VStack(alignment: .leading, spacing: 12) {
+                if run.finished {
+                    Text("Updated").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)
+                    Text("This app is now made by NFSU2 Builder \(run.version). Your saves and settings are as they were.")
+                        .font(.system(size: 12)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("What's new") { model.openUpdatePage(version: run.version) }.buttonStyle(SecondaryButtonStyle())
+                        Spacer()
+                        Button("OK") { model.updater.close() }.buttonStyle(PrimaryButtonStyle())
+                            .keyboardShortcut(.defaultAction)
+                    }
+                } else if let e = run.failure {
+                    Text("The update did not finish").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)
+                    Text(e).font(.system(size: 12)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        if run.builderRunning {
+                            Button("Show Details") { model.updater.showBuilder() }.buttonStyle(SecondaryButtonStyle())
+                        }
+                        Button("Download Instead") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
+                            .disabled(model.updateNotice == nil)
+                        Spacer()
+                        Button("Close") { model.updater.close() }.buttonStyle(PrimaryButtonStyle())
+                    }
+                } else {
+                    Text("Updating to NFSU2 Builder \(run.version)").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)
+                    Text(run.text).font(.system(size: 12)).foregroundColor(Theme.dim)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    ProgressView(value: run.fraction).accentColor(Theme.accent)
+                    HStack(alignment: .top) {
+                        Text(run.detail ?? " ").font(.system(size: 11)).foregroundColor(Theme.dim)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        if run.canCancel {
+                            Button("Cancel") { model.updater.cancel() }.buttonStyle(SecondaryButtonStyle())
+                        }
+                    }
+                }
+            }
+            .padding(20)
+            .frame(width: 400)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0.11, green: 0.115, blue: 0.13)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.cardBorder, lineWidth: 1))
+        }
     }
 }
 
@@ -575,11 +636,12 @@ struct LauncherView: View {
                     Button("Play") { model.play() }
                         .buttonStyle(PrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
-                        .disabled(!model.isReady || model.job != nil)
+                        .disabled(!model.isReady || model.job != nil || model.updateRun != nil)
                 }
             }
             .padding(.horizontal, 22).padding(.top, 10).padding(.bottom, 18)
             if let j = model.job { JobOverlay(model: model, job: j) }
+            if let u = model.updateRun { UpdateOverlay(model: model, run: u) }
         }
         .frame(width: LauncherView.size.width, height: LauncherView.size.height)
     }

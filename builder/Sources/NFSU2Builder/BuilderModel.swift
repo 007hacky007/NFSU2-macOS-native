@@ -37,6 +37,9 @@ final class BuilderModel: ObservableObject {
     private var dataIsAppFolder = false
 
     let paths = BuilderPaths()
+    /// `-LauncherUpdate <status file>`: NFSU2.app's launcher started this Builder to update it
+    /// (LauncherUpdate.swift); nil for a Builder the player opened.
+    let launcherUpdate = UserDefaults.standard.string(forKey: "LauncherUpdate").map { URL(fileURLWithPath: $0) }
     let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0-dev"
     private let sources = BuilderModel.findSources()
     private let defaults = UserDefaults.standard
@@ -131,7 +134,79 @@ final class BuilderModel: ObservableObject {
     func start() {
         refresh()
         prepare(sweep: true) { [self] _ in refreshBuildTools() }
-        if defaults.bool(forKey: "AutoBuild") { startAutoBuild() }
+        if launcherUpdate != nil { startLauncherUpdate() }
+        else if defaults.bool(forKey: "AutoBuild") { startAutoBuild() }
+    }
+
+    /// An update for the launcher (`-LauncherUpdate <status file>`, with -destination and
+    /// -gameData naming the NFSU2.app to replace): Install for the build tools and Build, as
+    /// AutoBuild does, and then what the player would do: install once the launcher has quit
+    /// (it quits when told the build is waiting), open the new NFSU2.app and quit. Twice a
+    /// second the status file says where it is. A red row that stays red, or a failed step,
+    /// stops it there: the window has the details and works as usual from then on.
+    private func startLauncherUpdate() {
+        guard let statusFile = launcherUpdate else { return }
+        var installed = false, built = false, installing = false, opened = false, stuck = 0
+        var last: LauncherUpdateStatus?
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+            guard let self = self, !self.shuttingDown else { timer.invalidate(); return }
+            var status: LauncherUpdateStatus
+            switch self.phase {
+            case .checklist:
+                if built {
+                    status = LauncherUpdateStatus(state: .failed, message: self.notice ?? "The build did not start.")
+                } else if self.states[.buildTools]?.isBlocked == true, !installed, !self.installingTools {
+                    installed = true
+                    self.installBuildTools()
+                    status = LauncherUpdateStatus(state: .tools, text: "Setting up the build tools")
+                } else if self.buildEnabled {
+                    built = true
+                    self.build()
+                    status = LauncherUpdateStatus(state: .building, text: "Starting the build")
+                } else if !self.installingTools, installed || self.toolsReady, let (id, message) = updateBlocker(self.states) {
+                    // a row can turn red for a moment while its check starts again
+                    stuck += 1
+                    status = stuck < 4 ? last ?? LauncherUpdateStatus(state: .preparing, text: "Checking")
+                        : LauncherUpdateStatus(state: .failed, message: "\(id.title): \(message)")
+                } else {
+                    stuck = 0
+                    if self.installingTools, case let .checking(text)? = self.states[.buildTools] {
+                        status = LauncherUpdateStatus(state: .tools, text: text)
+                    } else {
+                        let checking = CheckID.allCases.lazy.compactMap { id -> String? in
+                            if case let .checking(text)? = self.states[id] { return text }
+                            return nil
+                        }.first
+                        status = LauncherUpdateStatus(state: .preparing, text: checking ?? "Checking")
+                    }
+                }
+            case let .building(step, fraction, _):
+                status = installing ? LauncherUpdateStatus(state: .installing, fraction: 1, text: "Installing NFSU2.app")
+                    : LauncherUpdateStatus(state: .building, fraction: fraction, text: buildStepNames[step] ?? "Starting the build")
+            case .quitToInstall:
+                status = LauncherUpdateStatus(state: .waiting, fraction: 1, text: "Installing NFSU2.app")
+                if !isGameRunning() {
+                    installing = true
+                    self.installAgain()
+                }
+            case let .finished(app):
+                status = LauncherUpdateStatus(state: .done, fraction: 1, text: "Opening NFSU2")
+                if !opened {
+                    opened = true
+                    let configuration = NSWorkspace.OpenConfiguration()
+                    NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, _ in
+                        DispatchQueue.main.async { NSApp.terminate(nil) }
+                    }
+                }
+            case let .failed(step, message, _):
+                status = LauncherUpdateStatus(state: .failed, message: "\(step) failed: \(message)")
+            }
+            if status != last {
+                last = status
+                try? status.write(to: statusFile)
+            }
+            if status.state == .failed { timer.invalidate() }
+        }
     }
 
     /// Unattended runs (`open "NFSU2 Builder.app" --args -AutoBuild YES`, used to test a release):
@@ -477,7 +552,8 @@ final class BuilderModel: ObservableObject {
 
     func build() {
         guard phase == .checklist, buildEnabled, let report = dataReport, !shuttingDown else { return }
-        if isGameRunning() {
+        // An update for the launcher builds while it runs; installing waits until it has quit.
+        if launcherUpdate == nil, isGameRunning() {
             notice = "Quit NFSU2 first, then try again."
             return
         }

@@ -317,6 +317,43 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         check(requests.count == open + 1, "updates: a launcher left open asks once two hours have passed")
         m.keepCheckingForUpdates(every: 3600)
+        // Update (Updater.swift): what it needs, the Builder's arguments, the bar, the record
+        check(parsed?.checksum?.absoluteString == "https://example.com/x", "update: the release's checksum file (NFSU2-Builder.dmg.sha256)")
+        check(Updater.checksum(in: String(repeating: "aB", count: 32) + "  NFSU2-Builder.dmg\n") == String(repeating: "ab", count: 32)
+              && Updater.checksum(in: "abc  NFSU2-Builder.dmg") == nil && Updater.checksum(in: "") == nil,
+              "update: the SHA-256 of a shasum line, nothing else")
+        let here = URL(fileURLWithPath: "/Users/p/My \"Games\"/NFSU2.app")
+        let args = Updater.builderArguments(app: here, status: URL(fileURLWithPath: "/tmp/s.json"))
+        let gameData = (args.firstIndex(of: "-gameData").map { args[$0 + 1] }).flatMap {
+            try? PropertyListSerialization.propertyList(from: Data($0.utf8), format: nil) as? [String] }
+        check(args.starts(with: ["-LauncherUpdate", "/tmp/s.json", "-destination", "/Users/p/My \"Games\""]) && gameData == [here.path],
+              "update: the Builder is told the status file, the folder and this app (as its arguments read them)")
+        let steps = ["download", "open", "preparing", "tools", "building", "waiting", "done"]
+        let bar = steps.flatMap { s in [0, 1].map { Updater.fraction(state: s, part: Double($0)) } }
+        check(zip(bar, bar.dropFirst()).allSatisfy { $0 <= $1 } && bar.first == 0 && bar.last! < 1, "update: the bar only goes forward")
+        let rec = Updater.Record(version: "1.0.5", folder: URL(fileURLWithPath: "/tmp/u"), pid: 42)
+        check(Updater.Record(rec.dictionary) == rec && Updater.Record(nil) == nil && Updater.Record(["version": "1"]) == nil,
+              "update: the record survives the launcher quitting")
+        m.updateNotice = parsed
+        m.updateHere = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NFSU2.app")
+        check(m.canUpdateInPlace, "update: in place for an NFSU2.app in a folder it can write to")
+        m.updateHere = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NFSU2 copy.app")
+        check(!m.canUpdateInPlace, "update: another name gets Download (the Builder makes NFSU2.app)")
+        m.updateHere = URL(fileURLWithPath: "/System/NFSU2.app")
+        check(!m.canUpdateInPlace, "update: a folder it cannot write to gets Download")
+        m.updateNotice = UpdateCheck.Release(version: "1.1.0", page: parsed!.page, download: parsed!.download)
+        m.updateHere = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NFSU2.app")
+        check(!m.canUpdateInPlace, "update: no checksum, no Update")
+        d.set(rec.dictionary, forKey: Prefs.updateRun)
+        check(m.updater.pending, "update: an update in progress is seen (no Play on opening)")
+        var playedDuringUpdate = false
+        LauncherModel.testSpawn = { _ in playedDuringUpdate = true }
+        m.game = .ready(GameLocation(exe: URL(fileURLWithPath: "/tmp/g/SPEED2.EXE"), embedded: false))
+        m.play()
+        check(!playedDuringUpdate, "update: no Play while it runs")
+        d.removeObject(forKey: Prefs.updateRun)
+        LauncherModel.testSpawn = nil
+        m.updateNotice = nil
 
         // validation
         for ok in ["wss://nfsu2.xyz/lan", "ws://127.0.0.1:8080/lan", "ws://[::1]:8080/lan", "ws://localhost/lan"] { check(OnlineSettings.validServer(ok), "server accepted: \(ok)") }

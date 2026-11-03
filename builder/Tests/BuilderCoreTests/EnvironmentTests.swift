@@ -298,6 +298,30 @@ final class EnvironmentTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: paths.venv.path))
     }
 
+    func testLauncherUpdateStatusRoundTrip() throws {
+        let file = tmp.appendingPathComponent("status.json")
+        XCTAssertNil(LauncherUpdateStatus.read(from: file))
+        let status = LauncherUpdateStatus(state: .building, fraction: 0.4, text: "Compile the game")
+        try status.write(to: file)
+        XCTAssertEqual(LauncherUpdateStatus.read(from: file), status)
+        // what launcher/Updater.swift reads
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
+        XCTAssertEqual(json?["state"] as? String, "building")
+        XCTAssertEqual(json?["fraction"] as? Double, 0.4)
+        XCTAssertEqual(json?["text"] as? String, "Compile the game")
+    }
+
+    func testUpdateBlockerWaitsForEveryCheck() {
+        var states = Dictionary(uniqueKeysWithValues: CheckID.allCases.map { ($0, CheckState.ready("ok")) })
+        XCTAssertNil(updateBlocker(states))
+        states[.diskSpace] = .blocked("Only 0.5 GB free, 1.5 GB needed")
+        states[.gameData] = .checking("Checking your game copy...")
+        XCTAssertNil(updateBlocker(states), "not while a check runs")
+        states[.gameData] = .automatic("fine")
+        XCTAssertEqual(updateBlocker(states)?.0, .diskSpace)
+        XCTAssertEqual(updateBlocker(states)?.1, "Only 0.5 GB free, 1.5 GB needed")
+    }
+
     func testInstallCompletionArrivesOnMainThread() throws {
         let paths = BuilderPaths(support: tmp.appendingPathComponent("support"))
         let bad = tmp.appendingPathComponent("bad.tgz")

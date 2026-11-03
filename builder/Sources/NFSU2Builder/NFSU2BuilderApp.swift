@@ -9,7 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when started with `swift run`, where there is no app bundle to say so.
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        // An update for the launcher works out of sight; the launcher shows its progress.
+        if model.launcherUpdate == nil { NSApp.activate(ignoringOtherApps: true) }
         // The pipeline runs in its own process group, so a plain SIGTERM to the Builder would
         // orphan it; route the signal through the normal quit path instead. terminate(_:) is
         // started from the run loop, not from inside a main-queue block: while it waits for the

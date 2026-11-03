@@ -107,6 +107,7 @@ enum Prefs {
     static let updateLastCheck = "LauncherUpdateLastCheck"   // when it last asked (seconds since 1970)
     static let updateLatest = "LauncherUpdateLatest"         // the newest release it saw: version, page, download
     static let updateDismissed = "LauncherUpdateDismissed"   // Not now: hidden until a newer version than this
+    static let updateRun = "LauncherUpdateRun"               // an Update in progress: its download folder and the Builder (Updater.swift)
     static let engine = "LauncherEngine"           // "original" | "hd"
     static let showAtStartup = "LauncherShowAtStartup"
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
