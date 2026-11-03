@@ -8,9 +8,10 @@
  * the second debug no-op call of GameLoop (0x581485, NA 0x581475), on the
  * guest thread between two frames; the names over the cars after the HUD's
  * update in Player::Update (0x6005F0, NA 0x6005E0), where the game places
- * its own LAN race labels.  The main-loop hook also runs the horns of
- * network races and the Horn Volume slider's frame (racehorn.c,
- * hornmenu.c; only with horns on, NFSU2_HORN) and the "[stream]" log of the
+ * its own LAN race labels.  The main-loop hook also runs the horns and quick
+ * chat of network races and the Horn Volume slider's frame (racehorn.c,
+ * hornmenu.c; only with horns or quick chat on, NFSU2_HORN, NFSU2_ROAM_SAY)
+ * and the "[stream]" log of the
  * world's reads (roamfix.c reads_frame), free roam or not.  Both are tools/gen_v2.sh HOOKS.  The whole CPU
  * state is saved and restored around each call (roam_host.h rh_call).
  *
@@ -32,7 +33,7 @@ void roam_game_frame(CPU *c);
 void roam_game_hud(CPU *c);
 void mprace_frame(CPU *c);
 void roam_texts_frame(CPU *c);
-void racehorn_frame(CPU *c);                  /* racehorn.c: horns in network races (NFSU2_HORN) */
+void racehorn_frame(CPU *c);                  /* racehorn.c: horns and quick chat in network races (NFSU2_HORN, NFSU2_ROAM_SAY) */
 void hornmenu_frame(CPU *c);                  /* hornmenu.c: the Horn Volume slider (NFSU2_HORN) */
 void reads_frame(CPU *c);                     /* roamfix.c: the streamer's reads and Loading screens, for the log */
 
