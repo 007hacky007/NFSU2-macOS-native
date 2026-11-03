@@ -2,6 +2,11 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.6 - unreleased
+
+### Added
+- Czech: ROXOR's and PINĎA & syn's Czech translation (v1.1, 2004), one click in Settings, Mods, Languages. The launcher downloads it from abcgames.cz, checks it is the tested release and reads its files without running its patch program. It is written as the translation wrote it, without the letters with the caron (c, r, s for č, ř, š), which the game's fonts lack. The texts it had left in German (gamepad help, colours, countries, console messages) are in Czech now, and so are the movies' subtitles, which it had left empty.
+
 ## 1.0.5 - 2026-11-03
 
 ### Added
