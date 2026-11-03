@@ -98,6 +98,7 @@ cutscenes60:cutscenes60.txt:[expect] PASS:NFSU2_CUTSCENES_60=1 NFSU2_FPS=120
 heapreset:heap_resetloop.txt:[status] after_reset_8:
 padrace:pad_quickrace.txt:$FLOW:NFSU2_PAD_FAKE=PLUG=1
 padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:NFSU2_PAD_FAKE=PLUG=1
+padbindings:pad_hotplug_bindings.txt:the pad is back:NFSU2_PAD=hotplug NFSU2_TEST_PAD_NO_REAL=1
 kbprofile:kb_profile.txt:LOG Cmd-Q now:
 kbprofilefill:kb_profile_prefill.txt:[profile] a new profile's name starts as the Player name:NFSU2_NEW_PROFILE_NAME=Alex_the_Great
 kbprofilezh:kb_profile_zh.txt:[profile] a new profile's name starts empty:NFSU2_LANGUAGE=chinese
