@@ -105,7 +105,6 @@
 #define GA_0x00537990u 0x00537980u   /* function 00537990 + 0x0 */
 #define GA_0x005379d0u 0x005379c0u   /* function 005379d0 + 0x0 */
 #define GA_0x00537a20u 0x00537a10u   /* function 00537a20 + 0x0 */
-#define GA_0x00537bf0u 0x00537be0u   /* function 00537bf0 + 0x0 */
 #define GA_0x00537c10u 0x00537c00u   /* function 00537c10 + 0x0 */
 #define GA_0x0053d0fau 0x0053d0eau   /* function 0053d0b0 + 0x4a */
 #define GA_0x0053d155u 0x0053d145u   /* function 0053d0b0 + 0xa5 */
