@@ -34,6 +34,14 @@
 //     with the tilde and u with the circumflex), memory-card texts and credits;
 //     Ukrainian also the Russian pack's fonts, which its text is written in.  Ported
 //     from th0mk's nfsu2-web tools/langpacks.py --hu and --uk (MIT).
+//   - ROXOR's and PINĎA & syn's Czech translation (v1.1, 2004; abcgames.cz): Download
+//     fetches the zip abcgames.cz serves, checks it (size and SHA-256) and the patch in
+//     it, and reads the patch's files, never running it (a Clickteam Patch Maker one,
+//     Clickteam.swift).  It takes English's place: its text, in the game's own fonts
+//     (it writes c, r, s, z, e for the letters with the caron, as the translation
+//     says itself: "partial diacritics"), and memory-card texts.  The translation was
+//     made on German's text: the texts it left in German and the movies' lines it left
+//     empty (German's movies are dubbed) are ours, in its spelling (CzechTexts.swift).
 import Foundation
 import CryptoKit
 
@@ -62,8 +70,9 @@ enum LanguagePacks {
                                    sha256: "b8a9f123ed9779001770c408687845b58ca9c77adff5a578d397edbe7f77b5aa")
     /// The translations fetched as one installer: the author's page, where it links the
     /// installer (Ukrainian's: the Google Drive file kuli.com.ua's Download leads to), and
-    /// the release this was made with.
-    struct Installer { let page: URL; let url: URL; let file: Archive }
+    /// the release this was made with; inner: the installer in it when the download is a
+    /// zip (Czech's), which Import… also takes as it is.
+    struct Installer { let page: URL; let url: URL; let file: Archive; var inner: Archive? = nil }
     static let installers: [String: Installer] = [
         "hungarian": Installer(page: URL(string: "http://www.gamehunter.hu/2010/08/need-for-speed-underground-2-pc.html")!,
                                url: URL(string: "https://lukacs.eu/gamehunter/nfs_underground2.exe")!,
@@ -73,6 +82,12 @@ enum LanguagePacks {
                                url: URL(string: "https://drive.usercontent.google.com/download?id=10t3yk3a1bBQiHrLWF5nywx4PiWp-2-5a&export=download&confirm=t")!,
                                file: Archive(name: "Need for Speed Underground 2 - Ukrainian.exe", size: 4_038_701,
                                              sha256: "c378c2f99f41679e0ab12d28765c4f83d9603f3c613a2b940d0b3b63cbd60b0e")),
+        "czech": Installer(page: URL(string: "https://www.abcgames.cz/?p=preklady_zobraz&id=7774")!,
+                           url: URL(string: "https://www.abcgames.cz/download/file.ashx?s=7&id=1371")!,
+                           file: Archive(name: "nfs-underground-2-cz.zip", size: 376_277,
+                                         sha256: "9d4e140c5d7d49bd59d49feecfb97724a15e6f4454c41355d5eb4fbaf2f2ff5c"),
+                           inner: Archive(name: "nfsu2cz-v1.1.exe", size: 421_341,
+                                          sha256: "8cf760e988e8410549f40e5150dee0cabbd98534ebbc6d1ced971104f811bdd1")),
     ]
     static let pages: [String: URL] = [
         "portuguese": URL(string: "https://joao13traducoes.com/2018/08/pc-need-for-speed-underground-2-traduzido-e-dublado-varios-autores/")!,
@@ -138,6 +153,10 @@ enum LanguagePacks {
                           (4, "GLOBAL/GLOBALA.BUN"), (5, "memcard/LOCALE_ENGLISH.loc"),
                           (7, "CREDITS/NA_ENGLISH.TXT"), (8, "CREDITS/UK_ENGLISH.TXT")]
     static let ukEntries = 9
+    // Czech: (file in the patch, the game's file it stands in for).  Not used: its German.bin
+    // and LOCALE_GERMAN.loc, the same translation for the German game.
+    static let czFiles = [("LANGUAGES\\English.bin", "LANGUAGES/English.bin"),
+                          ("memcard\\LOCALE_ENGLISH.loc", "memcard/LOCALE_ENGLISH.loc")]
 
     /// How a language's pack is made.
     enum Way { case download, importOnly }
@@ -360,6 +379,10 @@ enum LanguagePacks {
     /// strings) rebuilt with the changed texts after the others; the chunks after it (the
     /// fonts) stay 0x80-aligned behind a pad chunk (id 0), as in the game's own file.
     static func withTexts(_ file: Data, _ texts: [UInt32: String]) throws -> (Data, Int) {
+        try withTexts(file, bytes: texts.mapValues { Array($0.utf8) })
+    }
+    /// The same with the texts as the file's bytes (a translation's letters).
+    static func withTexts(_ file: Data, bytes texts: [UInt32: [UInt8]]) throws -> (Data, Int) {
         let d = [UInt8](file)
         func u32(_ o: Int) -> Int { Int(d[o]) | Int(d[o + 1]) << 8 | Int(d[o + 2]) << 16 | Int(d[o + 3]) << 24 }
         func put(_ v: Int, _ a: inout [UInt8]) { for i in 0..<4 { a.append(UInt8(truncatingIfNeeded: v >> (8 * i))) } }
@@ -379,8 +402,7 @@ enum LanguagePacks {
             return Array(c[(sd + o)..<e])
         }
         var strs = Array(c[sd...]), changed = 0
-        for (h, t) in texts.sorted(by: { $0.key < $1.key }) {
-            let b = Array(t.utf8)
+        for (h, b) in texts.sorted(by: { $0.key < $1.key }) {
             if old(h) == b { continue }
             at[h] = strs.count; strs += b + [0]; changed += 1
         }
@@ -610,29 +632,67 @@ enum LanguagePacks {
         return p.summary
     }
 
-    /// The pinned installer at src (the file, or a folder with it), refused unless it is
-    /// the release this was made with.
-    static func pinnedInstaller(_ lang: String, _ src: URL) throws -> URL {
-        guard let a = installers[lang]?.file else { throw Failure(message: "\(lang) has no installer") }
+    /// Czech's pack from its patch (as downloaded, checked by the caller): the patch's
+    /// English.bin with our texts (CzechTexts.swift) and its memory-card texts.
+    static func buildCzech(installer: URL, game: URL, packs: URL? = nil) throws -> String {
+        let d = [UInt8](try Data(contentsOf: installer))
+        let patch = try Clickteam.read(d)
+        let p = Pack(game: game, lang: "czech", packs: packs)
+        for (s, rel) in czFiles {
+            guard let e = patch.entries.first(where: { $0.path.lowercased() == s.lowercased() }) else {
+                throw Failure(message: "The Czech translation's patch has no \(s).")
+            }
+            var data = try Clickteam.file(d, patch, e)
+            if rel == "LANGUAGES/English.bin" {
+                if p.sameAsGame(rel, data) { throw Failure(message: "Its LANGUAGES/English.bin is the game's own, not the translation.") }
+                data = try withTexts(data, bytes: try CzechTexts.bytes()).0
+            }
+            try p.add(data, rel)
+        }
+        p.finish()
+        return p.summary
+    }
+
+    /// The pinned installer at src (the file, or a folder with it; for Czech also the
+    /// zip it comes in, unpacked to a temporary folder, the second URL, for the caller to
+    /// remove), refused unless it is the release this was made with.
+    static func pinnedInstaller(_ lang: String, _ src: URL) throws -> (URL, URL?) {
+        guard let i = installers[lang] else { throw Failure(message: "\(lang) has no installer") }
+        let a = i.inner ?? i.file
         func size(_ u: URL) -> Int64 { ((try? FileManager.default.attributesOfItem(atPath: u.path))?[.size] as? NSNumber)?.int64Value ?? -1 }
-        var found: URL? = nil
+        func pinned(_ u: URL, _ x: Archive) -> Bool { size(u) == x.size && (try? sha256(u)) == x.sha256 }
+        func search(_ dir: URL, _ x: Archive) -> URL? {
+            let all = (FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []
+            return all.filter { !UHUDPack.isDirectory($0) && size($0) == x.size }
+                .sorted { ($0.lastPathComponent == x.name ? 0 : 1, $0.path) < ($1.lastPathComponent == x.name ? 0 : 1, $1.path) }
+                .first { pinned($0, x) }
+        }
+        var found: URL? = nil, zip: URL? = nil
         if UHUDPack.isDirectory(src) {
-            let all = (FileManager.default.enumerator(at: src, includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []
-            found = all.filter { !UHUDPack.isDirectory($0) && size($0) == a.size }
-                .sorted { ($0.lastPathComponent == a.name ? 0 : 1, $0.path) < ($1.lastPathComponent == a.name ? 0 : 1, $1.path) }
-                .first { (try? sha256($0)) == a.sha256 }
-        } else if size(src) == a.size, try sha256(src) == a.sha256 {
+            found = search(src, a)
+            if found == nil, i.inner != nil { zip = search(src, i.file) }
+        } else if pinned(src, a) {
             found = src
+        } else if i.inner != nil, pinned(src, i.file) {
+            zip = src
+        }
+        if found == nil, let z = zip {
+            let (dir, temp) = try unpackedFolder(z)
+            if let f = search(dir, a) { return (f, temp) }
+            if let t = temp { try? FileManager.default.removeItem(at: t) }
         }
         guard let f = found else {
-            throw Failure(message: "\(src.lastPathComponent) is not the release this was made for (\(a.name), \(formatBytesPlain(a.size))). Choose it as downloaded from its page, or the folder it is in.")
+            throw Failure(message: "\(src.lastPathComponent) is not the release this was made for (\(i.inner == nil ? a.name : "\(i.file.name) or the \(a.name) in it"), \(formatBytesPlain(a.size))). Choose it as downloaded from its page, or the folder it is in.")
         }
-        return f
+        return (f, nil)
     }
 
     static func buildInstaller(lang: String, installer: URL, game: URL, packs: URL?) throws -> String {
-        lang == "hungarian" ? try buildHungarian(installer: installer, game: game, packs: packs)
-                            : try buildUkrainian(installer: installer, game: game, packs: packs)
+        switch lang {
+        case "hungarian": return try buildHungarian(installer: installer, game: game, packs: packs)
+        case "czech": return try buildCzech(installer: installer, game: game, packs: packs)
+        default: return try buildUkrainian(installer: installer, game: game, packs: packs)
+        }
     }
 
     static func formatBytesPlain(_ n: Int64) -> String { String(format: "%.1f MB", Double(n) / 1_048_576) }
@@ -669,9 +729,10 @@ enum LanguagePacks {
             let host = i.page.host ?? "its page"
             let f = try UHUDPack.Downloader(progress: { progress("Downloading", $0, total) }, host: i.url.host ?? host, hint: "use Import…").fetch(i.url)
             defer { try? fm.removeItem(at: f) }
-            guard let got = try? pinnedInstaller(lang, f) else {
+            guard let (got, temp) = try? pinnedInstaller(lang, f) else {
                 throw Failure(message: "The file \(host) links is not the release this was made for (\(i.file.name)). Download it from its page yourself and use Import….")
             }
+            defer { if let t = temp { try? fm.removeItem(at: t) } }
             progress("Building", total, total)
             return try buildInstaller(lang: lang, installer: got, game: game, packs: packs)
         }
@@ -709,7 +770,9 @@ enum LanguagePacks {
         }
         if pages[lang] != nil { return try buildTranslation(lang: lang, src: src, game: game, packs: packs) }
         if installers[lang] != nil {
-            return try buildInstaller(lang: lang, installer: try pinnedInstaller(lang, src), game: game, packs: packs)
+            let (exe, temp) = try pinnedInstaller(lang, src)
+            defer { if let t = temp { try? FileManager.default.removeItem(at: t) } }
+            return try buildInstaller(lang: lang, installer: exe, game: game, packs: packs)
         }
         // Multi 13: the pinned archives in a folder, or a single archive
         var core: URL? = nil, dub: URL? = nil

@@ -248,8 +248,9 @@ enum Languages {
         ("russian", "Russian", "English.bin"), ("portuguese", "Brazilian Portuguese", "English.bin"),
         ("polish", "Polish", "English.bin"), ("turkish", "Turkish", "English.bin"),
         ("hungarian", "Hungarian", "English.bin"), ("ukrainian", "Ukrainian", "English.bin"),
+        ("czech", "Czech", "English.bin"),
     ]
-    private static let packOnly: Set<String> = ["russian", "portuguese", "polish", "turkish", "hungarian", "ukrainian"]
+    private static let packOnly: Set<String> = ["russian", "portuguese", "polish", "turkish", "hungarian", "ukrainian", "czech"]
 
     private static func child(_ name: String, in dir: URL?) -> URL? {
         guard let dir = dir else { return nil }

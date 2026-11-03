@@ -1,7 +1,8 @@
 // tests/language_packs.swift: the language pack builder (launcher/LanguagePacks.swift)
 // on made-up data: an endscript's texts merged into a language file, the gzip and
 // Astrum installer readers (the Polish layout and the older Hungarian one), the Inno
-// Setup reader and its LZMA decoder (the Ukrainian installer), a pack holding only what
+// Setup reader and its LZMA decoder (the Ukrainian installer), the Clickteam patch reader
+// and its deflate (the Czech translation), a pack holding only what
 // differs from the game folder, and the RAR reader refusing what it is not.  No game
 // files, no internet.
 import Foundation
@@ -126,6 +127,7 @@ struct LanguagePackTests {
         "123456789".utf8CString.dropLast().withUnsafeBytes { crc.update($0) }
         check(crc.value == 0xcbf4_3926, "CRC32 check value")
         try installers()
+        try czech()
         try malicious()
         exit(fails == 0 ? 0 : 1)
     }
@@ -289,6 +291,123 @@ struct LanguagePackTests {
         try Data(astrum([("LANGUAGES\\English.bin", [1])], tail: le(0xffff_ffff))).write(to: partial)
         refused("a Hungarian installer without all the translation's files") { _ = try LanguagePacks.buildHungarian(installer: partial, game: game, packs: packs) }
         check(LanguagePacks.way("hungarian") == .download && LanguagePacks.way("ukrainian") == .download, "both download in one click")
+    }
+
+    // MARK: the Czech translation's Clickteam patch
+
+    /// the fixture's text, and it in Clickteam's deflate with dynamic codes (zlib's raw
+    /// deflate at level 9, its block headers, code length order and stored lengths
+    /// rewritten as Clickteam's; checked with a decoder written from the patch program)
+    static let ctText: [UInt8] = Array((String(repeating: "Cestina do hry Need for Speed: Underground 2 - zkusebni text. ", count: 3)
+        + String(repeating: "Zpet na hlavni menu. Opravdu chces prepsat predchozi ulozeni hry? ", count: 4)
+        + String((0..<120).map { Character(UnicodeScalar(UInt8(65 + ($0 * 7) % 26))) })).utf8)
+    static let ctDynamic = hex(
+        "bedb931cd04e020000b8cabb802c5cba318af3002ae2c0aed2af2562db7420cae9ad873026aedecb1b63b2ae920c5c41981712228eab32c874603de4"
+        + "9293b919e52547171db4776fe9222b387aba08f10fdb852687d016356b82f820e923a4dab0867b94a2240b6d485be63ec84ba1da0abe562d8574f8eb"
+        + "ffc9c260961ee2c5f6345e65c534c987f3cd71b4dc9d27ebfd779d37")
+    /// the patch's title block, as the translation's patch has it (fixed codes)
+    static let ctTitle = hex("7d22755649665ea2424abe424651a5825f6a6a8a425a7e914270019065a5109a97925a945e945f9a97a260c40000")
+
+    /// data as one stored block of Clickteam's deflate (header 7 | last, its length, no complement)
+    static func ctStored(_ data: [UInt8]) -> [UInt8] { [0x0f, UInt8(data.count & 255), UInt8(data.count >> 8)] + data }
+    static func le16(_ v: Int) -> [UInt8] { [UInt8(v & 255), UInt8(v >> 8 & 255)] }
+    static func ctBlock(_ id: Int, _ data: [UInt8], packed: [UInt8]? = nil) -> [UInt8] {
+        if let p = packed { return le16(id) + le16(1) + le(4 + p.count) + le(data.count) + p }
+        return le16(id) + le16(0) + le(data.count) + data
+    }
+    /// a Clickteam patch carrying these files whole: (path, data, the old version's size)
+    static func ctPatch(_ files: [(String, [UInt8], Int)], packed: [String: [UInt8]] = [:]) -> [UInt8] {
+        var exe = [UInt8](repeating: 0, count: 0x100)
+        exe[0] = 0x4d; exe[1] = 0x5a; exe[0x3c] = 0x40
+        exe.replaceSubrange(0x40..<0x44, with: Array("PE".utf8) + [0, 0])
+        exe[0x46] = 1                                       // one section, no optional header
+        exe.replaceSubrange((0x58 + 16)..<(0x58 + 24), with: le(0x80) + le(0x80))   // its size and offset: it ends at 0x100
+        var list = le(files.count), data: [UInt8] = []
+        for (path, content, old) in files {
+            let stream = packed[path] ?? ctStored(content)
+            var r = [UInt8](repeating: 0, count: 0x36) + Array(path.utf8) + [0, 0]
+            let at = r.count
+            r += le(0x1234_5678) + le(old) + le(data.count) + le(stream.count)
+            r.replaceSubrange(0..<4, with: le(r.count))
+            r[8] = 0x22
+            r.replaceSubrange(0x0a..<0x12, with: le(Int(Clickteam.checksum(content))) + le(content.count))
+            r.replaceSubrange(0x14..<0x18, with: le16(1) + le16(at))
+            list += r; data += stream
+        }
+        exe += ctBlock(0x1238, Array("Čeština do hry Need for Speed: Underground 2".data(using: .windowsCP1250)!) + [0], packed: ctTitle)
+        exe += ctBlock(0x1242, list, packed: ctStored(list))
+        exe += le16(0x7f7f) + le16(0) + le(4 + data.count) + le(4 + data.count) + data
+        return exe
+    }
+
+    static func czech() throws {
+        check(Clickteam.checksum([1, 0, 0, 0, 2, 0, 0, 0, 3]) == 11, "the patch program's checksum (turn left, add; the last bytes one at a time)")
+        check(try Clickteam.inflate(ArraySlice(ctDynamic), size: ctText.count) == ctText, "Clickteam's deflate with dynamic codes (\(ctText.count) bytes)")
+        refused("a Clickteam stream asked for more than it holds") { _ = try Clickteam.inflate(ArraySlice(ctDynamic), size: ctText.count + 1) }
+        refused("a Clickteam stream asked for less than it holds") { _ = try Clickteam.inflate(ArraySlice(ctDynamic), size: ctText.count - 1) }
+        refused("a Clickteam stream with RFC 1951's block header") { _ = try Clickteam.inflate([0x01, 3, 0, 0xfc, 0xff, 1, 2, 3], size: 3) }
+        for cut in stride(from: 0, to: ctDynamic.count, by: 3) {          // must not trap
+            var bad = ctDynamic; bad[cut] ^= 0xa5
+            _ = try? Clickteam.inflate(ArraySlice(bad), size: ctText.count)
+            _ = try? Clickteam.inflate(ArraySlice(ctDynamic.prefix(cut)), size: ctText.count)
+        }
+        check(true, "every damaged Clickteam stream returned or threw")
+
+        let english = languageFile([(0x1111, "Zurück zum Hauptmenü"), (0x0381_2413, ""), (0x2222, "Zpet")])
+        let patch = ctPatch([("LANGUAGES\\English.bin", english, 270_456), ("LANGUAGES\\German.bin", english, 283_896),
+                             ("memcard\\LOCALE_ENGLISH.loc", ctText, 668)], packed: ["memcard\\LOCALE_ENGLISH.loc": ctDynamic])
+        let read = try Clickteam.read(patch)
+        check(read.title == "Čeština do hry Need for Speed: Underground 2" && read.entries.map { $0.path }
+                == ["LANGUAGES\\English.bin", "LANGUAGES\\German.bin", "memcard\\LOCALE_ENGLISH.loc"],
+              "the patch's title and file list (\(read.title))")
+        check(try Clickteam.file(patch, read, read.entries[2]) == Data(ctText), "a file the patch carries whole, its checksum checked")
+        var badSum = patch
+        badSum[badSum.count - 1] ^= 1
+        refused("a file whose checksum is wrong") { let r = try Clickteam.read(badSum); _ = try Clickteam.file(badSum, r, r.entries[2]) }
+        refused("not a Clickteam patch") { _ = try Clickteam.read(Array(patch[0..<0x100]) + [0x99, 0x99, 0, 0, 4, 0, 0, 0, 1, 2, 3, 4]) }
+        refused("a patch with no file list") { _ = try Clickteam.read(Array(patch[0..<0x100]) + le16(0x7f7f) + le16(0) + le(4) + le(4)) }
+        for cut in stride(from: 0x100, to: patch.count, by: 5) {           // must not trap
+            var bad = patch; bad[cut] ^= 0x5a
+            if let r = try? Clickteam.read(bad) { for e in r.entries { _ = try? Clickteam.file(bad, r, e) } }
+            _ = try? Clickteam.read(Array(patch.prefix(cut)))
+        }
+        check(true, "every damaged patch returned or threw")
+
+        // the pack: the patch's English.bin with our texts, its memory-card texts
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("nfsu2-langcz-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmp) }
+        let game = tmp.appendingPathComponent("game"), packs = tmp.appendingPathComponent("packs")
+        try fm.createDirectory(at: game.appendingPathComponent("LANGUAGES"), withIntermediateDirectories: true)
+        try Data(languageFile([(0x1111, "Back to Main Menu")])).write(to: game.appendingPathComponent("LANGUAGES/English.bin"))
+        let exe = tmp.appendingPathComponent("nfsu2cz-v1.1.exe")
+        try Data(patch).write(to: exe)
+        let s = try LanguagePacks.buildCzech(installer: exe, game: game, packs: packs)
+        check(s.hasPrefix("czech: 2 files"), "Czech's pack (\(s))")
+        let built = [UInt8](try Data(contentsOf: packs.appendingPathComponent("czech/LANGUAGES/English.bin")))
+        var q = 0
+        while rd(built, q) != 0x39000 { q += 8 + rd(built, q + 4) }
+        let c = Array(built[(q + 8)...]), n = rd(c, 4), tab = rd(c, 8), sd = rd(c, 12)
+        var got: [UInt32: [UInt8]] = [:]
+        for i in 0..<n {
+            let o = sd + rd(c, tab + 8 * i + 4)
+            got[UInt32(rd(c, tab + 8 * i))] = Array(c[o..<c[o...].firstIndex(of: 0)!])
+        }
+        let ours = try CzechTexts.bytes()
+        check(ours[0x0381_2413] != nil && got[0x0381_2413] == ours[0x0381_2413] && got[0x2222] == Array("Zpet".utf8),
+              "the empty movie line filled in, in the game's letters; the translation's own texts kept")
+        check(ours.values.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0 >= 0x20 && ($0 < 0x7f || [0xc1, 0xc9, 0xcd, 0xd3, 0xda, 0xdd, 0xe1, 0xe9, 0xed, 0xf3, 0xfa, 0xfd].contains($0)) } },
+              "our Czech texts use only ASCII and the fonts' \u{E1}\u{E9}\u{ED}\u{F3}\u{FA}\u{FD} (\(ours.count) texts)")
+        check(fm.fileExists(atPath: packs.appendingPathComponent("czech/memcard/LOCALE_ENGLISH.loc").path)
+              && !fm.fileExists(atPath: packs.appendingPathComponent("czech/LANGUAGES/German.bin").path), "its memory-card texts; not its German.bin")
+        let same = tmp.appendingPathComponent("same.exe")
+        try Data(ctPatch([("LANGUAGES\\English.bin", languageFile([(0x1111, "Back to Main Menu")]), 1), ("memcard\\LOCALE_ENGLISH.loc", [1], 1)])).write(to: same)
+        refused("a patch whose English.bin is the game's own") { _ = try LanguagePacks.buildCzech(installer: same, game: game, packs: packs) }
+        refused("an imported Czech patch that is not the pinned release") {
+            _ = try LanguagePacks.importCopy(lang: "czech", src: exe, game: game, packs: packs)
+        }
+        check(LanguagePacks.way("czech") == .download && LanguagePacks.installers["czech"]?.inner?.name == "nfsu2cz-v1.1.exe",
+              "Czech downloads in one click, as the zip abcgames.cz serves")
     }
 
     // MARK: crafted inputs: each must be refused with an error, never trap or write outside
