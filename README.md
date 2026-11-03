@@ -540,7 +540,8 @@ and trigger dead zones, the trigger buttons at full pull, the pad's menu keys
 and reading it in the background (`NFSU2_PAD`, `NFSU2_PAD_DEADZONE`,
 `NFSU2_PAD_TRIGGER_DEADZONE`, `NFSU2_PAD_TRIGGER_CLICK`, `NFSU2_PAD_FE_KEYS`,
 `NFSU2_PAD_BACKGROUND`, which still win when set by hand; runtime/gamepad.m,
-runtime/dinput_pad.c).  The keyboard follows the Mac's keyboard layout as
+runtime/dinput_pad.c).  With **Hotplug**, a pad that switches itself off and
+comes back keeps the buttons set in the game's Controls page.  The keyboard follows the Mac's keyboard layout as
 Windows would (typed characters, dead keys, Option as Alt), keys can be rebound
 on the game's Controls page and the bindings are kept (runtime/keyboard_mac.m,
 runtime/dinput_kbd.c).
@@ -593,6 +594,15 @@ empty, as German's dubbed text has them. The pack fills those in Czech, in the
 translation's spelling (`launcher/CzechTexts.swift`), so Movie subtitles work in
 Czech too.
 
+Turkish has its own text, every one of the game's texts translated anew from
+English by hand (3918 texts, `launcher/TurkishTexts.swift`, from th0mk's
+nfsu2-web), written in the fonts of muntazam's translation, the only part of it
+the pack takes: Import... takes the folder innoextract made from its
+nfsu2tr11.exe. The credits stay the game's. The Polish pack has Polish words for
+the race HUD's DRAFT and its tip, which the translation left in English, and
+the Thai pack's ordinal suffixes are empty: the race HUD drew them in a font
+without Thai letters. Ported from th0mk's nfsu2-web (MIT).
+
 Slovak comes from MixerX's translation (v1.0, 2011), downloaded in one click
 from abcgames.cz as well: the zip of its installer for the European game, size
 and SHA-256 checked, then each file it takes. The installer is an NSIS one, read
@@ -622,6 +632,8 @@ or from an "Artist - Title" file name. The game's music volume and pause still
 apply, and nothing goes over the network. While a folder plays, the app menu's
 **Music** submenu pauses, skips to the next track, shuffles, or goes back to the
 game soundtrack (`radio_native.h` has the same controls for other panels).
+At a track's end both of the song's readers hand the mixer silence and the game
+stops the song itself, so no half of it plays on unseen (a crash in nfsu2-web).
 Tests: `tests/radio_native.sh`; `tests/shop_music.sh` checks that the music
 keeps playing after entering a shop.
 
@@ -641,7 +653,8 @@ pictures go to `~/Library/Application Support/NFSU2/Screenshots`
 turns on the game's drift handling, drift camera and drift scoring, with a points
 panel over the window; X again turns them off. The car then handles as in the
 drift races, with its own Drift tuning from Performance Tuning / Dyno, and keeps
-its nitrous (X neither empties nor fills it). Tests: `tests/native_scene.sh`,
+its nitrous (X neither empties nor fills it). An x typed in the game's text
+fields (a profile's name, an Online room's chat) is a letter only. Tests: `tests/native_scene.sh`,
 `tests/photo_gallery.sh`, `tests/photo_drift.sh`.
 
 While playing, **Cmd+Shift+D** writes the next frame as a PNG plus the full
@@ -682,6 +695,8 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   With no profile in the save folder yet, the game's name box for the first
   profile starts with the player name's letters and digits (7 at most) instead
   of NAME; one Enter takes it (`NFSU2_NEW_PROFILE_NAME`, `runtime/gamefix.c`).
+  Where the language's NAME is no name the box makes (the Chinese, Japanese,
+  Thai, Korean, Polish and Hungarian ones), a new profile's box starts empty.
 - **Online statistics** (Settings, Online, with Play online; off by default, as
   in the original game): a small panel in the top-left corner of the game, under
   the frame-rate counter when that is on.  It shows the connection (connected,
@@ -713,7 +728,15 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   (16 to 48, 32 by default) sets how many other players' cars free roam
   draws near you, the nearest first; the server links you with as many
   players, and an outrun's other player stays linked however many players
-  come between the two.  A car that stays in the air for two minutes in free
+  come between the two.  The minimap shows an arrow for the rest too: the
+  nearest 64 players past the cars drawn within its reach, as the server
+  answers four times a second, and friends whose car is still loading.  In a
+  crowd the names over cars do not pile up: crews' and friends' come first,
+  then those who just used quick chat, then the nearest, and a name that
+  would cover one already shown is left out; names fade out between 25 and
+  60 m.  A car left at NaN (nothing drawn but the HUD) goes back where it last
+  was, and a hit with another player's car that would leave it so is undone.
+  A car that stays in the air for two minutes in free
   roam (no wheel on the ground, upright and moving) takes its player off the
   server for the rest of that session, as a kick does, with a line saying
   so; the server hears why.  At a career race's marker the race card asks

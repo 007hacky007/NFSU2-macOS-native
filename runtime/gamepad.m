@@ -43,6 +43,9 @@
  *                               item lets go of everything, PLUG=0 / PLUG=1
  *                               unplugs the pad and plugs it back in
  *   NFSU2_PAD_LOG=1             log controllers connecting and disconnecting
+ *   NFSU2_TEST_PAD_NO_REAL=1    (test aid) only the synthetic pad: a script's
+ *                               "pad disconnect" unplugs it on a Mac with a
+ *                               controller of its own
  * Ported from th0mk's nfsu2-web runtime/gamepad.m (MIT); the synthetic pad,
  * the start-up wait and the report come from upstream's gamepad.m. */
 #import <Foundation/Foundation.h>
@@ -328,14 +331,16 @@ static void wait_discovery(void){
 
 int gamepad_read(PadState *s){
     static float dz = -1.f, tdz = -1.f;
-    static int bg = -1;
+    static int bg = -1, no_real;
     if (dz < 0.f){ dz = envf("NFSU2_PAD_DEADZONE", 0.10f, 0.f, 0.9f);
                    tdz = envf("NFSU2_PAD_TRIGGER_DEADZONE", 0.02f, 0.f, 0.9f);
-                   bg = gamepad_env_flag("NFSU2_PAD_BACKGROUND", 0); }
+                   bg = gamepad_env_flag("NFSU2_PAD_BACKGROUND", 0);
+                   no_real = gamepad_env_flag("NFSU2_TEST_PAD_NO_REAL", 0); }
     wait_discovery();
     os_unfair_lock_lock(&g_lk);
     syn_tick();
     *s = g_syn.connected ? g_syn : g_real;      /* the synthetic pad wins while connected */
+    if (no_real && !g_syn.connected) memset(s, 0, sizeof *s);   /* (test aid: a controller of the Mac's own is not seen) */
     os_unfair_lock_unlock(&g_lk);
     stick_dz(&s->axis[PAD_AXIS_LX], &s->axis[PAD_AXIS_LY], dz);
     stick_dz(&s->axis[PAD_AXIS_RX], &s->axis[PAD_AXIS_RY], dz);

@@ -7,6 +7,7 @@
 #define GA_0x004048c0u 0x004048c0u   /* function 00404890 + 0x30 */
 #define GA_0x00435fa4u 0x00435fa4u   /* function 00435f40 + 0x64 */
 #define GA_0x0043f8f0u 0x0043f8f0u   /* function 0043f8f0 + 0x0 */
+#define GA_0x0043f920u 0x0043f920u   /* function 0043f920 + 0x0 */
 #define GA_0x00440090u 0x00440090u   /* function 00440090 + 0x0 */
 #define GA_0x00440820u 0x00440820u   /* function 00440820 + 0x0 */
 #define GA_0x00440e50u 0x00440e50u   /* function 00440e50 + 0x0 */
@@ -105,7 +106,6 @@
 #define GA_0x00537990u 0x00537980u   /* function 00537990 + 0x0 */
 #define GA_0x005379d0u 0x005379c0u   /* function 005379d0 + 0x0 */
 #define GA_0x00537a20u 0x00537a10u   /* function 00537a20 + 0x0 */
-#define GA_0x00537bf0u 0x00537be0u   /* function 00537bf0 + 0x0 */
 #define GA_0x00537c10u 0x00537c00u   /* function 00537c10 + 0x0 */
 #define GA_0x0053d0fau 0x0053d0eau   /* function 0053d0b0 + 0x4a */
 #define GA_0x0053d155u 0x0053d145u   /* function 0053d0b0 + 0xa5 */
@@ -270,6 +270,7 @@
 #define GA_0x00789fe4u 0x00789fe4u   /* operand pair */
 #define GA_0x0078ac58u 0x0078ac58u   /* operand pair */
 #define GA_0x0078af30u 0x0078af30u   /* operand pair */
+#define GA_0x0078e098u 0x0078e098u   /* operand pair */
 #define GA_0x0078ea4cu 0x0078ea4cu   /* operand pair */
 #define GA_0x0078ea60u 0x0078ea60u   /* between pairs 0078ea4c and 0078ea74 (delta +0x0) */
 #define GA_0x0078f240u 0x0078f240u   /* operand pair */
@@ -369,10 +370,12 @@
 #define GA_0x00835860u 0x00835860u   /* operand pair */
 #define GA_0x00835f70u 0x00835f70u   /* operand pair */
 #define GA_0x00836370u 0x00836370u   /* operand pair */
+#define GA_0x008363ecu 0x008363ecu   /* operand pair */
 #define GA_0x00836488u 0x00836488u   /* operand pair */
 #define GA_0x0083648cu 0x0083648cu   /* operand pair */
 #define GA_0x00836498u 0x00836498u   /* operand pair */
 #define GA_0x008364b4u 0x008364b4u   /* operand pair */
+#define GA_0x008364b8u 0x008364b8u   /* operand pair */
 #define GA_0x008364d4u 0x008364d4u   /* operand pair */
 #define GA_0x008364e8u 0x008364e8u   /* operand pair */
 #define GA_0x00836514u 0x00836514u   /* operand pair */
@@ -404,12 +407,20 @@
 #define GA_0x00838968u 0x00838968u   /* operand pair */
 #define GA_0x00838974u 0x00838974u   /* operand pair */
 #define GA_0x0083a8b0u 0x0083a8b0u   /* operand pair */
+#define GA_0x0083a8b1u 0x0083a8b1u   /* between pairs 0083a8b0 and 0083a9b4 (delta +0x0) */
+#define GA_0x0083a8b6u 0x0083a8b6u   /* between pairs 0083a8b0 and 0083a9b4 (delta +0x0) */
+#define GA_0x0083a8b7u 0x0083a8b7u   /* between pairs 0083a8b0 and 0083a9b4 (delta +0x0) */
 #define GA_0x0083a9b0u 0x0083a9b0u   /* between pairs 0083a8b0 and 0083a9b4 (delta +0x0) */
 #define GA_0x0083a9b4u 0x0083a9b4u   /* operand pair */
 #define GA_0x0083a9c0u 0x0083a9c0u   /* operand pair */
 #define GA_0x0083a9c4u 0x0083a9c4u   /* operand pair */
 #define GA_0x0083a9d0u 0x0083a9d0u   /* operand pair */
 #define GA_0x0083a9e0u 0x0083a9e0u   /* operand pair */
+#define GA_0x0083a9e2u 0x0083a9e2u   /* between pairs 0083a9e0 and 0083aa00 (delta +0x0) */
+#define GA_0x0083a9e3u 0x0083a9e3u   /* between pairs 0083a9e0 and 0083aa00 (delta +0x0) */
+#define GA_0x0083a9e6u 0x0083a9e6u   /* between pairs 0083a9e0 and 0083aa00 (delta +0x0) */
+#define GA_0x0083a9e7u 0x0083a9e7u   /* between pairs 0083a9e0 and 0083aa00 (delta +0x0) */
+#define GA_0x0083aa00u 0x0083aa00u   /* operand pair */
 #define GA_0x0083aa1au 0x0083aa1au   /* operand pair */
 #define GA_0x0083aa28u 0x0083aa28u   /* operand pair */
 #define GA_0x0083aa34u 0x0083aa34u   /* operand pair */
@@ -460,6 +471,7 @@
 #define GA_0x00864f88u 0x00864f8cu   /* operand pair */
 #define GA_0x008650b4u 0x008650b8u   /* operand pair */
 #define GA_0x008650ccu 0x008650d0u   /* operand pair */
+#define GA_0x008650f4u 0x008650f8u   /* between pairs 008650f0 and 00865100 (delta +0x4) */
 #define GA_0x00865134u 0x00865138u   /* operand pair */
 #define GA_0x00865138u 0x0086513cu   /* operand pair */
 #define GA_0x0086513cu 0x00865140u   /* operand pair */
@@ -508,6 +520,7 @@
 #define GA_0x00874fc1u 0x00874fc1u   /* operand pair */
 #define GA_0x00874fc8u 0x00874fc8u   /* between pairs 00874fc3 and 008751e0 (delta +0x0) */
 #define GA_0x00874fd0u 0x00874fd0u   /* between pairs 00874fc3 and 008751e0 (delta +0x0) */
+#define GA_0x00874fdcu 0x00874fdcu   /* between pairs 00874fc3 and 008751e0 (delta +0x0) */
 #define GA_0x00874ff0u 0x00874ff0u   /* between pairs 00874fc3 and 008751e0 (delta +0x0) */
 #define GA_0x00874ff4u 0x00874ff4u   /* between pairs 00874fc3 and 008751e0 (delta +0x0) */
 #define GA_0x00875048u 0x00875048u   /* between pairs 00874fc3 and 008751e0 (delta +0x0) */
@@ -521,6 +534,7 @@
 #define GA_0x00883da4u 0x00883da4u   /* operand pair */
 #define GA_0x00883de0u 0x00883de0u   /* operand pair */
 #define GA_0x0088eb00u 0x0088eb00u   /* operand pair */
+#define GA_0x0088eb20u 0x0088eb20u   /* between pairs 0088eb00 and 0088ebcc (delta +0x0) */
 #define GA_0x0088f298u 0x0088f298u   /* operand pair */
 #define GA_0x00890080u 0x00890080u   /* operand pair */
 #define GA_0x00890084u 0x00890084u   /* operand pair */

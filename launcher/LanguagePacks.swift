@@ -20,10 +20,15 @@
 //   - TraduMix's and MixMods' Brazilian Portuguese translation (joao13traducoes.com),
 //     PLProjekt's Polish one (portal24h.pl) and muntazam's Turkish one (moddb.com):
 //     their sites refuse downloads that do not come from a browser, so the player
-//     downloads them there and uses Import…  Portuguese, Polish and Turkish take
-//     English's place: their text, credits and memory-card texts; Polish and Turkish
-//     also their fonts' textures, which draw the accented letters their texts use as
-//     the Polish or Turkish ones.
+//     downloads them there and uses Import…  Portuguese and Polish take English's
+//     place: their text, credits and memory-card texts; Polish also its fonts'
+//     textures, which draw the accented letters its text uses as the Polish ones, and
+//     Polish words for the two texts it left in English (the race HUD's DRAFT and its
+//     tip, plTexts).  Turkish takes English's place with a text of its own, every one
+//     of the game's texts translated anew (TurkishTexts.swift, from th0mk's nfsu2-web),
+//     in the translation's fonts, its only files used; the credits stay the game's.
+//     Thai's ordinal suffixes are emptied (thaiTexts): the race HUD drew them in a font
+//     without Thai letters.  Ported from th0mk's nfsu2-web tools/langpacks.py (MIT).
 //   - GameHunter's Hungarian translation (v1.1, 2005, by L_zooltan; gamehunter.hu) and
 //     Clark X.'s Ukrainian one (2022, kuli.com.ua): Download fetches the installer from
 //     where the author's page links it, only when the player clicks, and checks it
@@ -148,12 +153,27 @@ enum LanguagePacks {
     static let ptbrFiles = [("LANGUAGES/English.bin", "LANGUAGES/English.bin"),
                             ("CREDITS/NA_ENGLISH.TXT", "CREDITS/NA_ENGLISH.TXT"),
                             ("CREDITS/NA_ENGLISH.TXT", "CREDITS/UK_ENGLISH.TXT")]
-    static let trFiles = [("LANGUAGES/English.bin", "LANGUAGES/English.bin"),
-                          ("LANGUAGES/LanguageTextures.bin", "LANGUAGES/LanguageTextures.bin"),
-                          ("GLOBAL/GLOBALA.BUN", "GLOBAL/GLOBALA.BUN"),
-                          ("memcard/LOCALE_ENGLISH.loc", "memcard/LOCALE_ENGLISH.loc"),
-                          ("CREDITS/NA_ENGLISH.TXT", "CREDITS/NA_ENGLISH.TXT"),
-                          ("CREDITS/NA_ENGLISH.TXT", "CREDITS/UK_ENGLISH.TXT")]
+    // Turkish: the translation's fonts only; the text is TurkishTexts', in the game's
+    // English.bin and memory-card texts (buildTranslation)
+    static let trFiles = [("LANGUAGES/LanguageTextures.bin", "LANGUAGES/LanguageTextures.bin"),
+                          ("GLOBAL/GLOBALA.BUN", "GLOBAL/GLOBALA.BUN")]
+    // Polish: texts the translation left in English, by their hash, in its letters (as its
+    // fonts draw them; no Z with the acute in it), the rest Latin-1
+    static let plTexts: [UInt32: String] = [
+        0x9148097e: "TUNEL AERODYNAMICZNY",          // STYLE_DRAFTING, the race HUD's "DRAFT"
+        0x227eba64: "Drag - Tunel aerodynamiczny",   // ENGAGE_TIPS_DRAFT_SUBJECT, "Drag - Draftowanie"
+    ]
+    static let plLetters: [Character: UInt8] = ["ę": 0xbf, "ł": 0xee, "ś": 0xe2, "ą": 0xe7, "ć": 0xe9, "ż": 0xe1, "ź": 0xeb,
+                                                "ń": 0xf1, "Ę": 0xc7, "Ł": 0xfa, "Ś": 0xda, "Ą": 0xfd, "Ć": 0xc8, "Ż": 0xc9, "Ń": 0xd1]
+    static func plBytes(_ s: String) -> [UInt8] {
+        s.map { ch in plLetters[ch] ?? UInt8(truncatingIfNeeded: ch.unicodeScalars.first?.value ?? 0x3f) }
+    }
+    // Thai: its ordinal suffixes (ORDINAL_FIRST ... _NINTH, _ZEROTH) are "number n" in Thai,
+    // which the race HUD draws after the position in a font without Thai letters (4th
+    // showed as "4 4 /4"): empty, as German's are "."
+    static let thaiTexts: [UInt32: [UInt8]] = Dictionary(uniqueKeysWithValues: [
+        0x7447c0e3, 0xbc4ce12f, 0x63eb6a03, 0xbd498562, 0x46573b3f, 0xbc4cae38, 0xbd383957, 0xe2ab0284, 0x438da7c0, 0xbcdd9448,
+    ].map { (UInt32($0), [UInt8]()) })
     // Polish: (file in the installer, the game's file it stands in for)
     static let plFiles = [("LANGUAGES/Polish.bin", "LANGUAGES/English.bin"),
                           ("LANGUAGES/LanguageTextures.bin", "LANGUAGES/LanguageTextures.bin"),
@@ -361,7 +381,7 @@ enum LanguagePacks {
             let files = try unpack(c) { srcs.contains($0) }
             for (_, src, rel) in mine {
                 guard let d = files[src.lowercased()] else { throw Failure(message: "\(c.lastPathComponent) has no \(src): not the Multi 13 languages mod") }
-                try p.add(d, rel)
+                try p.add(lang == "thai" && rel == "LANGUAGES/Thailand.bin" ? try withTexts(d, bytes: thaiTexts).0 : d, rel)
             }
         }
         if let (dir, _) = dubs[lang] {
@@ -414,12 +434,15 @@ enum LanguagePacks {
     /// A language file with these texts: its text chunk (id 0x39000: { 16, count, table,
     /// strings } and a character table, the table of (hash, offset) in hash order, the
     /// strings) rebuilt with the changed texts after the others; the chunks after it (the
-    /// fonts) stay 0x80-aligned behind a pad chunk (id 0), as in the game's own file.
+    /// fonts) go 0x80-aligned behind a pad chunk (id 0), as in the game's own file (the
+    /// Polish translation's has them unaligned; the game reads either).
     static func withTexts(_ file: Data, _ texts: [UInt32: String]) throws -> (Data, Int) {
         try withTexts(file, bytes: texts.mapValues { Array($0.utf8) })
     }
-    /// The same with the texts as the file's bytes (a translation's letters).
-    static func withTexts(_ file: Data, bytes texts: [UInt32: [UInt8]]) throws -> (Data, Int) {
+    /// The same with the texts as the file's bytes (a translation's letters).  whole: the
+    /// strings written anew, each once, so that a translation of every text leaves no
+    /// English behind (the file stays the size of a language's).
+    static func withTexts(_ file: Data, bytes texts: [UInt32: [UInt8]], whole: Bool = false) throws -> (Data, Int) {
         let d = [UInt8](file)
         func u32(_ o: Int) -> Int { Int(d[o]) | Int(d[o + 1]) << 8 | Int(d[o + 2]) << 16 | Int(d[o + 3]) << 24 }
         func put(_ v: Int, _ a: inout [UInt8]) { for i in 0..<4 { a.append(UInt8(truncatingIfNeeded: v >> (8 * i))) } }
@@ -438,10 +461,22 @@ enum LanguagePacks {
             while e < c.count && c[e] != 0 { e += 1 }
             return Array(c[(sd + o)..<e])
         }
-        var strs = Array(c[sd...]), changed = 0
-        for (h, b) in texts.sorted(by: { $0.key < $1.key }) {
-            if old(h) == b { continue }
-            at[h] = strs.count; strs += b + [0]; changed += 1
+        var strs: [UInt8] = [], changed = 0
+        if whole {
+            var new: [UInt32: [UInt8]] = [:], offs: [[UInt8]: Int] = [:]
+            for h in at.keys { new[h] = old(h) ?? [] }
+            for (h, b) in texts { if old(h) != b { changed += 1 }; new[h] = b }
+            for h in new.keys.sorted() {
+                let b = new[h]!
+                if offs[b] == nil { offs[b] = strs.count; strs += b + [0] }
+                at[h] = offs[b]!
+            }
+        } else {
+            strs = Array(c[sd...])
+            for (h, b) in texts.sorted(by: { $0.key < $1.key }) {
+                if old(h) == b { continue }
+                at[h] = strs.count; strs += b + [0]; changed += 1
+            }
         }
         strs += [UInt8](repeating: 0, count: (4 - strs.count % 4) % 4)
         var body: [UInt8] = []
@@ -454,12 +489,37 @@ enum LanguagePacks {
         var out = Array(d[0..<q])
         put(0x39000, &out); put(body.count, &out); out += body
         if r < d.count {
-            guard r % 0x80 == 0 else { throw Failure(message: "English.bin's fonts are not 0x80-aligned: a file of another layout") }
             let pad = (0x80 - (out.count + 8) % 0x80) % 0x80
             put(0, &out); put(pad, &out); out += [UInt8](repeating: 0, count: pad)
         }
         out += d[r...]
         return (Data(out), changed)
+    }
+
+    /// A memory-card text file (memcard/LOCALE_*.loc) with these texts (bytes, in the
+    /// language file's letters).  Its chunks LOCH and LOCI, then LOCL, the last: tag, size
+    /// (its 8 bytes in it), 0, the count, each text's offset from the chunk's start, the
+    /// texts in UTF-16 each followed by four 0 bytes, then padding to 4.
+    static func withLoc(_ file: Data, _ texts: [[UInt8]]) throws -> Data {
+        let d = [UInt8](file)
+        func u32(_ o: Int) -> Int { Int(d[o]) | Int(d[o + 1]) << 8 | Int(d[o + 2]) << 16 | Int(d[o + 3]) << 24 }
+        func put(_ v: Int, _ a: inout [UInt8]) { for i in 0..<4 { a.append(UInt8(truncatingIfNeeded: v >> (8 * i))) } }
+        var q = -1
+        if d.count >= 16 { for i in 0...(d.count - 16) where d[i] == 0x4c && d[i + 1] == 0x4f && d[i + 2] == 0x43 && d[i + 3] == 0x4c { q = i; break } }
+        guard q >= 0, q + u32(q + 4) == d.count else { throw Failure(message: "LOCALE_ENGLISH.loc is of another layout") }
+        let n = u32(q + 12)
+        guard texts.count == n else { throw Failure(message: "\(texts.count) memory-card texts, the game has \(n)") }
+        var body: [UInt8] = [], offs: [Int] = []
+        for t in texts {
+            offs.append(16 + 4 * n + body.count)
+            for b in t { body += [b, 0] }                  // Latin-1 as UTF-16
+            body += [0, 0, 0, 0]
+        }
+        body += [UInt8](repeating: 0, count: (4 - body.count % 4) % 4)
+        var out = Array(d[0..<q]) + Array("LOCL".utf8)
+        put(16 + 4 * n + body.count, &out); put(0, &out); put(n, &out)
+        for o in offs { put(o, &out) }
+        return Data(out + body)
     }
 
     /// English's pack from the subtitles mod (its .7z or the folder it was extracted to).
@@ -526,11 +586,11 @@ enum LanguagePacks {
     }
 
     /// the folder at or below dir with LANGUAGES/English.bin
-    static func translationRoot(_ dir: URL) -> URL? {
-        if find(dir, "LANGUAGES/English.bin") != nil { return dir }
+    static func translationRoot(_ dir: URL, has rel: String = "LANGUAGES/English.bin") -> URL? {
+        if find(dir, rel) != nil { return dir }
         let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
         while let u = e?.nextObject() as? URL {
-            if UHUDPack.isDirectory(u), find(u, "LANGUAGES/English.bin") != nil { return u }
+            if UHUDPack.isDirectory(u), find(u, rel) != nil { return u }
         }
         return nil
     }
@@ -543,15 +603,26 @@ enum LanguagePacks {
             let files = try polishFiles(dir)
             for (s, rel) in plFiles {
                 guard let d = files[s.lowercased()] else { throw Failure(message: "The Polish translation's installer has no \(s).") }
-                try p.add(d, rel)
+                try p.add(rel == "LANGUAGES/English.bin" ? try withTexts(d, bytes: plTexts.mapValues(plBytes)).0 : d, rel)
             }
+        } else if lang == "turkish" {
+            guard let root = translationRoot(dir, has: "LANGUAGES/LanguageTextures.bin") else {
+                throw Failure(message: "\(src.lastPathComponent) has no LANGUAGES/LanguageTextures.bin. The Turkish translation comes as a Windows installer (nfsu2tr11.exe): unpack it with innoextract and choose the folder it made.")
+            }
+            for (s, _) in trFiles where find(root, s) == nil { throw Failure(message: "The translation is not all there: it has no \(s).") }
+            let tex = try Data(contentsOf: find(root, "LANGUAGES/LanguageTextures.bin")!)
+            if p.sameAsGame("LANGUAGES/LanguageTextures.bin", tex) { throw Failure(message: "Its LANGUAGES/LanguageTextures.bin is the game's own, not the translation.") }
+            guard let eng = find(game, "LANGUAGES/English.bin"), let loc = find(game, "memcard/LOCALE_ENGLISH.loc") else {
+                throw Failure(message: "The game folder has no LANGUAGES/English.bin or memcard/LOCALE_ENGLISH.loc.")
+            }
+            try p.add(try withTexts(try Data(contentsOf: eng), bytes: try TurkishTexts.bytes(), whole: true).0, "LANGUAGES/English.bin")
+            try p.add(try withLoc(try Data(contentsOf: loc), try TurkishTexts.memcard()), "memcard/LOCALE_ENGLISH.loc")
+            for (s, rel) in trFiles { try p.add(file: find(root, s)!, rel) }
         } else {
             guard let root = translationRoot(dir) else {
-                throw Failure(message: lang == "turkish"
-                    ? "\(src.lastPathComponent) has no LANGUAGES/English.bin. The Turkish translation comes as a Windows installer (nfsu2tr11.exe): unpack it with innoextract and choose the folder it made."
-                    : "\(src.lastPathComponent) has no LANGUAGES/English.bin: not the translation. Unpack its archive (password on its page) and choose the folder.")
+                throw Failure(message: "\(src.lastPathComponent) has no LANGUAGES/English.bin: not the translation. Unpack its archive (password on its page) and choose the folder.")
             }
-            let list = lang == "turkish" ? trFiles : ptbrFiles
+            let list = ptbrFiles
             for (s, _) in list where find(root, s) == nil { throw Failure(message: "The translation is not all there: it has no \(s).") }
             let eng = try Data(contentsOf: find(root, "LANGUAGES/English.bin")!)
             if p.sameAsGame("LANGUAGES/English.bin", eng) { throw Failure(message: "Its LANGUAGES/English.bin is the game's own, not the translation.") }
