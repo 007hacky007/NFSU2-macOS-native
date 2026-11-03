@@ -100,6 +100,7 @@ padrace:pad_quickrace.txt:$FLOW:NFSU2_PAD_FAKE=PLUG=1
 padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:NFSU2_PAD_FAKE=PLUG=1
 kbprofile:kb_profile.txt:LOG Cmd-Q now:
 kbprofilefill:kb_profile_prefill.txt:[profile] a new profile's name starts as the Player name:NFSU2_NEW_PROFILE_NAME=Alex_the_Great
+kbprofilezh:kb_profile_zh.txt:[profile] a new profile's name starts empty:NFSU2_LANGUAGE=chinese
 kbtypingx:kb_typing_x.txt:LOG x_in_menu:NFSU2_DRIFT=1
 kbfocus:kb_focus_mouse.txt:$FLOW:
 kbregain:kb_focus_regain.txt:LOG kb_focus_regain_end:
