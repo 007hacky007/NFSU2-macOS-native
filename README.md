@@ -66,8 +66,8 @@ fixes it. Click a picture to see it full size.
 The app it makes has the game inside it, so it needs no game folder and you can move
 it anywhere.
 
-**Updating.** When an app the Builder made opens, the launcher asks GitHub once a day
-whether a newer NFSU2 Builder is out and, if so, says so with **What's new** and
+**Updating.** When an app the Builder made opens, the launcher asks GitHub every two
+hours whether a newer NFSU2 Builder is out and, if so, says so with **What's new** and
 **Download** (Settings > More > Check for updates turns this off; off, it makes no
 network request). Open the new Builder: it finds your `NFSU2.app`, takes the game from
 inside it, and the button reads **Update NFSU2.app** with the old and new versions. The

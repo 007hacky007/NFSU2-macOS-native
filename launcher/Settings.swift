@@ -264,7 +264,7 @@ struct MoreSettings: View {
                 SettingRow(title: "Check for updates",
                            description: model.builderStamp == nil
                                ? "This app was not made by NFSU2 Builder, so it is updated by building it again."
-                               : "Once a day the launcher asks GitHub whether a newer NFSU2 Builder is out; the new Builder updates this app. Check Now asks at once. Off: no network request unless you press Check Now."
+                               : "Every two hours the launcher asks GitHub whether a newer NFSU2 Builder is out; the new Builder updates this app. Check Now asks at once. Off: no network request unless you press Check Now."
                                  + (model.updateStatus.map { "\n" + $0 } ?? "")) {
                     HStack(spacing: 10) {
                         Button(model.updateChecking ? "Checking…" : "Check Now") { model.checkForUpdatesNow() }

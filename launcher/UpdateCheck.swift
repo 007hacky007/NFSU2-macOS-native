@@ -1,5 +1,6 @@
-// Settings › Check for updates: once a day the launcher asks GitHub whether a newer
-// NFSU2 Builder is out, and the main window says so.  New features come only from a
+// Settings › Check for updates: every two hours the launcher asks GitHub whether a newer
+// NFSU2 Builder is out, and the main window says so (when it opens, and while it stays
+// open).  New features come only from a
 // new Builder, which updates this app with the game inside it in one click.
 //
 // Only for an app made by NFSU2 Builder: its Info.plist has NFSBuilderVersion (pack.sh
@@ -14,7 +15,7 @@ enum UpdateCheck {
     static let releasesAPI = URL(string: "https://api.github.com/repos/007hacky007/NFSU2-macOS-native/releases/latest")!
     static let userAgent = "NFSU2-Launcher"
     static let asset = "NFSU2-Builder.dmg"
-    static let interval: TimeInterval = 24 * 60 * 60
+    static let interval: TimeInterval = 2 * 60 * 60
     static let stampKey = "NFSBuilderVersion"
 
     struct Release: Equatable {
@@ -44,7 +45,7 @@ enum UpdateCheck {
         return false
     }
 
-    /// A check is due when none was made, or the last one is a day old (or in the future: the clock moved).
+    /// A check is due when none was made, or the last one is two hours old (or in the future: the clock moved).
     static func isDue(last: Date?, now: Date) -> Bool {
         guard let last = last else { return true }
         return now.timeIntervalSince(last) >= interval || last > now

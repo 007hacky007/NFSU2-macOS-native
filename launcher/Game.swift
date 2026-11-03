@@ -103,7 +103,7 @@ enum Prefs {
     static let rumbleCrashes = "LauncherRumbleCrashes"     // NFSU2_FF_JOLT=1
     static let rumbleStrength = "LauncherRumbleStrength"   // NFSU2_FF_STRENGTH (0.1 .. 1)
     // Launcher only.
-    static let checkUpdates = "LauncherCheckUpdates"         // ask GitHub once a day for a newer Builder (UpdateCheck.swift)
+    static let checkUpdates = "LauncherCheckUpdates"         // ask GitHub every two hours for a newer Builder (UpdateCheck.swift)
     static let updateLastCheck = "LauncherUpdateLastCheck"   // when it last asked (seconds since 1970)
     static let updateLatest = "LauncherUpdateLatest"         // the newest release it saw: version, page, download
     static let updateDismissed = "LauncherUpdateDismissed"   // Not now: hidden until a newer version than this

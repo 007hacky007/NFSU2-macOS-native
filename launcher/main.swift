@@ -223,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        if env["NFSU2_LAUNCHER_TEST"] == nil && env["NFSU2_LAUNCHER_STATE"] == nil { model.checkForUpdates() }
+        if env["NFSU2_LAUNCHER_TEST"] == nil && env["NFSU2_LAUNCHER_STATE"] == nil { model.checkForUpdates(); model.keepCheckingForUpdates() }
     }
 
     /// Settings… in the window and the app menu (Cmd-,).

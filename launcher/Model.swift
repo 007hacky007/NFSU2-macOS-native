@@ -63,8 +63,10 @@ final class LauncherModel: ObservableObject {
     /// Settings › Check Now: asking GitHub, and what the last asking found (nil: not asked here).
     @Published var updateChecking = false
     @Published var updateStatus: String?
-    /// Check Now was used: its result shows even with the daily check off.
+    /// Check Now was used: its result shows even with the regular check off.
     private var checkedByHand = false
+    /// While the launcher is open: asks checkForUpdates() whether a check is due.
+    private var updateTimer: Timer?
     /// The Builder version this app was made with (nil: not made by a Builder, no check).
     var builderStamp: String? = UpdateCheck.stamp(of: Paths.bundle)
     /// How the latest release is asked for (tests put a fake one here).
@@ -750,7 +752,7 @@ final class LauncherModel: ObservableObject {
 
     // MARK: updates (UpdateCheck.swift)
 
-    /// At most once a day, in the background, when on and the app has a Builder stamp; the
+    /// At most every two hours, in the background, when on and the app has a Builder stamp; the
     /// newest release seen is kept, so the notice stays between the checks.
     func checkForUpdates(now: Date = Date()) {
         refreshUpdateNotice()
@@ -769,7 +771,16 @@ final class LauncherModel: ObservableObject {
         }
     }
 
-    /// Settings › Check Now: asks GitHub at once, whether the daily check is on or off and
+    /// A launcher left open checks too: once a minute it looks whether the last check is two
+    /// hours old (UpdateCheck.interval), so no two checks are more than about two hours apart.
+    func keepCheckingForUpdates(every tick: TimeInterval = 60) {
+        updateTimer?.invalidate()
+        let timer = Timer(timeInterval: tick, repeats: true) { [weak self] _ in self?.checkForUpdates() }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
+    }
+
+    /// Settings › Check Now: asks GitHub at once, whether the regular check is on or off and
     /// however recently it asked, and brings back a notice hidden with Not now.
     func checkForUpdatesNow(now: Date = Date()) {
         guard builderStamp != nil, !updateChecking else { return }

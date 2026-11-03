@@ -13,7 +13,8 @@
 //                  the online tests)
 //   embedded       a game inside the app: language packs are made outside the bundle,
 //                  the engine is told where (NFSU2_LANGPACKS), nothing in the bundle changes
-//   updates        Check for updates (UpdateCheck.swift): version order, once a day, off
+//   updates        Check for updates (UpdateCheck.swift): version order, every two hours,
+//                  also while the launcher stays open, off
 //                  makes no request, the notice and Not now (a fake fetcher, no network)
 import AppKit
 
@@ -229,9 +230,9 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
               && !UpdateCheck.isNewer("1.2.0", than: "1.10.0") && !UpdateCheck.isNewer("1.1.0", than: "1.1.0"),
               "updates: versions compare number by number")
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-        check(UpdateCheck.isDue(last: nil, now: t0) && !UpdateCheck.isDue(last: t0, now: t0.addingTimeInterval(23 * 3600))
-              && UpdateCheck.isDue(last: t0, now: t0.addingTimeInterval(24 * 3600)) && UpdateCheck.isDue(last: t0.addingTimeInterval(60), now: t0),
-              "updates: at most once a day")
+        check(UpdateCheck.isDue(last: nil, now: t0) && !UpdateCheck.isDue(last: t0, now: t0.addingTimeInterval(2 * 3600 - 60))
+              && UpdateCheck.isDue(last: t0, now: t0.addingTimeInterval(2 * 3600)) && UpdateCheck.isDue(last: t0.addingTimeInterval(60), now: t0),
+              "updates: every two hours")
         func release(_ v: String) -> Data {
             Data(#"{"tag_name":"v\#(v)","html_url":"https://github.com/007hacky007/NFSU2-macOS-native/releases/tag/v\#(v)","assets":[{"name":"NFSU2-Builder.dmg","browser_download_url":"https://github.com/007hacky007/NFSU2-macOS-native/releases/download/v\#(v)/NFSU2-Builder.dmg"},{"name":"NFSU2-Builder.dmg.sha256","browser_download_url":"https://example.com/x"}]}"#.utf8)
         }
@@ -258,11 +259,11 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.checkForUpdates(now: t0); settle()
         check(requests == [UpdateCheck.releasesAPI] && m.updateNotice?.version == "1.1.0", "updates: a newer Builder shows the notice")
         m.checkForUpdates(now: t0.addingTimeInterval(3600)); settle()
-        check(requests.count == 1 && m.updateNotice?.version == "1.1.0", "updates: one request a day, the notice stays")
+        check(requests.count == 1 && m.updateNotice?.version == "1.1.0", "updates: one request in two hours, the notice stays")
         let next = LauncherModel()
         next.builderStamp = "1.0.0"
         next.fetchRelease = { url, done in requests.append(url); done(nil) }
-        next.checkForUpdates(now: t0.addingTimeInterval(7200)); settle()
+        next.checkForUpdates(now: t0.addingTimeInterval(5400)); settle()
         check(requests.count == 1 && next.updateNotice?.version == "1.1.0", "updates: the next start shows the notice without asking again")
         m.dismissUpdate()
         check(m.updateNotice == nil, "updates: Not now hides it")
@@ -301,11 +302,21 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.updateNotice == nil, "updates: off hides a notice Check Now found")
         let asked = requests.count
         m.checkForUpdatesNow(now: t0.addingTimeInterval(81 * 3600)); settle()
-        check(requests.count == asked + 1 && m.updateNotice?.version == "1.2.0", "updates: Check Now works with the daily check off")
+        check(requests.count == asked + 1 && m.updateNotice?.version == "1.2.0", "updates: Check Now works with the regular check off")
         m.builderStamp = nil
         m.checkForUpdatesNow(now: t0.addingTimeInterval(82 * 3600)); settle()
         check(requests.count == asked + 1, "updates: Check Now makes no request for an app no Builder made")
         m.builderStamp = "1.0.0"
+        // a launcher left open asks again once two hours have passed, and not before
+        m.checkUpdates = true; settle()
+        let open = requests.count
+        m.keepCheckingForUpdates(every: 0.02)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        check(requests.count == open, "updates: a launcher left open does not ask before two hours")
+        d.set(Date().addingTimeInterval(-2 * 3600).timeIntervalSince1970, forKey: Prefs.updateLastCheck)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        check(requests.count == open + 1, "updates: a launcher left open asks once two hours have passed")
+        m.keepCheckingForUpdates(every: 3600)
 
         // validation
         for ok in ["wss://nfsu2.xyz/lan", "ws://127.0.0.1:8080/lan", "ws://[::1]:8080/lan", "ws://localhost/lan"] { check(OnlineSettings.validServer(ok), "server accepted: \(ok)") }
