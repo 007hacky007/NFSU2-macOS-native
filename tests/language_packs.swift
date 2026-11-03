@@ -4,8 +4,9 @@
 // Setup reader and its LZMA decoder (the Ukrainian installer), the Clickteam patch reader
 // and its deflate (the Czech translation), the NSIS reader and its bzip2 (the Slovak
 // one), a pack holding only what
-// differs from the game folder, and the RAR reader refusing what it is not.  No game
-// files, no internet.
+// differs from the game folder, the Turkish text written anew in a language file and the
+// memory-card texts, the Thai and Polish text fixes, and the RAR reader refusing what it
+// is not.  No game files, no internet.
 import Foundation
 import CryptoKit
 
@@ -129,6 +130,7 @@ struct LanguagePackTests {
         check(crc.value == 0xcbf4_3926, "CRC32 check value")
         try installers()
         try czech()
+        try turkish()
         try slovak()
         try malicious()
         exit(fails == 0 ? 0 : 1)
@@ -412,6 +414,89 @@ struct LanguagePackTests {
         }
         check(LanguagePacks.way("czech") == .download && LanguagePacks.installers["czech"]?.inner?.name == "nfsu2cz-v1.1.exe",
               "Czech downloads in one click, as the zip abcgames.cz serves")
+    }
+
+    // MARK: Turkish, Thai and Polish texts
+
+    /// a memory-card text file: a LOCH chunk, then LOCL with these texts (UTF-16, as the game's)
+    static func locFile(_ texts: [String]) -> [UInt8] {
+        let n = texts.count
+        var body: [UInt8] = [], offs: [Int] = []
+        for t in texts { offs.append(16 + 4 * n + body.count); for u in t.utf16 { body += [UInt8(u & 255), UInt8(u >> 8)] }; body += [0, 0, 0, 0] }
+        while body.count % 4 != 0 { body.append(0) }
+        var f = Array("LOCH".utf8) + le(12) + le(1)
+        f += Array("LOCL".utf8) + le(16 + 4 * n + body.count) + le(0) + le(n)
+        for o in offs { f += le(o) }
+        return f + body
+    }
+    static func locTexts(_ f: [UInt8]) -> [String] {
+        let q = 12, n = rd(f, q + 12)
+        return (0..<n).map { i in
+            var o = q + rd(f, q + 16 + 4 * i), u: [UInt16] = []
+            while f[o] != 0 || f[o + 1] != 0 { u.append(UInt16(f[o]) | UInt16(f[o + 1]) << 8); o += 2 }
+            return String(decoding: u, as: UTF16.self)
+        }
+    }
+    static func bstr(_ s: String) -> UInt32 { s.utf8.reduce(UInt32.max) { $0 &* 33 &+ UInt32($1) } }
+
+    static func turkish() throws {
+        // whole: every string once, the others kept
+        let file = languageFile([(0x10, "One"), (0x20, "Two"), (0x30, "Two"), (0x40, "Four")])
+        let (w, changed) = try LanguagePacks.withTexts(Data(file), bytes: [0x10: Array("Bir".utf8), 0x40: Array("Two".utf8)], whole: true)
+        let wt = texts([UInt8](w))
+        check(changed == 2 && wt == [0x10: "Bir", 0x20: "Two", 0x30: "Two", 0x40: "Two"], "whole: the new texts, the others kept (\(wt))")
+        var q = 0
+        let wb = [UInt8](w)
+        while rd(wb, q) != 0x39000 { q += 8 + rd(wb, q + 4) }
+        let c = Array(wb[(q + 8)...]), sd = rd(c, 12)
+        check(Set((0..<4).map { rd(c, rd(c, 8) + 8 * $0 + 4) }).count == 2 && rd(c, sd + 0) != 0, "whole: each string written once")
+        // memory-card texts
+        let loc = locFile(["2.03.09", "Yes", "No"])
+        let lt = try LanguagePacks.withLoc(Data(loc), [Array("1.0".utf8), [0x45, 0x76, 0x65, 0x74], [0x48, 0x61, 0x79, 0xfd, 0x72]])
+        check(locTexts([UInt8](lt)) == ["1.0", "Evet", "Hay\u{fd}r"] && Array([UInt8](lt)[0..<12]) == Array(loc[0..<12]),
+              "the memory-card texts, the chunks before kept")
+        refused("memory-card texts of another count") { _ = try LanguagePacks.withLoc(Data(loc), [[0x41]]) }
+        // the Turkish text in the translation's fonts' letters
+        check(try TurkishTexts.trBytes("Şış ığİ’") == [0xfe, 0xed, 0xff, 0x20, 0xed, 0xfd, 0xcd, 0x81], "Turkish letters as the fonts draw them")
+        refused("a letter the Turkish fonts lack") { _ = try TurkishTexts.trBytes("ž") }
+        let tr = try TurkishTexts.bytes()
+        check(tr.count == 3918 && tr[bstr("ACCEPT")] == Array("Kabul Et".utf8), "3918 Turkish texts by their labels' hashes")
+        check(try TurkishTexts.memcard().count == 14, "14 memory-card texts")
+        // the pack: the game's English.bin and memory-card texts in Turkish, the translation's fonts
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("nfsu2-langtr-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmp) }
+        let game = tmp.appendingPathComponent("game"), packs = tmp.appendingPathComponent("packs"), src = tmp.appendingPathComponent("tr/app")
+        for d in ["LANGUAGES", "memcard", "GLOBAL"] { try fm.createDirectory(at: game.appendingPathComponent(d), withIntermediateDirectories: true) }
+        for d in ["LANGUAGES", "GLOBAL"] { try fm.createDirectory(at: src.appendingPathComponent(d), withIntermediateDirectories: true) }
+        try Data(languageFile([(bstr("ACCEPT"), "Accept"), (0x1234, "Other")])).write(to: game.appendingPathComponent("LANGUAGES/English.bin"))
+        try Data(locFile((0..<14).map { "E\($0)" })).write(to: game.appendingPathComponent("memcard/LOCALE_ENGLISH.loc"))
+        try Data("game fonts".utf8).write(to: game.appendingPathComponent("LANGUAGES/LanguageTextures.bin"))
+        try Data("game globala".utf8).write(to: game.appendingPathComponent("GLOBAL/GLOBALA.BUN"))
+        try Data("turkish fonts".utf8).write(to: src.appendingPathComponent("LANGUAGES/LanguageTextures.bin"))
+        try Data("turkish globala".utf8).write(to: src.appendingPathComponent("GLOBAL/GLOBALA.BUN"))
+        let s = try LanguagePacks.buildTranslation(lang: "turkish", src: tmp.appendingPathComponent("tr"), game: game, packs: packs)
+        let pk = packs.appendingPathComponent("turkish")
+        let eng = texts([UInt8](try Data(contentsOf: pk.appendingPathComponent("LANGUAGES/English.bin"))))
+        check(s.hasPrefix("turkish: 4 files") && eng[bstr("ACCEPT")] == "Kabul Et" && eng[0x1234] == "Other", "Turkish's pack: the game's text in Turkish (\(s))")
+        check(locTexts([UInt8](try Data(contentsOf: pk.appendingPathComponent("memcard/LOCALE_ENGLISH.loc"))))[2] == "Evet"
+              && (try? Data(contentsOf: pk.appendingPathComponent("GLOBAL/GLOBALA.BUN"))) == Data("turkish globala".utf8),
+              "its memory-card texts and the translation's fonts")
+        let noFonts = tmp.appendingPathComponent("nofonts")
+        try fm.createDirectory(at: noFonts.appendingPathComponent("LANGUAGES"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: noFonts.appendingPathComponent("LANGUAGES/English.bin"))
+        refused("a Turkish folder without the translation's fonts") { _ = try LanguagePacks.buildTranslation(lang: "turkish", src: noFonts, game: game, packs: packs) }
+        // Thai's ordinal suffixes and Polish's DRAFT
+        let th = try LanguagePacks.withTexts(Data(languageFile([(0x7447_c0e3, "x"), (0xbcdd_9448, "y"), (0x55, "z")])), bytes: LanguagePacks.thaiTexts).0
+        let tt = texts([UInt8](th))
+        check(LanguagePacks.thaiTexts.count == 10 && tt[0x7447_c0e3] == "" && tt[0xbcdd_9448] == "" && tt[0x55] == "z", "Thai's ordinal suffixes emptied")
+        check(LanguagePacks.plBytes("Tunel ąęł") == Array("Tunel ".utf8) + [0xe7, 0xbf, 0xee], "Polish letters as its fonts draw them")
+        // a language file whose fonts are not 0x80-aligned (the Polish translation's): written aligned
+        let lf = languageFile([(0x10, "a")])
+        let odd = Array(lf[0..<(16 + 8 + rd(lf, 20))]) + Array(lf[(lf.count - 12)...])   // no pad chunk: the font chunk unaligned
+        let ob = [UInt8](try LanguagePacks.withTexts(Data(odd), bytes: [0x10: Array("b".utf8)]).0)
+        check((ob.count - 12) % 0x80 == 0 && Array(ob[(ob.count - 12)...]) == le(0x30201) + le(4) + [9, 9, 9, 9] && texts(ob)[0x10] == "b",
+              "fonts not 0x80-aligned are written aligned")
     }
 
     // MARK: the Slovak translation's NSIS installer
