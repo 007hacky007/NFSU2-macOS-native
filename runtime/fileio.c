@@ -265,6 +265,11 @@ static int resolve(const char *win, char *out, size_t outsz){
     }
     return resolve_in(g_root, win, out, outsz);
 }
+/* Can the game read this file, from any layer (the mod files too)? */
+int fileio_game_can_read(const char *win){
+    char p[1024]; struct stat st;
+    return resolve(win, p, sizeof p) && stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
 /* Write: ALWAYS the write root if there is one. */
 static int resolve_w(const char *win, char *out, size_t outsz){
     g_ov_gen++;                              /* the save layer may change: forget what it lacked */
