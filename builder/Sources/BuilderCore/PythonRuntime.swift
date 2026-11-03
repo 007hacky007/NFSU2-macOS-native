@@ -68,7 +68,10 @@ public enum PythonRuntime {
         try removeQuarantine(at: extracted)
         try expected.write(to: extracted.appendingPathComponent(markerName), atomically: true, encoding: .utf8)
         let previous = fm.fileExists(atPath: paths.python.path) ? try moveToTrash(paths.python) : nil
+        // The shared venv belongs to the Python it was made with: set up again for the new one.
+        let oldVenv = (try? paths.venv.checkResourceIsReachable()) == true ? try moveToTrash(paths.venv) : nil
         try fm.moveItem(at: extracted, to: paths.python)
         if let previous = previous { try? fm.removeItem(at: previous) }
+        if let oldVenv = oldVenv { try? fm.removeItem(at: oldVenv) }
     }
 }

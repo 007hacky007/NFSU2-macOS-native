@@ -63,7 +63,8 @@ final class EnvironmentTests: XCTestCase {
         XCTAssertEqual(paths.python.path, "/s/python")
         XCTAssertEqual(paths.pythonExecutable.path, "/s/python/bin/python3")
         XCTAssertEqual(paths.workspace(version: "1.0").path, "/s/1.0")
-        XCTAssertEqual(paths.venvPython(version: "1.0").path, "/s/1.0/.venv/bin/python")
+        XCTAssertEqual(paths.venv.path, "/s/venv")
+        XCTAssertEqual(paths.venvPython.path, "/s/venv/bin/python")
     }
 
     func testStaleOrHalfCopiedWorkspaceIsReplaced() throws {
@@ -240,8 +241,8 @@ final class EnvironmentTests: XCTestCase {
         let ws = paths.workspace(version: "1")
         let req = ws.appendingPathComponent("requirements.txt")
         try write("numpy\n", to: req)
-        try write("", to: paths.venvPython(version: "1"))
-        try write(try sha256Hex(of: req) + "\n", to: ws.appendingPathComponent(".venv/.build-requirements-sha256"))
+        try write("", to: paths.venvPython)
+        try write(try sha256Hex(of: req) + "\n", to: paths.venv.appendingPathComponent(".build-requirements-sha256"))
         // Venv fine, Python missing.
         XCTAssertEqual(buildToolsCheck(paths: paths, version: "1"), .blocked("A private Python and the lifter's packages, about 32 MB download"))
         try fakePython(paths, marker: PythonRuntime.sha256)
@@ -250,9 +251,51 @@ final class EnvironmentTests: XCTestCase {
         let packages = CheckState.blocked("Packages need to be set up again (small download)")
         try write("numpy\nscipy\n", to: req)
         XCTAssertEqual(buildToolsCheck(paths: paths, version: "1"), packages)
-        // Python present, venv removed (Remove build files).
-        try fm.removeItem(at: ws.appendingPathComponent(".venv"))
+        // Python present, venv removed (Delete temporary files with the build tools).
+        try write("numpy\n", to: req)
+        XCTAssertTrue(buildToolsCheck(paths: paths, version: "1").isReady)
+        try fm.removeItem(at: paths.venv)
         XCTAssertEqual(buildToolsCheck(paths: paths, version: "1"), packages)
+    }
+
+    /// The packages are shared: a workspace links to them, an old one of its own is replaced by
+    /// the link, and deleting a workspace (or one of another version) leaves them.
+    func testWorkspaceLinksTheSharedVenv() throws {
+        let paths = BuilderPaths(support: tmp)
+        try write("", to: paths.venvPython)
+        let ws = paths.workspace(version: "1.0.5")
+        try write("old", to: ws.appendingPathComponent(".venv/bin/python"))
+        try linkSharedVenv(paths, workspace: ws)
+        let link = ws.appendingPathComponent(".venv")
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: link.path), paths.venv.path)
+        XCTAssertEqual(read(link.appendingPathComponent("bin/python")), "")
+        try linkSharedVenv(paths, workspace: ws)
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: link.path), paths.venv.path, "a right link stays")
+        try write("1.0.5", to: ws.appendingPathComponent(".builder-version"))
+        removeOldWorkspaces(paths, keeping: "1.0.6")
+        XCTAssertFalse(fm.fileExists(atPath: ws.path))
+        XCTAssertTrue(fm.fileExists(atPath: paths.venvPython.path), "another version's workspace goes, the packages stay")
+        XCTAssertFalse(try fm.contentsOfDirectory(atPath: tmp.path).contains { $0.hasPrefix(".trash-") })
+    }
+
+    /// A new private Python sets the packages up again: the old venv was made with the old one.
+    func testNewPythonDropsTheVenv() throws {
+        let paths = BuilderPaths(support: tmp.appendingPathComponent("support"))
+        try write("", to: paths.venvPython)
+        let root = tmp.appendingPathComponent("archive")
+        try write("#!/bin/sh\n", to: root.appendingPathComponent("python/bin/python3"))
+        XCTAssertEqual(chmod(root.appendingPathComponent("python/bin/python3").path, 0o755), 0)
+        let archive = tmp.appendingPathComponent("python.tar.gz")
+        XCTAssertEqual(SystemCommandRunner().run("/usr/bin/tar", ["-czf", archive.path, "-C", root.path, "python"]).status, 0)
+        let digest = try sha256Hex(of: archive)
+        let done = expectation(description: "install")
+        var outcome: Result<Void, Error>?
+        PythonRuntime.install(paths, sha256: digest, download: { _, finish in finish(.success(archive)) },
+                              completion: { outcome = $0; done.fulfill() })
+        wait(for: [done], timeout: 30)
+        XCTAssertNoThrow(try outcome?.get())
+        XCTAssertTrue(fm.isExecutableFile(atPath: paths.pythonExecutable.path))
+        XCTAssertFalse(fm.fileExists(atPath: paths.venv.path))
     }
 
     func testInstallCompletionArrivesOnMainThread() throws {

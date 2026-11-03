@@ -378,6 +378,7 @@ final class BuilderModel: ObservableObject {
             if sweep { sweepLeftovers(paths) }
             let result = Result {
                 try prepareWorkspace(sources: sources, destination: paths.workspace(version: version), version: version)
+                try linkSharedVenv(paths, workspace: paths.workspace(version: version))
             }
             if sweep, case .success = result {
                 DispatchQueue.global(qos: .utility).async { removeOldWorkspaces(paths, keeping: version) }
@@ -585,30 +586,44 @@ final class BuilderModel: ObservableObject {
         refresh()
     }
 
-    /// The workspace is renamed aside first, so quitting during the slow delete cannot leave a
-    /// marked but incomplete workspace behind; the next start sweeps whatever is left.
     /// The size of the Builder's work files (the workspace), shown on the delete button.
     @Published private(set) var buildFilesBytes: Int64? = nil
+    /// The size of the build tools (the private Python and the lifter's packages).
+    @Published private(set) var buildToolsBytes: Int64? = nil
+    /// Delete temporary files also deletes the build tools (off: kept for the next update).
+    @Published var removeToolsToo = false
+    /// What the last delete freed.
+    @Published private(set) var freedBytes: Int64? = nil
 
     private func measureBuildFiles() {
-        buildFilesBytes = nil
-        let workspace = paths.workspace(version: version)
+        (buildFilesBytes, buildToolsBytes) = (nil, nil)
+        let (workspace, tools) = (paths.workspace(version: version), [paths.python, paths.venv])
         DispatchQueue.global(qos: .utility).async {
             let bytes = allocatedSize(of: workspace)
-            DispatchQueue.main.async { [self] in buildFilesBytes = bytes }
+            let toolBytes = tools.map(allocatedSize(of:)).reduce(0, +)
+            DispatchQueue.main.async { [self] in (buildFilesBytes, buildToolsBytes) = (bytes, toolBytes) }
         }
     }
 
     /// Deletes only the Builder's own work files (its workspace: the copy of the sources, the
-    /// translated and compiled game code, the lifter's packages). NFSU2.app, the player's game
-    /// copy, saves, settings and the private Python are not touched.
+    /// translated and compiled game code) and, with removeToolsToo, the build tools (the private
+    /// Python and the lifter's packages, downloaded again by the next build). NFSU2.app, the
+    /// player's game copy, saves and settings are not touched. Each folder is renamed aside
+    /// first, so quitting during the slow delete cannot leave a marked but incomplete one
+    /// behind; the next start sweeps whatever is left.
     func removeBuildFiles() {
         let workspace = paths.workspace(version: version)
         workspaceReady = false
-        if let trash = try? moveToTrash(workspace) {
-            DispatchQueue.global(qos: .utility).async { try? FileManager.default.removeItem(at: trash) }
+        var removed = [workspace]
+        if removeToolsToo { removed += [paths.python, paths.venv] }
+        let fm = FileManager.default
+        for url in removed where fm.fileExists(atPath: url.path) {
+            if let trash = try? moveToTrash(url) {
+                DispatchQueue.global(qos: .utility).async { try? fm.removeItem(at: trash) }
+            }
         }
-        buildFilesRemoved = !FileManager.default.fileExists(atPath: workspace.path)
+        buildFilesRemoved = !fm.fileExists(atPath: workspace.path)
+        freedBytes = buildFilesBytes.map { $0 + (removeToolsToo ? buildToolsBytes ?? 0 : 0) }
     }
 
     /// Lines arrive faster than SwiftUI should redraw, so they are published at most four times a second.

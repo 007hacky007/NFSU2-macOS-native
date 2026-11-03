@@ -59,9 +59,9 @@ public final class PipelineRunner {
 
     // MARK: - Pipeline commands
 
-    /// Creates the workspace .venv with the private Python and installs requirements.txt.
+    /// Creates the shared venv with the private Python and installs requirements.txt.
     public static func setup(paths: BuilderPaths, version: String) -> PipelineRunner {
-        PipelineRunner(executable: paths.pythonExecutable, arguments: ["tools/builder_cli.py", "setup"],
+        PipelineRunner(executable: paths.pythonExecutable, arguments: ["tools/builder_cli.py", "setup", "--venv", paths.venv.path],
                        workingDirectory: paths.workspace(version: version), environment: pipelineEnvironment())
     }
 
@@ -72,7 +72,7 @@ public final class PipelineRunner {
         var arguments = ["tools/builder_cli.py", "build", "--exe", program.path]
         for source in data { arguments += ["--data", source.path] }
         arguments += ["--version", version]
-        return PipelineRunner(executable: paths.venvPython(version: version), arguments: arguments,
+        return PipelineRunner(executable: paths.venvPython, arguments: arguments,
                               workingDirectory: paths.workspace(version: version), environment: pipelineEnvironment())
     }
 

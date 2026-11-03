@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Non-interactive entry points for NFSU2 Builder (builder/). Prints NFSU2-EVENT JSON lines.
 
-  python3 tools/builder_cli.py setup
-      .venv with requirements.txt, for the Python that runs it (the Builder's private one)
+  python3 tools/builder_cli.py setup [--venv DIR]
+      .venv (or DIR: the Builder's shared one, linked from .venv) with requirements.txt, for
+      the Python that runs it (the Builder's private one)
   .venv/bin/python tools/builder_cli.py build --exe SPEED2.EXE --data PATH [--data PATH] [--version V]
       the same steps as the Terminal build: tools/gen_v2.sh, build.sh, link.sh, pack.sh --embed
       (README, "Build from Terminal") for the one region SPEED2.EXE belongs to. The app has
@@ -74,12 +75,12 @@ def find_exe(folder):
 
 # --- setup -------------------------------------------------------------------------------
 
-def setup():
+def setup(venv=None):
     if sys.platform != 'darwin' or os.uname().machine != 'arm64':
         raise BuildError('building needs an Apple Silicon Mac')
     if sys.version_info < (3, 10):
         raise BuildError('Python 3.10 or newer is needed')
-    venv = ROOT / '.venv'
+    venv = Path(venv) if venv else ROOT / '.venv'
     python = venv / 'bin/python'
     stamp = venv / '.build-requirements-sha256'
     digest = sha256(ROOT / 'requirements.txt')
@@ -296,7 +297,8 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # Cancel: unwind temporary folders
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('setup', help='create .venv and install requirements.txt')
+    setup_args = commands.add_parser('setup', help='create .venv and install requirements.txt')
+    setup_args.add_argument('--venv', help='the venv to set up (default: .venv)')
     b = commands.add_parser('build', help='build out/personal/NFSU2.app with the game inside')
     b.add_argument('--exe', required=True, help='a supported SPEED2.EXE')
     b.add_argument('--data', action='append', required=True,
@@ -305,7 +307,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == 'setup':
-            setup()
+            setup(args.venv)
         else:
             build(args)
     except (BuildError, OSError, ValueError) as error:

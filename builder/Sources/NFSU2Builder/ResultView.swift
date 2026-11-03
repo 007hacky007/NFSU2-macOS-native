@@ -59,7 +59,7 @@ struct ResultView: View {
             .controlSize(.large)
             Spacer()
             if model.buildFilesRemoved {
-                Text("Temporary files deleted\(model.buildFilesBytes.map { ", \(sizeText($0)) freed" } ?? ""). NFSU2.app and your game are unchanged.")
+                Text("Temporary files deleted\(model.freedBytes.map { ", \(sizeText($0)) freed" } ?? ""). NFSU2.app and your game are unchanged.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -78,6 +78,11 @@ struct ResultView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
+                    Toggle("Also delete the build tools\(model.buildToolsBytes.map { " (Python and its packages, \(sizeText($0)))" } ?? "")", isOn: $model.removeToolsToo)
+                        .font(.caption)
+                    Text("Off: they stay, so the next update does not download them again.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
         }

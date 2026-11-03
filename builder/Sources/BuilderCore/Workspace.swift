@@ -20,9 +20,25 @@ public struct BuilderPaths {
         support.appendingPathComponent(version)
     }
 
-    public func venvPython(version: String) -> URL {
-        workspace(version: version).appendingPathComponent(".venv/bin/python")
+    /// The lifter's packages (a venv of the private Python). Shared by every Builder version and
+    /// kept by Remove build files, so they are downloaded again only when requirements.txt or the
+    /// private Python changes. Each workspace's .venv is a link to it (linkSharedVenv), which is
+    /// where the pipeline scripts look ("$ROOT/.venv/bin/python").
+    public var venv: URL { support.appendingPathComponent("venv") }
+    public var venvPython: URL { venv.appendingPathComponent("bin/python") }
+}
+
+/// Makes `workspace`/.venv a link to the shared venv. A .venv of its own (made by a Builder
+/// before 1.0.5, inside the workspace) is deleted; the link is left as it is when it is right.
+public func linkSharedVenv(_ paths: BuilderPaths, workspace: URL) throws {
+    let fm = FileManager.default
+    let link = workspace.appendingPathComponent(".venv")
+    if let target = try? fm.destinationOfSymbolicLink(atPath: link.path), target == paths.venv.path { return }
+    if (try? link.checkResourceIsReachable()) == true || (try? fm.destinationOfSymbolicLink(atPath: link.path)) != nil {
+        let trash = try moveToTrash(link)
+        try? fm.removeItem(at: trash)
     }
+    try fm.createSymbolicLink(at: link, withDestinationURL: paths.venv)
 }
 
 private let versionMarker = ".builder-version"
@@ -92,12 +108,12 @@ private func removePycache(in root: URL) throws {
 }
 
 /// Deletes workspaces of other Builder versions: visible siblings in the support folder whose
-/// `.builder-version` marker names a different version. The private Python and directories
-/// without a marker are never touched.
+/// `.builder-version` marker names a different version. The private Python, the shared venv and
+/// directories without a marker are never touched.
 public func removeOldWorkspaces(_ paths: BuilderPaths, keeping version: String) {
     let fm = FileManager.default
     for name in (try? fm.contentsOfDirectory(atPath: paths.support.path)) ?? []
-    where !name.hasPrefix(".") && name != paths.python.lastPathComponent && name != version {
+    where !name.hasPrefix(".") && name != paths.python.lastPathComponent && name != paths.venv.lastPathComponent && name != version {
         let dir = paths.support.appendingPathComponent(name)
         guard let marker = try? String(contentsOf: dir.appendingPathComponent(versionMarker), encoding: .utf8),
               marker != version, let trash = try? moveToTrash(dir) else { continue }
@@ -105,15 +121,15 @@ public func removeOldWorkspaces(_ paths: BuilderPaths, keeping version: String) 
     }
 }
 
-/// Ready when the private Python is installed and the workspace venv was built from the
-/// current requirements.txt. Otherwise red: 25 MB of Python plus 7 MB of packages to
-/// fetch, or only the packages when Python is already there (after Remove build files).
+/// Ready when the private Python is installed and the shared venv was built from the current
+/// requirements.txt. Otherwise red: 25 MB of Python plus 7 MB of packages to fetch, or only the
+/// packages when Python is already there (a new requirements.txt).
 public func buildToolsCheck(paths: BuilderPaths, version: String) -> CheckState {
     let workspace = paths.workspace(version: version)
     guard PythonRuntime.isInstalled(paths) else { return .blocked("A private Python and the lifter's packages, about 32 MB download") }
-    guard FileManager.default.fileExists(atPath: paths.venvPython(version: version).path),
+    guard FileManager.default.fileExists(atPath: paths.venvPython.path),
           let requirements = try? sha256Hex(of: workspace.appendingPathComponent("requirements.txt")),
-          let recorded = try? String(contentsOf: workspace.appendingPathComponent(".venv/.build-requirements-sha256"), encoding: .utf8),
+          let recorded = try? String(contentsOf: paths.venv.appendingPathComponent(".build-requirements-sha256"), encoding: .utf8),
           recorded.trimmingCharacters(in: .whitespacesAndNewlines) == requirements
     else { return .blocked("Packages need to be set up again (small download)") }
     return .ready("Installed")

@@ -269,12 +269,12 @@ final class PipelineRunnerTests: XCTestCase {
     func testConvenienceConstructors() {
         let paths = BuilderPaths(support: tmp)
         let workspace = paths.workspace(version: "1.2.0")
-        let venv = paths.venvPython(version: "1.2.0")
+        let venv = paths.venvPython
         let game = URL(fileURLWithPath: #"/Users/x/Games/NFSU2 (EU) "copy""#)
         let exe = game.appendingPathComponent("SPEED2.EXE")
         let discs = [URL(fileURLWithPath: "/Volumes/D/Disc 1.cue"), URL(fileURLWithPath: "/Volumes/D/Disc 2.iso")]
         let expected: [(PipelineRunner, URL, [String])] = [
-            (.setup(paths: paths, version: "1.2.0"), paths.pythonExecutable, ["tools/builder_cli.py", "setup"]),
+            (.setup(paths: paths, version: "1.2.0"), paths.pythonExecutable, ["tools/builder_cli.py", "setup", "--venv", paths.venv.path]),
             (.build(paths: paths, version: "1.2.0", program: exe, data: [game]), venv,
              ["tools/builder_cli.py", "build", "--exe", exe.path, "--data", game.path, "--version", "1.2.0"]),
             (.build(paths: paths, version: "1.2.0", program: paths.program, data: discs), venv,
