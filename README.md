@@ -565,8 +565,8 @@ folder; a file there is read in place of the game's, for dubbed speech and movie
 or languages the retail files lack). The app downloads nothing. The engine takes
 it as `NFSU2_LANGUAGE` (`english`, `french`, `german`, `italian`, `spanish`,
 `dutch`, `swedish`, `danish`, `korean`, `chinese`, `japanese`, `thai`, and
-`russian`, `portuguese`, `polish`, `turkish`, `hungarian`, `ukrainian`, `czech`
-from a pack), which still wins when set by hand.
+`russian`, `portuguese`, `polish`, `turkish`, `hungarian`, `ukrainian`, `czech`,
+`slovak` from a pack), which still wins when set by hand.
 
 Hungarian comes from GameHunter's translation (v1.1, 2005, by L_zooltan) and
 Ukrainian from Clark X.'s (2022, kuli.com.ua). Their packs are one click in
@@ -592,6 +592,16 @@ lines, colours, countries, console and demo messages) and the movies' lines
 empty, as German's dubbed text has them. The pack fills those in Czech, in the
 translation's spelling (`launcher/CzechTexts.swift`), so Movie subtitles work in
 Czech too.
+
+Slovak comes from MixerX's translation (v1.0, 2011), downloaded in one click
+from abcgames.cz as well: the zip of its installer for the European game, size
+and SHA-256 checked, then each file it takes. The installer is an NSIS one, read
+without running it (`launcher/NSIS.swift`); Import... also takes the one for the
+American game, whose language files are the same. Its text has every Slovak
+letter (in Windows-1250), drawn by the fonts' textures it comes with, and the
+movies' lines. It replaces the Swedish files in the Windows game; here it takes
+English's place, as the other packs do. Its own SPEED2.EXE and CD image are not
+used: the engine shows the subtitles itself.
 
 `run.sh` documents the environment switches; most are diagnostics.
 
