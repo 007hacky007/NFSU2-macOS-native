@@ -54,6 +54,8 @@
  *   visual                     log the car's visual rating (0x528420, NA 0x528410: with the
  *                              NFSU2_CAREER_BOT_VISUAL tweak, and its own)
  *   watchw X                   debug: log the guest functions that write X
+ *   racesay N                  quick chat in a race between players: phrase N
+ *                              as if picked in Game Tools (racehorn.c qc_say)
  *   bot on|off                 the career bot below (also NFSU2_CAREER_BOT=1)
  * X/ARG/FN are expressions: numbers, "*X" (guest dword at X), "(X)", "+", "-",
  * and "*" between two operands (multiply), e.g. "*(*0x890118+0xbd0)".  Script
@@ -991,7 +993,7 @@ static void queue(const char *line){
 int career_is_cmd(const char *cmd){
     static const char *const k[] = { "call", "memdump", "waitx", "teleport", "autopilot", "racewin",
                                      "careerlist", "careergo", "shopgo", "peekx", "fnglist", "bot", "waitfe", "tapfe", "waitroam", "showgo", "cargo", "watchw",
-                                     "outrun", "outrunwin", "visual", 0 };
+                                     "outrun", "outrunwin", "visual", "racesay", 0 };
     for (int i = 0; k[i]; i++) if (!strcasecmp(cmd, k[i])) return 1;
     return 0;
 }
@@ -1019,6 +1021,12 @@ int career_cmd(CPU *c, const char *line, long *wait_start){
     if (!strcasecmp(cmd, "call") || !strcasecmp(cmd, "autopilot") || !strcasecmp(cmd, "racewin") ||
         !strcasecmp(cmd, "bot") || !strcasecmp(cmd, "outrunwin") || !strcasecmp(cmd, "visual")){
         queue(line); return 1; }
+    if (!strcasecmp(cmd, "racesay")){             /* racehorn.c takes it at its next frame */
+        void racehorn_test_say(int phrase);
+        racehorn_test_say(atoi(a1));
+        fprintf(stderr, "[career] f=%ld racesay %d\n", f, atoi(a1));
+        return 1;
+    }
     if (!strcasecmp(cmd, "memdump")){
         uint32_t a = eval(a1), n = eval(a2);
         FILE *o = fopen(a3, "wb");

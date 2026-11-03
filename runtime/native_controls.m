@@ -30,14 +30,22 @@
  * groups of four phrases (NFSU2_QUICKCHAT_GROUPS, NFSU2_QUICKCHAT_PHRASES;
  * "Quick chat groups..." in the launcher or in the panel changes them).
  * While the player drives in free roam with the session up
- * (roam_plat_driving), 1-4 opens a group and 1-4 again says one of its
- * phrases; on a controller the right stick flicked up / right / down / left
- * twice does the same (the click opens group 1, B closes).  The picker closes
- * after 4 s, when the game window loses focus or when the player is no longer
- * driving; at all other times (offline, in a race, in the menus) the keys and
- * the stick go to the game as before.  What players said shows over their
- * cars (an overlay on the game window, where roam_game.c tags_update puts
- * their names: roam_plat_say_marks) and in the panel's log.
+ * (roam_plat_driving), and in a race between players, driving or on its
+ * results (racehorn.c says so: native_controls_set_race; Online races, the
+ * LAN menu's and free roam's lobby races through the server, with free roam
+ * on or off; never a career race or a Quick Race), 1-4 opens a group and 1-4
+ * again says one of its phrases; on a controller the right stick flicked up /
+ * right / down / left twice does the same (the click opens group 1, B
+ * closes).  The picker closes after 4 s, when the game window loses focus or
+ * when the player is no longer there; at all other times (offline, in the
+ * career's races, in the menus) the keys and the stick go to the game as
+ * before.  Free roam takes the picks made in free roam (roam_plat_say_pick),
+ * racehorn.c those made in a race (native_controls_race_pick).  What players
+ * said in free roam shows over their cars (an overlay on the game window,
+ * where roam_game.c tags_update puts their names: roam_plat_say_marks), what
+ * they said in a race in a chat log on the left of the picture (the game
+ * says nobody where it draws its racers' names), and both in the panel's
+ * log.
  *
  * Threads: the guest thread calls the roam_plat_* functions (some with the
  * session lock held) and the pad filter; AppKit runs on the main thread.
@@ -233,14 +241,18 @@ const char *native_controls_phrase(int p){ return p >= 0 && p < PHRASE_COUNT ? p
 #define CHAT_OPEN_S    4.0       /* the picker closes by itself after this */
 #define CHAT_BURST     3         /* at most this many of the player's own in CHAT_WINDOW_S (roam_game.c SAY_BURST) */
 #define CHAT_WINDOW_S  6.0
+#define RACE_LOG       5         /* the race's chat log: its last lines, */
+#define RACE_LOG_S     8.0       /*   each this long */
 static struct { uint32_t id; int phrase, me; double until; } qLines[CHAT_LINES];
 static struct { uint32_t id; float x, y, scale; } qMarks[CHAT_LINES];
 static int qMarksCount;
 static double qMarksAt;
 static int qLayout[16] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
 static char qGroupNames[4][100] = {"Greetings", "Replies", "Driving", "Racing"};
-static int qNetwork, qDriving, qFocused, qTestFocus, qGroup = -1, qPad, qArmed = 1, qStickHeld;
-static double qDriveAt, qUntil, qSent[CHAT_BURST];
+static int qNetwork, qDriving, qRace, qFocused, qTestFocus, qGroup = -1, qPad, qArmed = 1, qStickHeld;
+static double qDriveAt, qRaceAt, qUntil, qSent[CHAT_BURST];
+static struct { char name[64]; int phrase, me; double at; } qRaceLog[RACE_LOG];   /* the oldest first */
+static int qRaceLogCount;
 static int qSentCount;
 static int picks[16], pickHead, pickCount;
 static int qPadB, qPadRS;                       /* pad buttons the picker took, until let go */
@@ -256,11 +268,13 @@ static uint32_t roomGeneration;
 static const uint32_t crewDefaults[4] = {0x3cd2ff, 0xff50c8, 0xa078ff, 0xff4646};   /* roam_game.c CREW_RGB */
 
 static double now_s(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
-/* the keys and the stick are quick chat's: the session takes it, the player
- * drives in free roam (said this frame or the last few), the window has
- * focus, no photo mode */
+/* a race between players, driving or on its results (racehorn.c said so this frame or the last few) */
+static int chat_racing(double now){ return qRace && now - qRaceAt < 0.25; }
+/* the keys and the stick are quick chat's: the session takes it and the
+ * player drives in free roam (said this frame or the last few), or a race
+ * between players; the window has focus, no photo mode */
 static int chat_eligible(double now){
-    return qNetwork && qDriving && (qFocused || qTestFocus) && now - qDriveAt < 0.25 && !native_scene_active();
+    return ((qNetwork && qDriving && now - qDriveAt < 0.25) || chat_racing(now)) && (qFocused || qTestFocus) && !native_scene_active();
 }
 static void chat_close(void){ qGroup = -1; }
 static int chat_enqueue(int phrase){
@@ -308,10 +322,21 @@ void native_controls_action(int a){
     pthread_mutex_lock(&mu); action = a; pthread_mutex_unlock(&mu);
 }
 int roam_plat_action(void){ pthread_mutex_lock(&mu); int a = action; action = 0; pthread_mutex_unlock(&mu); return a; }
-int roam_plat_say_pick(void){
+/* free roam takes the picks made outside races between players, racehorn.c those made in one */
+static int take_pick(int race){
     pthread_mutex_lock(&mu); int p = -1;
-    if (pickCount){ p = picks[pickHead]; pickHead = (pickHead + 1) % 16; pickCount--; }
+    if (pickCount && !!qRace == race){ p = picks[pickHead]; pickHead = (pickHead + 1) % 16; pickCount--; }
     pthread_mutex_unlock(&mu); return p;
+}
+int roam_plat_say_pick(void){ return take_pick(0); }
+int native_controls_race_pick(void){ return take_pick(1); }
+void native_controls_set_race(int state){
+    pthread_mutex_lock(&mu);
+    int was = qRace;
+    qRace = state == 1 || state == 2 ? state : 0; qRaceAt = now_s();
+    if (!was != !qRace){ pickCount = 0; pickHead = 0; chat_close(); }    /* into a race or out of one: nothing picked before goes */
+    if (!was && qRace) qRaceLogCount = 0;                               /* a new race's log */
+    pthread_mutex_unlock(&mu);
 }
 int native_controls_pick(int phrase){
     if (phrase < 0 || phrase >= PHRASE_COUNT) return 0;
@@ -376,18 +401,31 @@ static BOOL json_int(id v, double lo, double hi){
     return isfinite(n) && floor(n) == n && n >= lo && n <= hi;
 }
 /* a phrase said: {"id", "name", "p"} (+ "me": the player's own, "lobby": one
- * of our race lobby's) -> a line over that car and in the log.  A number past
- * our list (a newer game's phrase) is taken and not shown */
+ * of our race lobby's, "race": one said in a race between players,
+ * racehorn.c) -> a line over that car (in a race: in the race's chat log) and
+ * in the panel's log.  A number past our list (a newer game's phrase) is
+ * taken and not shown */
 int roam_plat_said(const char *json){ @autoreleasepool {
     NSDictionary *s = json_object(json);
     if (!s || !json_int(s[@"id"], 1, UINT32_MAX) || ![s[@"name"] isKindOfClass:NSString.class] || [s[@"name"] length] > 128) return -1;
     if (!json_int(s[@"p"], 0, 255)) return -1;
     if (s[@"me"] && !json_int(s[@"me"], 0, 1)) return -1;
     if (s[@"lobby"] && !json_int(s[@"lobby"], 0, 1)) return -1;
+    if (s[@"race"] && !json_int(s[@"race"], 0, 1)) return -1;
     int p = [s[@"p"] intValue];
     if (p >= PHRASE_COUNT) return 1;
     BOOL me = [s[@"me"] intValue] == 1;
     uint32_t id = [s[@"id"] unsignedIntValue];
+    if ([s[@"race"] intValue] == 1){
+        pthread_mutex_lock(&mu);
+        if (qRaceLogCount == RACE_LOG){ memmove(qRaceLog, qRaceLog + 1, (RACE_LOG - 1) * sizeof *qRaceLog); qRaceLogCount--; }
+        int n = qRaceLogCount++;
+        snprintf(qRaceLog[n].name, sizeof qRaceLog[n].name, "%s", me ? "You" : [s[@"name"] UTF8String]);
+        qRaceLog[n].phrase = p; qRaceLog[n].me = me; qRaceLog[n].at = now_s();
+        pthread_mutex_unlock(&mu);
+        add_message([NSString stringWithFormat:@"%@ (race): %s", me ? @"You" : s[@"name"], phrases[p]]);
+        return 1;
+    }
     pthread_mutex_lock(&mu);
     double now = now_s(); int slot = 0;
     for (int i = 1; i < CHAT_LINES; i++) if (qLines[i].until < qLines[slot].until) slot = i;      /* the oldest, */
@@ -808,6 +846,8 @@ int native_controls_set_room(const char *name, char *error, size_t capacity){ @a
     typeof(qLines) lines; memcpy(lines, qLines, sizeof lines);
     typeof(qMarks) marks; memcpy(marks, qMarks, sizeof marks);
     int count = now - qMarksAt < 0.15 ? qMarksCount : 0;
+    typeof(qRaceLog) rlog; memcpy(rlog, qRaceLog, sizeof rlog);
+    int rlogs = chat_racing(now) && shown && !native_scene_active() ? qRaceLogCount : 0;
     pthread_mutex_unlock(&mu);
     NSRect pic = self.picture;
     CGFloat k = MAX(0.75, MIN(1.6, MIN(pic.size.width / 1280, pic.size.height / 720)));
@@ -825,6 +865,19 @@ int native_controls_set_room(const char *name, char *error, size_t capacity){ @a
         NSRect box = NSMakeRect(pic.origin.x + (pic.size.width - ts.width) / 2 - 12 * k, y, ts.width + 24 * k, ts.height + 12 * k);
         [[NSColor colorWithWhite:0.04 alpha:0.85] setFill]; [[NSBezierPath bezierPathWithRoundedRect:box xRadius:8 * k yRadius:8 * k] fill];
         [t drawAtPoint:NSMakePoint(box.origin.x + 12 * k, box.origin.y + 6 * k) withAttributes:a];
+    }
+    /* a race's chat log: on the left, under the picker's place, each line for RACE_LOG_S */
+    for (int i = 0, row = 0; i < rlogs; i++){
+        if (now - rlog[i].at >= RACE_LOG_S) continue;
+        CGFloat alpha = MIN(1, (RACE_LOG_S - (now - rlog[i].at)) / 0.6);
+        NSDictionary *a = @{NSFontAttributeName: [NSFont systemFontOfSize:14 * k weight:NSFontWeightSemibold],
+                            NSForegroundColorAttributeName: [(rlog[i].me ? [NSColor colorWithSRGBRed:0.89 green:0.94 blue:0.82 alpha:1] : NSColor.whiteColor)
+                                                             colorWithAlphaComponent:alpha]};
+        NSString *t = [NSString stringWithFormat:@"%@: %s", [NSString stringWithUTF8String:rlog[i].name] ?: @"", phrases[rlog[i].phrase]];
+        NSSize ts = [t sizeWithAttributes:a];
+        NSRect box = NSMakeRect(pic.origin.x + 20 * k, pic.origin.y + (190 + 30 * row++) * k, MIN(ts.width + 20 * k, pic.size.width * 0.6), ts.height + 8 * k);
+        [[NSColor colorWithWhite:0.04 alpha:0.8 * alpha] setFill]; [[NSBezierPath bezierPathWithRoundedRect:box xRadius:7 * k yRadius:7 * k] fill];
+        [t drawAtPoint:NSMakePoint(box.origin.x + 10 * k, box.origin.y + 4 * k) withAttributes:a];
     }
     if (!visible) return;
     if (group >= 0){
@@ -1033,10 +1086,10 @@ static NSColor *color_of(unsigned rgb){
     [self.chatPanel orderOut:nil]; [self.panel makeKeyAndOrderFront:nil];
 }
 - (void)refresh {
-    pthread_mutex_lock(&mu); NSDictionary *s = lobby; NSArray *lines = [messages copy]; int net = qNetwork; pthread_mutex_unlock(&mu);
+    pthread_mutex_lock(&mu); NSDictionary *s = lobby; NSArray *lines = [messages copy]; int net = qNetwork || chat_racing(now_s()); pthread_mutex_unlock(&mu);
     NSMutableArray<NSString *> *rows = [NSMutableArray array];
     NSString *v = str(s[@"v"]), *st = str(s[@"st"]);
-    if (!self.roam) [rows addObject:@"Free roam with other players is off (the launcher's Settings, Online). The music controls below work anyway."];
+    if (!self.roam) [rows addObject:@"Free roam with other players is off (the launcher's Settings, Online). Quick chat works in races with other players, the music controls below anyway."];
     else if (!v.length) [rows addObject:@"Drive to a race marker in free roam to open a race lobby there, or to join the one another player opened."];
     else {
         NSString *kind = str(s[@"kind"]), *track = str(s[@"track"]);
@@ -1300,5 +1353,5 @@ void native_controls_install(NSWindow *game){
     }
     [ui refresh];
     fprintf(stderr, "[gametools] Game Tools in the app menu (Cmd+Shift+M)%s; quick chat groups: %s, %s, %s, %s\n",
-            ui.roam ? "" : " (free roam with others off: music only)", qGroupNames[0], qGroupNames[1], qGroupNames[2], qGroupNames[3]);
+            ui.roam ? "" : " (free roam with others off: music and quick chat in races)", qGroupNames[0], qGroupNames[1], qGroupNames[2], qGroupNames[3]);
 }

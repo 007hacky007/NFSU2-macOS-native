@@ -125,11 +125,12 @@
  *     audioreset               handle a default output device change now
  *     roam SUB ...             the old fork's free-roam research probes: only
  *                              the ones career.c also has are kept (waitroam,
- *                              shopgo, teleport, peek, wait, memdump, call)
+ *                              shopgo, teleport, peek, wait, memdump, call,
+ *                              racesay)
  *   career aids (runtime/career.c, test-only): call, memdump, waitx, peekx,
  *   teleport, autopilot, racewin, careerlist, careergo, shopgo, showgo,
  *   fnglist, waitfe, tapfe, waitroam, cargo, outrun, outrunwin, visual,
- *   watchw, bot.
+ *   watchw, bot, racesay.
  *   real-keyboard path (runtime/keyboard_mac.m): NSEvents are made and posted
  *   into AppKit's event queue on the main thread, so they go through the
  *   same handler as keys typed on a real keyboard:
@@ -516,7 +517,8 @@ static int add_line(char *p, int ln){
     else if (!strcasecmp(cmd, "roam")){
         /* the probes career.c also has */
         static const char *const keep[][2] = { {"waitroam","waitroam"}, {"shopgo","shopgo"}, {"teleport","teleport"},
-                                               {"peek","peekx"}, {"wait","waitx"}, {"memdump","memdump"}, {"call","call"}, {0,0} };
+                                               {"peek","peekx"}, {"wait","waitx"}, {"memdump","memdump"}, {"call","call"},
+                                               {"racesay","racesay"}, {0,0} };
         int k; for (k = 0; keep[k][0] && strcasecmp(keep[k][0], a1); k++) ;
         if (!keep[k][0]){ fprintf(stderr, "[autotest] script line %d: 'roam %s' is a free-roam research probe of the old fork, "
                                           "not in this port\n", ln, a1); return 0; }
