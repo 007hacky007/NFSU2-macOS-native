@@ -2,6 +2,28 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.7 - 2026-11-04
+
+### Added
+- Both Releases' Cars: RKBDI's files of the cars only one release has, one click in Settings, Mods. The European game gets the Honda Civic and Acura RSX of the North American release, the North American game the Vauxhall Corsa and Peugeot 106. They are EA's own files, byte for byte the retail ones. The launcher downloads them from MediaFire, where the mod's page links them, checks they are the tested release and puts only the two cars your game lacks next to it; your game folder stays as it is. With them on, Settings, Game, Both releases' cars puts all four on sale and in races.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/d1195cc9fe0d065cd3de27d23649dd2959fbadbb/release-1.0.7/launcher-mods-region-cars.png" width="560" alt="Settings, Mods: Both Releases' Cars">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/d1195cc9fe0d065cd3de27d23649dd2959fbadbb/release-1.0.7/launcher-both-releases-cars.png" width="560" alt="Settings, Game: Both releases' cars">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/d1195cc9fe0d065cd3de27d23649dd2959fbadbb/release-1.0.7/civic-on-european-data.png" width="800" alt="The Honda Civic in Quick Race on the European game">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/d1195cc9fe0d065cd3de27d23649dd2959fbadbb/release-1.0.7/rsx-on-european-data.png" width="800" alt="The Acura RSX in Quick Race on the European game">
+
+### Fixed
+- Free roam no longer freezes when a player in a car your release lacks comes near (a North American player's Civic or RSX in the European game, or the other way round). The game tried to load the missing car, stopped loading every friend's car after it, and froze for good on the next trip to a race or the main menu. Such a car now shows as the other release's car in its place (the Civic as a Corsa, the RSX as a 106), unless you have Both Releases' Cars.
+- A LAN or online race against such a car no longer stays on "Loading" forever. The opponent's car shows as the other release's car, with its performance parts and tuning and stock body parts.
+- Rumble on a DualShock 4 over Bluetooth: macOS refused the kind of vibration the game asked for, so the pad never vibrated. It does now, and the log says why when a controller cannot vibrate.
+- A song from your own music folder no longer plays on unseen after its end (a crash in nfsu2-web).
+- Names over other players' cars no longer pile up in a crowd, and they fade out with distance. The minimap shows an arrow for the nearest 64 players beyond the cars drawn.
+- A free-roam car left at an impossible position by a bad hit is put back.
+- A LAN racer's name that reads as a slur shows as "Player", and the name filter has the live server's newer lists.
+- An x typed in a text field (a profile's name, an Online room's chat) no longer switches drift mode.
+- In languages whose word for "name" is no valid profile name (Chinese, Japanese, Thai, Korean, Polish, Hungarian), a new profile's name box starts empty.
+- With Hotplug, a game pad that switches itself off and comes back keeps the buttons set in the game's Controls page.
+- The Turkish pack has a new translation of all of the game's texts, made by hand in th0mk's nfsu2-web, with muntazam's fonts. The Polish pack has the race HUD's DRAFT in Polish, and the Thai pack no longer shows broken ordinal suffixes in races.
+
 ## 1.0.6 - 2026-11-03
 
 ### Added
