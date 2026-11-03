@@ -232,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print("update: " + (run.map { "\(Int($0.fraction * 100))% \($0.text) \($0.detail ?? "") \($0.failure ?? "")" } ?? "none"))
                 shown(run)
             }
+            unsetenv("NFSU2_LAUNCHER_TEST")     // the app the Builder opens afterwards must not start it again
             model.updater.start(UpdateCheck.Release(version: parts[1], page: dmg, download: dmg, checksum: sum))
         }
         if env["NFSU2_LAUNCHER_TEST"] == nil && env["NFSU2_LAUNCHER_STATE"] == nil {
@@ -272,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "update":
             model.game = .ready(GameLocation(exe: exe, embedded: true))
             model.updateNotice = UpdateCheck.Release(version: "1.1.0", page: URL(string: "https://github.com/")!, download: nil)
-        case "update-here", "updating", "update-failed", "updated":   // Update and its overlay (Updater.swift)
+        case "update-here", "updating", "update-failed", "update-needs-builder", "update-in-builder", "updated":   // Update and its overlay (Updater.swift)
             model.game = .ready(GameLocation(exe: exe, embedded: true))
             model.builderStamp = "1.0.4"
             model.updateHere = URL(fileURLWithPath: "/Applications/NFSU2.app")
@@ -282,9 +283,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             switch s {
             case "updating":
                 model.updateRun = Updater.Run(version: "1.0.5", text: "Building: Compile the game", fraction: Updater.fraction(state: "building", part: 0.45),
-                                              detail: "NFSU2 Builder 1.0.5 is making the new app; this takes a few minutes.", canCancel: true, builderRunning: true)
+                                              detail: "NFSU2 Builder 1.0.5 is making the new app; this takes a few minutes.", canCancel: true)
             case "update-failed":
-                model.updateRun = Updater.Run(version: "1.0.5", text: "", failure: "The update stopped. Free disk space: Only 0.9 GB free, 1.5 GB needed", builderRunning: true)
+                model.updateRun = Updater.Run(version: "1.0.5", text: "",
+                                              failure: "Compile the game failed: This step stopped with an error. Click Copy log and include it in a bug report.",
+                                              hasLog: true, canOpenBuilder: true)
+            case "update-needs-builder":
+                model.updateRun = Updater.Run(version: "1.0.5", text: "",
+                                              needsBuilder: "Xcode command line tools: Not installed. Click Install, then follow Apple's installer.\nFree disk space: Only 0.9 GB free, 1.5 GB needed")
+            case "update-in-builder":
+                model.updateRun = Updater.Run(version: "1.0.5", text: "", inBuilder: true)
             case "updated":
                 model.updateRun = Updater.Run(version: "1.0.5", text: "", fraction: 1, finished: true)
             default: break

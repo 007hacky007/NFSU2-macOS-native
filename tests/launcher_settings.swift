@@ -328,10 +328,15 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
             try? PropertyListSerialization.propertyList(from: Data($0.utf8), format: nil) as? [String] }
         check(args.starts(with: ["-LauncherUpdate", "/tmp/s.json", "-destination", "/Users/p/My \"Games\""]) && gameData == [here.path],
               "update: the Builder is told the status file, the folder and this app (as its arguments read them)")
+        check(Updater.builderArguments(app: here, status: nil).first == "-destination",
+              "update: Open NFSU2 Builder opens its window with this app chosen, not the background update")
+        let builderEnv = Updater.builderEnvironment(["HOME": "/Users/p", "PATH": "/usr/bin", "NFSU2_LAUNCHER_TEST": "update|x", "NFSU2_ENGINE": "hd"])
+        check(builderEnv == ["HOME": "/Users/p", "PATH": "/usr/bin"], "update: the Builder gets none of the launcher's NFSU2_ variables")
         let steps = ["download", "open", "preparing", "tools", "building", "waiting", "done"]
         let bar = steps.flatMap { s in [0, 1].map { Updater.fraction(state: s, part: Double($0)) } }
         check(zip(bar, bar.dropFirst()).allSatisfy { $0 <= $1 } && bar.first == 0 && bar.last! < 1, "update: the bar only goes forward")
-        let rec = Updater.Record(version: "1.0.5", folder: URL(fileURLWithPath: "/tmp/u"), pid: 42)
+        let rec = Updater.Record(version: "1.0.5", folder: URL(fileURLWithPath: "/tmp/u"), pid: 42, window: true)
+        check(!Updater.isBuilder(getpid()) && !Updater.isBuilder(0), "update: only a Builder from an update's image counts as its Builder")
         check(Updater.Record(rec.dictionary) == rec && Updater.Record(nil) == nil && Updater.Record(["version": "1"]) == nil,
               "update: the record survives the launcher quitting")
         m.updateNotice = parsed
@@ -349,8 +354,10 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         var playedDuringUpdate = false
         LauncherModel.testSpawn = { _ in playedDuringUpdate = true }
         m.game = .ready(GameLocation(exe: URL(fileURLWithPath: "/tmp/g/SPEED2.EXE"), embedded: false))
+        m.updateRun = Updater.Run(version: "1.0.5", text: "Building: Compile the game")
         m.play()
-        check(!playedDuringUpdate, "update: no Play while it runs")
+        check(playedDuringUpdate == false, "update: no Play while it runs")
+        m.updateRun = nil
         d.removeObject(forKey: Prefs.updateRun)
         LauncherModel.testSpawn = nil
         m.updateNotice = nil

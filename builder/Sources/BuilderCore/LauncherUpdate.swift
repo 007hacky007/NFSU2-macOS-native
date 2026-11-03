@@ -1,9 +1,13 @@
 import Foundation
 
-/// An update started by NFSU2.app's launcher (launcher/Updater.swift): it opens this Builder
-/// from the downloaded disk image with `-LauncherUpdate <status file>`, and the Builder makes
-/// and installs the new NFSU2.app with no one pressing its buttons. The status file is how the
-/// launcher follows it (its progress bar); the Builder writes it each time what it does changes.
+/// An update started by NFSU2.app's launcher (launcher/Updater.swift): it runs this Builder
+/// from the downloaded disk image, with no window, as
+/// `NFSU2Builder -LauncherUpdate <status file> -destination <folder> -gameData '("<NFSU2.app>")'`
+/// and the Builder makes and installs the new NFSU2.app with no one pressing its buttons.
+/// Each line it prints is JSON: a status (below) each time what it does changes, or
+/// {"log": line} for the build's log. The status file holds the latest status too, for a
+/// launcher opened again while the Builder works (the one that started it quits to let it
+/// install). Exit 0: installed and opened; 1: failed; 3: needsBuilder; 143: stopped.
 public struct LauncherUpdateStatus: Codable, Equatable {
     public enum State: String, Codable {
         /// The checklist: checking the game in the app, the disk space and the rest.
@@ -18,8 +22,12 @@ public struct LauncherUpdateStatus: Codable, Equatable {
         case installing
         /// Installed; the new NFSU2.app is being opened and the Builder quits.
         case done
-        /// Stopped: `message` says why, the Builder's window has the details.
+        /// A step failed: `message` says which and why; the log lines before it have the details.
         case failed
+        /// A checklist row stays red and only the player can see to it (the command line tools,
+        /// the game, the disk space): `message` has one "Row: what it says" line per row. The
+        /// launcher offers to open the Builder's window.
+        case needsBuilder
     }
 
     public var state: State
@@ -43,16 +51,29 @@ public struct LauncherUpdateStatus: Codable, Equatable {
     public static func read(from url: URL) -> LauncherUpdateStatus? {
         (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(LauncherUpdateStatus.self, from: $0) }
     }
+
+    public static func read(line: String) -> LauncherUpdateStatus? {
+        try? JSONDecoder().decode(LauncherUpdateStatus.self, from: Data(line.utf8))
+    }
 }
 
-/// The checklist row that keeps an unattended update from building, once every check has
-/// finished: none is still checking, and a row is red. nil while it may still turn ready.
-public func updateBlocker(_ states: [CheckID: CheckState]) -> (CheckID, String)? {
+/// The checklist rows that keep an unattended update from building, once every check has
+/// finished: none is still checking, and some are red. nil while they may still turn ready.
+public func updateBlockers(_ states: [CheckID: CheckState]) -> [(CheckID, String)]? {
     for id in CheckID.allCases {
         if case .checking? = states[id] { return nil }
     }
-    for id in CheckID.allCases {
+    let rows = CheckID.allCases.compactMap { id -> (CheckID, String)? in
         if case let .blocked(message)? = states[id] { return (id, message) }
+        return nil
     }
-    return nil
+    return rows.isEmpty ? nil : rows
+}
+
+/// One line of the update's output: the JSON of `status`, or {"log": line}.
+public func launcherUpdateLine(_ status: LauncherUpdateStatus) -> String {
+    (try? JSONEncoder().encode(status)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+}
+public func launcherUpdateLine(log: String) -> String {
+    (try? JSONSerialization.data(withJSONObject: ["log": log])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 }

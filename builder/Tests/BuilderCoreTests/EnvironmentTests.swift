@@ -313,13 +313,19 @@ final class EnvironmentTests: XCTestCase {
 
     func testUpdateBlockerWaitsForEveryCheck() {
         var states = Dictionary(uniqueKeysWithValues: CheckID.allCases.map { ($0, CheckState.ready("ok")) })
-        XCTAssertNil(updateBlocker(states))
+        XCTAssertNil(updateBlockers(states))
         states[.diskSpace] = .blocked("Only 0.5 GB free, 1.5 GB needed")
         states[.gameData] = .checking("Checking your game copy...")
-        XCTAssertNil(updateBlocker(states), "not while a check runs")
+        XCTAssertNil(updateBlockers(states), "not while a check runs")
         states[.gameData] = .automatic("fine")
-        XCTAssertEqual(updateBlocker(states)?.0, .diskSpace)
-        XCTAssertEqual(updateBlocker(states)?.1, "Only 0.5 GB free, 1.5 GB needed")
+        states[.commandLineTools] = .blocked("Install them")
+        XCTAssertEqual(updateBlockers(states)?.map { $0.0 }, [.commandLineTools, .diskSpace])
+        XCTAssertEqual(updateBlockers(states)?.last?.1, "Only 0.5 GB free, 1.5 GB needed")
+        // the lines the launcher reads
+        let line = launcherUpdateLine(LauncherUpdateStatus(state: .needsBuilder, message: "Free disk space: Only 0.5 GB free"))
+        XCTAssertEqual(LauncherUpdateStatus.read(line: line)?.state, .needsBuilder)
+        let log = try? JSONSerialization.jsonObject(with: Data(launcherUpdateLine(log: "cc -O2 \"a b\".c").utf8)) as? [String: String]
+        XCTAssertEqual(log?["log"], "cc -O2 \"a b\".c")
     }
 
     func testInstallCompletionArrivesOnMainThread() throws {

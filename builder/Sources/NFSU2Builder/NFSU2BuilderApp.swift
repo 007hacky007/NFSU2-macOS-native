@@ -9,8 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when started with `swift run`, where there is no app bundle to say so.
         NSApp.setActivationPolicy(.regular)
-        // An update for the launcher works out of sight; the launcher shows its progress.
-        if model.launcherUpdate == nil { NSApp.activate(ignoringOtherApps: true) }
+        NSApp.activate(ignoringOtherApps: true)
         // The pipeline runs in its own process group, so a plain SIGTERM to the Builder would
         // orphan it; route the signal through the normal quit path instead. terminate(_:) is
         // started from the run loop, not from inside a main-queue block: while it waits for the
@@ -99,7 +98,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The window, or with -LauncherUpdate the update the launcher runs (LauncherUpdateCLI.swift).
 @main
+enum BuilderMain {
+    static func main() {
+        if UserDefaults.standard.string(forKey: "LauncherUpdate") != nil { LauncherUpdateCLI.run() }
+        NFSU2BuilderApp.main()
+    }
+}
+
 struct NFSU2BuilderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 

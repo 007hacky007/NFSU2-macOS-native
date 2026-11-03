@@ -343,7 +343,7 @@ final class LauncherModel: ObservableObject {
     // MARK: play
 
     func play() {
-        guard case .ready(let loc) = game, updateRun == nil, !updater.pending else { return }
+        guard case .ready(let loc) = game, updateRun == nil else { return }
         if let err = onlineError { alert("Online play is not set up", err); return }
         let typedName = playerName       // the first profile's name: the one typed, not the digits played under
         // a name another player claimed: asked about once (NameClaims.swift); not in the settings tests

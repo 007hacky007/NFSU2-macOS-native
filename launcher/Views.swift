@@ -178,14 +178,54 @@ struct UpdateOverlay: View {
                     Text("The update did not finish").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)
                     Text(e).font(.system(size: 12)).foregroundColor(Theme.dim)
                         .fixedSize(horizontal: false, vertical: true)
+                    if run.canOpenBuilder {
+                        Text("NFSU2 Builder can try again in its own window, where you see every step.")
+                            .font(.system(size: 11)).foregroundColor(Theme.dim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     HStack {
-                        if run.builderRunning {
-                            Button("Show Details") { model.updater.showBuilder() }.buttonStyle(SecondaryButtonStyle())
+                        if run.hasLog {
+                            Button("Copy Log") { model.updater.copyLog() }.buttonStyle(SecondaryButtonStyle())
                         }
-                        Button("Download Instead") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
-                            .disabled(model.updateNotice == nil)
+                        if run.canOpenBuilder {
+                            Button("Open NFSU2 Builder") { model.updater.openBuilder() }.buttonStyle(SecondaryButtonStyle())
+                        }
                         Spacer()
                         Button("Close") { model.updater.close() }.buttonStyle(PrimaryButtonStyle())
+                    }
+                } else if let rows = run.needsBuilder {
+                    Text("NFSU2 Builder needs you").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)
+                    Text("The update cannot go on by itself. In NFSU2 Builder's checklist:")
+                        .font(.system(size: 12)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(rows.split(separator: "\n").map(String.init), id: \.self) { row in
+                            HStack(alignment: .top, spacing: 6) {
+                                Circle().fill(Theme.bad).frame(width: 6, height: 6).padding(.top, 5)
+                                Text(row).font(.system(size: 12)).foregroundColor(Theme.text)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    Text("Open it to see to these; then click Update NFSU2.app there. When the new app is ready it asks you to quit NFSU2.")
+                        .font(.system(size: 11)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("Cancel Update") { model.updater.close() }.buttonStyle(SecondaryButtonStyle())
+                        Spacer()
+                        Button("Open NFSU2 Builder") { model.updater.openBuilder() }.buttonStyle(PrimaryButtonStyle())
+                            .keyboardShortcut(.defaultAction)
+                    }
+                } else if run.inBuilder {
+                    Text("Finish the update in NFSU2 Builder").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)
+                    Text("Its checklist shows what is left to do. Then click Update NFSU2.app; when the new app is ready, NFSU2 Builder asks you to quit NFSU2 and click Install. Play waits until then.")
+                        .font(.system(size: 12)).foregroundColor(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("Stop Update") { model.updater.cancel() }.buttonStyle(SecondaryButtonStyle())
+                        Spacer()
+                        Button("Show NFSU2 Builder") { model.updater.showBuilder() }.buttonStyle(PrimaryButtonStyle())
+                            .keyboardShortcut(.defaultAction)
                     }
                 } else {
                     Text("Updating to NFSU2 Builder \(run.version)").font(.system(size: 15, weight: .bold)).foregroundColor(Theme.text)

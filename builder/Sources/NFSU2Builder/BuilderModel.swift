@@ -134,23 +134,29 @@ final class BuilderModel: ObservableObject {
     func start() {
         refresh()
         prepare(sweep: true) { [self] _ in refreshBuildTools() }
-        if launcherUpdate != nil { startLauncherUpdate() }
-        else if defaults.bool(forKey: "AutoBuild") { startAutoBuild() }
+        if defaults.bool(forKey: "AutoBuild"), launcherUpdate == nil { startAutoBuild() }
     }
 
-    /// An update for the launcher (`-LauncherUpdate <status file>`, with -destination and
-    /// -gameData naming the NFSU2.app to replace): Install for the build tools and Build, as
-    /// AutoBuild does, and then what the player would do: install once the launcher has quit
-    /// (it quits when told the build is waiting), open the new NFSU2.app and quit. Twice a
-    /// second the status file says where it is. A red row that stays red, or a failed step,
-    /// stops it there: the window has the details and works as usual from then on.
-    private func startLauncherUpdate() {
+    /// An update for the launcher (LauncherUpdateCLI.swift: no window, run by the launcher with
+    /// `-LauncherUpdate <status file>`, -destination and -gameData naming the NFSU2.app to
+    /// replace): Install for the build tools and Build, as AutoBuild does, and then what the
+    /// player would do: install once the launcher has quit (it quits when told the build is
+    /// waiting) and open the new NFSU2.app. Each new status goes to `onUpdateStatus` and the
+    /// status file (for a launcher opened again meanwhile). A row that stays red, with the
+    /// build tools already tried, ends it with needsBuilder: the player sees to it in the
+    /// Builder's window. A failed step ends it with failed. `onUpdateEnd` gets the exit status.
+    var onUpdateStatus: (LauncherUpdateStatus) -> Void = { _ in }
+    var onUpdateLog: (String) -> Void = { _ in }
+    var onUpdateEnd: (Int32) -> Void = { _ in }
+
+    func startLauncherUpdate() {
         guard let statusFile = launcherUpdate else { return }
-        var installed = false, built = false, installing = false, opened = false, stuck = 0
+        var installed = false, built = false, installing = false, stuck = 0
         var last: LauncherUpdateStatus?
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self = self, !self.shuttingDown else { timer.invalidate(); return }
             var status: LauncherUpdateStatus
+            var end: Int32?
             switch self.phase {
             case .checklist:
                 if built {
@@ -163,11 +169,12 @@ final class BuilderModel: ObservableObject {
                     built = true
                     self.build()
                     status = LauncherUpdateStatus(state: .building, text: "Starting the build")
-                } else if !self.installingTools, installed || self.toolsReady, let (id, message) = updateBlocker(self.states) {
+                } else if !self.installingTools, installed || self.toolsReady, let rows = updateBlockers(self.states) {
                     // a row can turn red for a moment while its check starts again
                     stuck += 1
                     status = stuck < 4 ? last ?? LauncherUpdateStatus(state: .preparing, text: "Checking")
-                        : LauncherUpdateStatus(state: .failed, message: "\(id.title): \(message)")
+                        : LauncherUpdateStatus(state: .needsBuilder,
+                                               message: rows.map { "\($0.0.title): \($0.1)" }.joined(separator: "\n"))
                 } else {
                     stuck = 0
                     if self.installingTools, case let .checking(text)? = self.states[.buildTools] {
@@ -191,21 +198,27 @@ final class BuilderModel: ObservableObject {
                 }
             case let .finished(app):
                 status = LauncherUpdateStatus(state: .done, fraction: 1, text: "Opening NFSU2")
-                if !opened {
-                    opened = true
-                    let configuration = NSWorkspace.OpenConfiguration()
-                    NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, _ in
-                        DispatchQueue.main.async { NSApp.terminate(nil) }
-                    }
-                }
+                // open(1), so the new app gets nothing of this process (its environment above all)
+                let open = Process()
+                open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                open.arguments = [app.path]
+                open.environment = [:]
+                try? open.run()
+                open.waitUntilExit()
+                end = 0
             case let .failed(step, message, _):
                 status = LauncherUpdateStatus(state: .failed, message: "\(step) failed: \(message)")
             }
+            if status.state == .failed || status.state == .needsBuilder { end = status.state == .failed ? 1 : 3 }
             if status != last {
                 last = status
                 try? status.write(to: statusFile)
+                self.onUpdateStatus(status)
             }
-            if status.state == .failed { timer.invalidate() }
+            if let code = end {
+                timer.invalidate()
+                self.onUpdateEnd(code)
+            }
         }
     }
 
@@ -522,8 +535,8 @@ final class BuilderModel: ObservableObject {
         var error: String?
         run(.setup(paths: paths, version: version), onEvent: { event in
             switch event {
-            case let .log(line): output.append(line)
-            case let .step(_, title): output.append(title)
+            case let .log(line): output.append(line); self.onUpdateLog(line)
+            case let .step(_, title): output.append(title); self.onUpdateLog(title)
             case let .error(message):
                 error = message
                 output.append("Error: \(message)")
@@ -705,6 +718,7 @@ final class BuilderModel: ObservableObject {
     /// Lines arrive faster than SwiftUI should redraw, so they are published at most four times a second.
     private func appendLog(_ line: String) {
         buildLog.append(line)
+        onUpdateLog(line)
         guard !flushScheduled else { return }
         flushScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in flushLog() }
