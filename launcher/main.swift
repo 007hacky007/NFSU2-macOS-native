@@ -229,7 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard parts.count == 4, let dmg = URL(string: parts[2]), let sum = URL(string: parts[3]) else { print("bad NFSU2_LAUNCHER_TEST"); exit(2) }
             let shown = model.updater.onChange
             model.updater.onChange = { run in
-                print("update: " + (run.map { "\(Int($0.fraction * 100))% \($0.text) \($0.detail ?? "") \($0.failure ?? "")" } ?? "none"))
+                print("update: " + (run.map { "\(Int($0.fraction * 100))% \($0.text) \($0.detail ?? "") \($0.failure ?? "") \($0.needsBuilder.map { "needs: " + $0 } ?? "")\($0.finished ? "finished" : "")" } ?? "none"))
+                fflush(stdout)
                 shown(run)
             }
             unsetenv("NFSU2_LAUNCHER_TEST")     // the app the Builder opens afterwards must not start it again
