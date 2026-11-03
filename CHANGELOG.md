@@ -6,9 +6,13 @@ What each version of NFSU2 Builder brings. The newest version is first.
 
 ### Added
 - Everything ghost: a third choice for free roam with other players, where the game's traffic and tuners drive through your car too, and give no near-miss points. A tuner you race in an outrun stays solid, and an outrun between two players is solid only when both chose solid cars. Game Tools switches between solid, ghost and everything ghost while you play.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/4af7ed67a7f04f4a2badd61d86f99c84e1a2824c/release-1.0.4/launcher-free-roam.png" width="560" alt="Settings, Online: Everything ghost and Players' cars shown">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/4af7ed67a7f04f4a2badd61d86f99c84e1a2824c/release-1.0.4/gametools-cars.png" width="520" alt="Game Tools' Cars menu">
 - Quick chat in races with other players: the same phrases, keys 1-4 twice or the right stick, while driving and on the results of every race between players online (the Online and LAN menus' races and free roam's race lobbies), with free roam on or off. What is said shows in a chat on the left of the picture. Never in a career race or a Quick Race; from th0mk's nfsu2-web.
 - Players' cars shown in Settings, Online: 16 to 48 other players' cars near you in free roam, 32 by default.
 - Hungarian and Ukrainian: GameHunter's Hungarian translation (L_zooltan) and Clark X.'s Ukrainian one, one click each in Settings, Mods, Languages. The launcher downloads the translation's installer, checks it is the tested release and reads its files without running it.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/4af7ed67a7f04f4a2badd61d86f99c84e1a2824c/release-1.0.4/launcher-languages.png" width="560" alt="Settings, Mods, Languages: Hungarian and Ukrainian">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/4af7ed67a7f04f4a2badd61d86f99c84e1a2824c/release-1.0.4/hungarian-ukrainian.png" width="800" alt="The Sound options in Hungarian and Ukrainian">
 
 ### Changed
 - Free roam speaks the community server's free-roam version 11: the server links you with as many players as you show cars, and keeps an outrun's two players linked however many others come between them, so an outrun in a crowd no longer ends with both players winning.
