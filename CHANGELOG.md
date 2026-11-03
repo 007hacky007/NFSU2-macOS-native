@@ -2,11 +2,16 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
-## 1.0.6 - unreleased
+## 1.0.6 - 2026-11-03
 
 ### Added
 - Czech: ROXOR's and PINĎA & syn's Czech translation (v1.1, 2004) with our own edits, one click in Settings, Mods, Languages. The launcher downloads it from abcgames.cz, checks it is the tested release and reads its files without running its patch program. It is written as the translation wrote it, without the letters with the caron (c, r, s for č, ř, š), which the game's fonts lack. The texts it had left in German (gamepad help, colours, countries, console messages) are in Czech now, and so are the movies' subtitles, which it had left empty.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d1e46ede62f54d00c48dbd0d247c050dc936953/release-1.0.6/launcher-czech-slovak.png" width="560" alt="Settings, Mods, Languages: Czech and Slovak">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d1e46ede62f54d00c48dbd0d247c050dc936953/release-1.0.6/czech-audio.png" width="800" alt="The Sound options in Czech">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d1e46ede62f54d00c48dbd0d247c050dc936953/release-1.0.6/czech-subtitles.png" width="800" alt="A story movie with Czech subtitles">
 - Slovak: MixerX's Slovak translation (v1.0, 2011), one click in Settings, Mods, Languages. The launcher downloads it from abcgames.cz, checks it is the tested release and reads its files without running its installer. It has every Slovak letter, drawn by the fonts it comes with, and the movies' subtitles. Import… also takes its installer for the American game.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d1e46ede62f54d00c48dbd0d247c050dc936953/release-1.0.6/slovak-audio.png" width="800" alt="The Sound options in Slovak">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/6d1e46ede62f54d00c48dbd0d247c050dc936953/release-1.0.6/slovak-subtitles.png" width="800" alt="A story movie with Slovak subtitles">
 
 ## 1.0.5 - 2026-11-03
 
