@@ -14,7 +14,8 @@ func check(_ ok: Bool, _ what: String) {
 func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
 
 @main struct LauncherRoamTests {
-    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER", "NFSU2_ROAM_AI_GREY", "NFSU2_ROAM_FRIENDS"]
+    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER", "NFSU2_ROAM_AI_GREY", "NFSU2_ROAM_FRIENDS",
+                       "NFSU2_ROAM_SAY", "NFSU2_QUICKCHAT_GROUPS", "NFSU2_QUICKCHAT_PHRASES"]
     static func clear() { for k in vars { unsetenv(k) } }
     static func main() {
         setvbuf(stdout, nil, _IOLBF, 0)
@@ -55,11 +56,30 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.freeRoam = .off; m.play()
         check(env("NFSU2_ROAM") == nil && env("NFSU2_ROAM_TUNERS") == nil, "play: free roam off, none of them")
         clear()
+        // quick chat: in free roam and in races between players, so with free roam off too; off: nothing
+        check(!m.quickChat, "defaults: quick chat off, as in the original game")
+        m.quickChat = true; m.freeRoam = .solid; m.play()
+        check(env("NFSU2_ROAM_SAY") == "1" && env("NFSU2_QUICKCHAT_GROUPS") == "Greetings,Replies,Driving,Racing"
+              && env("NFSU2_QUICKCHAT_PHRASES") == "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15", "play: quick chat on, its groups for the engine")
+        clear()
+        m.freeRoam = .off; m.play()
+        check(env("NFSU2_ROAM_SAY") == "1" && env("NFSU2_QUICKCHAT_GROUPS") != nil && env("NFSU2_ROAM") == nil,
+              "play: quick chat with free roam off (races between players)")
+        clear()
+        m.online = false; m.play()
+        check(env("NFSU2_ROAM_SAY") == nil && env("NFSU2_QUICKCHAT_GROUPS") == nil, "play: offline, no quick chat")
+        clear()
+        m.online = true; m.quickChat = false; m.play()
+        check(env("NFSU2_ROAM_SAY") == nil, "play: quick chat off, nothing for the engine")
+        clear()
+        m.freeRoam = .off
         m = LauncherModel()
         check(!m.roamTuners, "persistence: tuners off kept")
 
         // Restore Original Game
+        m.quickChat = true
         m.restoreOriginalGame()
+        check(!m.quickChat, "original game: no quick chat")
         check(m.roamTuners, "original game: the tuners come, as in the original game")
         check(!m.roamMapFilter, "original game: no rows of ours in the world map's legend")
         check(!m.roamAIGrey, "original game: the challengers in the game's orange")

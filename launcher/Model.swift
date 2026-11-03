@@ -452,18 +452,19 @@ final class LauncherModel: ObservableObject {
             if !crew.isEmpty, let rgb = defaults.string(forKey: Prefs.roamCrewColours), OnlineSettings.validColours(rgb) {
                 setenv("NFSU2_ROAM_CREW_RGB", rgb, 0)
             }
-            // Quick chat (runtime/native_controls.m, roam_game.c say_*).  Off: 1-4 and
-            // the right stick do what they do in the original game.
-            if quickChat {
-                setenv("NFSU2_ROAM_SAY", "1", 0)
-                setenv("NFSU2_QUICKCHAT_GROUPS", quickChatGroups.joined(separator: ","), 0)
-                setenv("NFSU2_QUICKCHAT_PHRASES", quickChatPhrases.map(String.init).joined(separator: ","), 0)
-            }
             // The other players' engines, nitrous and hydraulics (runtime/carsfx.c).
             // Off: their cars sound as the game alone sounds them.
             if hearCars { setenv("NFSU2_ROAM_CARSFX", "1", 0) }
             // Later free-roam options (RoamExtras.swift): on in the engine unless set to 0.
             for (k, v) in RoamExtras.environment(tuners: roamTuners, mapFilter: roamMapFilter, aiGrey: roamAIGrey, friends: roamFriends) { setenv(k, v, 0) }
+        }
+        // Quick chat in free roam and in races between players, with free roam on or off
+        // (runtime/native_controls.m, roam_game.c say_*, racehorn.c qc_*).  Off: 1-4 and
+        // the right stick do what they do in the original game.
+        if online && quickChat {
+            setenv("NFSU2_ROAM_SAY", "1", 0)
+            setenv("NFSU2_QUICKCHAT_GROUPS", quickChatGroups.joined(separator: ","), 0)
+            setenv("NFSU2_QUICKCHAT_PHRASES", quickChatPhrases.map(String.init).joined(separator: ","), 0)
         }
         // Horns between players in free roam and Online races (runtime/horn.c,
         // racehorn.c).  Off: no horn, as in the original game.

@@ -1,5 +1,6 @@
-// Quick chat for free roam with other players: the launcher's switch and the
-// editor of its four groups (the engine's runtime/native_controls.m does the rest).
+// Quick chat with other players, in free roam and in races between players: the
+// launcher's switch and the editor of its four groups (the engine's
+// runtime/native_controls.m, roam_game.c and racehorn.c do the rest).
 import SwiftUI
 
 enum QuickChat {
@@ -86,7 +87,7 @@ struct QuickChatRow: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Quick chat").font(.system(size: 12.5)).foregroundColor(Theme.text)
-                Text("In free roam press 1-4 twice, or flick the right stick twice, to say a phrase over your car. Game Tools in the game: Cmd+Shift+M. Off: as in the original game.")
+                Text("Press 1-4 twice, or flick the right stick twice, to say a phrase: over your car in free roam, and in a chat on the left in races with other players. Game Tools in the game: Cmd+Shift+M. Off: as in the original game.")
                     .font(.system(size: 11)).foregroundColor(Theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -96,7 +97,6 @@ struct QuickChatRow: View {
                 .disabled(!model.quickChat)
             Toggle("", isOn: $model.quickChat).labelsHidden().toggleStyle(SwitchToggleStyle())
         }
-        .disabled(model.freeRoam == .off).opacity(model.freeRoam == .off ? 0.5 : 1)
     }
 }
 
