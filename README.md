@@ -170,7 +170,7 @@ Click a picture to see it full size.
 | Sharper menus and HUD | One click downloads LunicAura106's Upscaled HUD mod and sets it up; Cmd-T compares. Off by default. | <a href="docs/readme/full/uhud-before-after.jpg"><img src="docs/readme/thumbs/uhud.jpg" width="180" alt="Menu and speedometer, original and with the Upscaled HUD"></a> |
 | Texture packs | The community's texture mods (TexMod, TexWizard and more): 38 listed, 27 with one-click Download, each with its own switch. Off by default. | <a href="docs/readme/full/tp-texpacks-winter-na.jpg"><img src="docs/readme/thumbs/texture-packs.jpg" width="180" alt="Winter texture pack in the main menu"></a> |
 | Upscaled textures | Builds a 4x sharper copy of the game's own textures from your files, on your Mac. Off by default. | <a href="docs/readme/launcher/upscaled-textures.png"><img src="docs/readme/thumbs/f-upscaled.jpg" width="180" alt="Upscaled textures card"></a> |
-| Data mods | Detailed Map, Upscaled Freeway Signs and Carbon 4K, downloaded and applied by the launcher; your game folder stays as it is. Off by default. | <a href="docs/readme/full/data-mods-minimap.jpg"><img src="docs/readme/thumbs/data-mods.jpg" width="180" alt="Minimap without and with the Detailed Map mod"></a> |
+| Data mods | Detailed Map, Upscaled Freeway Signs, Carbon 4K and Both Releases' Cars, downloaded and applied by the launcher; your game folder stays as it is. Off by default. | <a href="docs/readme/full/data-mods-minimap.jpg"><img src="docs/readme/thumbs/data-mods.jpg" width="180" alt="Minimap without and with the Detailed Map mod"></a> |
 | Rain on wide screens | Rain drops keep their shape and the rain tint covers the whole screen. | |
 | Highest graphics at first start | Start with every graphics option at its highest instead of the game's hardware check. Off by default. | <a href="docs/readme/launcher/settings-graphics.png"><img src="docs/readme/thumbs/f-first-launch.jpg" width="180" alt="First launch setting"></a> |
 | **Audio and music** | | |
@@ -186,7 +186,7 @@ Click a picture to see it full size.
 | Hidden races on the map | The career's 33 hidden races on the map and the radar like the others, up to 8 races of each kind at once, as MaxHwoy's Show Hidden Races Mod (`NFSU2_SHOW_HIDDEN_RACES=1`). Off by default. | |
 | Unique parts for every car | Once Caleb is beaten, the career shops sell the unique visual parts (the wide body kits too) for every car, as the game already does in Customize mode; from th0mk's nfsu2-web (`NFSU2_UNIQUES=1`). Off by default: each unique part only for the car that won its star. | |
 | Power in bhp or kW | Choose the power unit apart from the speed unit, in Options and the pause menu. | <a href="docs/readme/full/power-units-eu-na.jpg"><img src="docs/readme/thumbs/power-units.jpg" width="180" alt="Gameplay options with Power Units"></a> |
-| Both regions' cars | With all four cars' files, buy and race the Corsa, 106, Civic and RSX in either version. | <a href="docs/readme/full/region-cars.jpg"><img src="docs/readme/thumbs/region-cars.jpg" width="180" alt="Peugeot 106 and Honda Civic in Quick Race car select"></a> |
+| Both regions' cars | With all four cars' files (both releases, or the Both Releases' Cars data mod), buy and race the Corsa, 106, Civic and RSX in either version. Other players' cars your game lacks show as the other region's car. | <a href="docs/readme/full/region-cars.jpg"><img src="docs/readme/thumbs/region-cars.jpg" width="180" alt="Peugeot 106 and Honda Civic in Quick Race car select"></a> |
 | Languages | Pick the game's language in the launcher, 18 in all. | <a href="docs/readme/full/language-eu-na.jpg"><img src="docs/readme/thumbs/languages.jpg" width="180" alt="Main menu in six languages"></a> |
 | Language packs | The launcher downloads and builds packs for the languages your game folder lacks, with voices and movies. | <a href="docs/readme/launcher/settings-mods.png"><img src="docs/readme/thumbs/f-language-packs.jpg" width="180" alt="Language packs in the launcher"></a> |
 | Cloud saves | Encrypted cloud saves that also work with the browser version, linked by an 8-word phrase. Off until you link. | <a href="docs/readme/launcher/saves-cloud.png"><img src="docs/readme/thumbs/f-cloud-saves.jpg" width="180" alt="Encrypted cloud saves in the save window"></a> |
@@ -550,9 +550,15 @@ The **Mods** tab adds a few PC mods that change the game's own data files, each
 with a switch (off by default, which is the original game): JeansBig's
 [Detailed Map](https://nfsmods.xyz/mod/4485), XoLSt94's
 [Upscaled Freeway Signs](https://nfsmods.xyz/mod/7342) and
-[Carbon 4K](https://nfsmods.xyz/mod/7401).  The mods are not part of the app:
-**Download** fetches the tested release from the mod's page on nfsmods.xyz and
-checks its SHA-256, **Add File…** takes a copy you already have.  The launcher
+[Carbon 4K](https://nfsmods.xyz/mod/7401), and RKBDI's
+[Both Releases' Cars](https://nfsmods.xyz/mod/5485): the other release's two
+cars (the Civic and RSX for the European game, the Corsa and 106 for the North
+American one), EA's own files byte for byte, with which Settings' Both releases'
+cars puts all four on sale and in races.  The mods are not part of the app:
+**Download** fetches the tested release from the mod's page on nfsmods.xyz (or
+the MediaFire page it links to, `launcher/MediaFire.swift`) and checks its
+SHA-256, **Add File…** takes a copy you already have (for the cars, the same
+zip from its Mega or Google Drive link).  The launcher
 applies them (`launcher/DataMods.swift`: replacement files, and the parts of
 nlgxzef's Binary scripts these mods use) into
 `~/Library/Application Support/NFSU2/Mods/Files`, which the engine reads before

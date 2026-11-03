@@ -375,6 +375,36 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
                     "https://example.com/" + String(repeating: "a", count: 300), "https://u:p@example.com/a.png"] {
             check(!DiscordImage.valid(bad), "Discord picture refused: \(bad.prefix(40).debugDescription)")
         }
+        // MediaFire: the download address on a file's page (DataMods' Both Releases' Cars)
+        let mfPage = """
+            <a class="input popsok"
+               aria-label="Download file"
+               href="https://download2267.mediafire.com/0mcu511q2jd/ayagoftrnkmuzrn/Regional+US+and+EU+Cars.zip"
+            """
+        check(MediaFire.link(inPage: mfPage)?.absoluteString == "https://download2267.mediafire.com/0mcu511q2jd/ayagoftrnkmuzrn/Regional+US+and+EU+Cars.zip",
+              "MediaFire: the Download button's address")
+        let scrambled = Data("https://download1234.mediafire.com/tok/key/a.zip?x=1".utf8).base64EncodedString()
+        check(MediaFire.link(inPage: "<a href=\"javascript:void(0)\" data-scrambled-url=\"\(scrambled)\">")?.absoluteString
+              == "https://download1234.mediafire.com/tok/key/a.zip?x=1", "MediaFire: a scrambled address")
+        for bad in ["href=\"http://download1.mediafire.com/a/b.zip\"", "href=\"https://download1.mediafire.com.evil.com/a.zip\"",
+                    "data-scrambled-url=\"\(Data("https://evil.com/a.zip".utf8).base64EncodedString())\"", "<p>no link</p>"] {
+            check(MediaFire.link(inPage: bad) == nil, "MediaFire: no address from \(bad.prefix(50).debugDescription)")
+        }
+        // Both Releases' Cars on: the four cars count as there (Settings shows Both releases' cars)
+        if let rc = DataMods.catalog.first(where: { $0.id == "region-cars" }) {
+            check(rc.host == .mediaFire && rc.download.host == "www.mediafire.com", "region cars: downloaded from its MediaFire page")
+            m.game = .ready(GameLocation(exe: URL(fileURLWithPath: "/tmp/no-such-game/SPEED2.EXE"), embedded: false))
+            check(!m.hasAllRegionCars, "region cars: one region's folder, no mod: not all four")
+            try? FileManager.default.createDirectory(at: m.modStore, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: m.modStore.appendingPathComponent(rc.file).path, contents: Data())
+            m.refreshMods(); m.modsOn = [rc.id]
+            check(m.hasAllRegionCars, "region cars: the mod on: all four")
+            m.modsOn = []
+            check(!m.hasAllRegionCars, "region cars: the mod off: not all four")
+            try? FileManager.default.removeItem(at: m.modStore.appendingPathComponent(rc.file))
+            m.refreshMods()
+        } else { check(false, "region cars: in the catalog") }
+
         d.removePersistentDomain(forName: domain); d.synchronize()      // (exit() skips defer)
         print(failures == 0 ? "launcher settings: all passed" : "launcher settings: \(failures) FAILED")
         exit(failures == 0 ? 0 : 1)

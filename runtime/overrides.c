@@ -314,13 +314,13 @@ void sub_006623ea(CPU *c){
  *                       player's language, sub_00571390 -> the country)
  *   North American v1.2: the same variable is in .bss, so 0 (-> "EN", "US")
  * Data with only one region's cars (US discs: CIVIC + RSX; European release:
- * CORSA + PEUGOT106) gets that region; otherwise the executable's own region
- * stays.  NFSU2_REGION=na|eu forces it. */
+ * CORSA + PEUGOT106; a data mod's files count, the launcher's Both Releases'
+ * Cars) gets that region; otherwise the executable's own region stays.  NFSU2_REGION=na|eu forces it. */
 #define GAME_REGION_ADDR GA(0x7fa73cu)
 #define GAME_REGION_NA   0u
 #define GAME_REGION_EU   6u
 static void region_install(void){
-    int fileio_game_file_exists(const char *win);
+    int fileio_game_can_read(const char *win);
     uint32_t cur = MR32(GAME_REGION_ADDR);
     if (cur != GAME_REGION_EU && cur != GAME_REGION_NA){
         fprintf(stderr, "region: unexpected territory %u, left unchanged\n", cur);
@@ -335,10 +335,10 @@ static void region_install(void){
         else { fprintf(stderr, "region: NFSU2_REGION=%s not understood (na|eu)\n", e); return; }
         why = "forced by NFSU2_REGION";
     } else {
-        int eu_cars = fileio_game_file_exists("CARS\\CORSA\\GEOMETRY.BIN")
-                   && fileio_game_file_exists("CARS\\PEUGOT106\\GEOMETRY.BIN");
-        int na_cars = fileio_game_file_exists("CARS\\CIVIC\\GEOMETRY.BIN")
-                   && fileio_game_file_exists("CARS\\RSX\\GEOMETRY.BIN");
+        int eu_cars = fileio_game_can_read("CARS\\CORSA\\GEOMETRY.BIN")
+                   && fileio_game_can_read("CARS\\PEUGOT106\\GEOMETRY.BIN");
+        int na_cars = fileio_game_can_read("CARS\\CIVIC\\GEOMETRY.BIN")
+                   && fileio_game_can_read("CARS\\RSX\\GEOMETRY.BIN");
         if (na_cars && !eu_cars){ want = GAME_REGION_NA; why = "North American data"; }
         else if (eu_cars && !na_cars){ want = GAME_REGION_EU; why = "European data"; }
         else if (eu_cars && na_cars) why = "data with both regions' cars, the executable's own";

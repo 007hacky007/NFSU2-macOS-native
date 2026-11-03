@@ -294,7 +294,10 @@ final class LauncherModel: ObservableObject {
         default: return nil
         }
     }
-    var hasAllRegionCars: Bool { Locator.hasAllRegionCars(location?.folder) }
+    /// All four regional cars: in the game folder, or with the Both Releases' Cars mod on
+    var hasAllRegionCars: Bool {
+        Locator.hasAllRegionCars(location?.folder) || activeMods.contains { $0.id == "region-cars" }
+    }
     var isReady: Bool { if case .ready = game { return true }; return false }
 
     /// Synchronous: used once at startup, before deciding whether to show the window.
@@ -577,7 +580,7 @@ final class LauncherModel: ObservableObject {
         p.canChooseDirectories = true
         p.allowsMultipleSelection = false
         p.prompt = "Add"
-        p.message = "Choose the \(m.name) archive from nfsmods.xyz (or the folder it was extracted to)."
+        p.message = "Choose the \(m.name) archive from \(m.hostName) (or the folder it was extracted to)."
         guard p.runModal() == .OK, let u = p.url else { return }
         addModFile(m, u)
     }

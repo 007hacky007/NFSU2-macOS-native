@@ -16,7 +16,8 @@
  *    the others' at 0x7f6dc0 with 7 and 6 in their place; 3 SUVs at 0x7f6ddc
  *    when the player drives an SUV).
  * A race with a car whose folder is missing hangs on "Loading", so this only
- * acts when all four folders are there (a folder made from both releases).
+ * acts when all four folders are there (a folder made from both releases, or
+ * the launcher's Both Releases' Cars data mod: RKBDI's files of the four).
  * Then neither table holds a type (-1), and each AI list is 28 long, the
  * other region's two cars in the two bytes of padding after it (read by
  * nothing else; the hook at 0x4febad, where both lists' paths meet, makes
@@ -49,11 +50,11 @@ static int ai_list_is(uint32_t a, uint8_t last0, uint8_t last1){
 }
 
 void regional_install(void){
-    int fileio_game_file_exists(const char *win);
+    int fileio_game_can_read(const char *win);
     const char *e = getenv("NFSU2_ALL_CARS");
     if (e && *e == '0') return;
-    if (!fileio_game_file_exists("CARS\\CORSA\\GEOMETRY.BIN") || !fileio_game_file_exists("CARS\\PEUGOT106\\GEOMETRY.BIN")
-        || !fileio_game_file_exists("CARS\\CIVIC\\GEOMETRY.BIN") || !fileio_game_file_exists("CARS\\RSX\\GEOMETRY.BIN"))
+    if (!fileio_game_can_read("CARS\\CORSA\\GEOMETRY.BIN") || !fileio_game_can_read("CARS\\PEUGOT106\\GEOMETRY.BIN")
+        || !fileio_game_can_read("CARS\\CIVIC\\GEOMETRY.BIN") || !fileio_game_can_read("CARS\\RSX\\GEOMETRY.BIN"))
         return;                                   /* one region's data: its own cars only */
     /* only on the data this was made for */
     if (MR32(LOCKED) != T_CORSA || MR32(LOCKED + 4u) != T_PEUGOT106
@@ -68,7 +69,7 @@ void regional_install(void){
     MR8(AI_CARS_OTHER + AI_CARS_N) = T_CIVIC;
     MR8(AI_CARS_OTHER + AI_CARS_N + 1u) = T_RSX;
     g_on = 1;
-    fprintf(stderr, "cars: the game folder has both regions' cars, all four are for sale and race\n");
+    fprintf(stderr, "cars: the game has both regions' cars, all four are for sale and race\n");
 }
 
 /* Called from guest_hook (debug.c); tools/gen_v2.sh lifts the hook site. */

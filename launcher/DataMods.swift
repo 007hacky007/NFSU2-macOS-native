@@ -10,9 +10,10 @@
 // the folder and reads only the game's own files.
 //
 // The mods are not part of this app.  Download fetches a mod's archive from its own
-// page on nfsmods.xyz, only when the player clicks it, and checks it against the
-// release this was tested with (SHA-256); Add File... takes a copy the player
-// already has (the archive or the folder it was extracted to).
+// page on nfsmods.xyz (or the MediaFire page it links to, MediaFire.swift), only when
+// the player clicks it, and checks it against the release this was tested with
+// (SHA-256); Add File... takes a copy the player already has (the archive or the
+// folder it was extracted to).
 //
 // The Endscript subset done here (what the mods in the catalog use; a script with
 // any other command is refused, naming it):
@@ -45,6 +46,10 @@ enum DataMods {
         let size: Int64
         let sha256: String
         let file: String            // the archive's name in the store
+        var host: Host = .direct
+
+        enum Host { case direct, mediaFire }   // download: the file itself, or its MediaFire page
+        var hostName: String { host == .mediaFire ? "MediaFire" : "nfsmods.xyz" }
     }
 
     // The releases this was tested with.  Another file is not used for Download.
@@ -70,6 +75,18 @@ enum DataMods {
             size: 2_209_603,
             sha256: "4d680ad221cd870a0df761eb233c7fde33ab3522616ed715c13170c12ab1991d",
             file: "carbon-4k.zip"),
+        // The other release's two cars (CARS/CIVIC and RSX for the European game,
+        // CORSA and PEUGOT106 for the North American one), unmodified: each of its 16
+        // files is byte for byte the retail release's.  With them the folder has all
+        // four, and runtime/regional.c puts them on sale and in races (Settings, Both
+        // releases' cars).  The files the game has already are the same as its own.
+        Mod(id: "region-cars", name: "Both Releases' Cars", author: "RKBDI",
+            summary: "The Honda Civic and Acura RSX of the North American release and the Vauxhall Corsa and Peugeot 106 of the European one, EA's own files, for the game that lacks them.",
+            page: URL(string: "https://nfsmods.xyz/mod/5485")!,
+            download: URL(string: "https://www.mediafire.com/file/ayagoftrnkmuzrn/Regional_US_and_EU_Cars.zip/file")!,
+            size: 73_056_710,
+            sha256: "3af185903b45cff153eb4ee7f333d50e9b122128082d54ae0597ee6ca28cb6e4",
+            file: "region-cars.zip", host: .mediaFire),
     ]
 
     // MARK: the store
@@ -108,10 +125,13 @@ enum DataMods {
 
     /// Downloads a mod's archive (progress: bytes so far), checks it and keeps it in the store.
     static func download(_ m: Mod, store: URL, progress: @escaping (Int64) -> Void) throws {
-        let file = try Downloader(progress: progress).fetch(m.download)
+        let url: URL
+        do { url = m.host == .mediaFire ? try MediaFire.resolve(m.download) : m.download }
+        catch let e as MediaFire.Failure { throw Failure(message: e.message + " Or download \(m.name) from its page yourself and use Add File….") }
+        let file = try Downloader(progress: progress).fetch(url)
         defer { try? FileManager.default.removeItem(at: file) }
         guard sha256(file) == m.sha256 else {
-            throw Failure(message: "The file on nfsmods.xyz is not the release this was made for. Download \(m.name) from its page yourself and use Add File….")
+            throw Failure(message: "The file on \(m.hostName) is not the release this was made for. Download \(m.name) from its page yourself and use Add File….")
         }
         try keep(file, as: m, store: store)
     }
@@ -354,9 +374,11 @@ enum DataMods {
             for (i, c) in parts.enumerated() {
                 let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
                 guard let n = names.first(where: { $0.caseInsensitiveCompare(c) == .orderedSame }) else {
-                    // a new file (only its name: the folders must exist)
-                    guard i == parts.count - 1 else { throw Failure(message: "The game has no \(win).") }
-                    rel.append(c); break
+                    // a new file (only its name: the folders must exist), or a car's own
+                    // new folder, CARS\<CAR>\<file> (the other release's cars)
+                    let car = i == 1 && parts.count == 3 && rel.first?.uppercased() == "CARS"
+                    guard i == parts.count - 1 || car else { throw Failure(message: "The game has no \(win).") }
+                    rel.append(contentsOf: parts[i...]); break
                 }
                 rel.append(n); dir = dir.appendingPathComponent(n)
             }
@@ -406,6 +428,8 @@ enum DataMods {
                     throw Failure(message: "The mod's \(rel) is not in its own folder.")
                 }
                 let p = try path(rel)
+                // the game's own file, byte for byte: nothing to put in front of it
+                if fm.contentsEqual(atPath: game.appendingPathComponent(p).path, andPath: src.path) { continue }
                 let u = out.appendingPathComponent(p)
                 try fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? fm.removeItem(at: u)

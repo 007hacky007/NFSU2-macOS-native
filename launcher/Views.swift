@@ -311,7 +311,7 @@ struct ModRow: View {
                     Text("by \(mod.author)").font(.system(size: 11)).foregroundColor(Theme.dim)
                 }
                 Text(model.modNote[mod.id] ?? (have ? mod.summary + " Off: as in the original game."
-                                                    : mod.summary + " \(formatBytes(mod.size)) from nfsmods.xyz."))
+                                                    : mod.summary + " \(formatBytes(mod.size)) from \(mod.hostName)."))
                     .font(.system(size: 11))
                     .foregroundColor(model.modNote[mod.id] != nil && !busy ? Theme.warn : Theme.dim)
                     .fixedSize(horizontal: false, vertical: true)
