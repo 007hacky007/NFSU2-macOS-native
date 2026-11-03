@@ -2,6 +2,19 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.5 - 2026-11-03
+
+### Added
+- Update in one click: the launcher's notice for a newer NFSU2 Builder has an Update button. The launcher downloads the new Builder, checks it against the release's SHA-256, and the Builder makes the new app in the background from the game inside yours. One progress bar in the launcher shows each step, and Play waits until it is done. When the new app is ready the launcher closes, NFSU2.app is replaced and opens again by itself. An app not named NFSU2.app, or in a folder you cannot write to, keeps the Download button.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/795c6c2c208a2ec237b5121879eabbe703faa20b/release-1.0.5/launcher-update-notice.png" width="560" alt="The update notice with its Update button">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/795c6c2c208a2ec237b5121879eabbe703faa20b/release-1.0.5/launcher-updating.png" width="420" alt="The update's progress in the launcher">
+- When the update cannot go on by itself (the command line tools are missing, the game in the app has changed, the disk is full), the launcher lists what NFSU2 Builder's checklist shows and opens the Builder, where you see to it. A step that fails says which and why, with Copy Log.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/795c6c2c208a2ec237b5121879eabbe703faa20b/release-1.0.5/launcher-update-needs-builder.png" width="420" alt="The launcher listing the Builder's red checklist rows">
+
+### Changed
+- The launcher looks for a newer Builder every two hours, also while it stays open, instead of once a day.
+- NFSU2 Builder keeps its Python packages between versions, so an update no longer downloads them again. Delete temporary files leaves the build tools (Python and its packages) unless you also tick Also delete the build tools.
+
 ## 1.0.4 - 2026-11-03
 
 ### Added
