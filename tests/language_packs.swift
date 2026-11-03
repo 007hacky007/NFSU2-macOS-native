@@ -1,8 +1,11 @@
 // tests/language_packs.swift: the language pack builder (launcher/LanguagePacks.swift)
 // on made-up data: an endscript's texts merged into a language file, the gzip and
-// Astrum installer readers, a pack holding only what differs from the game folder,
-// and the RAR reader refusing what it is not.  No game files, no internet.
+// Astrum installer readers (the Polish layout and the older Hungarian one), the Inno
+// Setup reader and its LZMA decoder (the Ukrainian installer), a pack holding only what
+// differs from the game folder, and the RAR reader refusing what it is not.  No game
+// files, no internet.
 import Foundation
+import CryptoKit
 
 @main
 struct LanguagePackTests {
@@ -122,8 +125,170 @@ struct LanguagePackTests {
         var crc = RarArchive.CRC32()
         "123456789".utf8CString.dropLast().withUnsafeBytes { crc.update($0) }
         check(crc.value == 0xcbf4_3926, "CRC32 check value")
+        try installers()
         try malicious()
         exit(fails == 0 ? 0 : 1)
+    }
+
+    // MARK: Hungarian and Ukrainian installers
+
+    static func hex(_ s: String) -> [UInt8] {
+        var out: [UInt8] = [], it = s.makeIterator()
+        while let a = it.next(), let b = it.next() { out.append(UInt8(String([a, b]), radix: 16)!) }
+        return out
+    }
+    static func be32(_ v: Int) -> [UInt8] { [UInt8(v >> 24 & 255), UInt8(v >> 16 & 255), UInt8(v >> 8 & 255), UInt8(v & 255)] }
+    /// an Astrum InstallWizard installer with these files; tail: what comes between the
+    /// header's offset and the magic (n bytes, then n)
+    static func astrum(_ files: [(String, [UInt8])], tail: [UInt8]) -> [UInt8] {
+        var inst: [UInt8] = Array("MZ".utf8) + [UInt8](repeating: 0, count: 300)
+        let start = inst.count
+        for (name, data) in files {
+            let nm = Array("<InstallDir>\\\(name)".utf8).map { b -> UInt8 in
+                var v: UInt8 = 0
+                for i in 0..<8 where b >> (i ^ 6) & 1 != 0 { v |= 1 << i }
+                return v
+            }
+            var rec = [UInt8](repeating: 0, count: 0x40)
+            rec.replaceSubrange(0x2c..<0x30, with: le(nm.count))
+            let endAt = inst.count + 0x40 + nm.count + 4 + data.count
+            inst += rec + nm + le(endAt) + data
+        }
+        let head = inst.count
+        var words = [Int](repeating: 0, count: 59); words[48] = start; words[49] = head - start
+        for w in words { inst += be32(w) }
+        return inst + le(head) + tail + le(0x0b1c2d3e) + le(0x1234_5678)
+    }
+
+    // the Ukrainian fixture's nine files, one LZMA chunk (tools: Python's lzma, FORMAT_RAW,
+    // LZMA1, dict 64 KB, lc 3, lp 0, pb 2: it ends with the end marker)
+    static let ukContents: [[UInt8]] = (0..<9).map { i in
+        Array("uk\(i): \(String(repeating: "Ukrainian text \(i % 3) ", count: 8 + i))".utf8) + (i * 20..<(i * 20 + 40)).map { UInt8($0) }
+    }
+    static let ukProps: [UInt8] = [0x5d, 0, 0, 1, 0]
+    static let ukStream = hex(
+        "003a9ac2022029593b7ddbc4024976bed0341031830ce407c24ede8013445eddcc5cb0b63fbeca1330c8e97a207e9f45aa1c59913d7ca431bb9862be"
+        + "7ad3a93ec9d8a066dca646b4b31b5c417b8941506458ee74b4cdc41c573613b77d3e5fc27183c66338c6211f38509183a0f363d386348c8298577394"
+        + "053be505330a19aadccedef84a4399c07d93f22634ef348e6cf2ae48b88e4a0abe1f2c46d4431e6e34283a1e1efbbc1ab85f5089b3866cbfa53fe8d4"
+        + "9bfe5f682e074ef413a2b8ab63691acd9a213ff01d0b7bed49a152ab0e99059499b93640fe69963da0da81a3a7852c976395d56559cae04486bd0e27"
+        + "8ad1a36387bb5a10630b9e415179a36484a9e8a8e04c10fab73cae0c3e3462d2b53a33a15e497de005fb86c3069a44c9b839468660394a27d4c7fffb"
+        + "e2f233")
+
+    static func crc(_ b: [UInt8]) -> Int {
+        var c = RarArchive.CRC32()
+        b.withUnsafeBytes { c.update($0) }
+        return Int(c.value)
+    }
+    /// one of setup-0's blocks, stored (not compressed)
+    static func innoBlock(_ content: [UInt8]) -> [UInt8] {
+        var pieces: [UInt8] = [], q = 0
+        repeat {
+            let n = min(4096, content.count - q)
+            let piece = Array(content[q..<(q + n)])
+            pieces += le(crc(piece)) + piece; q += n
+        } while q < content.count
+        let head = le(pieces.count) + [0]
+        return le(crc(head)) + head + pieces
+    }
+    /// an Inno Setup 5.5.0 installer: the files in one LZMA chunk, flags for every entry
+    static func inno(flags: Int = 0x80, chunk: [UInt8]? = nil) -> [UInt8] {
+        var exe: [UInt8] = Array("MZ".utf8) + [UInt8](repeating: 0, count: 0x200 - 2)
+        let tableAt = 0x100
+        let off1 = exe.count
+        let packed = chunk ?? ukProps + ukStream
+        exe += InnoSetup.chunkMagic + packed
+        var entries: [UInt8] = [], sub = 0
+        for f in ukContents {
+            var e = le(0) + le(0) + le(0) + le(sub) + le(0) + le(f.count) + le(0) + le(packed.count) + le(0)
+            e += Array(Insecure.SHA1.hash(data: f)) + [UInt8](repeating: 0, count: 16) + [UInt8(flags & 255), UInt8(flags >> 8)]
+            entries += e; sub += f.count
+        }
+        let off0 = exe.count
+        var id = Array("Inno Setup Setup Data (5.5.0)".utf8); id += [UInt8](repeating: 0, count: 64 - id.count)
+        exe += id + innoBlock(Array("the setup header, not read".utf8)) + innoBlock(entries)
+        let table0 = InnoSetup.tableID + le(1) + le(exe.count) + le(0) + le(0) + le(0) + le(off0) + le(off1)
+        let table = table0 + le(crc(table0))
+        exe.replaceSubrange(tableAt..<(tableAt + table.count), with: table)
+        return exe
+    }
+
+    static func installers() throws {
+        // LZMA: the whole stream to its end marker, and only its start
+        let all = ukContents.flatMap { $0 }
+        check(try LZMA.decode(ukStream, props: ukProps, size: nil) == all, "an LZMA stream to its end marker (\(all.count) bytes)")
+        check(try LZMA.decode(ukStream, props: ukProps, size: 100) == Array(all[0..<100]), "an LZMA stream's first 100 bytes")
+        refused("an LZMA stream cut short of the size asked") { _ = try LZMA.decode(Array(ukStream.prefix(150)), props: ukProps, size: all.count) }
+        // without a size it ends where its input does (the installer's header blocks have
+        // no end marker; their CRC32s say they are whole)
+        let head = try LZMA.decode(Array(ukStream.prefix(150)), props: ukProps, size: nil)
+        check(head.count < all.count && head == Array(all[0..<head.count]), "an LZMA stream without a size ends with its input (\(head.count) bytes)")
+        refused("LZMA properties out of range") { _ = try LZMA.decode(ukStream, props: [225, 0, 0, 1, 0], size: nil) }
+        for cut in stride(from: 0, to: ukStream.count, by: 7) {             // must not trap
+            var bad = ukStream; bad[cut] ^= 0x5a
+            _ = try? LZMA.decode(bad, props: ukProps, size: nil)
+            _ = try? LZMA.decode(Array(ukStream.prefix(cut)), props: ukProps, size: all.count)
+        }
+        check(true, "every damaged LZMA stream returned or threw")
+
+        // the Inno Setup reader
+        let exe = inno()
+        let setup = try InnoSetup.read(exe)
+        check(setup.entries.count == 9, "the installer's nine data entries")
+        check(try InnoSetup.file(exe, setup.entries[4]) == Data(ukContents[4]), "a file in the middle of its chunk, SHA-1 checked")
+        refused("not an Inno Setup installer") { _ = try InnoSetup.read(Array("MZ nothing".utf8) + [UInt8](repeating: 0, count: 100)) }
+        var badCRC = exe; badCRC[badCRC.count - 3] ^= 1
+        refused("a data entries block whose CRC32 is wrong") { _ = try InnoSetup.read(badCRC) }
+        var badFile = exe; badFile[0x200 + 4 + 5 + 40] ^= 1
+        refused("a file whose SHA-1 is wrong") {
+            let s = try InnoSetup.read(badFile)
+            for e in s.entries { _ = try InnoSetup.file(badFile, e) }
+        }
+        let enc = inno(flags: 0xc0)
+        refused("an encrypted file") { _ = try InnoSetup.file(enc, try InnoSetup.read(enc).entries[0]) }
+        let bcj = inno(flags: 0x90)
+        refused("a file with the x86 call filter") { _ = try InnoSetup.file(bcj, try InnoSetup.read(bcj).entries[0]) }
+        var newer = exe
+        let at = 0x200 + 4 + ukProps.count + ukStream.count
+        newer.replaceSubrange((at + 23)..<(at + 26), with: Array("6.0".utf8))
+        refused("an Inno Setup installer of another version") { _ = try InnoSetup.read(newer) }
+
+        // the packs, in a made-up game folder
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("nfsu2-langinst-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmp) }
+        let game = tmp.appendingPathComponent("game"), packs = tmp.appendingPathComponent("packs")
+        try fm.createDirectory(at: game.appendingPathComponent("CREDITS"), withIntermediateDirectories: true)
+        try Data(ukContents[8]).write(to: game.appendingPathComponent("CREDITS/UK_ENGLISH.TXT"))   // as the game's: not kept
+        let ukExe = tmp.appendingPathComponent("uk.exe")
+        try Data(exe).write(to: ukExe)
+        let s = try LanguagePacks.buildUkrainian(installer: ukExe, game: game, packs: packs)
+        let uk = packs.appendingPathComponent("ukrainian")
+        check(s == "ukrainian: 5 files, 0.0 MB", "Ukrainian's pack (\(s))")
+        check((try? Data(contentsOf: uk.appendingPathComponent("GLOBAL/GLOBALA.BUN"))) == Data(ukContents[4]), "entry 4 is its GLOBAL/GLOBALA.BUN")
+        check((try? Data(contentsOf: uk.appendingPathComponent("CREDITS/NA_ENGLISH.TXT"))) == Data(ukContents[7]), "entry 7 is its CREDITS/NA_ENGLISH.TXT")
+        check(!fm.fileExists(atPath: uk.appendingPathComponent("LANGUAGES/Labels.bin").path)
+              && !fm.fileExists(atPath: uk.appendingPathComponent("CREDITS/UK_ENGLISH.TXT").path),
+              "the files the game does not read, and the one like the game's, are left out")
+        refused("an imported Ukrainian installer that is not the pinned release") {
+            _ = try LanguagePacks.importCopy(lang: "ukrainian", src: ukExe, game: game, packs: packs)
+        }
+
+        let huExe = tmp.appendingPathComponent("nfs_underground2.exe")
+        try Data(astrum([("LANGUAGES\\English.bin", Array("magyar sz\u{F6}veg".utf8)), ("memcard\\LOCALE_ENGLISH.loc", Array("loc".utf8)),
+                         ("CREDITS\\NA_ENGLISH.TXT", Array("na".utf8)), ("CREDITS\\UK_ENGLISH.TXT", Array("uk".utf8))],
+                        tail: le(0xffff_ffff))).write(to: huExe)
+        let files = try LanguagePacks.astrumFiles(try Data(contentsOf: huExe))
+        check(files["languages/english.bin"] == Data("magyar sz\u{F6}veg".utf8), "the older Astrum layout (no block before the magic, 0xffffffff)")
+        let h = try LanguagePacks.buildHungarian(installer: huExe, game: game, packs: packs)
+        check(h == "hungarian: 4 files, 0.0 MB" && fm.fileExists(atPath: packs.appendingPathComponent("hungarian/memcard/LOCALE_ENGLISH.loc").path),
+              "Hungarian's pack (\(h))")
+        refused("an imported Hungarian installer that is not the pinned release") {
+            _ = try LanguagePacks.importCopy(lang: "hungarian", src: tmp, game: game, packs: packs)
+        }
+        let partial = tmp.appendingPathComponent("partial.exe")
+        try Data(astrum([("LANGUAGES\\English.bin", [1])], tail: le(0xffff_ffff))).write(to: partial)
+        refused("a Hungarian installer without all the translation's files") { _ = try LanguagePacks.buildHungarian(installer: partial, game: game, packs: packs) }
+        check(LanguagePacks.way("hungarian") == .download && LanguagePacks.way("ukrainian") == .download, "both download in one click")
     }
 
     // MARK: crafted inputs: each must be refused with an error, never trap or write outside

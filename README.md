@@ -177,7 +177,7 @@ Click a picture to see it full size.
 | Unique parts for every car | Once Caleb is beaten, the career shops sell the unique visual parts (the wide body kits too) for every car, as the game already does in Customize mode; from th0mk's nfsu2-web (`NFSU2_UNIQUES=1`). Off by default: each unique part only for the car that won its star. | |
 | Power in bhp or kW | Choose the power unit apart from the speed unit, in Options and the pause menu. | <a href="docs/readme/full/power-units-eu-na.jpg"><img src="docs/readme/thumbs/power-units.jpg" width="180" alt="Gameplay options with Power Units"></a> |
 | Both regions' cars | With all four cars' files, buy and race the Corsa, 106, Civic and RSX in either version. | <a href="docs/readme/full/region-cars.jpg"><img src="docs/readme/thumbs/region-cars.jpg" width="180" alt="Peugeot 106 and Honda Civic in Quick Race car select"></a> |
-| Languages | Pick the game's language in the launcher, 16 in all. | <a href="docs/readme/full/language-eu-na.jpg"><img src="docs/readme/thumbs/languages.jpg" width="180" alt="Main menu in six languages"></a> |
+| Languages | Pick the game's language in the launcher, 18 in all. | <a href="docs/readme/full/language-eu-na.jpg"><img src="docs/readme/thumbs/languages.jpg" width="180" alt="Main menu in six languages"></a> |
 | Language packs | The launcher downloads and builds packs for the languages your game folder lacks, with voices and movies. | <a href="docs/readme/launcher/settings-mods.png"><img src="docs/readme/thumbs/f-language-packs.jpg" width="180" alt="Language packs in the launcher"></a> |
 | Cloud saves | Encrypted cloud saves that also work with the browser version, linked by an 8-word phrase. Off until you link. | <a href="docs/readme/launcher/saves-cloud.png"><img src="docs/readme/thumbs/f-cloud-saves.jpg" width="180" alt="Encrypted cloud saves in the save window"></a> |
 | Crash fixes | The car lot opens on damaged profiles, and the Performance Shop no longer locks up after Nitrous. | |
@@ -555,8 +555,20 @@ folder; a file there is read in place of the game's, for dubbed speech and movie
 or languages the retail files lack). The app downloads nothing. The engine takes
 it as `NFSU2_LANGUAGE` (`english`, `french`, `german`, `italian`, `spanish`,
 `dutch`, `swedish`, `danish`, `korean`, `chinese`, `japanese`, `thai`, and
-`russian`, `portuguese`, `polish`, `turkish` from a pack), which still wins when
-set by hand.
+`russian`, `portuguese`, `polish`, `turkish`, `hungarian`, `ukrainian` from a
+pack), which still wins when set by hand.
+
+Hungarian comes from GameHunter's translation (v1.1, 2005, by L_zooltan) and
+Ukrainian from Clark X.'s (2022, kuli.com.ua). Their packs are one click in
+Settings, Mods, Languages: the launcher downloads the translation's installer
+from where its author's page links it, refuses anything but the release it was
+tested with (size and SHA-256), and reads the files out of it without running
+it (an Astrum InstallWizard installer for Hungarian, an Inno Setup one for
+Ukrainian, `launcher/InnoSetup.swift`); Import... takes a local copy of the same
+installer. Hungarian's text writes o and u with the double acute as o with the
+tilde and u with the circumflex, as the translation does (the game's fonts have
+neither); Ukrainian's is drawn with the Russian pack's fonts. Ported from th0mk's
+nfsu2-web (MIT).
 
 `run.sh` documents the environment switches; most are diagnostics.
 
