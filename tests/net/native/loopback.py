@@ -150,6 +150,27 @@ def serve_extra(listener, scenario):
                 got += frames(conn)
             assert sorted(struct.unpack("!I", f[8:12])[0] for f in got) == [0x0A4D0003, 0x0A4D0004, 0x0A4D0005]
             assert all(f[16:] == b"snap" for f in got)
+        elif scenario == "flying":
+            # the game says its car flew, then leaves: the message first, then the close, and no new connection
+            while True:
+                op, data = receive(conn)
+                if op == 8:
+                    raise AssertionError("closed before the flying message")
+                if op == 1 and json.loads(data).get("t") == "flying":
+                    assert json.loads(data) == {"t": "flying", "s": 120}, data
+                    break
+            while receive(conn)[0] != 8:
+                pass
+            listener.settimeout(1.5)
+            try:
+                extra, _ = listener.accept()
+                extra.close()
+                raise AssertionError("the client came back after flying")
+            except socket.timeout:
+                pass
+            finally:
+                listener.settimeout(None)
+            return
         elif scenario == "rename":
             time.sleep(0.5)  # the client sees itself online first
             send(conn, {"t": "rename", "name": "fixture-player", "msg": "fixture"})
@@ -306,11 +327,11 @@ def main():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(2)
-        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "lanports", "atexit", "bundlein", "multi", "rename"):
+        for scenario in ("relay", "resume", "queue", "two", "idle", "burst", "big", "claim", "lanports", "atexit", "bundlein", "multi", "rename", "flying"):
             failure = []
             def worker():
                 try:
-                    if scenario in ("bundlein", "multi", "rename"):
+                    if scenario in ("bundlein", "multi", "rename", "flying"):
                         serve_extra(listener, scenario)
                         return
                     serve_two(listener) if scenario == "two" else serve(listener, resume=scenario == "resume", queued=scenario == "queue", idle=scenario == "idle", burst=scenario == "burst", big=scenario == "big", lanports=scenario == "lanports")
@@ -336,7 +357,7 @@ def main():
                 os.close(read_end)
                 assert result.returncode == 0
             else:
-                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "lanports", "atexit", "bundlein", "multi", "rename") else []), timeout=20)
+                result = subprocess.run([binary, url] + ([scenario] if scenario in ("relay", "resume", "queue", "idle", "burst", "big", "lanports", "atexit", "bundlein", "multi", "rename", "flying") else []), timeout=20)
                 assert result.returncode == 0
             thread.join(timeout=5)
             if failure:

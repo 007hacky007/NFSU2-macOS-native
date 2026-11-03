@@ -11,7 +11,8 @@
  * the server's lan crate lib.rs), and the hello asks for bundles back
  * ("bundle":1).  A kick, a ban or a name taken away (closes 4001, 4003,
  * 4004) keeps the game off the switch for the rest of the session, with a
- * line in the game saying why.
+ * line in the game saying why; so does a car that flew in free roam for
+ * minutes (native_net_flying: the server hears {"t":"flying"} first).
  *
  * The client side of th0mk's nfsu2-web server's switch (its wire format:
  * net_proto.h, MIT). */
@@ -522,6 +523,32 @@ int native_net_text(const char *json){
     if (dispatch_get_specific(&native_queue_key)) send();       /* (from a message of the link's own: its queue) */
     else dispatch_sync(transport->queue, send);
     return sent;
+}
+/* the player's car flew (roam_game.c fly_frame, through roam_plat_flying): the server's log hears it, then the link
+ * stays off for this game as after a kick (nfsu2-web web/src/net/index.ts flying).  The close waits for the message
+ * to go out, a second at most.  Never on the caller's thread: it holds the free-roam session's lock */
+int native_net_flying(int secs){
+    NFSNativeNet *t = transport;
+    native_net_status st; native_net_get_status(&st);
+    if (!t || st.state != NETSTATS_CONNECTED) return 0;
+    dispatch_async(t->queue, ^{
+        if (!t->socket || !t->welcomed || t->stopped) return;
+        NSData *j = [NSJSONSerialization dataWithJSONObject:@{ @"t": @"flying", @"s": @(secs) } options:0 error:nil];
+        NSString *text = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding];
+        NSURLSessionWebSocketTask *s = t->socket;
+        __block BOOL done = NO;
+        void (^off)(void) = ^{
+            if (done) return;
+            done = YES;
+            fprintf(stderr, "[network] the car was in the air for %d s in free roam\n", secs);
+            [t stayOff:@NATIVE_NET_FLYING_MSG];
+        };
+        [s sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithString:text] completionHandler:^(NSError *error){
+            (void)error; dispatch_async(t->queue, off);
+        }];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), t->queue, off);
+    });
+    return 1;
 }
 void native_net_shutdown(void){
     if (!transport) return;

@@ -89,6 +89,11 @@ int      roam_plat_said(const char *json);
  * {"id","name","on"}: Game Tools offers to add that player as a friend (1
  * taken, -1 not).  With the session lock held */
 int      roam_plat_friend(const char *json);
+/* the player's car flew in free roam for minutes (roam_game.c fly_frame), as
+ * a JSON object {"s": seconds}: the game leaves the server for the rest of
+ * the session, as an operator's kick takes a player, and tells it (1 done, 0
+ * not on the server now, -1 try again).  With the session lock held */
+int      roam_plat_flying(const char *json);
 /* where the names of the players who said something lately are this frame:
  * ids[i] at xys[3i], xys[3i + 1] (parts of the picture from its top left
  * corner) with the name's scale xys[3i + 2]; n = 0: none.  On the game

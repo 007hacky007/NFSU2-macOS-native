@@ -72,6 +72,18 @@ int main(int argc, char **argv){
             assert(m->tx_tail == 3);
             puts("native bundle to several players passed"); native_net_shutdown(); return 0;
         }
+        if (!strcmp(mode, "flying")){
+            /* a car in the air for minutes (roam_game.c fly_frame): the server hears it, the link stays off */
+            for (int i = 0; i < 500 && __atomic_load_n(&m->page_state, __ATOMIC_SEQ_CST) != NET_PAGE_ONLINE; i++) usleep(10000);
+            native_net_status ns2;
+            for (int i = 0; i < 500; i++){ native_net_get_status(&ns2); if (ns2.state == NETSTATS_CONNECTED) break; usleep(10000); }
+            assert(native_net_flying(120) == 1);
+            for (int i = 0; i < 500 && __atomic_load_n(&m->page_state, __ATOMIC_SEQ_CST) == NET_PAGE_ONLINE; i++) usleep(10000);
+            assert(m->page_state != NET_PAGE_ONLINE);
+            usleep(1600000);
+            assert(m->page_state != NET_PAGE_ONLINE && m->vip == 0 && native_net_flying(120) == 0);
+            puts("native flying close passed"); native_net_shutdown(); return 0;
+        }
         if (!strcmp(mode, "rename")){
             for (int i = 0; i < 500 && __atomic_load_n(&m->page_state, __ATOMIC_SEQ_CST) == NET_PAGE_ONLINE; i++) usleep(10000);
             assert(m->page_state != NET_PAGE_ONLINE);

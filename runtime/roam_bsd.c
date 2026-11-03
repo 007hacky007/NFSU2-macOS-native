@@ -52,6 +52,14 @@ void roam_plat_notice(const char *name, const char *what){
     fprintf(stderr, "[roam] notice: %s%s\n", name ? name : "", what);
     native_controls_notice(name, what);
 }
+/* a car that flew for minutes (roam_game.c fly_frame): off the server for this game, which hears it first
+ * (net_native.m native_net_flying); 0 with no link to the server (LAN play, offline) */
+int roam_plat_flying(const char *json){
+    int secs = 0;
+    const char *p = json ? strstr(json, "\"s\":") : 0;
+    if (p) secs = atoi(p + 4);
+    return native_net_flying(secs);
+}
 const char *roam_ip_str(uint32_t ip, char *b){
     snprintf(b, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255u, (ip >> 8) & 255u, ip & 255u); return b; }
 void roam_plat_get_stats(roam_plat_stats *o){ roam_plat_lock(); *o = g_st; roam_plat_unlock(); }

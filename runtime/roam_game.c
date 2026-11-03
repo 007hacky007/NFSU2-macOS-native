@@ -5351,6 +5351,67 @@ static void bump_frame(int64_t host, int can){
         } else if (!g_bump[k].on && g_bump[k].since && host - g_bump[k].last > BUMP_LAPSE_US) g_bump[k].since = 0;
     }
 }
+/* ---- planes: a car in the air for minutes leaves the others ------------------------------------
+ * Players flew and floated over free roam for minutes at a time: an edited car or a cheat holds a
+ * car up, which no car of the game does for longer than a jump (seconds).  The player's own car, in
+ * free roam with others: FLY_S seconds of world time with no wheel on the ground (CAR_GROUND), and
+ * the game leaves the server with a line saying why, as an operator's kick takes a player, and
+ * tells it (its log); for the rest of this session, as a kick (roam_plat_flying, net_native.m).
+ * The count stands (no time added, none taken off) while the world stands (pause, map, photo
+ * mode, loading), while the physics does not drive the car (mode 1), and for a car that is no
+ * plane: on its side or its roof (its up under FLY_UP: a crash), slower than FLY_MOVE_MPS (hung on
+ * a kerb or a barrier with its wheels free), falling faster than FLY_FALL_MPS (off a ledge, or
+ * through a hole in the world).  FLY_GROUND_S on the ground ends it; a shorter touch does not, so a
+ * car that skims the road now and then keeps its count.  NFSU2_ROAM_FLY_S changes FLY_S in a run an
+ * input script drives (a test), never in a player's game.  LAN free roam has no server to leave.
+ * Ported from th0mk's nfsu2-web runtime/roam_game.c (c352c1f, 7e5d34f; MIT). */
+#define FLY_S           120
+#define FLY_TELL_S      30.f          /* a flight this long gets a line */
+#define FLY_GROUND_S    3.f
+#define FLY_UP          0.5f          /* the car's up vector's height (car +0xB8) */
+#define FLY_MOVE_MPS    5.f
+#define FLY_FALL_MPS    15.f
+static float g_fly_air, g_fly_ground;     /* the count, and the time on the ground since the last of it (s) */
+static int g_fly_s = -1, g_fly_told, g_fly_gone;
+/* every frame: `can` = free roam proper, the world ran `dt` (s) */
+static void fly_frame(int can, float dt){
+    if (g_fly_s < 0){
+        const char *scr = rh_opt("NFSU2_INPUT_SCRIPT"), *k = rh_opt("NFSU2_ROAM_FLY_S");
+        int test = scr && *scr;
+        g_fly_s = test ? env_int("NFSU2_ROAM_FLY_S", FLY_S, 5, 3600) : FLY_S;
+        if (!test && k && *k) rlog("[roam] NFSU2_ROAM_FLY_S is for tests (an input script's run): %d s\n", FLY_S);
+    }
+    uint32_t me = can && !g_fly_gone && dt > 0.f ? player_car() : 0;
+    if (!me || !ok(me, 0x9e0) || MR32(me + 0x28u) != 1u) return;
+    int ground = 0;
+    for (uint32_t w = 0; w < 4; w++) ground |= MR8(me + CAR_GROUND + w) != 0;
+    if (ground){
+        if (g_fly_air > 0.f && (g_fly_ground += dt) >= FLY_GROUND_S){
+            if (g_fly_told) rlog("[roam] f=%ld my car is on the ground again, after %.0f s in the air\n", rh_frame(), (double)g_fly_air);
+            g_fly_air = g_fly_ground = 0.f; g_fly_told = 0;
+        }
+        return;
+    }
+    g_fly_ground = 0.f;
+    float v[3]; rd3(me + 0x70u, v);
+    float speed = rc_sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(MRF32(me + 0xb8u) >= FLY_UP) || !(speed >= FLY_MOVE_MPS) || !(v[2] > -FLY_FALL_MPS)) return;
+    g_fly_air += dt;
+    if (!g_fly_told && g_fly_air >= FLY_TELL_S){
+        g_fly_told = 1;
+        rlog("[roam] f=%ld my car has been in the air for %.0f s (at %.0f %.0f %.0f, %.0f km/h)\n", rh_frame(), (double)g_fly_air,
+             (double)MRF32(me + 0x60u), (double)MRF32(me + 0x64u), (double)MRF32(me + 0x68u), (double)(speed * 3.6f));
+    }
+    if (g_fly_air < (float)g_fly_s) return;
+    char js[24]; snprintf(js, sizeof js, "{\"s\":%d}", g_fly_s);
+    roam_plat_lock();
+    int r = roam_plat_flying(js);
+    roam_plat_unlock();
+    rlog("[roam] f=%ld my car has been in the air for %d s: %s\n", rh_frame(), g_fly_s,
+         r > 0 ? "off the server for this session" : r < 0 ? "tried again in a second" : "not on the server now");
+    if (r < 0){ g_fly_air = (float)g_fly_s - 1.f; return; }
+    g_fly_air = g_fly_ground = 0.f; g_fly_told = 0; g_fly_gone = r > 0;
+}
 static uint8_t local_status(int in_roam){
     uint32_t flow = rd32(G_FLOW);
     if (in_roam) return g_sync_paused > 1 ? RC_ST_PAUSED : RC_ST_ROAM;
@@ -6178,6 +6239,7 @@ void roam_game_frame(CPU *c){
         }
     }
     if (O.friends) bump_frame(host, in_roam && world_runs && st == RC_ST_ROAM && !g_racing && g_du.st == DU_IDLE && !mp_busy());
+    fly_frame(in_roam && world_runs && st == RC_ST_ROAM, wdt);
     du_frame(c, host, in_roam, world_runs, duin, nduin);
     mp_frame(c, host, in_roam, world_runs, mpfrom, mpin, nmpin);
     mp_panel(host, in_roam);
