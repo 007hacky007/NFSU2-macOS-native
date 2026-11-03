@@ -634,58 +634,19 @@ static uint32_t find_part(CPU *c, uint32_t type, uint32_t sl, uint32_t key, uint
     }
     return 0;
 }
+/* A car type whose files this game folder does not have (the other
+ * region's two cars on one region's data, a mod's car on one side only)
+ * cannot be loaded: the car loader would wait for it for good, and with it
+ * every friend's car after it and the world's unload (a player's European
+ * game of 2026-11-03, North American players' Civics around: frozen on the
+ * trip to a multiplayer race).  Such a car is shown as a stock car of the
+ * type regional.c picks (the other region's car in its place). */
 /* Decode a car-look record into the RideInfo at ride (0x8F0 bytes of guest
  * memory) with skin slot n: RideInfo::Init, stock parts, then each slot of
  * the record looked up by its key in the CarPartDB (NewGetCarPart, owner
  * checked) and written; slots the record does not name are left empty, as
  * on the sender; a part this game does not have keeps the stock part.
  * Returns the number of parts not found, or -1. */
-/* A car type CarTypeInfo lists but whose files this game folder does not
- * have: the other region's two cars (the European release has no CARS\CIVIC
- * and CARS\RSX, the North American one no CARS\CORSA and CARS\PEUGOT106;
- * both list all four, regional.c), or a mod's car on one side only.  Loading
- * one, the car loader's read of a pack that is not there never comes back
- * and its busy word (0x8A329C) stays set: no friend's car loads again, and
- * the world's unload (0x63B080, from 0x5815D0: a Quit, a race's trip)
- * services reads until busy clears -- for good, holding the guest lock.  A
- * player's European game of 2026-11-03, with North American players' Civics
- * around, froze so on the trip to a multiplayer race.  Such a car is shown
- * as the other region's car in its place (the game's own region tables:
- * the AI lists have the Corsa where the other region has the Civic, the
- * 106 for the RSX), as a stock car, or the Peugeot 206 (type 0). */
-#define N_CARTYPES      46u
-static int type_has_files(uint32_t types, uint32_t type){
-    static int8_t seen[N_CARTYPES];               /* 0 not looked, 1 there, -1 not there */
-    if (type >= N_CARTYPES) return 0;
-    if (!seen[type]){
-        char n[20], p[48]; cstr(types + type * 0x890u, n, sizeof n);
-        snprintf(p, sizeof p, "CARS\\%s\\GEOMETRY.BIN", n);
-        seen[type] = n[0] && rh_game_file(p) ? 1 : -1;
-    }
-    return seen[type] > 0;
-}
-static uint32_t type_by_name(uint32_t types, const char *name){
-    for (uint32_t i = 0; i < N_CARTYPES && types; i++){
-        char n[20]; cstr(types + i * 0x890u, n, sizeof n);
-        if (!strcasecmp(n, name)) return i;
-    }
-    return 0xffffffffu;
-}
-static uint32_t stand_in_type(uint32_t types, const char *name){
-    static const char *const other[][2] = { { "CIVIC", "CORSA" }, { "RSX", "PEUGOT106" } };
-    for (int i = 0; i < 2; i++)
-        for (int j = 0; j < 2; j++)
-            if (!strcasecmp(name, other[i][j])){
-                uint32_t t = type_by_name(types, other[i][!j]);
-                if (t < N_CARTYPES && type_has_files(types, t)) return t;
-            }
-    /* an add-on car (Unlimiter): a type with the same name prefix */
-    for (uint32_t i = 0; i < N_CARTYPES && types; i++){
-        char n[20]; cstr(types + i * 0x890u, n, sizeof n);
-        if (n[0] && !strncasecmp(n, name, 4) && type_has_files(types, i)) return i;
-    }
-    return 0;
-}
 static int build_ride(CPU *c, const rc_carcfg *cc, uint32_t ride, uint32_t skin, char *why, int whylen){
     uint32_t types = rd32(G_CARTYPES);
     uint32_t ti = gcall1(c, FN_TYPE_BY_HASH, 0, cc->type_hash);
@@ -693,10 +654,10 @@ static int build_ride(CPU *c, const rc_carcfg *cc, uint32_t ride, uint32_t skin,
     int missing = 0;
     if (ti && types && ti >= types && (ti - types) % 0x890u == 0) type = (ti - types) / 0x890u;
     else type = 0xffffffffu;
-    if (type >= N_CARTYPES || !type_has_files(types, type)){
+    if (!rh_type_has_files(type)){
         /* a stock car of another type (above) */
-        const char *what = type >= N_CARTYPES ? "unknown here" : "not in this game folder";
-        type = stand_in_type(types, cc->type_name);
+        const char *what = type == 0xffffffffu ? "unknown here" : "not in this game folder";
+        type = rh_stand_in(cc->type_name);
         char n[20]; cstr(types + type * 0x890u, n, sizeof n);
         snprintf(why, (size_t)whylen, "car type %s %s, shown as %s (type %u)", cc->type_name, what, n, type);
         missing = -1;

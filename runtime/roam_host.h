@@ -33,8 +33,10 @@
  *   rh_carsfx_begin/rh_carsfx_car/rh_carsfx_end
  *                           a frame of friends' engines, nitrous and hydraulics
  *                           (carsfx.h's carsfx_begin, ...)
- *   rh_game_file(win)       1 when the game can read that file (a Windows path
- *                           in the game folder: CARS\CIVIC\GEOMETRY.BIN)
+ *   rh_type_has_files(t)    1 when this game folder has car type t's files
+ *                           (regional.c)
+ *   rh_stand_in(name)       the car type shown for a type whose files are not
+ *                           here (regional.c)
  *
  * Ported from th0mk's nfsu2-web runtime/roam_host.h (MIT).
  */
@@ -54,7 +56,8 @@ long metal_frames(void);
 void roam_hud_marker(float *x, float *y);    /* roam.c */
 int  roam_no_profile(const char *name);      /* roam.c */
 int  drift_kept_tuning(uint8_t *out);       /* drift.c */
-int  fileio_game_can_read(const char *win); /* fileio.c */
+int  regional_type_has_files(uint32_t type);   /* regional.c */
+uint32_t regional_stand_in(const char *name); /* regional.c */
 
 #define ROAM_HOOK_RET    GA(0x00581485u)     /* the return address guest calls see: the main-loop hook (roam.c) */
 #define RH_FE_NODES      4096                /* objects FEng draws of one package: roamfix.c's level sorter (the game: 512) */
@@ -66,7 +69,8 @@ int  fileio_game_can_read(const char *win); /* fileio.c */
 #define rh_heap_mb()     0u
 #define rh_hud_marker(x, y) roam_hud_marker((x), (y))
 #define rh_no_profile(n) roam_no_profile(n)
-#define rh_game_file(w)  fileio_game_can_read(w)
+#define rh_type_has_files(t) regional_type_has_files(t)
+#define rh_stand_in(n)   regional_stand_in(n)
 #define rh_drift_tuning(out) drift_kept_tuning(out)
 #define rh_horn_on()     horn_on()
 #define rh_horn_held()   horn_held()

@@ -65,6 +65,7 @@ tests/net/loop_run.sh, tests/net/vlan_run.sh, tests/net/lan_race.sh   # LAN play
 tests/roam/plan.sh <out> 900 roam_loader_overlap.txt 47600 8 tests/roam/plan_loader.sh   # free roam: friends' car loads during part-animation reads (roamfix.c)
 tests/roam/plan.sh <out> 900 roam_carpool.txt 47600 8 tests/roam/plan_loader.sh NFSU2_ROAM_CARPOOL_KB=24000   # free roam: friends' cars in a small car pool (roamfix.c)
 tests/roam/plan.sh <out> 420 roam_region_cars.txt 47700 3 tests/roam/plan_region.sh   # free roam: friends' Civic and RSX on European data (roam_game.c)
+tests/net/lan_region_cars.sh <out>                     # a LAN race against a Civic on European data (regional.c); LAN_DATA_2=<one region>
 tests/roam/plan.sh ...                                 # other plans with stand-in friends (tests/roam/plan_*.sh)
 ```
 
