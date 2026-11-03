@@ -102,7 +102,7 @@ final class LanguagePackStore: ObservableObject {
         case "turkish": return "muntazam's translation. Its site needs a browser: download it there, then Import."
         case "hungarian": return "GameHunter's translation (L_zooltan): the text, which writes \u{151} and \u{171} as \u{F5} and \u{FB}."
         case "ukrainian": return "Clark X.'s translation (kuli.com.ua): the text, on the Russian pack's fonts."
-        case "czech": return "ROXOR's and PIN\u{10E}A & syn's translation (abcgames.cz): the text, which writes \u{10D}, \u{159}, \u{161} as c, r, s."
+        case "czech": return "ROXOR's and PIN\u{10E}A & syn's translation (abcgames.cz) with our own edits: the text, which writes \u{10D}, \u{159}, \u{161} as c, r, s."
         case "slovak": return "MixerX's translation (abcgames.cz): the text with every Slovak letter, on its own fonts."
         default:
             let what = LanguagePacks.dubs[lang] != nil ? (lang == "japanese" || lang == "russian" ? "Text, voices and movies" : "Voices and movies")

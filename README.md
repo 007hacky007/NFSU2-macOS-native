@@ -580,9 +580,9 @@ tilde and u with the circumflex, as the translation does (the game's fonts have
 neither); Ukrainian's is drawn with the Russian pack's fonts. Ported from th0mk's
 nfsu2-web (MIT).
 
-Czech comes from ROXOR's and PINĎA & syn's translation (v1.1, 2004), downloaded
-in one click the same way from abcgames.cz (the zip it serves, size and SHA-256
-checked, then the patch in it). It is a Clickteam Patch Maker patch, read without
+Czech comes from ROXOR's and PINĎA & syn's translation (v1.1, 2004) with our own
+edits (below), downloaded in one click the same way from abcgames.cz (the zip it
+serves, size and SHA-256 checked, then the patch in it). It is a Clickteam Patch Maker patch, read without
 running it (`launcher/Clickteam.swift`); Import... takes the zip, the
 `nfsu2cz-v1.1.exe` in it or the folder it is in. Its text writes the letters with
 the caron and u with the ring without them (c, r, s, z, e, u), as the
