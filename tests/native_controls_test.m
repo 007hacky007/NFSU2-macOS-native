@@ -198,6 +198,8 @@ int main(int argc, char **argv){ @autoreleasepool {
         for (NSView *view in panel.contentView.subviews){
             if ([view isKindOfClass:NSPopUpButton.class] && [view.accessibilityLabel isEqual:@"Friends in another room"])
                 assert([[(NSPopUpButton *)view itemTitles] isEqual:@[@"Bo (room Red)"]]);                      /* (the friends' tests above) */
+            else if ([view isKindOfClass:NSPopUpButton.class] && [view.accessibilityLabel isEqual:@"Cars"])
+                assert([(NSPopUpButton *)view numberOfItems] == 3);              /* solid, ghost, everything ghost */
             else if ([view isKindOfClass:NSPopUpButton.class]) assert([(NSPopUpButton *)view numberOfItems] == NATIVE_PHRASES);
             if ([view isKindOfClass:NSTextField.class] && [[(NSTextField *)view stringValue] containsString:@"Synthetic tune"]) sawMusic = YES;
             if ([view isKindOfClass:NSTextField.class] && [[(NSTextField *)view stringValue] containsString:@"2. Guest"]) sawLobby = YES;
