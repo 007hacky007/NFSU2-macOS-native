@@ -1,7 +1,8 @@
 /* language.c - the game's language: NFSU2_LANGUAGE.
  *
  *   english, french, german, italian, spanish, dutch, swedish, danish,
- *   korean, chinese, japanese, thai, russian, portuguese, polish, turkish
+ *   korean, chinese, japanese, thai, russian, portuguese, polish, turkish,
+ *   hungarian, ukrainian
  *
  * SPEED2.EXE reads its language once at startup from the registry value
  * "Language" (sub_005b7700, its compare loop at 0x5b7980; 0x5b76f0 and
@@ -17,10 +18,11 @@
  *
  * What a language needs beyond the retail folder (the dubbed speech and
  * movies, the full Chinese, Japanese and Thai text with the fonts drawn for
- * it, Russian, Portuguese, Polish, Turkish) can come from LANGPACKS/<language>
- * in the game folder, laid out like the game folder: fileio.c reads a file
- * there in place of the game folder's file of the same path.  A language
- * without a pack plays its text with English voices and movies.
+ * it, Russian, Portuguese, Polish, Turkish, Hungarian, Ukrainian) can come
+ * from LANGPACKS/<language> in the game folder, laid out like the game
+ * folder: fileio.c reads a file there in place of the game folder's file of
+ * the same path.  A language without a pack plays its text with English
+ * voices and movies.
  *
  * Two things the exe cannot do by itself, which the multilingual mod's
  * U2_ThaiSupport.asi patches into its code; here they are changes to its
@@ -33,11 +35,15 @@
  *    but has no entry.  In a Thai game Japanese's entry becomes Thai's: its
  *    id, its name and file ("JAPANESE" -> "THAILAND", the same length) and
  *    the font hashes of its block.
- * Russian, Portuguese (Brazil's), Polish and Turkish are no languages of the
- * game: they play as English, with English's files from their pack.  Polish's
- * and Turkish's texts spell their letters with accented ones of the game's
- * fonts, whose textures in their packs draw them as the Polish or Turkish
- * ones (language_game_letters does the same for texts of ours).
+ * Russian, Portuguese (Brazil's), Polish, Turkish, Hungarian and Ukrainian
+ * are no languages of the game: they play as English, with English's files
+ * from their pack.  Polish's and Turkish's texts spell their letters with
+ * accented ones of the game's fonts, whose textures in their packs draw them
+ * as the Polish or Turkish ones; Hungarian's spells its o and u with the
+ * double acute as the fonts' o with the tilde and u with the circumflex, as
+ * its translation does (language_game_letters does the same for texts of
+ * ours).  Ukrainian's are Russian's fonts with its text in their letters
+ * (its I, Yi and Ye at 0xE2-0xE7).
  *
  * Movie subtitles, NFSU2_SUBTITLES=1 (default off, as the original game):
  * the movies' subtitles (SUBTITLES/<movie>: when to show which of the
@@ -68,7 +74,8 @@
  * strings after the entries.  The game's own array stays as it was, for the
  * next copy.
  *
- * Ported from th0mk's nfsu2-web runtime/language.c (MIT). */
+ * Ported from th0mk's nfsu2-web runtime/language.c (MIT), Hungarian and
+ * Ukrainian too. */
 #include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,13 +112,15 @@ static const struct lang { const char *key, *reg; uint32_t fonts; int thai; } LA
     { "portuguese", "English", 0, 0 },
     { "polish",     "English", 0, 0 },
     { "turkish",    "English", 0, 0 },
+    { "hungarian",  "English", 0, 0 },
+    { "ukrainian",  "English", 0, 0 },
 };
 static const struct lang *g_lang;   /* 0: NFSU2_LANGUAGE not set */
 static const uint32_t THAI_FONTS[4] = { 0x4815619du, 0xa87927beu, 0xa73823ffu, 0xbbba71c2u };
 
 /* The registry's "Language" for NFSU2_LANGUAGE, 0 when it is not set. */
 const char *language_registry(void){ return g_lang ? g_lang->reg : 0; }
-/* The language played, as NFSU2_LANGUAGE names it ("english" ... "turkish"). */
+/* The language played, as NFSU2_LANGUAGE names it ("english" ... "ukrainian"). */
 const char *language_name(void){ return g_lang ? g_lang->key : "english"; }
 
 /* ---- the game's texts ------------------------------------------------------- */
@@ -210,9 +219,10 @@ void language_texts_frame(CPU *c){
 /* A text of ours (UTF-8) in the game's letters: Latin-1, as its language files
  * write theirs; Polish's letters as its pack's fonts draw them (e-ogonek 0xBF,
  * l-stroke 0xEE, s-acute 0xE2 ...), Turkish's too (dotless i 0xED, s-cedilla
- * 0xFF, g-breve 0xFD ...); a letter the fonts lack as '?'.  Korean, Chinese,
- * Japanese, Thai and Russian draw ASCII as it is (car names), not Latin-1's
- * accented letters. */
+ * 0xFF, g-breve 0xFD ...), Hungarian's o and u with the double acute as its
+ * text has them (o-tilde 0xF5, u-circumflex 0xFB); a letter the fonts lack as
+ * '?'.  Korean, Chinese, Japanese, Thai, Russian and Ukrainian draw ASCII as
+ * it is (car names), not Latin-1's accented letters. */
 void language_game_letters(const char *utf8, char *out, size_t n){
     static const struct { uint16_t u; uint8_t b; } PL[] = {
         { 0x105, 0xe7 }, { 0x107, 0xe9 }, { 0x119, 0xbf }, { 0x142, 0xee }, { 0x144, 0xf1 }, { 0xf3, 0xf3 },
@@ -220,10 +230,12 @@ void language_game_letters(const char *utf8, char *out, size_t n){
         { 0x141, 0xfa }, { 0x143, 0xd1 }, { 0xd3, 0xd3 }, { 0x15a, 0xda }, { 0x17b, 0xc9 },
     }, TR[] = {
         { 0x131, 0xed }, { 0x130, 0xcd }, { 0x15f, 0xff }, { 0x15e, 0xfe }, { 0x11f, 0xfd }, { 0x11e, 0xdd },
+    }, HU[] = {
+        { 0x151, 0xf5 }, { 0x150, 0xd5 }, { 0x171, 0xfb }, { 0x170, 0xdb },
     };
     const char *key = language_name();
-    int polish = !strcmp(key, "polish"), turkish = !strcmp(key, "turkish");
-    int latin = !(g_lang && g_lang->fonts) && strcmp(key, "russian");
+    int polish = !strcmp(key, "polish"), turkish = !strcmp(key, "turkish"), hungarian = !strcmp(key, "hungarian");
+    int latin = !(g_lang && g_lang->fonts) && strcmp(key, "russian") && strcmp(key, "ukrainian");
     const uint8_t *s = (const uint8_t *)utf8;
     size_t o = 0;
     if (!n) return;
@@ -240,6 +252,7 @@ void language_game_letters(const char *utf8, char *out, size_t n){
         else if (u == 0x2013 || u == 0x2014) b = '-';
         else if (polish){ for (unsigned i = 0; i < sizeof PL / sizeof PL[0]; i++) if (PL[i].u == u) b = PL[i].b; }
         else if (turkish && u >= 0x100){ for (unsigned i = 0; i < sizeof TR / sizeof TR[0]; i++) if (TR[i].u == u) b = TR[i].b; }
+        else if (hungarian && u >= 0x100){ for (unsigned i = 0; i < sizeof HU / sizeof HU[0]; i++) if (HU[i].u == u) b = HU[i].b; }
         else if (latin && u >= 0xa0 && u < 0x100) b = (uint8_t)u;
         out[o++] = (char)b;
     }
