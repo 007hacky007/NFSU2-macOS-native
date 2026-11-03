@@ -15,7 +15,7 @@
  *  - the local car's state goes to the session (roam_core), which sends a
  *    snapshot 20 times a second; its car look (type and part hashes) goes
  *    out when it changes;
- *  - remote players get "slots": up to 32 cars of our own (CreateCar), the
+ *  - remote players get "slots": up to 48 cars of our own (CreateCar), the
  *    nearest players first, out of World::IndexCars' array (22 cars), on the
  *    World's list only, which is what the renderer walks (finish_create), so
  *    the game's outrun challengers, which take the index's AI range, never
@@ -178,11 +178,13 @@
  * NFSU2_ROAM_TUNERS=0 (em_update) */
 #define LEND_OPP        0
 #define NOPP            0             /* (LEND_OPP: slots 0-2, the parked free-roam opponent cars) */
-#define NSLOT           32            /* NOPP opponent cars + the rest of our own */
+#define NSLOT           48            /* NOPP opponent cars + the rest of our own */
 #define WORLD_INDEX     22            /* World::IndexCars' cars[] (World +0x1C; other fields follow) */
 #define KIND_OUT        4             /* a racer record kind IndexCars skips (1 human, 2 AI racer, 3 traffic) */
 #define SKIN_GAME       6             /* the game's paint slots, DUMMY_SKIN1-6 */
 #define MAX_CARS        NSLOT
+#define DEF_CARS        32            /* NFSU2_ROAM_MAX_CARS unset (the launcher's Players' cars shown: 16 to 48) */
+#define CARPOOL_KB_CAR  1500          /* the car pool's room for each car past DEF_CARS (NFSU2_ROAM_CARPOOL_KB unset) */
 #define CLEAR_M         6.f           /* a ghost becomes solid once its centre is this far from the player's car's */
 #define SOLID_M         20.f          /* ...and has its body only this near it (cars touch from ~5 m; a frame at 20 fps and 160 m/s closing is 8) */
 #define SPAWN_X         1695.3f       /* the new career's start, where every new player appears (the airport's car park) */
@@ -256,7 +258,8 @@ static uint32_t ai_car(uint32_t w, int i){
     return ok(car, 0x9e0) ? car : 0;
 }
 static int car_out(uint32_t car){ return __builtin_fabsf(MRF32(car + 0x68u) - PARK_Z) >= 0.001f; }   /* 0x5ED440 */
-#define RIDE_ENTRIES    128           /* the car loader's ride entries with free-roam multiplayer on (g_pools) */
+#define RIDE_ENTRIES    160           /* the car loader's ride entries with free-roam multiplayer on (g_pools): 48 friends' cars,
+                                         a new look's ride beside the old one, and RIDES_FREE kept free */
 static uint32_t loader_entry(uint32_t h){
     uint32_t head = G_CARLOADER + 0x58u, e = rd32(head);
     for (int k = 0; e && e != head && k < 4 * RIDE_ENTRIES; k++, e = rd32(e)) if (rd32(e + 0x123cu) == h) return e;
@@ -2253,7 +2256,8 @@ static void tags_update(CPU *c){
 #define FN_POOL_ALLOC   GA(0x0043f8f0u)   /* cdecl (pool) */
 #define FN_NODE_ALLOC   GA(0x00440ec0u)   /* cdecl (): a list node, +8 its data */
 #define MM_AIRACER      3u
-#define MM_POOL         256u          /* the minimap's visual and icon pools with free roam on (g_pools) */
+#define MM_POOL         384u          /* the minimap's visual and icon pools with free roam on (g_pools): the friends' cars' arrows
+                                         and the game's own */
 static struct { uint32_t hud, copy[NSLOT], hash[NSLOT]; int ncopy; int said, stop;
                 int32_t col[NSLOT][3];                                  /* each copy's own colour (b, g, r) */
                 uint32_t orig; int vis; } g_mm;                         /* AIRACERINDICATOR_0; its copies are 0 unknown, 1 hidden, 2 shown */
@@ -3038,6 +3042,7 @@ static void map_update(CPU *c, uint32_t w, int64_t host){
 
 /* ---- per-frame --------------------------------------------------------------------------------- */
 typedef struct { int idx; uint32_t id; char name[RC_NAME_MAX + 1]; int visible, paused; float dist; uint32_t cfg_gen;
+                 int roams;            /* its status: in free roam, or paused there (shown or not) */
                  float rank;           /* the slots' order (assign): the nearest of the distances SOON_S and LOOK_S
                                           on, both cars at their speeds, and from our view point VIEW_M ahead (as
                                           the hub links, nfsu2-roam) */
@@ -3270,7 +3275,14 @@ static int64_t render_delay(int i, const rc_peer *p, int64_t frame_dt){
  *    (race +0xBEC/+0xBF0, as the game's result message 0x4A7B30 does), so
  *    a few metres of network delay never make two winners;
  *  - a player who leaves (back to the menus, quits, loses the connection)
- *    loses: the other wins.
+ *    loses: the other wins.  The server's hub keeps the two linked however
+ *    many players are nearer (rc_set_duel), and the friend's car keeps its
+ *    slot: by distance alone the one who fell behind went from both screens
+ *    in a crowd, and both games won (Discord, 2026-10-31).  A friend whose
+ *    snapshots stop waits where it was drawn, the order held, until it comes
+ *    back or the session lets it go; then a win only when it went (its BYE,
+ *    a restart, nothing heard of it for 10 s while our own link stood: on its
+ *    screen we are the one gone), else a loss, so the two never both win.
  * While it runs both still count as in free roam: friends' cars stay, and
  * friends still see the two.  Messages: RC_MSG_DUEL (roam_core.h), each
  * repeated until answered (a datagram lost on a LAN). */
@@ -3291,7 +3303,9 @@ static int64_t render_delay(int i, const rc_peer *p, int64_t frame_dt){
 #define DU_RANK_MPS     2.f           /* the order changes when the other gets away this much faster (m/s) */
 #define DU_AWAY_US      1000000
 #define DU_OFFER_US     15000000      /* a challenge nobody takes goes */
-#define DU_GONE_US      2000000       /* a friend whose car is not shown for this long has left the outrun */
+#define DU_GONE_US      2000000       /* a friend out of free roam (its status: the menus, a shop, a race) this long has left the outrun */
+#define DU_CUT_US       3000000       /* no list from the hub for this long: our own link stands (or the whole page stood) */
+#define DU_CUT_KEEP_US  15000000      /* ...and a list after such a gap counts for this long (a friend unheard for T_DROP went then) */
 #define DU_NOTE_US      4000000
 enum { DU_IDLE, DU_SENT, DU_GOT, DU_ACCEPTED, DU_RACE, DU_OVER };
 static const char *const du_st[] = { "idle", "challenge sent", "challenged", "accepted", "racing", "over" };
@@ -3306,7 +3320,10 @@ static struct {
     int      won;                             /* our game's result: 1 won, 2 lost, 0 none (yet) */
     int      their;                           /* the friend's game's, for us: 1 we won, 2 we lost */
     int      posted, nres;                    /* we gave the game a result; results still to send */
-    int64_t  gone_at;
+    int64_t  gone_at;                         /* the friend's car not shown since (0: shown) */
+    int      gone_why;                        /* the session let the friend go: how (rc_set_duel, RC_DGONE_*; 0: not, or for no word) */
+    int      unlisted;                        /* the hub's last list left the friend out (the session keeps it: logged when that changes) */
+    int64_t  hub_heard, hub_late;             /* the hub's last list (0: no hub), and the last one after a gap (rc_session hub_late_us) */
     float    gap, away;                       /* metres between the cars; how much faster we get away (m/s, smoothed) */
     float    was[4]; int64_t away_at;         /* where the two cars were (ours x y, the friend's x y), and when */
     uint32_t ranks;                           /* order changes */
@@ -3321,6 +3338,12 @@ static int du_racing(uint32_t race){
 }
 /* the outrun's friend keeps the slot (assign) */
 static int du_keeps(int k){ return g_du.st != DU_IDLE && g_sl[k].peer_id == g_du.id; }
+/* our own link stood lately: no list from the hub for DU_CUT_US now, or one came after such a gap within DU_CUT_KEEP_US
+ * (the WebSocket, or the whole page, a phone's locked screen): a friend whose packets stopped then is gone on our
+ * screen, and we are gone on its */
+static int du_cut(int64_t host){
+    return g_du.hub_heard && (host - g_du.hub_heard > DU_CUT_US || (g_du.hub_late && host - g_du.hub_late < DU_CUT_KEEP_US));
+}
 static void du_note(int64_t host, const char *fmt, const char *name){
     snprintf(g_du.note, sizeof g_du.note, fmt, name);
     g_du.note_until = host + DU_NOTE_US;
@@ -3441,6 +3464,7 @@ static int du_start(CPU *c, int64_t host){
     gcall0(c, FN_ENGAGE_DONE, G_ENGAGE);
     MR32(w + 0x1cu + 4u * first) = keep; MR32(w + 0x18u) = end;
     g_du.car = car; g_du.won = g_du.their = 0; g_du.posted = 0; g_du.nres = 0; g_du.gone_at = 0; g_du.ranks = 0; g_du.away = 0; g_du.away_at = 0;
+    g_du.unlisted = 0;
     if (MR32(G_RACETYPE) != 7u || MR32(race + 0x24u) != 2u){
         rlog("[roam] f=%ld outrun with %s: the game did not start it (race type %u, %u racers)\n", rh_frame(), g_du.name,
                 MR32(G_RACETYPE), MR32(race + 0x24u));
@@ -3637,15 +3661,46 @@ static void du_frame(CPU *c, int64_t host, int in_roam, int world_runs, const ui
         /* the friend is gone (not shown, not in free roam, no packets): its
          * car stays where it was (the slots leave it), and we win */
         const PeerView *v = du_pv(g_du.id);
+        if (!v && in_roam){
+            /* the session let the friend go, and the slots parked its car: the result at once, before the game's next
+             * update counts the car 120 km behind.  A win when it went (its BYE, a restart, another room; or nothing
+             * heard of it for T_DROP while our own link stood); a loss when our link stood (then we went, on its
+             * screen) or for no word (its session let us go first: we went silent there) */
+            if (!g_du.posted){
+                int won = g_du.gone_why == RC_DGONE_SAID || (g_du.gone_why == RC_DGONE_SILENT && !du_cut(host));
+                if (won) du_note(host, "%s left the outrun", g_du.name);
+                else du_note(host, "The connection dropped: the outrun with %s is lost", g_du.name);
+                du_post(won, g_du.gone_why == RC_DGONE_SAID ? "the friend left the session" : g_du.gone_why != RC_DGONE_SILENT ?
+                        "the friend's game let us go" : won ? "nothing heard of the friend for 10 s" : "our own link stood");
+            }
+            break;
+        }
+        if (v && (!v->listed) != g_du.unlisted){
+            g_du.unlisted = !v->listed;
+            rlog("[roam] f=%ld outrun with %s: %s, %.0f m apart\n", rh_frame(), g_du.name,
+                 g_du.unlisted ? "the hub's list leaves it out (kept for the outrun)" : "on the hub's list again", (double)g_du.gap);
+        }
         if (!car_out(g_du.car) || (k >= 0 && g_sl[k].car != g_du.car)){
-            /* its car was parked (the friend left the session): at once, before the game's next update counts it */
+            /* its car was parked with the friend still here (the slots keep it: du_keeps): the game's next update
+             * would count it 120 km behind.  Ours is the result, and the friend's game takes it (RC_DUEL_RESULT) */
             if (!g_du.posted){ du_note(host, "%s left the outrun", g_du.name); du_post(1, "the friend's car is gone"); }
             break;
         }
-        if (k < 0 || !v || !v->visible){
-            if (!g_du.gone_at) g_du.gone_at = host;
-            if (host - g_du.gone_at > DU_GONE_US && !g_du.posted){ du_note(host, "%s left the outrun", g_du.name); du_post(1, "the friend is gone"); }
+        if (!v || k < 0 || !v->visible){
+            /* not shown: out of free roam (its status) for DU_GONE_US, it left; its snapshots stopped (a stall, its
+             * link), its car waits where it was and the order stands (du_rank) until it comes back or goes */
+            if (!g_du.gone_at){
+                g_du.gone_at = host;
+                rlog("[roam] f=%ld outrun with %s: its car not shown (%s), %.0f m apart\n", rh_frame(), g_du.name,
+                     !v ? "we are not in free roam" : v->roams ? "no snapshots" : "out of free roam", (double)g_du.gap);
+            }
+            if (v && !v->roams && host - g_du.gone_at > DU_GONE_US && !g_du.posted){
+                du_note(host, "%s left the outrun", g_du.name); du_post(1, "the friend left free roam"); }
             break;
+        }
+        if (g_du.gone_at){
+            rlog("[roam] f=%ld outrun with %s: its car shown again after %.1f s\n", rh_frame(), g_du.name, (host - g_du.gone_at) / 1e6);
+            g_du.away_at = 0;                         /* (its jump to where it is counts for nothing) */
         }
         g_du.gone_at = 0;
         if (g_du.their){ du_post(g_du.their == 1, "the friend's game has its result"); break; }
@@ -5325,23 +5380,25 @@ static void init_once(CPU *c){
     O.map_filter = env_int("NFSU2_ROAM_MAP_FILTER", 1, 0, 1);
     O.ai_grey = env_int("NFSU2_ROAM_AI_GREY", 1, 0, 1);
     O.friends = env_int("NFSU2_ROAM_FRIENDS", 1, 0, 1);
-    O.max_cars = env_int("NFSU2_ROAM_MAX_CARS", MAX_CARS, 0, MAX_CARS);
+    O.max_cars = env_int("NFSU2_ROAM_MAX_CARS", DEF_CARS, 0, MAX_CARS);
     g_mp.alone_us = (int64_t)env_int("NFSU2_ROAM_LOBBY_ALONE_S", (int)(MP_ALONE_US / 1000000), 5, 3600) * 1000000;
     g_mp.idle_us = (int64_t)env_int("NFSU2_ROAM_LOBBY_IDLE_S", (int)(MP_IDLE_US / 1000000), 10, 3600) * 1000000;
-    /* at most 30: each snapshot goes to up to 32 friends, and 60 tripled what each of them got from that player
+    /* at most 30: each snapshot goes to up to 48 friends, and 60 tripled what each of them got from that player
      * (the server's port the limit, nfsu2.xyz 2026-10-22) for little they see: they draw a car 100 ms in the past,
      * between its snapshots */
     O.rate = env_int("NFSU2_ROAM_RATE", 20, 10, 30);
     O.delay_ms = env_int("NFSU2_ROAM_DELAY", 100, 0, 1000);
     O.extrap_ms = env_int("NFSU2_ROAM_EXTRAP", 250, 0, 1000);
-    O.carpool_kb = env_int("NFSU2_ROAM_CARPOOL_KB", CARPOOL_KB, 0, 128000);
+    /* (more cars shown than DEF_CARS: room for each of them) */
+    int carpool = CARPOOL_KB + (O.max_cars > DEF_CARS ? (O.max_cars - DEF_CARS) * CARPOOL_KB_CAR : 0);
+    O.carpool_kb = env_int("NFSU2_ROAM_CARPOOL_KB", carpool, 0, 128000);
     /* at or below the game's own size the player's car and traffic fill the pool and no friend's car is shown:
      * the value the Settings panel's old "Car memory pool" row left in players' files (its help said "never
      * below the game's own 11000"), so it counts as unset */
     if (O.carpool_kb <= CARPOOL_KB_GAME){
         rlog("[roam] NFSU2_ROAM_CARPOOL_KB=%d is not above the game's own %d KB (no room for friends' cars), using %d\n",
-             O.carpool_kb, CARPOOL_KB_GAME, CARPOOL_KB);
-        O.carpool_kb = CARPOOL_KB;
+             O.carpool_kb, CARPOOL_KB_GAME, carpool);
+        O.carpool_kb = carpool;
     }
     int port = env_int("NFSU2_ROAM_PORT", RC_DEFAULT_PORT, 1024, 65535);
     int maxp = env_int("NFSU2_ROAM_MAX_PLAYERS", RC_MAX_PLAYERS, 2, RC_MAX_PLAYERS);
@@ -5363,6 +5420,9 @@ static void init_once(CPU *c){
     snprintf(cf.name, sizeof cf.name, "%s", O.name[0] ? O.name : "Player");
     cf.platform = RC_PLAT_MAC;
     cf.test_mode = O.test; cf.max_players = maxp; cf.rate_hz = O.rate; cf.duels = 1; cf.lobbies = 1;
+    /* the hub links us with as many players as we show cars (a hub before version 10 gives 32; 0 shown: not said, 32
+     * for quick chat and the lobbies) */
+    cf.links = O.max_cars;
     /* quick chat: the launcher's Quick chat switch (NFSU2_ROAM_SAY=1); off, the HELLO tells the others to send none
      * and 1-4 and the right stick stay the game's */
     cf.say = roam_plat_quickchat() && env_int("NFSU2_ROAM_SAY", 0, 0, 1);
@@ -5874,6 +5934,11 @@ void roam_game_frame(CPU *c){
         if (!rc_take_duel(&g_s, &duin[4 * nduin], &op, &arg, &duin[4 * nduin + 3])) break;
         duin[4 * nduin + 1] = op; duin[4 * nduin + 2] = arg; nduin++;
     }
+    /* our outrun's friend, for the hub (it links the two first) and the session (it keeps the friend); and how the
+     * friend went if it went, as of the peers below (du_frame) */
+    rc_set_duel(&g_s, g_du.st != DU_IDLE ? g_du.id : 0);
+    g_du.gone_why = g_s.duel_gone;
+    g_du.hub_heard = g_s.conf.hub_ip ? g_s.hub_heard_us : 0; g_du.hub_late = g_s.hub_late_us;
     /* race lobby messages for us (mp_frame) */
     uint32_t mpfrom[RC_LOBBY_INBOX]; rc_lobby mpin[RC_LOBBY_INBOX]; int nmpin = 0;
     while (nmpin < RC_LOBBY_INBOX && rc_take_lobby(&g_s, &mpfrom[nmpin], &mpin[nmpin])) nmpin++;
@@ -5897,6 +5962,7 @@ void roam_game_frame(CPU *c){
                          (p->status == RC_ST_PAUSED ||
                           (p->status == RC_ST_ROAM && host - p->last_snap_rx < 2000000));
             v->paused = p->status == RC_ST_PAUSED; v->duels = p->duels; v->listed = rc_peer_listed(&g_s, i);
+            v->roams = p->status == RC_ST_ROAM || p->status == RC_ST_PAUSED;
             v->crew = rc_peer_crew(&g_s, i) + 1;
             if (!v->crew && O.friends && rc_peer_friend(&g_s, i)) v->crew = FRIEND_CREW;
             v->cfg_gen = p->cfg_gen; v->cfg_len = 0; v->has_cfg = p->cfg_len > 0; v->err = 0;
@@ -6360,15 +6426,15 @@ void roam_game_goals(CPU *c, void (*orig)(CPU *)){
  *  - the car loader's rides (CarLoadedRideInfoSlotPool, 22 x 0x1240 bytes):
  *    its Load (0x63AE80) waits until one is free, purging, for good when every
  *    entry is in use (the player's, the opponent cars', traffic's (up to 7), a
- *    car of our own's first ride, each friend's): 128 (600 KB);
+ *    car of our own's first ride, each friend's): RIDE_ENTRIES (160, 730 KB);
  *  - the minimap's visuals and icons (MinimapEntity 102 x 8, MinimapElements
  *    102 x 0x20 bytes), taken with 0x43F8F0, which never grows a pool: a
  *    friend's arrow is one of each (minimap arrows), and an icon the pool
- *    could not give is linked in as a null pointer (0x4EC790): 256 each. */
+ *    could not give is linked in as a null pointer (0x4EC790): MM_POOL (384) each. */
 static struct { uint32_t name, count; const char *what; int said; } g_pools[] = {
     { GA(0x007a869cu), RIDE_ENTRIES, "rides the car loader holds" },   /* "CarLoadedRideInfoSlotPool" */
-    { GA(0x00790b18u), 256, "minimap visuals" },                       /* "MinimapEntity" */
-    { GA(0x00790b08u), 256, "minimap icons" },                         /* "MinimapElements" */
+    { GA(0x00790b18u), MM_POOL, "minimap visuals" },                   /* "MinimapEntity" */
+    { GA(0x00790b08u), MM_POOL, "minimap icons" },                     /* "MinimapElements" */
 };
 /* The Cars pool's extra memory.  A track load adds the difference between
  * its size (0x7FA9D4 table, free roam's raised to O.carpool_kb) and the
