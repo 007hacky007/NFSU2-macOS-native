@@ -2,7 +2,7 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
-## 1.0.4 - unreleased
+## 1.0.4 - 2026-11-03
 
 ### Added
 - Everything ghost: a third choice for free roam with other players, where the game's traffic and tuners drive through your car too, and give no near-miss points. A tuner you race in an outrun stays solid, and an outrun between two players is solid only when both chose solid cars. Game Tools switches between solid, ghost and everything ghost while you play.
