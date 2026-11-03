@@ -300,9 +300,9 @@ struct LanguagePackTests {
     /// the fixture's text, and it in Clickteam's deflate with dynamic codes (zlib's raw
     /// deflate at level 9, its block headers, code length order and stored lengths
     /// rewritten as Clickteam's; checked with a decoder written from the patch program)
-    static let ctText: [UInt8] = Array((String(repeating: "Cestina do hry Need for Speed: Underground 2 - zkusebni text. ", count: 3)
-        + String(repeating: "Zpet na hlavni menu. Opravdu chces prepsat predchozi ulozeni hry? ", count: 4)
-        + String((0..<120).map { Character(UnicodeScalar(UInt8(65 + ($0 * 7) % 26))) })).utf8)
+    static let ctText: [UInt8] = cat(Array(String(repeating: "Cestina do hry Need for Speed: Underground 2 - zkusebni text. ", count: 3).utf8),
+        Array(String(repeating: "Zpet na hlavni menu. Opravdu chces prepsat predchozi ulozeni hry? ", count: 4).utf8),
+        (0..<120).map { (i: Int) -> UInt8 in UInt8(65 + (i * 7) % 26) })
     static let ctDynamic = hex(
         "bedb931cd04e020000b8cabb802c5cba318af3002ae2c0aed2af2562db7420cae9ad873026aedecb1b63b2ae920c5c41981712228eab32c874603de4"
         + "9293b919e52547171db4776fe9222b387aba08f10fdb852687d016356b82f820e923a4dab0867b94a2240b6d485be63ec84ba1da0abe562d8574f8eb"
@@ -398,7 +398,9 @@ struct LanguagePackTests {
         let ours = try CzechTexts.bytes()
         check(ours[0x0381_2413] != nil && got[0x0381_2413] == ours[0x0381_2413] && got[0x2222] == Array("Zpet".utf8),
               "the empty movie line filled in, in the game's letters; the translation's own texts kept")
-        check(ours.values.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0 >= 0x20 && ($0 < 0x7f || [0xc1, 0xc9, 0xcd, 0xd3, 0xda, 0xdd, 0xe1, 0xe9, 0xed, 0xf3, 0xfa, 0xfd].contains($0)) } },
+        let acute: Set<UInt8> = [0xc1, 0xc9, 0xcd, 0xd3, 0xda, 0xdd, 0xe1, 0xe9, 0xed, 0xf3, 0xfa, 0xfd]
+        func fontLetter(_ b: UInt8) -> Bool { (b >= 0x20 && b < 0x7f) || acute.contains(b) }
+        check(ours.values.allSatisfy { t in !t.isEmpty && t.allSatisfy(fontLetter) },
               "our Czech texts use only ASCII and the fonts' \u{E1}\u{E9}\u{ED}\u{F3}\u{FA}\u{FD} (\(ours.count) texts)")
         check(fm.fileExists(atPath: packs.appendingPathComponent("czech/memcard/LOCALE_ENGLISH.loc").path)
               && !fm.fileExists(atPath: packs.appendingPathComponent("czech/LANGUAGES/German.bin").path), "its memory-card texts; not its German.bin")
@@ -416,8 +418,8 @@ struct LanguagePackTests {
 
     /// the fixture's text, and it in NSIS's bzip2 (Python's bz2 at level 9, its stream
     /// header, block magic, CRCs, randomised bit and end magic rewritten as NSIS's)
-    static let bzText: [UInt8] = Array(String(repeating: "Slovencina do hry Need for Speed: Underground 2. ", count: 3).utf8)
-        + [UInt8](repeating: 0x61, count: 42) + (0..<256).map { UInt8($0) } + Array(String(repeating: "zzzzz", count: 40).utf8)
+    static let bzText: [UInt8] = cat(Array(String(repeating: "Slovencina do hry Need for Speed: Underground 2. ", count: 3).utf8),
+        [UInt8](repeating: 0x61, count: 42), (0..<256).map { UInt8($0) }, Array(String(repeating: "zzzzz", count: 40).utf8))
     static let bzNSIS = hex(
         "31000079ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff6002368c24c0013000130000000000000000000000"
         + "000000000000000000000000000000000010d0982600000000684c000004c00023013000000000000000000000000000004c00000000019faa21a834"

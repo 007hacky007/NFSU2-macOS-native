@@ -58,6 +58,15 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    /// a language pack's failure as its message (one cast at a time: a chain of ?? is slow to type-check)
+    static func packFailure(_ error: Error) -> String {
+        if let e = error as? LanguagePacks.Failure { return e.message }
+        if let e = error as? InnoSetup.Failure { return e.message }
+        if let e = error as? Clickteam.Failure { return e.message }
+        if let e = error as? NSIS.Failure { return e.message }
+        if let e = error as? Mega.Failure { return e.message }
+        return "\(error)"
+    }
     let model = LauncherModel()
     var window: NSWindow?
     var settingsWindow: NSWindow?
@@ -130,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         ? try LanguagePacks.importCopy(lang: parts[0], src: URL(fileURLWithPath: parts[2]), game: game, packs: packs)
                         : try LanguagePacks.download(lang: parts[0], game: game, packs: packs) { _, _, _ in }
                     print(s); exit(0)
-                } catch { print("failed: \((error as? LanguagePacks.Failure)?.message ?? (error as? InnoSetup.Failure)?.message ?? (error as? Clickteam.Failure)?.message ?? (error as? NSIS.Failure)?.message ?? (error as? Mega.Failure)?.message ?? "\(error)")"); exit(1) }
+                } catch { print("failed: " + AppDelegate.packFailure(error)); exit(1) }
             }
             return
         }
