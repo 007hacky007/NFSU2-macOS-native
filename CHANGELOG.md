@@ -2,6 +2,11 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.4 - unreleased
+
+### Added
+- Quick chat in races with other players: the same phrases, keys 1-4 twice or the right stick, while driving and on the results of every race between players online (the Online and LAN menus' races and free roam's race lobbies), with free roam on or off. What is said shows in a chat on the left of the picture. Never in a career race or a Quick Race; from th0mk's nfsu2-web.
+
 ## 1.0.3 - 2026-11-03
 
 ### Added

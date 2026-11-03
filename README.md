@@ -135,7 +135,7 @@ Click a picture to see it full size.
 | Online play | The game's Online mode through a community server, since EA's servers are gone. Your place in a full server survives a reconnect. Off by default. | <a href="docs/readme/full/online-lobby.jpg"><img src="docs/readme/thumbs/online-lobby.jpg" width="180" alt="The game's Online lobby"></a> |
 | Free roam with friends | See the other players' cars live in career free roam, as solid cars or ghosts, with rooms (invite links to share them) and up to four crews in your colours. Off by default. | <a href="docs/readme/full/fr-free-roam-eu-sees-na-ghost.jpg"><img src="docs/readme/thumbs/free-roam.jpg" width="180" alt="Another player's car in free roam"></a> |
 | Races from free roam | Challenge a nearby player to an outrun, or open a race lobby at a race marker. The prize goes into your career. The game's own tuners still challenge you with other players around. | <a href="docs/readme/full/fr-free-roam-na.jpg"><img src="docs/readme/thumbs/free-roam-race.jpg" width="180" alt="Challenge prompt next to another player's car"></a> |
-| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car. Cmd+Shift+M opens the free-roam race lobby and changes your room while you play. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
+| Quick chat and Game Tools | Say short phrases with keys 1-4 or the right stick, shown as bubbles over your car in free roam and in a chat on the left in races with other players. Cmd+Shift+M opens the free-roam race lobby and changes your room while you play. Off by default. | <a href="docs/readme/launcher/quick-chat.png"><img src="docs/readme/thumbs/launcher-quick-chat.jpg" width="180" alt="Quick chat groups in the launcher"></a> |
 | Horns and friends' cars | Honk at other players with N (eight horns), and hear their engines, nitrous and hydraulics. Both off by default. | <a href="docs/readme/full/ph-horns-pause-audio-eu.jpg"><img src="docs/readme/thumbs/horns.jpg" width="180" alt="Horn Volume slider in the Audio options"></a> |
 | Friends | Touch front bumpers with another player in free roam to become friends; friends stand out in free roam, and the launcher lists where each one plays with a Join. Needs a claimed name. |  |
 | Player counts | See how many play on the server, in your room and in your crews before you join. | <a href="docs/readme/launcher/settings-online.png"><img src="docs/readme/thumbs/f-player-counts.jpg" width="180" alt="Online settings with player counts"></a> |
@@ -713,6 +713,22 @@ lifted as a second guest module at 0x00A00000 (`tools/gen_v2.sh` ->
   nitrous and hydraulics in free roam with the game's own sounds
   (`runtime/carsfx.c`).  Environment: `NFSU2_HORN=<horn>`,
   `NFSU2_ROAM_CARSFX=1`.  Unit tests: `tests/horn_unit.sh`.
+- **Quick chat** (with Play online; off by default, as in the original game):
+  four groups of four phrases (**Quick chat groups...**, also in Game Tools,
+  Cmd+Shift+M); 1-4 opens a group and 1-4 again says a phrase, or flick the
+  right stick twice.  In free roam it shows over your car to the players
+  near you and in your race lobby (`runtime/native_controls.m`,
+  `roam_game.c`).  In every race between players online (the Online and LAN
+  menus' races and free roam's race lobbies, with free roam on or off) it
+  works while driving and on the results and goes to everyone in the race,
+  shown in a chat on the left of the picture; the race's creator passes each
+  joiner's on to the others, beside the horns (`runtime/racehorn.c`, from
+  nfsu2-web).  At most three phrases in six seconds, the same one again
+  within two seconds is not shown; never in a career race or a Quick Race.
+  Off, nothing is said, shown or passed on, and the keys and the stick are
+  the game's.  Environment: `NFSU2_ROAM_SAY=1`, `NFSU2_QUICKCHAT_GROUPS`,
+  `NFSU2_QUICKCHAT_PHRASES`.  Unit tests: `tests/native_controls.sh`,
+  `tests/horn_unit.sh`.
 - `NFSU2_NET=off` turns networking off; `NFSU2_NET=loopback` confines it to
   127.0.0.1 for two games on one Mac (see the top of `runtime/winsock.c`).
 
