@@ -66,13 +66,21 @@ fixes it. Click a picture to see it full size.
 The app it makes has the game inside it, so it needs no game folder and you can move
 it anywhere.
 
-**Updating.** When an app the Builder made opens, the launcher asks GitHub every two
-hours whether a newer NFSU2 Builder is out and, if so, says so with **What's new** and
-**Download** (Settings > More > Check for updates turns this off; off, it makes no
-network request). Open the new Builder: it finds your `NFSU2.app`, takes the game from
-inside it, and the button reads **Update NFSU2.app** with the old and new versions. The
-old app is only read, and it is replaced only once the new one is complete. Saves and
-settings stay as they are.
+**Updating.** The launcher of an app the Builder made asks GitHub whether a newer
+NFSU2 Builder is out when it opens and every two hours while it stays open, and if so
+says so with **What's new** and **Update** (Settings > More > Check for updates turns
+this off; off, it makes no network request). **Update** does the rest by itself, with
+one progress bar in the launcher: it downloads the new Builder's disk image, checks it
+against the release's SHA-256, opens the Builder in it out of sight, and the Builder
+builds the new app from the game inside your `NFSU2.app`. Play waits meanwhile. When
+the new app is built the launcher closes, the Builder replaces `NFSU2.app`, opens it
+and quits, and the launcher unmounts the disk image and deletes the download. If
+anything stops it, the launcher says why (**Show Details** opens the Builder with its
+log) and your app stays as it was. An app not named `NFSU2.app`, or in a folder you
+cannot write to, gets **Download** instead: open the new Builder yourself, it finds
+your `NFSU2.app`, takes the game from inside it, and the button reads **Update
+NFSU2.app** with the old and new versions. Either way the old app is only read, and it
+is replaced only once the new one is complete. Saves and settings stay as they are.
 
 What you need:
 
@@ -110,7 +118,9 @@ On an M1 Pro the build takes about 3 minutes: lifting 52 s, compiling 57 s,
 linking 10 s and the launcher 60 s (a rebuild skips the launcher). The first
 time, add about 1.5 minutes for the Python download and setup. It needs about
 1.5 GB of free space while building (0.6 GB stays per region built until you
-press **Remove build files**), and about 1.8 GB more for the game when it cannot
+press **Delete temporary files**; the build tools, about 110 MB, stay unless you
+also tick **Also delete the build tools**, so an update does not download them
+again), and about 1.8 GB more for the game when it cannot
 be cloned: unpacked from disc images, or copied from another disk.
 
 The Builder works in `~/Library/Application Support/NFSU2 Builder` and never
