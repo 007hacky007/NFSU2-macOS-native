@@ -2,6 +2,11 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.4 - unreleased
+
+### Added
+- Hungarian and Ukrainian: GameHunter's Hungarian translation (L_zooltan) and Clark X.'s Ukrainian one, one click each in Settings, Mods, Languages. The launcher downloads the translation's installer, checks it is the tested release and reads its files without running it.
+
 ## 1.0.3 - 2026-11-03
 
 ### Added
