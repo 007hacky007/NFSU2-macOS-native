@@ -2,7 +2,8 @@
 // on made-up data: an endscript's texts merged into a language file, the gzip and
 // Astrum installer readers (the Polish layout and the older Hungarian one), the Inno
 // Setup reader and its LZMA decoder (the Ukrainian installer), the Clickteam patch reader
-// and its deflate (the Czech translation), a pack holding only what
+// and its deflate (the Czech translation), the NSIS reader and its bzip2 (the Slovak
+// one), a pack holding only what
 // differs from the game folder, and the RAR reader refusing what it is not.  No game
 // files, no internet.
 import Foundation
@@ -128,6 +129,7 @@ struct LanguagePackTests {
         check(crc.value == 0xcbf4_3926, "CRC32 check value")
         try installers()
         try czech()
+        try slovak()
         try malicious()
         exit(fails == 0 ? 0 : 1)
     }
@@ -408,6 +410,73 @@ struct LanguagePackTests {
         }
         check(LanguagePacks.way("czech") == .download && LanguagePacks.installers["czech"]?.inner?.name == "nfsu2cz-v1.1.exe",
               "Czech downloads in one click, as the zip abcgames.cz serves")
+    }
+
+    // MARK: the Slovak translation's NSIS installer
+
+    /// the fixture's text, and it in NSIS's bzip2 (Python's bz2 at level 9, its stream
+    /// header, block magic, CRCs, randomised bit and end magic rewritten as NSIS's)
+    static let bzText: [UInt8] = Array(String(repeating: "Slovencina do hry Need for Speed: Underground 2. ", count: 3).utf8)
+        + [UInt8](repeating: 0x61, count: 42) + (0..<256).map { UInt8($0) } + Array(String(repeating: "zzzzz", count: 40).utf8)
+    static let bzNSIS = hex(
+        "31000079ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff6002368c24c0013000130000000000000000000000"
+        + "000000000000000000000000000000000010d0982600000000684c000004c00023013000000000000000000000000000004c00000000019faa21a834"
+        + "1a641341e80862309a00311a68d31304c40c9847a219033447a00460234d0c988609a6418868d0d0d1a190d31061190c8c2340c46430830cb12518"
+        + "3268b46474849369496989a7138e9e4f505152c829e472593ca1f5455402043010843102900341f415159616970501025e6063fa323338006a286c"
+        + "6e2800e024e4e8ecf0f4f87401f8fa020a121a222a323a47ed25292d313539b9bf587c3838b96b75de12c11b0d8941cdd364eaeceef1b3da20797e"
+        + "0c812f6a56d8c901ec80f6502c18202984218110241934373ab1ba303766c6f1f5f8f842641b0882a0804d078e038120248713c48360e8de9d08fb"
+        + "e2c22241c51812c41634210e84910b0d0f1113bfe04545c646c747c87078523c392e27178d21232527292b2d2f31333537393b3d3f41434547494b"
+        + "4d4f51535557595b5d5f61636567696b6d6f71737577797b7d7f81828b84e387898b8d8f91939597999b9d9fa1a3a5a7a9abadafb1b3b5b7b9bbbd"
+        + "bfc1c3c5c7c9cbcdcfd1d3d5d7d9dbdddfe1e3e5e7e9ebedeff1f3f5f7f9fa2e")
+
+    /// an NSIS 2 installer: its program, the first header, a script header, these files
+    /// (compressed when given as NSIS bzip2), its CRC
+    static func nsis(_ files: [(data: [UInt8], packed: Bool)]) -> [UInt8] {
+        var exe: [UInt8] = Array("MZ".utf8) + [UInt8](repeating: 0, count: 0x400 - 2)   // the first header at 0x400
+        var body = le(0x8000_0000 | 6) + [0x31, 1, 2, 3, 4, 0x17]          // the script header, not read
+        for f in files { body += le(f.data.count | (f.packed ? 0x8000_0000 : 0)) + f.data }
+        let total = 28 + body.count + 4
+        exe += le(0) + NSIS.magic + le(6) + le(total) + body + le(0x1234_5678)
+        return exe
+    }
+
+    static func slovak() throws {
+        check(try NSIS.bunzip(ArraySlice(bzNSIS)) == bzText, "NSIS's bzip2 (\(bzText.count) bytes: runs, every byte value)")
+        refused("NSIS bzip2 with bzip2's own header") { _ = try NSIS.bunzip(ArraySlice(Array("BZh9".utf8) + bzNSIS)) }
+        for cut in stride(from: 0, to: bzNSIS.count, by: 3) {              // must not trap
+            var bad = bzNSIS; bad[cut] ^= 0x5a
+            _ = try? NSIS.bunzip(ArraySlice(bad))
+            _ = try? NSIS.bunzip(ArraySlice(bzNSIS.prefix(cut)))
+        }
+        check(true, "every damaged NSIS bzip2 stream returned or threw")
+
+        let inst = nsis([(Array("as it is".utf8), false), (bzNSIS, true)])
+        let es = try NSIS.entries(inst)
+        let stored = try NSIS.file(inst, es[0]), packed = try NSIS.file(inst, es[1])
+        check(es.count == 2 && stored == Array("as it is".utf8) && packed == bzText, "an NSIS installer's files, stored and compressed")
+        refused("not an NSIS installer") { _ = try NSIS.entries(Array("MZ".utf8) + [UInt8](repeating: 0, count: 2000)) }
+        for cut in stride(from: 0x400, to: inst.count, by: 7) {            // must not trap
+            var bad = inst; bad[cut] ^= 0xa5
+            if let e = try? NSIS.entries(bad) { for x in e { _ = try? NSIS.file(bad, x) } }
+            _ = try? NSIS.entries(Array(inst.prefix(cut)))
+        }
+        check(true, "every damaged NSIS installer returned or threw")
+
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("nfsu2-langsk-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmp) }
+        try fm.createDirectory(at: tmp.appendingPathComponent("game"), withIntermediateDirectories: true)
+        let exe = tmp.appendingPathComponent("NFSU2UK_SK.exe")
+        try Data(nsis((0..<14).map { _ in (bzNSIS, true) })).write(to: exe)
+        refused("a Slovak installer whose files are not the release's") {
+            _ = try LanguagePacks.buildSlovak(installer: exe, game: tmp.appendingPathComponent("game"), packs: tmp.appendingPathComponent("packs"))
+        }
+        check(!fm.fileExists(atPath: tmp.appendingPathComponent("packs/slovak").path), "nothing of it written")
+        refused("an imported Slovak installer that is not the pinned release") {
+            _ = try LanguagePacks.importCopy(lang: "slovak", src: tmp, game: tmp.appendingPathComponent("game"), packs: tmp.appendingPathComponent("packs"))
+        }
+        check(LanguagePacks.way("slovak") == .download && LanguagePacks.installers["slovak"]?.others.first?.inner.name == "NFSU2US_SK.exe",
+              "Slovak downloads in one click; Import… takes the American game's installer too")
     }
 
     // MARK: crafted inputs: each must be refused with an error, never trap or write outside

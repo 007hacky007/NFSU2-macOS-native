@@ -42,6 +42,15 @@
 //     says itself: "partial diacritics"), and memory-card texts.  The translation was
 //     made on German's text: the texts it left in German and the movies' lines it left
 //     empty (German's movies are dubbed) are ours, in its spelling (CzechTexts.swift).
+//   - MixerX's Slovak translation (v1.0, 2011; abcgames.cz): Download fetches the zip of
+//     its installer for the European game abcgames.cz serves, checks it (size and
+//     SHA-256), and reads the installer's files, never running it (an NSIS one,
+//     NSIS.swift); Import… also takes the one for the American game, whose language
+//     files are the same.  It takes English's place: its text (written in Windows-1250,
+//     with every Slovak letter) and the fonts' textures it comes with, which draw those
+//     letters, memory-card texts and credits, all as they are.  Not used: its own
+//     SPEED2.EXE and a CD image (for the movies' subtitles, which the engine shows
+//     itself), and the American one's Corsa and 106, which the game folder has.
 import Foundation
 import CryptoKit
 
@@ -71,8 +80,13 @@ enum LanguagePacks {
     /// The translations fetched as one installer: the author's page, where it links the
     /// installer (Ukrainian's: the Google Drive file kuli.com.ua's Download leads to), and
     /// the release this was made with; inner: the installer in it when the download is a
-    /// zip (Czech's), which Import… also takes as it is.
-    struct Installer { let page: URL; let url: URL; let file: Archive; var inner: Archive? = nil }
+    /// zip (Czech's), which Import… also takes as it is; others: the same translation's
+    /// other releases Import… takes too, as (zip, installer in it) (Slovak's for the
+    /// American game).
+    struct Installer {
+        let page: URL; let url: URL; let file: Archive; var inner: Archive? = nil
+        var others: [(zip: Archive, inner: Archive)] = []
+    }
     static let installers: [String: Installer] = [
         "hungarian": Installer(page: URL(string: "http://www.gamehunter.hu/2010/08/need-for-speed-underground-2-pc.html")!,
                                url: URL(string: "https://lukacs.eu/gamehunter/nfs_underground2.exe")!,
@@ -88,6 +102,16 @@ enum LanguagePacks {
                                          sha256: "9d4e140c5d7d49bd59d49feecfb97724a15e6f4454c41355d5eb4fbaf2f2ff5c"),
                            inner: Archive(name: "nfsu2cz-v1.1.exe", size: 421_341,
                                           sha256: "8cf760e988e8410549f40e5150dee0cabbd98534ebbc6d1ced971104f811bdd1")),
+        "slovak": Installer(page: URL(string: "https://www.abcgames.cz/?p=preklady_zobraz&id=7774")!,
+                            url: URL(string: "https://www.abcgames.cz/download/file.ashx?s=7&id=461")!,
+                            file: Archive(name: "nfs-underground-2-uk-sk.zip", size: 7_894_784,
+                                          sha256: "c4c00562698a834efdfe6a410ff79a11bc3a50d946f2efb679bc2d8032a39590"),
+                            inner: Archive(name: "NFSU2UK_SK.exe", size: 7_916_820,
+                                           sha256: "9c2db534e8a26bb2b8bdc471d8e936c0ed2581009555779c09b80f879e239870"),
+                            others: [(Archive(name: "nfs-underground-2-us-sk.zip", size: 43_738_195,
+                                              sha256: "a332b2dcbe65ffbaf0c6303e1a5d8d290f85551dad5c60c2e4369443a875f1a4"),
+                                      Archive(name: "NFSU2US_SK.exe", size: 43_782_674,
+                                              sha256: "b0119095ba161aaa6392cb1d68ee7863155664f33563d1095fb9e924d94d724c"))]),
     ]
     static let pages: [String: URL] = [
         "portuguese": URL(string: "https://joao13traducoes.com/2018/08/pc-need-for-speed-underground-2-traduzido-e-dublado-varios-autores/")!,
@@ -157,6 +181,19 @@ enum LanguagePacks {
     // and LOCALE_GERMAN.loc, the same translation for the German game.
     static let czFiles = [("LANGUAGES\\English.bin", "LANGUAGES/English.bin"),
                           ("memcard\\LOCALE_ENGLISH.loc", "memcard/LOCALE_ENGLISH.loc")]
+    // Slovak: (data entry of the installer, its SHA-256, the game's file it stands in for).
+    // Its files in the data entries' order: the installer's pictures and plugins (0-6),
+    // NFSU2UK-SK.rtf, slovencina.reg, CREDITS/SWEDISH.TXT, Global/GLOBALA.BUN,
+    // memcard/LOCALE_SWEDISH.loc, Languages/Swedish.bin, Languages/LanguageTextures.bin,
+    // Speed2.exe, ... (the same in the American game's installer, which has the cars after).
+    static let skFiles = [
+        (12, "b57d95e18f2d9119a7a525d1145292fd08cbfb182e14a5d3bde79f2e00a42f16", "LANGUAGES/English.bin"),
+        (13, "e2955afca09ab6128eabed6b35ae99f8f43c198f83f5e64803555d8af9d10531", "LANGUAGES/LanguageTextures.bin"),
+        (10, "6cb8547b480ba44bc5015b639223a8a8dd19e65e607e56e93093fe7027d7e5d1", "GLOBAL/GLOBALA.BUN"),
+        (11, "c53c78601e7ba05dedcbf652c71135199a78333a6c7be3873726c39e02536068", "memcard/LOCALE_ENGLISH.loc"),
+        (9, "cb49b54123ed28eb79a5bafd4ed5a5fb6f1dab9bb5ebd3f108b85b623104f2a0", "CREDITS/NA_ENGLISH.TXT"),
+        (9, "cb49b54123ed28eb79a5bafd4ed5a5fb6f1dab9bb5ebd3f108b85b623104f2a0", "CREDITS/UK_ENGLISH.TXT"),
+    ]
 
     /// How a language's pack is made.
     enum Way { case download, importOnly }
@@ -653,12 +690,34 @@ enum LanguagePacks {
         return p.summary
     }
 
+    /// Slovak's pack from its installer (either one, as downloaded, checked by the caller):
+    /// its files by their index, each checked against the release this was made with.
+    static func buildSlovak(installer: URL, game: URL, packs: URL? = nil) throws -> String {
+        let d = [UInt8](try Data(contentsOf: installer))
+        let entries = try NSIS.entries(d)
+        let p = Pack(game: game, lang: "slovak", packs: packs)
+        var got: [Int: [UInt8]] = [:]
+        for (i, sha, rel) in skFiles {
+            guard i < entries.count else { throw Failure(message: "The Slovak translation's installer has other files than the release this was made for.") }
+            let data = try got[i] ?? NSIS.file(d, entries[i])
+            got[i] = data
+            guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == sha else {
+                throw Failure(message: "The Slovak translation's installer has other files than the release this was made for (\(rel)).")
+            }
+            try p.add(Data(data), rel)
+        }
+        p.finish()
+        return p.summary
+    }
+
     /// The pinned installer at src (the file, or a folder with it; for Czech also the
     /// zip it comes in, unpacked to a temporary folder, the second URL, for the caller to
     /// remove), refused unless it is the release this was made with.
     static func pinnedInstaller(_ lang: String, _ src: URL) throws -> (URL, URL?) {
         guard let i = installers[lang] else { throw Failure(message: "\(lang) has no installer") }
         let a = i.inner ?? i.file
+        // (zip, installer) of every release taken; a plain installer has no zip
+        let forms: [(zip: Archive?, exe: Archive)] = [(i.inner == nil ? nil : i.file, a)] + i.others.map { ($0.zip, $0.inner) }
         func size(_ u: URL) -> Int64 { ((try? FileManager.default.attributesOfItem(atPath: u.path))?[.size] as? NSNumber)?.int64Value ?? -1 }
         func pinned(_ u: URL, _ x: Archive) -> Bool { size(u) == x.size && (try? sha256(u)) == x.sha256 }
         func search(_ dir: URL, _ x: Archive) -> URL? {
@@ -667,18 +726,20 @@ enum LanguagePacks {
                 .sorted { ($0.lastPathComponent == x.name ? 0 : 1, $0.path) < ($1.lastPathComponent == x.name ? 0 : 1, $1.path) }
                 .first { pinned($0, x) }
         }
-        var found: URL? = nil, zip: URL? = nil
-        if UHUDPack.isDirectory(src) {
-            found = search(src, a)
-            if found == nil, i.inner != nil { zip = search(src, i.file) }
-        } else if pinned(src, a) {
-            found = src
-        } else if i.inner != nil, pinned(src, i.file) {
-            zip = src
+        var found: URL? = nil, zip: (URL, Archive)? = nil
+        for f in forms where found == nil && zip == nil {
+            if UHUDPack.isDirectory(src) {
+                found = search(src, f.exe)
+                if found == nil, let z = f.zip, let u = search(src, z) { zip = (u, f.exe) }
+            } else if pinned(src, f.exe) {
+                found = src
+            } else if let z = f.zip, pinned(src, z) {
+                zip = (src, f.exe)
+            }
         }
-        if found == nil, let z = zip {
+        if found == nil, let (z, exe) = zip {
             let (dir, temp) = try unpackedFolder(z)
-            if let f = search(dir, a) { return (f, temp) }
+            if let f = search(dir, exe) { return (f, temp) }
             if let t = temp { try? FileManager.default.removeItem(at: t) }
         }
         guard let f = found else {
@@ -691,6 +752,7 @@ enum LanguagePacks {
         switch lang {
         case "hungarian": return try buildHungarian(installer: installer, game: game, packs: packs)
         case "czech": return try buildCzech(installer: installer, game: game, packs: packs)
+        case "slovak": return try buildSlovak(installer: installer, game: game, packs: packs)
         default: return try buildUkrainian(installer: installer, game: game, packs: packs)
         }
     }

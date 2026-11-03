@@ -55,6 +55,7 @@ final class LanguagePackStore: ObservableObject {
             catch let e as RarArchive.Failure { err = e.message }
             catch let e as InnoSetup.Failure { err = e.message }
             catch let e as Clickteam.Failure { err = e.message }
+            catch let e as NSIS.Failure { err = e.message }
             catch let e as UHUDPack.Failure { err = e.message }
             catch { err = error.localizedDescription }
             DispatchQueue.main.async {
@@ -88,6 +89,7 @@ final class LanguagePackStore: ObservableObject {
         case "hungarian": return "Choose GameHunter's nfs_underground2.exe as downloaded, or the folder it is in. It is read, never run."
         case "ukrainian": return "Choose \"Need for Speed Underground 2 - Ukrainian.exe\" as downloaded, or the folder it is in. It is read, never run."
         case "czech": return "Choose nfs-underground-2-cz.zip as downloaded from abcgames.cz, the nfsu2cz-v1.1.exe in it, or the folder it is in. It is read, never run."
+        case "slovak": return "Choose nfs-underground-2-uk-sk.zip or -us-sk.zip as downloaded from abcgames.cz, the installer in it (NFSU2UK_SK.exe or NFSU2US_SK.exe), or the folder it is in. It is read, never run."
         default: return "Choose the folder with the Multi 13 languages mod's archives (nfsug2Multi13Core.rar and the dubs), or one of them."
         }
     }
@@ -101,6 +103,7 @@ final class LanguagePackStore: ObservableObject {
         case "hungarian": return "GameHunter's translation (L_zooltan): the text, which writes \u{151} and \u{171} as \u{F5} and \u{FB}."
         case "ukrainian": return "Clark X.'s translation (kuli.com.ua): the text, on the Russian pack's fonts."
         case "czech": return "ROXOR's and PIN\u{10E}A & syn's translation (abcgames.cz): the text, which writes \u{10D}, \u{159}, \u{161} as c, r, s."
+        case "slovak": return "MixerX's translation (abcgames.cz): the text with every Slovak letter, on its own fonts."
         default:
             let what = LanguagePacks.dubs[lang] != nil ? (lang == "japanese" || lang == "russian" ? "Text, voices and movies" : "Voices and movies")
                 : lang == "chinese" || lang == "thai" ? "The full text and its fonts" : "The EA logo"

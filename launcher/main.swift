@@ -130,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         ? try LanguagePacks.importCopy(lang: parts[0], src: URL(fileURLWithPath: parts[2]), game: game, packs: packs)
                         : try LanguagePacks.download(lang: parts[0], game: game, packs: packs) { _, _, _ in }
                     print(s); exit(0)
-                } catch { print("failed: \((error as? LanguagePacks.Failure)?.message ?? (error as? InnoSetup.Failure)?.message ?? (error as? Clickteam.Failure)?.message ?? (error as? Mega.Failure)?.message ?? "\(error)")"); exit(1) }
+                } catch { print("failed: \((error as? LanguagePacks.Failure)?.message ?? (error as? InnoSetup.Failure)?.message ?? (error as? Clickteam.Failure)?.message ?? (error as? NSIS.Failure)?.message ?? (error as? Mega.Failure)?.message ?? "\(error)")"); exit(1) }
             }
             return
         }
