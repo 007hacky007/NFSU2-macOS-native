@@ -1,0 +1,28 @@
+# Typing an x is a letter, not drift mode's key (runtime/drift.c x_is_typing): a new profile's name with x's in it
+# (the game's text entry, [0x83a9c0]), then X in the main menu.  Good: the name field holds the x's, and the log has
+# no "[drift] ... X" line (the note "Drift mode only works in free roam" came from those; run_suite.sh fails the run
+# when it has one).  NFSU2_DRIFT=1: drift mode is off unless the launcher turns it on.
+#   tests/run_suite.sh --game <outdir> kbtypingx
+# forbid: [drift] f=
+0     nstapuntil RETURN MC_Background.fng 120 4000  # title -> "create a new profile?"
++120  nstap LEFT                                    # "Yes"
++30   nstap RETURN
++240  nstap BACK                                    # clear "NAME"
++8    nstap BACK
++8    nstap BACK
++8    nstap BACK
++20   nstype xXx1
++80   peek 0x83a9c0                                 # the text entry is up (byte)
++0    peek 0x83a8b0 2                               # what it holds: "xXx1"
++0    expect b:0x83a9c0 == 1
++0    expect b:0x83a8b0 == 120                      # x
++0    expect b:0x83a8b1 == 88                       # X
++0    log typed
++0    nstap RETURN                                  # -> "save profile named xXx1?" ("No" selected)
++240  nstap LEFT                                    # "Yes"
++30   nstap RETURN
++240  nstapuntil RETURN GarageMain.fng 150 3000     # "Save complete." Continue -> main menu
++300  log mainmenu
++0    nstap X
++120  log x_in_menu
++60   quit

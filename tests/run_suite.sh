@@ -29,8 +29,9 @@
 # fault ("FAULT IN GUEST", ...), no time limit reached, no unresolved indirect
 # call, no failed "expect" check, no "waitfng/waitmem/... TIMEOUT", no
 # "[net] BLOCKED" / "[roam] BLOCKED" line (an attempt to reach a network
-# beyond loopback / the virtual LAN), and (where given) the expected marker in
-# the log.  The other game-level tests have their own scripts (tests/README.md).
+# beyond loopback / the virtual LAN), (where given) the expected marker in
+# the log, and no text of the script's "# forbid: TEXT" line in it.  The
+# other game-level tests have their own scripts (tests/README.md).
 # Ported from th0mk's nfsu2-web tests/run_suite.sh (MIT).
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
@@ -99,6 +100,7 @@ padrace:pad_quickrace.txt:$FLOW:NFSU2_PAD_FAKE=PLUG=1
 padfe:pad_fe_buttons.txt:waitfng UI_OptionsMain.fng satisfied:NFSU2_PAD_FAKE=PLUG=1
 kbprofile:kb_profile.txt:LOG Cmd-Q now:
 kbprofilefill:kb_profile_prefill.txt:[profile] a new profile's name starts as the Player name:NFSU2_NEW_PROFILE_NAME=Alex_the_Great
+kbtypingx:kb_typing_x.txt:LOG x_in_menu:NFSU2_DRIFT=1
 kbfocus:kb_focus_mouse.txt:$FLOW:
 kbregain:kb_focus_regain.txt:LOG kb_focus_regain_end:
 wscameras:ws_cameras.txt:$FLOW:
@@ -135,6 +137,9 @@ while IFS= read -r line; do
   LC_ALL=C grep -aq "^\[autotest\] script line\|^\[autotest\] line [0-9]*: 0x" "$log" && why="$why script-error"
   LC_ALL=C grep -aq "^\[net\] BLOCKED\|^\[roam\] BLOCKED" "$log" && why="$why net-blocked"
   [ -n "$marker" ] && ! LC_ALL=C grep -aqF "$marker" "$log" && why="$why missing:'$marker'"
+  # a script's "# forbid: TEXT" line: a log with TEXT fails the run
+  forbid=$(sed -n 's/^# forbid: //p' "$ROOT/tests/scripts/$script" | head -1)
+  [ -n "$forbid" ] && LC_ALL=C grep -aqF "$forbid" "$log" && why="$why forbidden:'$forbid'"
   st=$(LC_ALL=C grep -a "^\[status\]" "$log" | tail -1 | sed 's/^\[status\] //')
   if [ -z "$why" ]; then pass=$((pass+1)); echo "PASS $name  ($st)"; else fail=$((fail+1)); echo "FAIL $name:$why"; fi
 done <<< "$ALL"
