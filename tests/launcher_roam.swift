@@ -14,7 +14,8 @@ func check(_ ok: Bool, _ what: String) {
 func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
 
 @main struct LauncherRoamTests {
-    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER", "NFSU2_ROAM_AI_GREY", "NFSU2_ROAM_FRIENDS"]
+    static let vars = ["NFSU2_ROAM", "NFSU2_NET", "NFSU2_ROAM_TUNERS", "NFSU2_ROAM_MAP_FILTER", "NFSU2_ROAM_AI_GREY", "NFSU2_ROAM_FRIENDS",
+                        "NFSU2_ROAM_COLLIDE", "NFSU2_ROAM_MAX_CARS"]
     static func clear() { for k in vars { unsetenv(k) } }
     static func main() {
         setvbuf(stdout, nil, _IOLBF, 0)
@@ -27,6 +28,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.roamMapFilter, "defaults: the world map legend's Players rows")
         check(m.roamAIGrey, "defaults: the game's challengers grey on the maps")
         check(m.roamFriends, "defaults: friends in free roam")
+        check(m.roamCars == 32, "defaults: 32 players' cars shown")
 
         // environment
         let exe = URL(fileURLWithPath: "/nonexistent/Need for Speed Underground 2/SPEED2.EXE")
@@ -52,6 +54,24 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.play()
         check(env("NFSU2_ROAM_FRIENDS") == "0", "play: friends off (NFSU2_ROAM_FRIENDS=0)")
         clear()
+        // collisions and the cars shown
+        check(env("NFSU2_ROAM_COLLIDE") == nil && env("NFSU2_ROAM_MAX_CARS") == nil, "play: (cleared)")
+        m.freeRoam = .solid; m.play()
+        check(env("NFSU2_ROAM_COLLIDE") == "1" && env("NFSU2_ROAM_MAX_CARS") == "32", "play: solid cars (NFSU2_ROAM_COLLIDE=1), 32 cars shown")
+        clear()
+        m.freeRoam = .ghost; m.roamCars = 48; m.play()
+        check(env("NFSU2_ROAM_COLLIDE") == "0" && env("NFSU2_ROAM_MAX_CARS") == "48", "play: ghost cars (=0), 48 cars shown")
+        clear()
+        m.freeRoam = .everything; m.roamCars = 16; m.play()
+        check(env("NFSU2_ROAM_COLLIDE") == "none" && env("NFSU2_ROAM_MAX_CARS") == "16", "play: everything a ghost (=none), 16 cars shown")
+        clear()
+        m = LauncherModel()
+        check(m.freeRoam == .everything && m.roamCars == 16, "persistence: everything a ghost and 16 cars kept")
+        UserDefaults.standard.set(33, forKey: Prefs.roamCars)
+        check(LauncherModel().roamCars == 32 && RoamExtras.cars(40) == 40 && RoamExtras.cars(0) == 32, "persistence: a stored count that is no choice is 32")
+        m.roamCars = 32
+        m.game = .ready(GameLocation(exe: exe, embedded: false))
+        m.online = true; m.playerName = "Driver_1"; m.server = "ws://127.0.0.1:8080/lan"
         m.freeRoam = .off; m.play()
         check(env("NFSU2_ROAM") == nil && env("NFSU2_ROAM_TUNERS") == nil, "play: free roam off, none of them")
         clear()

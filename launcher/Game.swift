@@ -130,7 +130,7 @@ enum Prefs {
     static let online = "LauncherOnline"           // LAN and Online through a server
     static let server = "LauncherServer"
     static let playerName = "LauncherPlayerName"
-    static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost"
+    static let freeRoam = "LauncherFreeRoam"       // "off" | "solid" | "ghost" | "everything"
     static let roamRoom = "LauncherRoamRoom"
     static let roamCrew = "LauncherRoamCrew"       // also written by the engine's Game Tools panel (runtime/native_controls.m)
     static let roamCrewColours = "LauncherRoamCrewColours"     // "rrggbb,..." for the crews in order (Game Tools)
@@ -142,6 +142,7 @@ enum Prefs {
     static let horn = "LauncherHorn"               // "off" | one of the engine's horns (runtime/horn.c)
     static let hearCars = "LauncherHearCars"       // NFSU2_ROAM_CARSFX=1 for the engine
     static let roamTuners = "LauncherRoamTuners"   // false: NFSU2_ROAM_TUNERS=0 (RoamExtras.swift)
+    static let roamCars = "LauncherRoamCars"       // NFSU2_ROAM_MAX_CARS: 16 | 24 | 32 | 40 | 48 (RoamExtras.swift)
     static let roamMapFilter = "LauncherRoamMapFilter"     // false: NFSU2_ROAM_MAP_FILTER=0
     static let roamAIGrey = "LauncherRoamAIGrey"           // false: NFSU2_ROAM_AI_GREY=0
     static let roamFriends = "LauncherRoamFriends"         // false: NFSU2_ROAM_FRIENDS=0 (Friends.swift)

@@ -5,7 +5,7 @@ import Darwin
 final class LauncherModel: ObservableObject {
     enum Engine: String { case original, hd }
     enum Reflections: String { case original, sharp, sharpest }
-    enum FreeRoam: String { case off, solid, ghost }
+    enum FreeRoam: String { case off, solid, ghost, everything }   // everything: NFSU2_ROAM_COLLIDE=none, traffic and tuners pass through too
     /// Horns between players (runtime/horn.c): the raw value is the engine's
     /// NFSU2_HORN name.  The PC game has no horn: off.
     enum Horn: String, CaseIterable {
@@ -136,6 +136,7 @@ final class LauncherModel: ObservableObject {
     @Published var horn: Horn { didSet { defaults.set(horn.rawValue, forKey: Prefs.horn) } }
     @Published var hearCars: Bool { didSet { defaults.set(hearCars, forKey: Prefs.hearCars) } }
     @Published var roamTuners: Bool { didSet { defaults.set(roamTuners, forKey: Prefs.roamTuners) } }   // RoamExtras.swift
+    @Published var roamCars: Int { didSet { defaults.set(roamCars, forKey: Prefs.roamCars) } }          // RoamExtras.swift
     @Published var roamMapFilter: Bool { didSet { defaults.set(roamMapFilter, forKey: Prefs.roamMapFilter) } }
     @Published var roamAIGrey: Bool { didSet { defaults.set(roamAIGrey, forKey: Prefs.roamAIGrey) } }
     @Published var roamFriends: Bool { didSet { defaults.set(roamFriends, forKey: Prefs.roamFriends) } }   // Friends.swift
@@ -258,6 +259,7 @@ final class LauncherModel: ObservableObject {
         hearCars = defaults.bool(forKey: Prefs.hearCars)
         defaults.register(defaults: RoamExtras.defaults)
         roamTuners = defaults.bool(forKey: Prefs.roamTuners)
+        roamCars = RoamExtras.cars(defaults.integer(forKey: Prefs.roamCars))
         roamMapFilter = defaults.bool(forKey: Prefs.roamMapFilter)
         roamAIGrey = defaults.bool(forKey: Prefs.roamAIGrey)
         roamFriends = defaults.bool(forKey: Prefs.roamFriends)
@@ -442,7 +444,9 @@ final class LauncherModel: ObservableObject {
         // roam_game.c).  Off: free roam as in the original game.
         if online && freeRoam != .off {
             setenv("NFSU2_ROAM", "1", 0)
-            setenv("NFSU2_ROAM_COLLIDE", freeRoam == .solid ? "1" : "0", 0)
+            setenv("NFSU2_ROAM_COLLIDE", RoamExtras.collide(freeRoam), 0)
+            // how many other players' cars free roam shows near you (the rest on the minimap)
+            setenv("NFSU2_ROAM_MAX_CARS", String(roamCars), 0)
             setenv("NFSU2_ROAM_DISCOVERY", "0", 0)
             let room = roamRoom.trimmingCharacters(in: .whitespaces)
             let crew = roamCrew.trimmingCharacters(in: .whitespaces)

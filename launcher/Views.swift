@@ -413,7 +413,7 @@ struct MultiplayerCard: View {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Free roam with other players").font(.system(size: 12.5)).foregroundColor(Theme.text)
-                        Text("See the other players' cars in career free roam and race them from the race markers. Ghost cars drive through yours.")
+                        Text("See the other players' cars in career free roam and race them from the race markers. Ghost cars drive through yours; Everything ghost lets traffic and the tuners through too, but not a tuner you race in an outrun.")
                             .font(.system(size: 11)).foregroundColor(Theme.dim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -422,6 +422,7 @@ struct MultiplayerCard: View {
                         Text("Off (original)").tag(LauncherModel.FreeRoam.off)
                         Text("Solid cars").tag(LauncherModel.FreeRoam.solid)
                         Text("Ghost cars").tag(LauncherModel.FreeRoam.ghost)
+                        Text("Everything ghost").tag(LauncherModel.FreeRoam.everything)
                     }
                     .labelsHidden().fixedSize()
                 }
