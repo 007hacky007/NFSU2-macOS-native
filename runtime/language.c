@@ -2,7 +2,7 @@
  *
  *   english, french, german, italian, spanish, dutch, swedish, danish,
  *   korean, chinese, japanese, thai, russian, portuguese, polish, turkish,
- *   hungarian, ukrainian, czech
+ *   hungarian, ukrainian, czech, slovak
  *
  * SPEED2.EXE reads its language once at startup from the registry value
  * "Language" (sub_005b7700, its compare loop at 0x5b7980; 0x5b76f0 and
@@ -18,7 +18,8 @@
  *
  * What a language needs beyond the retail folder (the dubbed speech and
  * movies, the full Chinese, Japanese and Thai text with the fonts drawn for
- * it, Russian, Portuguese, Polish, Turkish, Hungarian, Ukrainian, Czech) can come
+ * it, Russian, Portuguese, Polish, Turkish, Hungarian, Ukrainian, Czech,
+ * Slovak) can come
  * from LANGPACKS/<language> in the game folder, laid out like the game
  * folder: fileio.c reads a file there in place of the game folder's file of
  * the same path.  A language without a pack plays its text with English
@@ -35,8 +36,8 @@
  *    but has no entry.  In a Thai game Japanese's entry becomes Thai's: its
  *    id, its name and file ("JAPANESE" -> "THAILAND", the same length) and
  *    the font hashes of its block.
- * Russian, Portuguese (Brazil's), Polish, Turkish, Hungarian, Ukrainian and
- * Czech are no languages of the game: they play as English, with English's files
+ * Russian, Portuguese (Brazil's), Polish, Turkish, Hungarian, Ukrainian,
+ * Czech and Slovak are no languages of the game: they play as English, with English's files
  * from their pack.  Polish's and Turkish's texts spell their letters with
  * accented ones of the game's fonts, whose textures in their packs draw them
  * as the Polish or Turkish ones; Hungarian's spells its o and u with the
@@ -45,7 +46,8 @@
  * ours).  Ukrainian's are Russian's fonts with its text in their letters
  * (its I, Yi and Ye at 0xE2-0xE7).  Czech's keeps the game's fonts and writes
  * its letters with the caron and u with the ring without them (c, r, s, z,
- * e, u ...), as its translation does.
+ * e, u ...), as its translation does.  Slovak's text is Windows-1250 (s-caron
+ * 0x9A, c-caron 0xE8, l-caron 0xBE ...), which its pack's fonts draw.
  *
  * Movie subtitles, NFSU2_SUBTITLES=1 (default off, as the original game):
  * the movies' subtitles (SUBTITLES/<movie>: when to show which of the
@@ -117,13 +119,14 @@ static const struct lang { const char *key, *reg; uint32_t fonts; int thai; } LA
     { "hungarian",  "English", 0, 0 },
     { "ukrainian",  "English", 0, 0 },
     { "czech",      "English", 0, 0 },
+    { "slovak",     "English", 0, 0 },
 };
 static const struct lang *g_lang;   /* 0: NFSU2_LANGUAGE not set */
 static const uint32_t THAI_FONTS[4] = { 0x4815619du, 0xa87927beu, 0xa73823ffu, 0xbbba71c2u };
 
 /* The registry's "Language" for NFSU2_LANGUAGE, 0 when it is not set. */
 const char *language_registry(void){ return g_lang ? g_lang->reg : 0; }
-/* The language played, as NFSU2_LANGUAGE names it ("english" ... "czech"). */
+/* The language played, as NFSU2_LANGUAGE names it ("english" ... "slovak"). */
 const char *language_name(void){ return g_lang ? g_lang->key : "english"; }
 
 /* ---- the game's texts ------------------------------------------------------- */
@@ -224,7 +227,8 @@ void language_texts_frame(CPU *c){
  * l-stroke 0xEE, s-acute 0xE2 ...), Turkish's too (dotless i 0xED, s-cedilla
  * 0xFF, g-breve 0xFD ...), Hungarian's o and u with the double acute as its
  * text has them (o-tilde 0xF5, u-circumflex 0xFB), Czech's letters with the
- * caron and u with the ring without them (c, r, s, u ...); a letter the fonts lack as
+ * caron and u with the ring without them (c, r, s, u ...), Slovak's in
+ * Windows-1250, as its pack's fonts draw them; a letter the fonts lack as
  * '?'.  Korean, Chinese, Japanese, Thai, Russian and Ukrainian draw ASCII as
  * it is (car names), not Latin-1's accented letters. */
 void language_game_letters(const char *utf8, char *out, size_t n){
@@ -240,11 +244,18 @@ void language_game_letters(const char *utf8, char *out, size_t n){
         { 0x10d, 'c' }, { 0x10c, 'C' }, { 0x10f, 'd' }, { 0x10e, 'D' }, { 0x11b, 'e' }, { 0x11a, 'E' },
         { 0x148, 'n' }, { 0x147, 'N' }, { 0x159, 'r' }, { 0x158, 'R' }, { 0x161, 's' }, { 0x160, 'S' },
         { 0x165, 't' }, { 0x164, 'T' }, { 0x16f, 'u' }, { 0x16e, 'U' }, { 0x17e, 'z' }, { 0x17d, 'Z' },
+    }, SK[] = {
+        { 0xe1, 0xe1 }, { 0xe4, 0xe4 }, { 0x10d, 0xe8 }, { 0x10f, 0xef }, { 0xe9, 0xe9 }, { 0xed, 0xed },
+        { 0x13a, 0xe5 }, { 0x13e, 0xbe }, { 0x148, 0xf2 }, { 0xf3, 0xf3 }, { 0xf4, 0xf4 }, { 0x155, 0xe0 },
+        { 0x161, 0x9a }, { 0x165, 0x9d }, { 0xfa, 0xfa }, { 0xfd, 0xfd }, { 0x17e, 0x9e },
+        { 0xc1, 0xc1 }, { 0xc4, 0xc4 }, { 0x10c, 0xc8 }, { 0x10e, 0xcf }, { 0xc9, 0xc9 }, { 0xcd, 0xcd },
+        { 0x139, 0xc5 }, { 0x13d, 0xbc }, { 0x147, 0xd2 }, { 0xd3, 0xd3 }, { 0xd4, 0xd4 }, { 0x154, 0xc0 },
+        { 0x160, 0x8a }, { 0x164, 0x8d }, { 0xda, 0xda }, { 0xdd, 0xdd }, { 0x17d, 0x8e },
     };
     const char *key = language_name();
     int polish = !strcmp(key, "polish"), turkish = !strcmp(key, "turkish"), hungarian = !strcmp(key, "hungarian");
-    int czech = !strcmp(key, "czech");
-    int latin = !(g_lang && g_lang->fonts) && strcmp(key, "russian") && strcmp(key, "ukrainian");
+    int czech = !strcmp(key, "czech"), slovak = !strcmp(key, "slovak");
+    int latin = !(g_lang && g_lang->fonts) && strcmp(key, "russian") && strcmp(key, "ukrainian") && strcmp(key, "slovak");
     const uint8_t *s = (const uint8_t *)utf8;
     size_t o = 0;
     if (!n) return;
@@ -263,6 +274,7 @@ void language_game_letters(const char *utf8, char *out, size_t n){
         else if (turkish && u >= 0x100){ for (unsigned i = 0; i < sizeof TR / sizeof TR[0]; i++) if (TR[i].u == u) b = TR[i].b; }
         else if (hungarian && u >= 0x100){ for (unsigned i = 0; i < sizeof HU / sizeof HU[0]; i++) if (HU[i].u == u) b = HU[i].b; }
         else if (czech && u >= 0x100){ for (unsigned i = 0; i < sizeof CS / sizeof CS[0]; i++) if (CS[i].u == u) b = CS[i].b; }
+        else if (slovak){ for (unsigned i = 0; i < sizeof SK / sizeof SK[0]; i++) if (SK[i].u == u) b = SK[i].b; }
         else if (latin && u >= 0xa0 && u < 0x100) b = (uint8_t)u;
         out[o++] = (char)b;
     }

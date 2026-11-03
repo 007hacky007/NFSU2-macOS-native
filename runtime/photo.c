@@ -451,6 +451,7 @@ static void label(void){
         { "spanish", "Modo foto" }, { "dutch", "Fotomodus" }, { "swedish", "Fotol\xe4ge" },
         { "danish", "Fototilstand" }, { "portuguese", "Modo Foto" }, { "polish", "Tryb foto" },
         { "turkish", "Foto Modu" }, { "hungarian", "Fot\xf3 m\xf3" "d" }, { "czech", "Fotorezim" },
+        { "slovak", "Foto re\x9eim" },
     };
     if (P.labelled) return;
     P.labelled = 1;

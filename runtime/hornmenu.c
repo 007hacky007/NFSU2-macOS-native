@@ -100,10 +100,12 @@ static const char *label(void){
      * Polish's letters as its pack's fonts draw them (l-stroke 0xEE, s-acute
      * 0xE2, c-acute 0xE9); Turkish's "Korna Sesi" after its "Motor Sesi";
      * Hungarian's "Duda hangereje" after its "Motor hangereje" (th0mk's
-     * nfsu2-web, MIT); Czech's "Hlasitost klaksonu" after its "Hlasitost motoru" */
+     * nfsu2-web, MIT); Czech's "Hlasitost klaksonu" after its "Hlasitost motoru";
+     * Slovak's "Hlasitos\x9d klaks\xf3nu" after its "Hlasitos\x9d motora" (Windows-1250,
+     * as its pack's fonts draw it) */
     static const struct { const char *lang, *text; } P[] = {
         { "portuguese", "Volume da Buzina" }, { "polish", "G\xeeo\xe2no\xe2\xe9 klaksonu" }, { "turkish", "Korna Sesi" },
-        { "hungarian", "Duda hangereje" }, { "czech", "Hlasitost klaksonu" },
+        { "hungarian", "Duda hangereje" }, { "czech", "Hlasitost klaksonu" }, { "slovak", "Hlasitos\x9d klaks\xf3nu" },
     };
     for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) if (!strcmp(language_name(), P[i].lang)) return P[i].text;
     static const struct { const char *lang, *text; } T[] = {
