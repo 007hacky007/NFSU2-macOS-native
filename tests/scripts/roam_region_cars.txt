@@ -1,0 +1,34 @@
+# Friends in the other region's cars, on one region's data (runtime/
+# roam_game.c build_ride, type_has_files).  CarTypeInfo lists the Civic, the
+# RSX, the Corsa and the 106 in both releases, but the European data has no
+# CARS\CIVIC or CARS\RSX (the North American none of the other two).  A
+# friend's Civic was loaded as one anyway: its packs' reads never came back,
+# the car loader's busy word (0x8A329C) stayed set, no friend's car loaded
+# again, and the next world unload (0x63B080: a Quit, the trip to a
+# multiplayer race) waited for it for good.  Here stand-ins (tests/roam/
+# plan_region.sh) drive a Civic, an RSX and then a stock 240SX.  Good, on
+# European data without CIVIC and RSX: "shown as CORSA" and "shown as
+# PEUGOT106" lines, the three cars "ready", the expect PASS.  On data with all
+# four cars: a CIVIC and an RSX ready as themselves.
+#   NFSU2_DATA=<game> tests/roam/plan.sh <out> 420 roam_region_cars.txt 47700 3 tests/roam/plan_region.sh
+0     tapuntil RETURN MC_Background.fng 120 4000
++120  tap LEFT
++30   tap RETURN
++240  tap BACK
++8    tap BACK
++8    tap BACK
++8    tap BACK
++20   type ${ROAM_PROFILE}
++60   tap RETURN
++240  tap RETURN
++0    waitfng GarageMain.fng 3000
++300  tap LEFT
++60   tap RETURN                      # Career
++300  tap RETURN                      # Start New Career
++0    waitfng UI_EngageMessageDialog.fng 8000
++120  tap RETURN                      # SMS: Continue
++0    waitroam 3000
++0    log ROAM_INROAM
++4800 status crowd                    # the three stand-ins in
++0    expect i:0x8a329c == 0           # the car loader not stuck
++60   quit

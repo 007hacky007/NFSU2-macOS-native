@@ -988,6 +988,10 @@
 #define sub_005d6d30_orig sub_005d6d20_orig
 #define sub_005d6d30_m sub_005d6d20_m
 #define sub_005d6d30_orig_m sub_005d6d20_orig_m
+#define sub_005f04e0 sub_005f04d0
+#define sub_005f04e0_orig sub_005f04d0_orig
+#define sub_005f04e0_m sub_005f04d0_m
+#define sub_005f04e0_orig_m sub_005f04d0_orig_m
 #define sub_005f46b0 sub_005f46a0
 #define sub_005f46b0_orig sub_005f46a0_orig
 #define sub_005f46b0_m sub_005f46a0_m

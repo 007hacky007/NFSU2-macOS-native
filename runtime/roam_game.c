@@ -634,6 +634,13 @@ static uint32_t find_part(CPU *c, uint32_t type, uint32_t sl, uint32_t key, uint
     }
     return 0;
 }
+/* A car type whose files this game folder does not have (the other
+ * region's two cars on one region's data, a mod's car on one side only)
+ * cannot be loaded: the car loader would wait for it for good, and with it
+ * every friend's car after it and the world's unload (a player's European
+ * game of 2026-11-03, North American players' Civics around: frozen on the
+ * trip to a multiplayer race).  Such a car is shown as a stock car of the
+ * type regional.c picks (the other region's car in its place). */
 /* Decode a car-look record into the RideInfo at ride (0x8F0 bytes of guest
  * memory) with skin slot n: RideInfo::Init, stock parts, then each slot of
  * the record looked up by its key in the CarPartDB (NewGetCarPart, owner
@@ -646,15 +653,13 @@ static int build_ride(CPU *c, const rc_carcfg *cc, uint32_t ride, uint32_t skin,
     uint32_t type;
     int missing = 0;
     if (ti && types && ti >= types && (ti - types) % 0x890u == 0) type = (ti - types) / 0x890u;
-    else {
-        /* an add-on car this game does not have (Unlimiter): a stock car of
-         * a type with the same name prefix, or the Peugeot 206 (type 0) */
-        type = 0;
-        for (uint32_t i = 0; i < 46 && types; i++){
-            char n[20]; cstr(types + i * 0x890u, n, sizeof n);
-            if (n[0] && !strncasecmp(n, cc->type_name, 4)){ type = i; break; }
-        }
-        snprintf(why, (size_t)whylen, "car type %s unknown here, shown as type %u", cc->type_name, type);
+    else type = 0xffffffffu;
+    if (!rh_type_has_files(type)){
+        /* a stock car of another type (above) */
+        const char *what = type == 0xffffffffu ? "unknown here" : "not in this game folder";
+        type = rh_stand_in(cc->type_name);
+        char n[20]; cstr(types + type * 0x890u, n, sizeof n);
+        snprintf(why, (size_t)whylen, "car type %s %s, shown as %s (type %u)", cc->type_name, what, n, type);
         missing = -1;
     }
     for (uint32_t i = 0; i < 0x8f0u; i += 4) MR32(ride + i) = 0;
