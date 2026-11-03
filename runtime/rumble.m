@@ -13,7 +13,11 @@
  * continuous event of infinite duration (GCHapticDurationInfinite) at full
  * intensity, and the level is its intensity control
  * (CHHapticDynamicParameterIDHapticIntensityControl), sent whenever it
- * changes.  Nothing plays for a controller without haptics: gamepad_rumble
+ * changes.  The player is a basic one: the controller haptics service
+ * (gamecontrollerd) refuses an advanced player ("Couldn't communicate with a
+ * helper application", a DualShock 4 over Bluetooth: no vibration at all),
+ * and a basic one takes the intensity control as well.  A motor that cannot
+ * start says why in the log, once.  Nothing plays for a controller without haptics: gamepad_rumble
  * then does nothing.
  *
  * The motors stop when the app is no longer in front, when the controller
@@ -59,8 +63,8 @@ static int rlog(void){
 
 @implementation NFSHapticMotor {
     CHHapticEngine *_engine;
-    id<CHHapticAdvancedPatternPlayer> _player;
-    BOOL _running;
+    id<CHHapticPatternPlayer> _player;
+    BOOL _running, _said;
     float _sharp;
     NSString *_loc;
 }
@@ -87,7 +91,7 @@ static int rlog(void){
     NSError *err = nil;
     if (!_running){
         if (![_engine startAndReturnError:&err]){
-            if (rlog()) fprintf(stderr, "[rumble] %s engine does not start: %s\n", _loc.UTF8String, err.localizedDescription.UTF8String ?: "?");
+            [self fail:"engine does not start" error:err];
             return NO;
         }
         _running = YES;
@@ -98,21 +102,27 @@ static int rlog(void){
         CHHapticEvent *ev = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[in, sh]
                                                         relativeTime:0 duration:GCHapticDurationInfinite];
         CHHapticPattern *pat = [[CHHapticPattern alloc] initWithEvents:@[ev] parameters:@[] error:&err];
-        id<CHHapticAdvancedPatternPlayer> p = pat ? [_engine createAdvancedPlayerWithPattern:pat error:&err] : nil;
+        id<CHHapticPatternPlayer> p = pat ? [_engine createPlayerWithPattern:pat error:&err] : nil;
         if (!p){
-            if (rlog()) fprintf(stderr, "[rumble] %s: no player: %s\n", _loc.UTF8String, err.localizedDescription.UTF8String ?: "?");
+            [self fail:"no player" error:err];
             return NO;
         }
         [self sendIntensity:p value:0.f];
         if (![p startAtTime:CHHapticTimeImmediate error:&err]){
-            if (rlog()) fprintf(stderr, "[rumble] %s: player does not start: %s\n", _loc.UTF8String, err.localizedDescription.UTF8String ?: "?");
+            [self fail:"player does not start" error:err];
             return NO;
         }
         _player = p;
     }
     return YES;
 }
-- (void)sendIntensity:(id<CHHapticAdvancedPatternPlayer>)p value:(float)v {
+/* why vibration does not work: always in the log once, every time with NFSU2_FF_LOG */
+- (void)fail:(const char *)what error:(NSError *)err {
+    if (_said && !rlog()) return;
+    _said = YES;
+    fprintf(stderr, "[rumble] %s: %s: %s\n", _loc.UTF8String, what, err.localizedDescription.UTF8String ?: "?");
+}
+- (void)sendIntensity:(id<CHHapticPatternPlayer>)p value:(float)v {
     CHHapticDynamicParameter *dp = [[CHHapticDynamicParameter alloc]
         initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:v relativeTime:0];
     [p sendParameters:@[dp] atTime:CHHapticTimeImmediate error:nil];
