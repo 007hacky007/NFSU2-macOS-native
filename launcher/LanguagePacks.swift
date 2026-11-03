@@ -24,6 +24,16 @@
 //     English's place: their text, credits and memory-card texts; Polish and Turkish
 //     also their fonts' textures, which draw the accented letters their texts use as
 //     the Polish or Turkish ones.
+//   - GameHunter's Hungarian translation (v1.1, 2005, by L_zooltan; gamehunter.hu) and
+//     Clark X.'s Ukrainian one (2022, kuli.com.ua): Download fetches the installer from
+//     where the author's page links it, only when the player clicks, and checks it
+//     against the release this was made with (size and SHA-256); the launcher reads its
+//     files and never runs it (Hungarian's is an Astrum InstallWizard one, as the Polish
+//     ones; Ukrainian's an Inno Setup one, InnoSetup.swift).  Both take English's place:
+//     Hungarian its text (which writes o and u with the double acute as the fonts' o
+//     with the tilde and u with the circumflex), memory-card texts and credits;
+//     Ukrainian also the Russian pack's fonts, which its text is written in.  Ported
+//     from th0mk's nfsu2-web tools/langpacks.py --hu and --uk (MIT).
 import Foundation
 import CryptoKit
 
@@ -50,6 +60,20 @@ enum LanguagePacks {
     static let subtitlesURL = URL(string: "https://nfsmods.xyz/uploads/mods/5286/5fa362-English%20Subtitles%20Fixed%20(v1.0).7z")!
     static let subtitles = Archive(name: "English Subtitles Fixed (v1.0).7z", size: 7_592,
                                    sha256: "b8a9f123ed9779001770c408687845b58ca9c77adff5a578d397edbe7f77b5aa")
+    /// The translations fetched as one installer: the author's page, where it links the
+    /// installer (Ukrainian's: the Google Drive file kuli.com.ua's Download leads to), and
+    /// the release this was made with.
+    struct Installer { let page: URL; let url: URL; let file: Archive }
+    static let installers: [String: Installer] = [
+        "hungarian": Installer(page: URL(string: "http://www.gamehunter.hu/2010/08/need-for-speed-underground-2-pc.html")!,
+                               url: URL(string: "https://lukacs.eu/gamehunter/nfs_underground2.exe")!,
+                               file: Archive(name: "nfs_underground2.exe", size: 595_280,
+                                             sha256: "9447106c71e74b269ab4ef5ceb613cb592d2165cd556886310c622a1a6f3348e")),
+        "ukrainian": Installer(page: URL(string: "https://kuli.com.ua/need-for-speed-underground-2")!,
+                               url: URL(string: "https://drive.usercontent.google.com/download?id=10t3yk3a1bBQiHrLWF5nywx4PiWp-2-5a&export=download&confirm=t")!,
+                               file: Archive(name: "Need for Speed Underground 2 - Ukrainian.exe", size: 4_038_701,
+                                             sha256: "c378c2f99f41679e0ab12d28765c4f83d9603f3c613a2b940d0b3b63cbd60b0e")),
+    ]
     static let pages: [String: URL] = [
         "portuguese": URL(string: "https://joao13traducoes.com/2018/08/pc-need-for-speed-underground-2-traduzido-e-dublado-varios-autores/")!,
         "polish": URL(string: "https://www.portal24h.pl/spolszczenia-gier/spolszczenia-gier/mo/Need-For-Speed-Underground-2-(plprojekt)-1456/")!,
@@ -99,10 +123,27 @@ enum LanguagePacks {
                           ("CREDITS/POLISH.TXT", "CREDITS/NA_ENGLISH.TXT"),
                           ("CREDITS/POLISH.TXT", "CREDITS/UK_ENGLISH.TXT")]
 
+    // Hungarian: (file in the installer, the game's file it stands in for)
+    static let huFiles = [("LANGUAGES/English.bin", "LANGUAGES/English.bin"),
+                          ("memcard/LOCALE_ENGLISH.loc", "memcard/LOCALE_ENGLISH.loc"),
+                          ("CREDITS/NA_ENGLISH.TXT", "CREDITS/NA_ENGLISH.TXT"),
+                          ("CREDITS/UK_ENGLISH.TXT", "CREDITS/UK_ENGLISH.TXT")]
+    // Ukrainian: (data entry of the installer, the game's file it stands in for).  Its
+    // [Files] list, in the data entries' order: LANGUAGES\English.bin, Labels.bin,
+    // LanguageTextures.bin, Largest.bin, GLOBAL\GLOBALA.BUN, memcard\LOCALE_ENGLISH.loc,
+    // GLOBAL\GlobalB.lzc, CREDITS\NA_ENGLISH.txt, UK_ENGLISH.txt.  Not used: Labels.bin
+    // and Largest.bin, which the game never reads, and a GlobalB.lzc that differs from
+    // the game's in one byte (the trademark sign of a shave gel's name).
+    static let ukFiles = [(0, "LANGUAGES/English.bin"), (2, "LANGUAGES/LanguageTextures.bin"),
+                          (4, "GLOBAL/GLOBALA.BUN"), (5, "memcard/LOCALE_ENGLISH.loc"),
+                          (7, "CREDITS/NA_ENGLISH.TXT"), (8, "CREDITS/UK_ENGLISH.TXT")]
+    static let ukEntries = 9
+
     /// How a language's pack is made.
     enum Way { case download, importOnly }
     static func way(_ lang: String) -> Way? {
         if lang == "english" || dubs[lang] != nil || multi13Files.contains(where: { $0.0 == lang }) { return .download }
+        if installers[lang] != nil { return .download }
         if pages[lang] != nil { return .importOnly }
         return nil
     }
@@ -114,7 +155,7 @@ enum LanguagePacks {
         return a
     }
     static func downloadSize(_ lang: String) -> Int64 {
-        lang == "english" ? subtitles.size : archives(lang).reduce(0) { $0 + $1.size }
+        lang == "english" ? subtitles.size : installers[lang]?.file.size ?? archives(lang).reduce(0) { $0 + $1.size }
     }
 
     // MARK: the pack
@@ -464,15 +505,16 @@ enum LanguagePacks {
         return p.summary
     }
 
-    // MARK: the Polish installer
+    // MARK: the Polish and Hungarian installers
 
     /// {path in the game folder, lower-cased: data} of an Astrum InstallWizard 2
-    /// installer (NFSU2PLv1.1US.exe / UK.exe), read, never run.  It ends with the
-    /// package's header offset and a magic; the header (big-endian words) says where the
-    /// files start, and they end where it begins.  Each file: a 0x40-byte record whose
-    /// word 0x2c is its name's length, the name ("<InstallDir>\...", each byte's bit i
-    /// stored as bit i^6), the offset its data ends at, the data: a gzip stream or the
-    /// file as it is.
+    /// installer (NFSU2PLv1.1US.exe / UK.exe, the Hungarian nfs_underground2.exe), read,
+    /// never run.  It ends with the package's header offset, a block of n bytes, n
+    /// (0xffffffff for none, in the older Hungarian one) and a magic; the header
+    /// (big-endian words) says where the files start, and they end where it begins.
+    /// Each file: a 0x40-byte record whose word 0x2c is its name's length, the name
+    /// ("<InstallDir>\...", each byte's bit i stored as bit i^6), the offset its data
+    /// ends at, the data: a gzip stream or the file as it is.
     static func astrumFiles(_ file: Data) throws -> [String: Data] {
         let d = [UInt8](file)
         func le(_ o: Int) -> Int { Int(d[o]) | Int(d[o + 1]) << 8 | Int(d[o + 2]) << 16 | Int(d[o + 3]) << 24 }
@@ -480,8 +522,9 @@ enum LanguagePacks {
         guard d.count > 300, le(d.count - 8) == 0x0b1c2d3e, le(d.count - 4) == 0x1234_5678 else {
             throw Failure(message: "not an Astrum InstallWizard installer")
         }
-        let n = le(d.count - 12)
-        guard d.count - 16 - n > 0 else { throw Failure(message: "a damaged installer") }
+        var n = le(d.count - 12)
+        if n == 0xffff_ffff { n = 0 }
+        guard n < d.count, d.count - 16 - n > 0 else { throw Failure(message: "a damaged installer") }
         let head = le(d.count - 16 - n)
         guard head > 0, head + 236 <= d.count else { throw Failure(message: "a damaged installer") }
         var pos = be(head + 48 * 4)
@@ -538,6 +581,60 @@ enum LanguagePacks {
         return try astrumFiles(try Data(contentsOf: e))
     }
 
+    // MARK: Hungarian and Ukrainian
+
+    /// Hungarian's pack from its installer (as downloaded, checked by the caller).
+    static func buildHungarian(installer: URL, game: URL, packs: URL? = nil) throws -> String {
+        let files = try astrumFiles(try Data(contentsOf: installer))
+        let p = Pack(game: game, lang: "hungarian", packs: packs)
+        for (s, rel) in huFiles {
+            guard let d = files[s.lowercased()] else { throw Failure(message: "The Hungarian translation's installer has no \(s).") }
+            try p.add(d, rel)
+        }
+        p.finish()
+        return p.summary
+    }
+
+    /// Ukrainian's pack from its installer (as downloaded, checked by the caller).
+    static func buildUkrainian(installer: URL, game: URL, packs: URL? = nil) throws -> String {
+        let d = [UInt8](try Data(contentsOf: installer))
+        let setup = try InnoSetup.read(d)
+        guard setup.entries.count == ukEntries else { throw Failure(message: "The Ukrainian translation's installer has other files than the release this was made for.") }
+        let p = Pack(game: game, lang: "ukrainian", packs: packs)
+        for (i, rel) in ukFiles {
+            let data = try InnoSetup.file(d, setup.entries[i])
+            if rel == "LANGUAGES/English.bin", p.sameAsGame(rel, data) { throw Failure(message: "Its LANGUAGES/English.bin is the game's own, not the translation.") }
+            try p.add(data, rel)
+        }
+        p.finish()
+        return p.summary
+    }
+
+    /// The pinned installer at src (the file, or a folder with it), refused unless it is
+    /// the release this was made with.
+    static func pinnedInstaller(_ lang: String, _ src: URL) throws -> URL {
+        guard let a = installers[lang]?.file else { throw Failure(message: "\(lang) has no installer") }
+        func size(_ u: URL) -> Int64 { ((try? FileManager.default.attributesOfItem(atPath: u.path))?[.size] as? NSNumber)?.int64Value ?? -1 }
+        var found: URL? = nil
+        if UHUDPack.isDirectory(src) {
+            let all = (FileManager.default.enumerator(at: src, includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []
+            found = all.filter { !UHUDPack.isDirectory($0) && size($0) == a.size }
+                .sorted { ($0.lastPathComponent == a.name ? 0 : 1, $0.path) < ($1.lastPathComponent == a.name ? 0 : 1, $1.path) }
+                .first { (try? sha256($0)) == a.sha256 }
+        } else if size(src) == a.size, try sha256(src) == a.sha256 {
+            found = src
+        }
+        guard let f = found else {
+            throw Failure(message: "\(src.lastPathComponent) is not the release this was made for (\(a.name), \(formatBytesPlain(a.size))). Choose it as downloaded from its page, or the folder it is in.")
+        }
+        return f
+    }
+
+    static func buildInstaller(lang: String, installer: URL, game: URL, packs: URL?) throws -> String {
+        lang == "hungarian" ? try buildHungarian(installer: installer, game: game, packs: packs)
+                            : try buildUkrainian(installer: installer, game: game, packs: packs)
+    }
+
     static func formatBytesPlain(_ n: Int64) -> String { String(format: "%.1f MB", Double(n) / 1_048_576) }
 
     // MARK: download
@@ -567,6 +664,16 @@ enum LanguagePacks {
             }
             progress("Building", total, total)
             return try buildSubtitles(mod: f, game: game, packs: packs)
+        }
+        if let i = installers[lang] {
+            let host = i.page.host ?? "its page"
+            let f = try UHUDPack.Downloader(progress: { progress("Downloading", $0, total) }, host: i.url.host ?? host, hint: "use Import…").fetch(i.url)
+            defer { try? fm.removeItem(at: f) }
+            guard let got = try? pinnedInstaller(lang, f) else {
+                throw Failure(message: "The file \(host) links is not the release this was made for (\(i.file.name)). Download it from its page yourself and use Import….")
+            }
+            progress("Building", total, total)
+            return try buildInstaller(lang: lang, installer: got, game: game, packs: packs)
         }
         let need = archives(lang)
         guard !need.isEmpty else { throw Failure(message: "\(lang) has no download") }
@@ -601,6 +708,9 @@ enum LanguagePacks {
             return try buildSubtitles(mod: src, game: game, packs: packs)
         }
         if pages[lang] != nil { return try buildTranslation(lang: lang, src: src, game: game, packs: packs) }
+        if installers[lang] != nil {
+            return try buildInstaller(lang: lang, installer: try pinnedInstaller(lang, src), game: game, packs: packs)
+        }
         // Multi 13: the pinned archives in a folder, or a single archive
         var core: URL? = nil, dub: URL? = nil
         let candidates = UHUDPack.isDirectory(src)

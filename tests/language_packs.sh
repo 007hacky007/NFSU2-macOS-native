@@ -8,5 +8,5 @@ cd "$(dirname "$0")/.."
 T=$(mktemp -d "${TMPDIR:-/tmp}/nfsu2_langpacks.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 swiftc -swift-version 5 -module-cache-path "$T/cache" launcher/LanguagePacks.swift launcher/RarArchive.swift \
-    launcher/Mega.swift launcher/UHUDPack.swift tests/language_packs.swift -o "$T/language-packs"
+    launcher/Mega.swift launcher/UHUDPack.swift launcher/InnoSetup.swift tests/language_packs.swift -o "$T/language-packs"
 "$T/language-packs"
