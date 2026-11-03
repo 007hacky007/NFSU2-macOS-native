@@ -113,8 +113,8 @@
  * (u32, 1/4000 s), then the name the player races under (16 bytes).  The
  * creator passes each joiner's on to the other joiners, marked relayed.  A
  * game of an older version sends none and drops these.  Also there (the
- * horns' port too: racehorn.c reads it while horns are on and hands these
- * here):
+ * horns' and quick chat's port too: racehorn.c reads it while either is on
+ * and hands these here):
  *   "N2CS", version 1, 0, the length (u16), then the bit stream's bytes as
  *   0x585D60 sent them: a joiner's car state, to every joiner on the list;
  *   "N2PL", version 1, 0, the count (u8), then that many addresses (u32,
@@ -147,7 +147,6 @@
  * Ported from th0mk's nfsu2-web (MIT). */
 #include "cpu.h"
 #include "racenet.h"
-#include "horn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -665,8 +664,10 @@ static void jumps_add(Jumps *j, const float *p, uint64_t dt, float step){
     memcpy(j->p, p, sizeof j->p); j->step = step; j->have += j->have < 2;
 }
 
-/* what came to FS_PORT, at most 64 a frame.  The horns share the port: while
- * they are on, racehorn.c reads it and hands the N2FS, N2CS and N2PL here. */
+/* what came to FS_PORT, at most 64 a frame.  The horns and quick chat share
+ * the port: while either is on, racehorn.c reads it and hands the N2FS, N2CS
+ * and N2PL here (racehorn_reads). */
+int racehorn_reads(void);
 static void hear(CPU *c){
     static uint8_t m[CS_HDR + BS_BYTES]; uint32_t from; int n;
     for (int i = 0; i < 64 && (n = vlan_rt_recv(FS_PORT, &from, m, sizeof m)) >= 0; i++){
@@ -678,7 +679,7 @@ static void hear(CPU *c){
 
 /* every frame, on the game thread (racenet_hook) */
 void racenet_frame(CPU *c){
-    if ((rd32(G_NETMODE) & 0x208u) && !horn_on()) hear(c);
+    if ((rd32(G_NETMODE) & 0x208u) && !racehorn_reads()) hear(c);
     uint32_t pl = rd32(G_PLAYER1), me = pl ? rd32(pl + 4u) : 0, w = rd32(G_WORLD), rc = rd32(G_RACE);
     int racing = rd32(G_FLOW) == 6u && (rd32(G_NETMODE) & 0x208u) && ok(me, 0x9e0) && ok(w, 0x80) && rd32(rc) == RC_RACING &&
                  !finished(rc, me);

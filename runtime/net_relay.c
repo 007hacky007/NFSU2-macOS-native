@@ -1290,6 +1290,26 @@ int vlan_rt_recv(uint16_t port, uint32_t *ip_h, void *p, int cap){
     pthread_mutex_unlock(&g_mu);
     return r;
 }
+/* Quick chat in a race between players (racehorn.c qc_*).  There is no page
+ * here: the picker and the chat log are Game Tools' (native_controls.m),
+ * whose picker opens while racehorn.c says the player is in such a race.
+ * The weak stand-ins keep the relay's own test builds free of AppKit. */
+__attribute__((weak)) int native_controls_race_pick(void){ return -1; }
+__attribute__((weak)) void native_controls_set_race(int state){ (void)state; }
+__attribute__((weak)) int roam_plat_said(const char *json){ (void)json; return -1; }
+/* the phrase the player picked in a race lately, once; -1 none new */
+int vlan_rt_say_pick(void){ return native_controls_race_pick(); }
+/* a phrase said in the race, for Game Tools alone (never on the switch): 0
+ * taken, -1 not (too long, or Game Tools refused it) */
+int vlan_rt_said(const char *json, int n){
+    char js[256];
+    if (!json || n <= 0 || n >= (int)sizeof js) return -1;
+    memcpy(js, json, (size_t)n); js[n] = 0;
+    return roam_plat_said(js) < 0 ? -1 : 0;
+}
+/* where the player is (racehorn.c qc_status, every frame): 1 driving in a
+ * race between players, 2 on its results, 0 elsewhere */
+void vlan_rt_race(int state){ native_controls_set_race(state); }
 /* the race's peers heard from or sent to within the last within_ms (host order) */
 int vlan_race_peers(uint32_t *ip_h, int max, uint32_t within_ms){
     pthread_mutex_lock(&g_mu);

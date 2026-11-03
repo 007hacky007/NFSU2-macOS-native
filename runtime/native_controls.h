@@ -31,6 +31,9 @@ void native_controls_filter_pad(PadState *s);
 void native_controls_notice(const char *name, const char *what);   /* a line in the panel's log */
 void native_controls_set_network(int say);   /* the session is up and takes quick chat (say), or down (0) */
 void native_controls_forget(uint32_t id);    /* a player left: their line over the car goes (0: every line) */
+/* ---- what racehorn.c tells it, through net_relay.c (the game thread) ---- */
+void native_controls_set_race(int state);    /* every frame: 1 driving in a race between players, 2 on its results, 0 not */
+int  native_controls_race_pick(void);        /* a phrase picked in such a race, once (-1 none) */
 
 /* ---- the panel's state, for tests and the panel itself ---- */
 #define NATIVE_PHRASES 152                   /* nfsu2-web's phrases.ts (append only) */

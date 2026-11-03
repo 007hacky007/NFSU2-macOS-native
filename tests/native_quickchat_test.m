@@ -3,7 +3,8 @@
  * its click, B; the game sees none of what the picker takes), the 4 s
  * timeout, focus loss, offline and racing (the keys and the stick stay the
  * game's), photo mode, the burst limit, the lines over the cars and a player
- * leaving; with --snapshot <prefix> the groups editor and the overlay.
+ * leaving, a race between players (racehorn.c's picks and the race's chat
+ * log); with --snapshot <prefix> the groups editor and the overlay.
  * tests/native_controls.sh builds and runs it. */
 #import <Cocoa/Cocoa.h>
 #include <assert.h>
@@ -119,6 +120,42 @@ int main(int argc, char **argv){ @autoreleasepool {
     for (int i = 1; i <= 40; i++){ char json[100]; snprintf(json, sizeof json, "{\"id\":%d,\"name\":\"Driver\",\"p\":0}", i); assert(roam_plat_said(json) == 1); }
     int lines = 0; for (int i = 0; i < CHAT_LINES; i++) lines += qLines[i].id != 0; assert(lines == CHAT_LINES);
     native_controls_set_network(0); for (int i = 0; i < CHAT_LINES; i++) assert(!qLines[i].id); assert(!qMarksCount);
+    /* a race between players (racehorn.c: native_controls_set_race), free roam off: the picker is there, driving
+     * and on the results, and racehorn.c takes the picks, free roam none */
+    native_controls_forget(0); roam_plat_driving(0);
+    native_controls_set_race(0);
+    assert(!native_controls_handle_event(key(18, YES, NO))); assert(!native_controls_handle_event(key(18, NO, NO)));
+    native_controls_set_race(1);
+    assert(press(18)); assert(press(18));
+    assert(roam_plat_say_pick() == -1 && native_controls_race_pick() == 151 && native_controls_race_pick() == -1);
+    pad(0, -1, 0, 0); pad(0, 0, 0, 0); pad(1, 0, 0, 0); assert(AX_RX == 0 && native_controls_race_pick() == 2);   /* the stick too */
+    pad(0, 0, 0, 0);
+    native_controls_set_race(2);                                        /* the results */
+    assert(press(19)); assert(press(19)); assert(native_controls_race_pick() == layout[5]);
+    assert(press(19)); assert(press(19)); assert(native_controls_race_pick() == -1);   /* the burst: three in six seconds */
+    for (int i = 0; i < qSentCount; i++) qSent[i] -= 6.1;
+    assert(press(19)); assert(press(19)); assert(native_controls_race_pick() == layout[5]);
+    assert(native_controls_pick(9)); assert(roam_plat_say_pick() == -1);   /* the panel's Say: the race's too */
+    native_controls_set_race(0);                                        /* out of the race: what was picked goes */
+    assert(native_controls_race_pick() == -1 && roam_plat_say_pick() == -1);
+    assert(!native_controls_handle_event(key(18, YES, NO))); assert(!native_controls_handle_event(key(18, NO, NO)));
+    native_controls_set_race(1); assert(press(18)); qRaceAt = now_s() - 1;   /* racehorn.c stopped saying so: closed */
+    chat_expire(now_s()); assert(qGroup == -1);
+    assert(!native_controls_handle_event(key(18, YES, NO))); assert(!native_controls_handle_event(key(18, NO, NO)));
+    native_controls_set_race(3); assert(!qRace);                        /* not a state */
+    /* what was said in the race: its chat log, not a line over a car; the last RACE_LOG kept */
+    native_controls_set_race(1);
+    assert(roam_plat_said("{\"id\":9,\"name\":\"Racer\",\"p\":4,\"race\":1}") == 1);
+    for (int i = 0; i < CHAT_LINES; i++) assert(qLines[i].id != 9);
+    assert(qRaceLogCount == 1 && !strcmp(qRaceLog[0].name, "Racer") && qRaceLog[0].phrase == 4 && !qRaceLog[0].me);
+    assert(roam_plat_said("{\"id\":9,\"name\":\"Me\",\"p\":5,\"race\":1,\"me\":1}") == 1);
+    assert(qRaceLogCount == 2 && !strcmp(qRaceLog[1].name, "You") && qRaceLog[1].me);
+    assert(roam_plat_said("{\"id\":9,\"name\":\"Racer\",\"p\":4,\"race\":2}") == -1);
+    assert(roam_plat_said("{\"id\":9,\"name\":\"Racer\",\"p\":200,\"race\":1}") == 1 && qRaceLogCount == 2);   /* a newer game's */
+    for (int i = 0; i < 8; i++) assert(roam_plat_said("{\"id\":9,\"name\":\"Racer\",\"p\":7,\"race\":1}") == 1);
+    assert(qRaceLogCount == RACE_LOG && qRaceLog[0].phrase == 7);
+    native_controls_set_race(0); native_controls_set_race(1); assert(qRaceLogCount == 0);   /* a new race, a new log */
+    native_controls_set_race(0);
     /* the groups from the launcher */
     setenv("NFSU2_QUICKCHAT_GROUPS", "Hi,Ok,Go,Race", 1);
     setenv("NFSU2_QUICKCHAT_PHRASES", "16,17,18,19,4,5,30,31,8,9,10,67,12,13,108,114", 1);
@@ -144,7 +181,15 @@ int main(int argc, char **argv){ @autoreleasepool {
             NSString *path = [[NSString stringWithUTF8String:argv[2]] stringByAppendingString:view == ui.overlay ? @"-overlay.png" : @"-groups.png"];
             assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES]);
         }
+        /* a race between players: the picker and the race's chat log */
+        native_controls_set_network(0); roam_plat_driving(0); native_controls_set_race(1); qGroup = 3; qUntil = now_s() + 4;
+        assert(roam_plat_said("{\"id\":7,\"name\":\"Driver\",\"p\":21,\"race\":1}") == 1);
+        assert(roam_plat_said("{\"id\":8,\"name\":\"Me\",\"p\":2,\"race\":1,\"me\":1}") == 1);
+        NSBitmapImageRep *bitmap = [ui.overlay bitmapImageRepForCachingDisplayInRect:ui.overlay.bounds];
+        [ui.overlay cacheDisplayInRect:ui.overlay.bounds toBitmapImageRep:bitmap];
+        assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+                   writeToFile:[[NSString stringWithUTF8String:argv[2]] stringByAppendingString:@"-race-overlay.png"] atomically:YES]);
         puts("quick chat group editor and overlay snapshots passed");
     }
-    puts("quick chat layout, key/pad capture, timeout, focus, offline, bounded lines and disconnect passed");
+    puts("quick chat layout, key/pad capture, timeout, focus, offline, bounded lines, disconnect and races between players passed");
 } }

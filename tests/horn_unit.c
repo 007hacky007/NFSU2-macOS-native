@@ -113,6 +113,7 @@ int main(void){
 }
 
 #elif defined(T_RACEHORN)
+#define MSG_LAST 64
 /* horn.c, as racehorn.c uses it */
 static int g_on = 1, g_held;
 int horn_on(void){ return g_on; }
@@ -128,7 +129,16 @@ void horn_end(void){}
 static uint32_t g_peer[PEERS] = { 0x0a4d0102u, 0x0a4d0202u, 0x0a4d0302u };
 static int g_npeer = PEERS, g_sent, g_n2fs;
 static struct { uint32_t ip; uint8_t m[512]; int n; } g_q[256]; static int g_qh, g_qt;
-int vlan_rt_send(uint16_t port, uint32_t ip_h, const void *p, int n){ (void)port; (void)ip_h; (void)p; (void)n; g_sent++; return 0; }
+static uint8_t g_out[MSG_LAST]; static uint32_t g_out_ip; static int g_out_n;
+int vlan_rt_send(uint16_t port, uint32_t ip_h, const void *p, int n){
+    (void)port; g_sent++; g_out_ip = ip_h; g_out_n = n; memcpy(g_out, p, (size_t)(n < MSG_LAST ? n : MSG_LAST)); return 0;
+}
+/* quick chat's way to Game Tools (net_relay.c), and autotest.c's top package */
+static int g_pick = -1, g_said, g_race = -1; static char g_said_js[256], g_top[64];
+int vlan_rt_say_pick(void){ int p = g_pick; g_pick = -1; return p; }
+int vlan_rt_said(const char *json, int n){ g_said++; snprintf(g_said_js, sizeof g_said_js, "%.*s", n, json); return 0; }
+void vlan_rt_race(int state){ g_race = state; }
+const char *autotest_top_fng(void){ return g_top[0] ? g_top : 0; }
 int vlan_rt_recv(uint16_t port, uint32_t *ip_h, void *p, int cap){
     (void)port;
     if (g_qh == g_qt) return -1;
@@ -148,6 +158,21 @@ static void honk(uint32_t ip, const char *name, uint8_t flags){
     uint8_t m[MSG_N] = { 'N', '2', 'H', 'N', 1, flags, 0, 0 };
     memcpy(m + 8, name, strlen(name) < NAME_N ? strlen(name) : NAME_N);
     put(ip, m, MSG_N);
+}
+/* an N2QC: from ip, as name, phrase, sequence number, flags (2 relayed) */
+static void qchat(uint32_t ip, const char *name, uint8_t phrase, uint8_t seq, uint8_t flags){
+    uint8_t m[MSG_N] = { 'N', '2', 'Q', 'C', 1, flags, seq, phrase };
+    memcpy(m + 8, name, strlen(name) < NAME_N ? strlen(name) : NAME_N);
+    put(ip, m, MSG_N);
+}
+/* the player in a network race (Online) under the name "Me": the player's car, its slot in the race's player table,
+ * an empty world */
+static void race(int on){
+    const uint32_t PL = 0x01000000u, CAR = 0x01004000u, NP = 0x01008000u, W = 0x0100c000u;
+    commit(G_FLOW, 4); commit(G_NETMODE, 4); commit(G_PLAYER1, 4); commit(G_WORLD, 4); commit(G_WORLDDT, 4);
+    commit(G_VIEW1 + 0x40u, 4); commit(G_NETPLAYERS, 24); commit(PL, 8); commit(CAR, 0xa00); commit(NP, 0x40); commit(W, 0x100);
+    MR32(G_FLOW) = on ? 6u : 4u; MR32(G_NETMODE) = 8u; MR32(G_PLAYER1) = PL; MR32(PL + 4u) = CAR; MR16(CAR + 0xau) = 0;
+    MR32(G_NETPLAYERS) = NP; memcpy(g_mem + NP + NP_NAME, "Me", 3); MR32(G_WORLD) = W; MR32(W) = W; MRF32(G_WORLDDT) = 0.016f;
 }
 static CPU g_c;
 static void frame(void){ racehorn_frame(&g_c); g_fake_ns += 10000000u; }
@@ -203,6 +228,94 @@ int main(void){
     g_on = 0; g_sent = 0; g_held = 1;
     honk(g_peer[0], "Alpha", 1); frame();
     CHECK(g_qh != g_qt && g_sent == 0, "horns off: nothing read, nothing sent");
+    CHECK(!racehorn_reads(), "horns and quick chat off: the port is racenet.c's");
+    /* ---- quick chat (qc_*) ---- */
+    /* both off: a pick is not said, and nothing is read */
+    g_qc_on = 0; g_sent = 0; g_said = 0;
+    racehorn_test_say(3); qchat(g_peer[0], "Ann", 0, 1, 1); frame();
+    CHECK(g_sent == 0 && g_said == 0 && g_qh != g_qt && g_qc_test == -1, "quick chat and horns off: nothing said, nothing read");
+    g_qh = g_qt = 0;
+    /* a network race (Online, a joiner), the player "Me" in the race's player table */
+    race(1);
+    MR32(G_NET_HOST) = 0; g_npeer = 1;                    /* a joiner's one race peer: the creator */
+    snprintf(g_top, sizeof g_top, "HUD_SingleRace.fng");
+    /* horns on, quick chat off: no picker, nothing said, shown or passed on */
+    g_on = 1; g_held = 0; g_sent = 0; g_said = 0; g_race = -1;
+    g_pick = 4; qchat(g_peer[0], "Ann", 2, 1, 1); frame();
+    CHECK(g_sent == 0 && g_said == 0 && g_race == 0, "quick chat off: nothing said or shown, no picker (sent %d, said %d, race %d)", g_sent, g_said, g_race);
+    /* quick chat on, horns off: the port is read for it */
+    g_on = 0; g_qc_on = 1; g_sent = 0; g_said = 0; g_pick = -1;
+    CHECK(racehorn_reads(), "quick chat on: racehorn.c reads the port");
+    frame();
+    CHECK(g_race == 1, "driving in a race between players: netrace 1 (%d)", g_race);
+    g_pick = 5; frame();
+    char want[128];
+    snprintf(want, sizeof want, "{\"id\":%u,\"name\":\"Me\",\"p\":5,\"race\":1,\"me\":1}", fnv1a("Me"));
+    CHECK(g_sent == 1 && g_out_ip == g_peer[0] && g_out_n == MSG_N && !memcmp(g_out, "N2QC\1\0", 6) && g_out[7] == 5 &&
+          !memcmp(g_out + 8, "Me\0", 3) && g_said == 1 && !strcmp(g_said_js, want),
+          "a pick: N2QC v1 to the creator (%d sent, phrase %d) and to Game Tools as %s", g_sent, g_out[7], g_said_js);
+    uint8_t seq1 = g_out[6];
+    g_pick = 6; frame(); g_pick = 7; frame(); g_pick = 8; frame();
+    CHECK(g_sent == 3 && g_said == 3 && (uint8_t)(g_out[6] - seq1) == 2, "the burst: three in six seconds, the fourth not said (%d sent)", g_sent);
+    g_fake_ns += 6100000000ull; g_pick = 8; frame();
+    CHECK(g_sent == 4, "six seconds later: said again (%d)", g_sent);
+    racehorn_test_say(300); frame();
+    CHECK(g_sent == 4, "past the phrases' byte: not said");
+    /* another player's, passed on by the creator: shown, not passed on by a joiner */
+    g_sent = 0; g_said = 0;
+    qchat(g_peer[0], "Ann", 1, 10, 2); frame();
+    snprintf(want, sizeof want, "{\"id\":%u,\"name\":\"Ann\",\"p\":1,\"race\":1}", fnv1a("Ann"));
+    CHECK(g_said == 1 && !strcmp(g_said_js, want) && g_sent == 0, "a relayed phrase: shown as %s, not passed on (%d)", g_said_js, g_sent);
+    qchat(g_peer[0], "Ann", 1, 10, 2); frame();
+    CHECK(g_said == 1, "the same message twice: shown once");
+    qchat(g_peer[0], "Ann", 1, 11, 2); frame();
+    CHECK(g_said == 1, "the same phrase again within two seconds: not shown");
+    g_fake_ns += 2100000000ull; qchat(g_peer[0], "Ann", 1, 12, 2); frame();
+    CHECK(g_said == 2, "after two seconds: shown (%d)", g_said);
+    g_fake_ns += 6100000000ull; g_said = 0;
+    for (int i = 0; i < 4; i++) qchat(g_peer[0], "Ann", (uint8_t)(20 + i), (uint8_t)(20 + i), 2);
+    frame();
+    CHECK(g_said == 3, "four from one player at once: three shown (%d)", g_said);
+    g_said = 0;
+    qchat(0x0a4d0909u, "Mallory", 1, 1, 0); qchat(g_peer[0], "Me", 1, 1, 2); qchat(g_peer[0], "", 1, 1, 2);
+    uint8_t v2[MSG_N] = { 'N', '2', 'Q', 'C', 2, 2, 1, 1, 'Z', 'o', 'e' }; put(g_peer[0], v2, MSG_N);
+    put(g_peer[0], "N2QC", 4); honk(g_peer[0], "Alpha", 1); put(g_peer[0], "N2FS", 4);
+    int fs0 = g_n2fs, used0 = 0; for (int j = 0; j < NHORNS; j++) used0 += g_h[j].on;
+    frame();
+    int used1 = 0; for (int j = 0; j < NHORNS; j++) used1 += g_h[j].on;
+    CHECK(g_said == 0 && g_n2fs == fs0 + 1 && used1 == used0,
+          "not from the race, our own name, no name, another version, short: none shown; horns off: no horn taken; N2FS to racenet");
+    /* the results: still there; the pause menu, the loading screen, the career: not */
+    snprintf(g_top, sizeof g_top, "UI_PostRaceResults.fng"); frame();
+    CHECK(g_race == 2, "the results: netrace 2 (%d)", g_race);
+    g_pick = 9; g_sent = 0; frame();
+    CHECK(g_sent == 1, "on the results: said");
+    snprintf(g_top, sizeof g_top, "HUD_World_Loading.fng"); frame(); int loading = g_race;
+    snprintf(g_top, sizeof g_top, "UI_PauseMain.fng"); frame(); int pause = g_race;
+    snprintf(g_top, sizeof g_top, "HUD_SingleRace.fng"); MR32(G_NETMODE) = 1; frame(); int career = g_race;
+    g_fake_ns += 6100000000ull; g_pick = 10; g_said = 0; g_sent = 0; qchat(g_peer[0], "Ann", 30, 40, 2); frame();
+    CHECK(loading == 0 && pause == 0 && career == 0 && g_sent == 0 && g_said == 0,
+          "loading, the pause menu, a career race: netrace 0 (%d %d %d), nothing said or shown", loading, pause, career);
+    MR32(G_NETMODE) = 8; frame();
+    /* the creator: passes a joiner's on to the others, marked relayed, holds back what it drops, and drops a relayed one */
+    MR32(G_NET_HOST) = 1; g_npeer = PEERS; g_fake_ns += 6100000000ull; g_sent = 0; g_said = 0;
+    qchat(g_peer[1], "Bob", 3, 1, 0); frame();
+    CHECK(g_said == 1 && g_sent == PEERS - 1 && g_out_ip != g_peer[1] && (g_out[5] & 2) && g_out[7] == 3 && !memcmp(g_out + 8, "Bob", 3),
+          "the creator: shows a joiner's and passes it on, relayed, to the other %d (%d sent)", PEERS - 1, g_sent);
+    g_sent = 0; g_said = 0;
+    qchat(g_peer[1], "Bob", 3, 2, 0); frame();
+    CHECK(g_said == 0 && g_sent == 0, "the creator holds back what it does not show");
+    qchat(g_peer[2], "Cid", 4, 1, 2); frame();
+    CHECK(g_said == 0 && g_sent == 0, "the creator drops a relayed phrase");
+    g_fake_ns += 6100000000ull;
+    const char *alias[] = { "B1", "B2", "B3", "B4", "B5" };
+    for (int i = 0; i < 5; i++) qchat(g_peer[1], alias[i], 5, 1, 0);
+    frame();
+    CHECK(g_said == 3 && g_sent == 3 * (PEERS - 1), "one joiner's game under five names: three shown and passed on (%d, %d sent)", g_said, g_sent);
+    /* out of the race: nothing shown, nothing said */
+    g_fake_ns += 6100000000ull; MR32(G_NET_HOST) = 0; g_npeer = 1; MR32(G_FLOW) = 4; g_sent = 0; g_said = 0;
+    g_pick = 11; qchat(g_peer[0], "Ann", 40, 50, 2); frame();
+    CHECK(g_sent == 0 && g_said == 0 && g_race == 0, "out of the race: nothing said or shown, netrace 0");
     printf("racehorn: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail != 0;
 }

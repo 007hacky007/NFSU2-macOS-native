@@ -6,6 +6,7 @@ What each version of NFSU2 Builder brings. The newest version is first.
 
 ### Added
 - Everything ghost: a third choice for free roam with other players, where the game's traffic and tuners drive through your car too, and give no near-miss points. A tuner you race in an outrun stays solid, and an outrun between two players is solid only when both chose solid cars. Game Tools switches between solid, ghost and everything ghost while you play.
+- Quick chat in races with other players: the same phrases, keys 1-4 twice or the right stick, while driving and on the results of every race between players online (the Online and LAN menus' races and free roam's race lobbies), with free roam on or off. What is said shows in a chat on the left of the picture. Never in a career race or a Quick Race; from th0mk's nfsu2-web.
 - Players' cars shown in Settings, Online: 16 to 48 other players' cars near you in free roam, 32 by default.
 
 ### Changed

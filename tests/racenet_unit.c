@@ -25,8 +25,8 @@ static void commit(uint32_t a, uint32_t n){ for (uint32_t pg = a >> 14; pg <= (a
 static int g_fail, g_pass;
 #define CHECK(c, ...) do { if (c) g_pass++; else { g_fail++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-/* horn.c: off, so racenet.c reads the port itself */
-int horn_on(void){ return 0; }
+/* racehorn.c: neither horns nor quick chat, so racenet.c reads the port itself */
+int racehorn_reads(void){ return 0; }
 /* net_relay.c: the race's peers, what was sent, what comes */
 static uint32_t g_peer[3]; static int g_npeer;
 static struct { uint32_t ip; uint8_t m[1100]; int n; } g_out[64]; static int g_nout;
