@@ -195,15 +195,37 @@ void dispatch_indirect(CPU *c, uint32_t addr);
 #define S_SERVERSEL     GA(0x00790428u)   /* "UI_PC_LAN_ServerSelect.fng" */
 #define S_LANNAME       GA(0x007990a4u)   /* "UI_PC_LAN.fng" */
 #define HOOK_MAINLOOP   HOOK_SITE(0x00581485u)
+/* The LAN server (server.dll, module.c): the game's glue object 0x89CF48 starts it with StartLANServer 0x5FA310
+ * (thiscall, the server's name): the module loaded once ([0x89011C] its handle, [0x890128] its IsServerRunning),
+ * then, unless IsServerRunning says it runs already, StartServer(name, region); UnloadServer 0x5F0900 (StopServer,
+ * FreeLibrary) is what leaving LAN calls (0x4A0183).  UI_PC_LAN (vtable 0x794FE8) starts it once the host's name is
+ * in (its handler 0x4A2E20, message 0xDA5B8712), puts up a "please wait" (+0x50) and logs in on it (UI_OLMAIN)
+ * once the game's clock is past +0x54 = the start + 5 s (20000 ticks) */
+#define G_SRV_GLUE      GA(0x0089cf48u)
+#define G_SRV_MOD       GA(0x0089011cu)
+#define G_SRV_ISRUN     GA(0x00890128u)
+#define FN_SRV_START    GA(0x005fa310u)
+#define FN_SRV_UNLOAD   GA(0x005f0900u)
+#define FN_NEW          GA(0x00575630u)   /* cdecl (size): operator new */
+#define VT_PCLAN        GA(0x00794fe8u)
+#define PCLAN_LOGIN_AT  0x54u
+#define SRV_WARM        20000         /* the game's wait from its server's start to the host's login (ticks) */
+/* The game's "active" flag: WM_ACTIVATEAPP sets and clears it (the window procedure, 0x5CCD70); while it is 0 the game
+ * polls no input channel (0x5CFD70: its keyboard, mouse and pads read nothing) and its message pump (0x5BF1D0) waits
+ * in GetMessageA outside a network race.  The trip's own keys need it while the app is in the background */
+#define G_APP_ACTIVE    GA(0x00870988u)
 /* The trip's waits are in its clock's ticks, 60 a second (clk): real time while the game runs; they were game
  * frames, which at 120 fps passed twice as fast (a player's results gone in 4 s, the room's waits halved) */
 #define STEP_FRAMES     (60 * 120)    /* ticks a phase may take before the trip gives up: out and into the LAN; the race's loading */
-#define ROOM_FRAMES     (60 * 60)     /* the host's wait for the others in its room, a minute at most */
+/* the host's wait in its room for players who do not come (their game frozen, or an old one that does not say its
+ * trip gave up), 30 s at most: the others come within seconds of the room (a minute before; live logs of
+ * 2026-11-02: hosts sat out the whole minute for lobby players whose trips had failed) */
+#define ROOM_FRAMES     (60 * 30)
 #define BACK_FRAMES     (60 * 240)    /* back to the career */
 /* A step's tap or message on a screen goes once the screen has been up SETTLE ticks, and again only while the same
  * screen is still up RETAP later (it was lost); the next screen came within two frames of it.  The steps waited 1.5
- * to 2 s after each instead: about 10 s of the way to the race and as much of the way back */
-#define SETTLE          20
+ * to 2 s after each at first (about 10 s of the way to the race and as much of the way back), then 1/3 s */
+#define SETTLE          10
 #define RETAP           90
 #define MP_PRIZE_N      4
 static const int k_prize[MP_PRIZE_N] = { 400, 300, 200, 100 };   /* 1st to 4th; 5th and 6th nothing */
@@ -216,7 +238,10 @@ static struct {
     const char *scr; long scr_at, scr_tap;         /* the screen a step acts on, since when, and when it last acted there */
     int      place, prize, paid, raced, owns;
     MpResult res[MPRACE_RESULTS_MAX]; int nres;    /* the race's results, as the game has them */
-    int      look_off;                             /* the host: its search for LAN servers called off */
+    int      look_off;                             /* its search for LAN servers called off */
+    int      pre;                                  /* the host: its LAN server was started early (mprace_server_start), */
+    uint32_t pre_at;                               /* ...at this game clock; */
+    int      pre_ok, pre_used;                     /* ...it still ran when the host's name went in; its login's wait cut */
     int      quit_race, fee;                       /* the player quit the race (its pause menu); the fee the bank paid */
     int      paused, quit, lan, hosted, named, carset, created, settings, joined, started, left, career, resumed, crib_go, ndlg, host_gone;
     int      logged_place, perf_logged;
@@ -225,7 +250,7 @@ static struct {
     float    rep_field;                            /* the cars' average rating */
     float    rep_factor;                           /* our engine power's factor (1: as it was) */
     uint32_t room[10];                             /* the host's room as last logged */
-    long     ready, dlg_at, wait_at;
+    long     ready, dlg_at, wait_at, join_at;
     char     keys[16]; int nkeys; long key_at;     /* keys to press, one every 20 frames: L LEFT, R RETURN, E ESCAPE */
     char     why[96];
     const char *step;                              /* where the trip is, for the player (mprace_step) */
@@ -661,6 +686,58 @@ static void pause_msg(CPU *c){
     sub_004c2170(c);
 }
 
+/* ---- the host's LAN server, started while its lobby waits ---------------------------------------- */
+/* Started by mprace_server_start in free roam (on: ours to stop), at the game's clock; a trip of the host takes it
+ * over (the game's leaving LAN unloads it then).  The name: a buffer of the game's heap of its own (the server may
+ * keep the pointer) */
+static struct { int on; uint32_t at, name; } P;
+static int srv_running(CPU *c){
+    uint32_t f = rd(G_SRV_ISRUN);
+    return rd(G_SRV_MOD) && f && (call(c, f, 0, 0, 0) & 0xffu);
+}
+int mprace_server_start(CPU *c, const char *name){
+    if (P.on) return 1;
+    if (M.phase == MPR_OUT || M.phase == MPR_LAN || M.phase == MPR_RACE || M.phase == MPR_BACK) return 0;   /* (a trip's) */
+    if (rd(G_SRV_MOD)) return 0;                                       /* (loaded by the game: not ours) */
+    if (!P.name){ uint32_t sz = 0x40; P.name = call(c, FN_NEW, 0, 1, &sz); if (!P.name) return 0; }
+    gs(P.name, name, 0x20);
+    uint32_t t0 = rd(G_TICKER), arg = P.name;
+    int ok = (call(c, FN_SRV_START, G_SRV_GLUE, 1, &arg) & 0xffu) && srv_running(c);
+    fprintf(stderr, "[mprace] f=%ld the LAN server started early, as %s: %s\n", metal_frames(), name, ok ? "it runs" : "it did not start");
+    if (!ok){ if (rd(G_SRV_MOD)) call(c, FN_SRV_UNLOAD, G_SRV_GLUE, 0, 0); return 0; }
+    P.on = 1; P.at = t0;
+    return 1;
+}
+void mprace_server_stop(CPU *c){
+    if (!P.on){
+        /* a trip's that ended in career free roam without leaving LAN by the game's way (it gave up before the LAN
+         * menus): the game hosts nothing in free roam */
+        int trip = M.phase != MPR_IDLE && M.phase != MPR_DONE && M.phase != MPR_FAILED;
+        if (!M.pre || trip || !rd(G_SRV_MOD) || rd(G_FLOW) != 6u || !(rd(G_GAMEMODE) & 1u)) return;
+        M.pre = 0;
+        call(c, FN_SRV_UNLOAD, G_SRV_GLUE, 0, 0);
+        mlog("the LAN server started early: stopped, the trip over in free roam%s", "");
+        return;
+    }
+    P.on = 0;
+    if (!rd(G_SRV_MOD)) return;                                        /* (gone already) */
+    call(c, FN_SRV_UNLOAD, G_SRV_GLUE, 0, 0);
+    fprintf(stderr, "[mprace] f=%ld the LAN server started early: stopped (no race), %.1f s after its start\n", metal_frames(),
+            (double)(int32_t)(rd(G_TICKER) - P.at) / 4000.0);
+}
+static int srv_warm(uint32_t at){ return (int32_t)(rd(G_TICKER) - at) >= SRV_WARM; }
+int mprace_lan_up(void){
+    if (M.r.host && M.goal == G_RACE_GOAL && (M.phase == MPR_OUT || M.phase == MPR_LAN))
+        return M.carset || (M.pre && srv_warm(M.pre_at) && (M.phase == MPR_OUT || M.pre_ok || !M.named));
+    return P.on && srv_warm(P.at);
+}
+void mprace_host_up(void){
+    if (M.r.host || M.r.host_up || M.goal != G_RACE_GOAL || (M.phase != MPR_OUT && M.phase != MPR_LAN)) return;
+    M.r.host_up = 1;
+    mlog("the host's LAN server takes logins (its lobby says so)%s", "");
+}
+int mprace_gave_up(void){ return M.phase != MPR_IDLE && M.goal == G_CAREER_GOAL && !M.raced; }
+
 int mprace_start(const MpRace *r){
     static int patched;
     if (M.phase != MPR_IDLE && M.phase != MPR_DONE && M.phase != MPR_FAILED) return 0;
@@ -673,6 +750,8 @@ int mprace_start(const MpRace *r){
     if (!patched){ dispatch_patch(FN_PAUSE_MSG, pause_msg); patched = 1; }
     memset(&M, 0, sizeof M); memset(&g_bal, 0, sizeof g_bal);
     M.r = *r; M.goal = G_RACE_GOAL; M.frame0 = metal_frames();
+    /* the host's LAN server started early: the trip's now (the game's leaving LAN stops it) */
+    if (M.r.host && P.on){ M.pre = 1; M.pre_at = P.at; P.on = 0; }
     M.step = "Leaving free roam";
     to_phase(MPR_OUT);
     fprintf(stderr, "[mprace] f=%ld start: %s, mode %d, track %d%s, %d laps, %d players, LAN name %s%s%s\n", M.frame0,
@@ -846,6 +925,18 @@ static void step_race(CPU *c, long f){
         fail(w);
         return;
     }
+    /* the host's LAN server started early and still running when the name went in (the game started nothing): its
+     * login goes once 5 s have passed since that start, not since now (UI_PC_LAN's +0x54; its "please wait" goes
+     * with it) */
+    if (M.r.host && M.pre_ok && !M.pre_used && on("UI_PC_LAN.fng")){
+        uint32_t sc = screen_of(VT_PCLAN), at = sc ? rd(sc + PCLAN_LOGIN_AT) : 0, want = M.pre_at + (uint32_t)SRV_WARM;
+        if (at && at != 0x7fffffffu){
+            if ((int32_t)(want - at) < 0) MR32(sc + PCLAN_LOGIN_AT) = want;
+            M.pre_used = 1;
+            fprintf(stderr, "[mprace] f=%ld the LAN server runs since %.1f s: the login %s\n", metal_frames(),
+                    (double)(int32_t)(rd(G_TICKER) - M.pre_at) / 4000.0, srv_warm(M.pre_at) ? "goes now" : "goes 5 s after its start");
+        }
+    }
     if (rd(G_DLG) && M.phase == MPR_LAN){
         /* a dialog on the way: "please wait" ones (no button, or "Looking for
          * LAN servers"' Cancel) go by themselves; the joiner's "reconnect?"
@@ -853,9 +944,10 @@ static void step_race(CPU *c, long f){
          * an error's OK ends the trip */
         uint32_t nb = rd(G_DLG_NBUT), m1 = rd(G_DLG_MSG1), m2 = rd(G_DLG_MSG2), m3 = rd(G_DLG_MSG3);
         if (!M.dlg_at) M.dlg_at = f;
-        /* the host's "Looking for LAN servers" (5 s): called off, as a player who hosts would (Host LAN Server takes
-         * nothing from its list; the Cancel only closes it, 0x4FB745) */
-        if (M.r.host && !M.hosted && !M.look_off && nb == 1 && m3 == MSG_LOOK_CANCEL && on("UI_PC_LAN_ServerSelect.fng")){
+        /* "Looking for LAN servers" (5 s): called off, as a player who hosts would (Host LAN Server takes nothing from
+         * its list; the Cancel only closes it, 0x4FB745), and a joiner too: it connects by the host's address, and
+         * the host's broadcast it waited for never came on a crowded switch */
+        if (!M.hosted && !M.look_off && nb == 1 && m3 == MSG_LOOK_CANCEL && on("UI_PC_LAN_ServerSelect.fng")){
             if (f - M.dlg_at >= SETTLE && dlg_answer(m3)){ M.look_off = 1; M.dlg_at = 0; mlog("the search for LAN servers called off%s", ""); }
             return;
         }
@@ -916,28 +1008,36 @@ static void step_race(CPU *c, long f){
             M.hosted = 1;
             mlog("host the LAN server%s", "");
         } else {
-            /* the host's server should be up: its advert among the servers found (by its address), or 12 s
-             * (it starts in about 6); a LAN broadcast may never come on a crowded server (with 50 players on the
-             * switch it did not: the trip waited 45 s for it), and one not listening yet is asked again
-             * (the "reconnect?" dialog, below) */
+            /* the host's server should be up: its lobby says so (mprace_host_up: it was started while the lobby
+             * waited, or the host logged in on it), or its advert among the servers found (by its address), or 12 s
+             * (an older host's starts in about 6); a LAN broadcast may never come on a crowded server (on the live
+             * one it never did: a 2026-11-04 report, 50 players on the switch), and one not listening yet is asked
+             * again (the "reconnect?" dialog, below) */
             int seen = 0; uint32_t head = ss + SS_LIST;
             for (uint32_t n = rd(head), k = 0; n && n != head && k < 128; n = rd(n), k++) if (rd(n + 0x18u) == M.r.host_ip) seen = 1;
             if (!M.look_at) M.look_at = f;
-            if (!seen && f - M.look_at < 60 * 12) return;
+            if (!seen && !M.r.host_up && f - M.look_at < 60 * 12) return;
             char ip[20]; snprintf(ip, sizeof ip, "%u.%u.%u.%u", M.r.host_ip >> 24, (M.r.host_ip >> 16) & 255u, (M.r.host_ip >> 8) & 255u, M.r.host_ip & 255u);
             MR8(G_LAN_HOST) = 0; gs(G_LAN_ADDR, ip, 40); MR16(G_LAN_PORT) = LAN_PORT;
             uint32_t a[3] = { S_SERVERSEL, S_LANNAME, 0 };
             call(c, FN_FE_SWITCH, 0, 3, a);
-            mlog(seen ? "join the host's LAN server at %s" : "join the host's LAN server at %s (its advert not seen)", ip);
+            mlog(M.r.host_up ? "join the host's LAN server at %s (its lobby says it is up)" : seen ? "join the host's LAN server at %s"
+                 : "join the host's LAN server at %s (its advert not seen)", ip);
         }
         M.next = f + SETTLE;
         return;
     }
     if (on("UI_PC_LAN.fng")){
         if (MR8(G_TXT_ON) != 1u || !rd(G_TXT_REC) || M.named) return;
+        /* the host's LAN server started early: still running, the game's start (the name's) starts nothing */
+        if (M.r.host && M.pre){
+            M.pre_ok = srv_running(c);
+            fprintf(stderr, "[mprace] f=%ld the LAN server started early %.1f s ago: %s\n", metal_frames(),
+                    (double)(int32_t)(rd(G_TICKER) - M.pre_at) / 4000.0, M.pre_ok ? "it runs" : "it no longer runs, the game starts it");
+        }
         gs(G_TXT_BUF, M.r.name, 13); MR32(G_TXT_LEN) = (uint32_t)strlen(M.r.name);
         call(c, FN_TXT_ACCEPT, rd(G_TXT_REC), 0, 0);
-        M.named = 1; M.next = f + 30;
+        M.named = 1; M.next = f + (M.pre_ok ? 4 : 30);                 /* (the login's wait to cut next: at once) */
         mlog("the LAN name %s", M.r.name);
         return;
     }
@@ -959,13 +1059,14 @@ static void step_race(CPU *c, long f){
             return;
         }
         /* the joiner: the list filtered as the host's game is, then the host's game by its HOST */
+        if (M.join_at && f - M.join_at < 60) return;                             /* (busy until the answer: no second join) */
         write_settings(0);
         uint32_t rec = find_game();
         if (!rec){
-            /* (every second: the host's game is listed within one of its coming; every 3 s, as before, missed it by
-             * 3 s at times) */
+            /* (every half second: the host's game is listed within that of its coming; every 3 s, at first, missed
+             * it by 3 s at times) */
             MR32(ctx + 0x100u) = 0; uint32_t z = 0; call(c, FN_REFRESH, ctx, 1, &z);
-            M.next = f + 60;
+            M.next = f + 30;
             return;
         }
         MR32(G_NET + N_JOIN) = 1; MR8(G_NET + N_PASSWD_ON) = 1;
@@ -975,7 +1076,7 @@ static void step_race(CPU *c, long f){
         if (r >= 0){ uint32_t st = 0x12; call(c, FN_LANSTATE, G_NET, 1, &st); }
         char nm[40]; for (int i = 0; i < 36; i++) nm[i] = (char)MR8(rec + 4u + (uint32_t)i); nm[36] = 0;
         fprintf(stderr, "[mprace] f=%ld join the game %s: %d\n", metal_frames(), nm, r);
-        M.next = f + 60;                                                          /* (busy until the answer: no second join) */
+        M.join_at = f; M.next = f + 4;                                            /* (the room next: its Ready at once) */
         return;
     }
     if (M.r.host && M.created){
@@ -1183,12 +1284,67 @@ static uint32_t gstr_tmp(CPU *c, const char *s){
     return a;
 }
 
+/* The trip's keys while the app is in the background: told it is inactive, the game clears its active flag and reads
+ * no input, yet in a LAN session it keeps running (lifecycle_may_park: the host must not drop it), so the trip's
+ * taps (UI_OLMAIN's Lobby, Create Game's screens, the room's way out) went nowhere and it gave up after its 2
+ * minutes: a 2026-11-04 report, the player switched apps as the trip reached the LAN menus.  So while the trip owns
+ * the input the flag stays set; after it, it is the game's again (cleared if the app is still in the background:
+ * the game parks then, as it would have).  The player's own keys and pads reach no app in the background, and the
+ * trip mutes them anyway (mprace_owns_input) */
+int lifecycle_told_active(void);                     /* lifecycle.c: the game was last told it is active */
+static int g_held;
+static int test_env(const char *name);
+static void input_hold(void){
+    static int off = -1;
+    if (off < 0) off = test_env("NFSU2_MPRACE_TEST_NOHOLD");
+    if (off) return;
+    if (M.owns){
+        if (MR32(G_APP_ACTIVE)) return;
+        MR32(G_APP_ACTIVE) = 1;
+        if (!g_held){ g_held = 1; mlog("the game is in the background: its input stays on for the trip%s", ""); }
+    } else if (g_held){
+        g_held = 0;
+        if (!lifecycle_told_active()){ MR32(G_APP_ACTIVE) = 0; mlog("the trip's input over: the game in the background is inactive again%s", ""); }
+    }
+}
+/* Test aids, scripted runs only (NFSU2_INPUT_SCRIPT; tests/scripts/mprace_solo.txt):
+ *   NFSU2_MPRACE_TEST_SOLO=1   3 s into career free roam, once: a trip that hosts a sprint for 2, its LAN server
+ *                              started early first as a lobby's is; alone, it goes through the LAN menus, creates
+ *                              the game, waits in the room for the player who never comes and goes back
+ *   NFSU2_MPRACE_TEST_BLUR=MS  the app loses the focus for MS ms once the trip hosts its LAN server (as Cmd-Tab
+ *                              away in the LAN menus: lifecycle_test_blur)
+ *   NFSU2_MPRACE_TEST_NOHOLD=1 input_hold off: the trip's keys as before, for the A/B */
+void lifecycle_test_blur(long ms);                   /* lifecycle.c */
+static int test_env(const char *name){
+    const char *s = getenv("NFSU2_INPUT_SCRIPT"), *e = getenv(name);
+    return s && *s && e && *e ? atoi(e) : 0;
+}
+static void test_aids(CPU *c, long f){
+    static int solo = -1, blur = -1, solo_done, blurred; static long roam_at;
+    if (solo < 0){ solo = test_env("NFSU2_MPRACE_TEST_SOLO"); blur = test_env("NFSU2_MPRACE_TEST_BLUR"); }
+    if (blur > 0 && !blurred && M.hosted){ blurred = 1; mlog("test: the app loses the focus now%s", ""); lifecycle_test_blur(blur); }
+    if (solo <= 0 || solo_done || M.phase != MPR_IDLE) return;
+    int roam = rd(G_FLOW) == 6u && (rd(G_GAMEMODE) & 1u) && rd(G_RACETYPE) == 0 && rd(rd(G_RACECO)) == 4u && on("HUD_SingleRace.fng");
+    if (!roam){ roam_at = 0; return; }
+    if (!roam_at) roam_at = f;
+    if (f - roam_at < 180) return;
+    solo_done = 1;
+    MpRace t; memset(&t, 0, sizeof t);
+    t.host = 1; t.mode = 1; t.track = 4102; t.reverse = 1; t.laps = 1; t.players = 2;
+    snprintf(t.name, sizeof t.name, "SOLOHOST"); snprintf(t.host_name, sizeof t.host_name, "SOLOHOST");
+    snprintf(t.password, sizeof t.password, "12345678");
+    mlog("test: a solo trip that hosts%s", "");
+    mprace_server_start(c, t.name);
+    mprace_start(&t);
+}
 void mprace_frame(CPU *c){
     clk_step();
-    if (M.phase == MPR_IDLE || M.phase == MPR_DONE || M.phase == MPR_FAILED){ M.owns = 0; return; }
+    test_aids(c, clk());
+    if (M.phase == MPR_IDLE || M.phase == MPR_DONE || M.phase == MPR_FAILED){ M.owns = 0; input_hold(); return; }
     long f = clk();
     /* the player's input is ours out of free roam and back, not in the race, not on its results */
     M.owns = M.phase == MPR_OUT || M.phase == MPR_LAN || (M.phase == MPR_BACK && !on("UI_PostRaceResults.fng"));
+    input_hold();
     if (step_racing(f)) return;
     if (keys_run(f) || f < M.next) return;
     if (M.goal == G_RACE_GOAL){

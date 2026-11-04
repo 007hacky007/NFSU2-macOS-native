@@ -18,6 +18,8 @@ typedef struct {
     int      mode;                 /* the network race's type [0x850088]: 0 circuit, 1 sprint, 2 drag, 3 drift, 4 URL, 0xA Street X */
     int      track, laps, reverse;
     int      players;              /* the host: the lobby's players, itself too (it starts once they are all ready) */
+    int      host_up;              /* a joiner: the host's LAN server takes logins already (its lobby said so):
+                                    * connect at once (mprace_host_up when that comes later) */
 } MpRace;
 enum { MPR_IDLE = 0, MPR_OUT, MPR_LAN, MPR_RACE, MPR_BACK, MPR_DONE, MPR_FAILED };
 /* what quitting a started race with its pause menu's Quit costs the bank (what it holds at most) */
@@ -71,6 +73,22 @@ void mprace_host_gone(void);
 /* the host: a player of the lobby is not coming after all (its trip did not start, it quit): the room does not wait
  * for it; with nobody else left the trip ends */
 void mprace_player_gone(void);
+/* a joiner: the host's lobby says its LAN server takes logins now: the trip connects to it at once (it waited for
+ * the server's LAN broadcast, which on a crowded switch never came, and then 12 s) */
+void mprace_host_up(void);
+/* the trip gave up before its race (it is on its way back, or over): the others are told (roam_game.c) */
+int  mprace_gave_up(void);
+struct CPU;
+/* The host's LAN server, started early: while its lobby waits in free roam, as the game's Host LAN Server starts it
+ * (server.dll, StartLANServer 0x5FA310 with the host's LAN name).  On the trip the game's own start finds it running
+ * and starts nothing, and the host's login need not sit out the game's 5 s from that start (the server takes
+ * logins about 2.5 s after its start): it goes once 5 s have passed since this one.  1 when it runs */
+int  mprace_server_start(struct CPU *c, const char *name);
+/* ...stopped (unloaded, as the game's leaving LAN does) unless a trip took it over: the lobby ended without its race */
+void mprace_server_stop(struct CPU *c);
+/* the host: its LAN server takes logins (started early 5 s ago or more, or the host logged in on it): the others
+ * may connect */
+int  mprace_lan_up(void);
 /* the player is in career free roam again while the trip is not over (it made its way back by hand, or the trip
  * lost its way): the trip is over, as done once raced (the prize, if the crib did not pay it, into the bank now),
  * else as failed */

@@ -1,0 +1,28 @@
+# A race's trip from free roam that hosts, alone (runtime/mprace.c test aids):
+# 3 s into career free roam NFSU2_MPRACE_TEST_SOLO=1 starts the LAN server
+# early, as a lobby's host does, then a trip that hosts a sprint for 2.  It
+# leaves free roam, finds the early server running ("the LAN server started
+# early ... it runs", its login not waiting the game's 5 s), creates the game,
+# waits in the room for the player who never comes, gives up ("nobody came
+# into the game") and goes back to free roam.
+# With NFSU2_MPRACE_TEST_BLUR=120000 the app loses the focus once the trip
+# hosts its LAN server, as a player who switches apps in the LAN menus (a
+# 2026-11-04 report): the trip's keys still go in ("its input stays on for the
+# trip"), it reaches the room and makes its way back in the background.
+# NFSU2_MPRACE_TEST_NOHOLD=1 is the way before, for the A/B: the keys go
+# nowhere, the trip never reaches the room ("the LAN race did not come
+# together") and stops in the LAN menus once its session ends.
+#   NFSU2_DATA=<EU game> tools/autorun.sh <out> NFSU2_INPUT_SCRIPT=tests/scripts/mprace_solo.txt
+#     NFSU2_SAVE_SEED=<a career's saves, its car bought> NFSU2_ROAM=1 NFSU2_NET=loopback
+#     NFSU2_NET_LOOPOFFSET=2101 NFSU2_MPRACE_TEST_SOLO=1 [NFSU2_MPRACE_TEST_BLUR=120000]
+# Good: "[mprace] ... the room:", "nobody came into the game", "state back in
+# free roam".
+0     bot on
++0    waitroam 6000
++0    bot off
++0    log SOLO_INROAM
++0    waitfng UI_PC_LAN_ServerSelect.fng 3000
++0    log SOLO_LAN
++0    waitfng HUD_SingleRace.fng 15000
++120  log SOLO_BACK
++60   quit
