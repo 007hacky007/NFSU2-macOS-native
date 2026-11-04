@@ -662,6 +662,10 @@
 #define sub_00407750_orig sub_00407750_orig
 #define sub_00407750_m sub_00407750_m
 #define sub_00407750_orig_m sub_00407750_orig_m
+#define sub_004172d0 sub_004172d0
+#define sub_004172d0_orig sub_004172d0_orig
+#define sub_004172d0_m sub_004172d0_m
+#define sub_004172d0_orig_m sub_004172d0_orig_m
 #define sub_0042cd60 sub_0042cd60
 #define sub_0042cd60_orig sub_0042cd60_orig
 #define sub_0042cd60_m sub_0042cd60_m

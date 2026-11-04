@@ -218,6 +218,15 @@ struct GameSettings: View {
                 SettingRow(title: "Show hidden races",
                            description: "The career's 33 hidden races on the map and the radar like the others, and up to 8 races of each kind on the map at once, as MaxHwoy's Show Hidden Races Mod. Off: as in the original game, a hidden race shows only when you drive near it.",
                            isOn: $model.hiddenRaces)
+                SettingRow(title: "Rubberbanding",
+                           description: "Career opponents ahead of you wait, ones behind get more power and grip. No boost: they still wait, but never beat their own pace. Off: neither. Original: as in the original game.") {
+                    Picker("", selection: $model.catchup) {
+                        Text("Original").tag("original")
+                        Text("No boost").tag("noboost")
+                        Text("Off").tag("off")
+                    }
+                    .pickerStyle(SegmentedPickerStyle()).labelsHidden().fixedSize()
+                }
                 SettingRow(title: "Unique parts for every car",
                            description: "Once Caleb is beaten, the career shops sell the unique visual parts (the wide body kits too) for every car, as the game already does in Customize mode. Off: as in the original game, each unique part only for the car that won its star.",
                            isOn: $model.uniques)
