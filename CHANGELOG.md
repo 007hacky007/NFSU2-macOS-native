@@ -2,6 +2,20 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.8 - 2026-11-04
+
+### Added
+- Rubberbanding in Settings, Game: in career races the game slows opponents who are ahead of you and gives ones behind you more power, grip and top speed, up to 37% more when you are 320 m ahead of them. No boost keeps the waiting but never lets an opponent beat its own pace; Off drops both, as Quick Race does with Catch Up off. Original is the default. The Binary scripts that set the opponents' CatchUp byte (nfsmods.xyz 3222, 1694) change nothing: the byte picks between two identical rows of the game's data.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/ee6e2aecb8d498dff4a5324b07eb28da4c831f09/release-1.0.8/launcher-rubberbanding.png" width="560" alt="Settings, Game: Rubberbanding">
+- When Check Now finds a newer NFSU2 Builder, Settings, More shows it right below, with What's new and Update (or Download), instead of sending you to the main window.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/ee6e2aecb8d498dff4a5324b07eb28da4c831f09/release-1.0.8/launcher-update-in-settings.png" width="560" alt="Settings, More: a newer Builder with What's new and Update">
+
+### Changed
+- The launcher window opens every time; Play starts the game. The "Show this window when the app opens" box is gone.
+
+### Fixed
+- A race started from free roam goes on when the game is not the frontmost app: the trip through the game's menus keeps its input in the background. The host's LAN server starts while the lobby waits, so joiners connect at once instead of waiting on an empty server list, a trip that gives up tells the others, and Game Tools covers the menus the trip drives with the race, its players and the results (from th0mk's nfsu2-web).
+
 ## 1.0.7 - 2026-11-04
 
 ### Added
