@@ -48,7 +48,6 @@ final class LauncherModel: ObservableObject {
     @Published var fpsCounter: Int { didSet { defaults.set(fpsCounter, forKey: Prefs.fpsCounter) } }
     @Published var metalHUD: Bool { didSet { defaults.set(metalHUD, forKey: Prefs.metalHUD) } }
     @Published var headlights: String { didSet { defaults.set(headlights, forKey: Prefs.headlights) } }
-    @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     private var setLangPacks = false     // NFSU2_LANGPACKS was set by us
@@ -200,7 +199,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.checkUpdates: true, Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
+        defaults.register(defaults: [Prefs.checkUpdates: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -212,7 +211,7 @@ final class LauncherModel: ObservableObject {
         fpsCounter = min(max(defaults.integer(forKey: Prefs.fpsCounter), 0), 2)
         metalHUD = defaults.bool(forKey: Prefs.metalHUD)
         headlights = defaults.string(forKey: Prefs.headlights) ?? "players"
-        showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
+        defaults.removeObject(forKey: Prefs.oldShowAtStartup)   // the launcher always opens now
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         allCars = defaults.bool(forKey: Prefs.allCars)
         checkUpdates = defaults.bool(forKey: Prefs.checkUpdates)

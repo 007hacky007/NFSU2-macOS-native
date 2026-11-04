@@ -533,9 +533,8 @@ by default, see `run.sh`), Controls, Online, Game, Mods and More, where **Make
 Copy…** builds a portable app with the game files inside (APFS clones, seconds
 on the same disk), so nobody needs `pack.sh --embed` or a terminal for that.
 **Restore Original Game** sets every option back to the original, unmodified
-game. Untick "Show this window when the app opens" to go straight into the game
-(hold Option to get the window back). `NFSU2_SKIP_LAUNCHER=1` /
-`NFSU2_ENGINE=original|hd` do the same from scripts. The Controls tab turns the
+game. The window opens every time; Play starts the game (`NFSU2_SKIP_LAUNCHER=1`
+/ `NFSU2_ENGINE=original|hd` are for `tools/session.sh`). The Controls tab turns the
 game controller on or off and sets what happens when it is unplugged, its stick
 and trigger dead zones, the trigger buttons at full pull, the pad's menu keys
 and reading it in the background (`NFSU2_PAD`, `NFSU2_PAD_DEADZONE`,

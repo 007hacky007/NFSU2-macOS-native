@@ -2139,8 +2139,8 @@ HD-only "NFSU2 HD.app"; `--original-only` leaves the HD engine out; without
 - **Tools:** Saves, Logs, Reset Graphics Settings (drops `g_*` and
   `NotFirstTime` from `~/.nfsu2_registry`: the game detects again), Report a
   Problem (GitHub issues).
-- **Show this window when the app opens:** off = straight into the game; hold
-  Option to see the window.
+- **The window opens every time;** Play starts the game (`NFSU2_SKIP_LAUNCHER=1`
+  is for `tools/session.sh`).
 
 **The engine is a child process, not exec().** A game folder under Downloads /
 Documents / Desktop triggers macOS's folder permission prompt. A child process

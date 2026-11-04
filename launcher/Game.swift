@@ -109,7 +109,7 @@ enum Prefs {
     static let updateDismissed = "LauncherUpdateDismissed"   // Not now: hidden until a newer version than this
     static let updateRun = "LauncherUpdateRun"               // an Update in progress: its download folder and the Builder (Updater.swift)
     static let engine = "LauncherEngine"           // "original" | "hd"
-    static let showAtStartup = "LauncherShowAtStartup"
+    static let oldShowAtStartup = "LauncherShowAtStartup"   // gone: the launcher always opens
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
     static let allCars = "LauncherAllCars"         // both releases' cars (off: NFSU2_ALL_CARS=0)
     static let intro = "LauncherIntro"             // BOOTMOVIES: "skippable" | "off" | "original"
@@ -169,7 +169,7 @@ enum Prefs {
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
-    /// game folder, full screen and showAtStartup are not game options.)
+    /// game folder and full screen are not game options.)
     static let originalGame: [OriginalValue] = [
         OriginalValue(\.engine, .original),
         OriginalValue(\.wideHUD, false),

@@ -102,7 +102,7 @@ final class Updater {
         set { if let r = newValue { defaults.set(r.dictionary, forKey: Prefs.updateRun) } else { defaults.removeObject(forKey: Prefs.updateRun) } }
     }
 
-    /// The launcher must not play by itself on opening (Show this window when the app opens off).
+    /// The launcher must not play by itself on opening (NFSU2_SKIP_LAUNCHER).
     var pending: Bool { record != nil }
 
     /// The Builder: run by this launcher in the background, its window, or one an earlier
