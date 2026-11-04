@@ -48,7 +48,6 @@ final class LauncherModel: ObservableObject {
     @Published var fpsCounter: Int { didSet { defaults.set(fpsCounter, forKey: Prefs.fpsCounter) } }
     @Published var metalHUD: Bool { didSet { defaults.set(metalHUD, forKey: Prefs.metalHUD) } }
     @Published var headlights: String { didSet { defaults.set(headlights, forKey: Prefs.headlights) } }
-    @Published var showAtStartup: Bool { didSet { defaults.set(showAtStartup, forKey: Prefs.showAtStartup) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     private var setLangPacks = false     // NFSU2_LANGPACKS was set by us
@@ -79,6 +78,8 @@ final class LauncherModel: ObservableObject {
     @Published var discord: Bool { didSet { defaults.set(discord, forKey: Prefs.discord) } }
     @Published var garage: Bool { didSet { defaults.set(garage, forKey: Prefs.garage) } }
     @Published var hiddenRaces: Bool { didSet { defaults.set(hiddenRaces, forKey: Prefs.hiddenRaces) } }
+    /// Settings › Game › Rubberbanding: "original", "noboost" or "off" (runtime/catchup.c).
+    @Published var catchup: String { didSet { defaults.set(catchup, forKey: Prefs.catchup) } }
     @Published var uniques: Bool { didSet { defaults.set(uniques, forKey: Prefs.uniques) } }
     @Published var photoMode: Bool { didSet { defaults.set(photoMode, forKey: Prefs.photoMode) } }
     @Published var driftMode: Bool { didSet { defaults.set(driftMode, forKey: Prefs.driftMode) } }
@@ -198,7 +199,7 @@ final class LauncherModel: ObservableObject {
         let fm = FileManager.default
         let hasOriginal = fm.isExecutableFile(atPath: Paths.engine(nil, hd: false).path)
         let hasHD = fm.isExecutableFile(atPath: Paths.engine(nil, hd: true).path)
-        defaults.register(defaults: [Prefs.checkUpdates: true, Prefs.showAtStartup: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
+        defaults.register(defaults: [Prefs.checkUpdates: true, Prefs.allCars: true, Prefs.garage: true, Prefs.cutsceneBars: true, Prefs.controller: true, Prefs.stickDeadzone: 0.10, Prefs.triggerDeadzone: 0.02, Prefs.triggerClick: true, Prefs.padMenuKeys: true, Prefs.rumbleStrength: 1.0])
         var e = Engine(rawValue: defaults.string(forKey: Prefs.engine) ?? "") ?? .original
         if let env = ProcessInfo.processInfo.environment["NFSU2_ENGINE"], let f = Engine(rawValue: env) { e = f }
         if e == .hd && !hasHD { e = .original }
@@ -210,7 +211,7 @@ final class LauncherModel: ObservableObject {
         fpsCounter = min(max(defaults.integer(forKey: Prefs.fpsCounter), 0), 2)
         metalHUD = defaults.bool(forKey: Prefs.metalHUD)
         headlights = defaults.string(forKey: Prefs.headlights) ?? "players"
-        showAtStartup = defaults.bool(forKey: Prefs.showAtStartup)
+        defaults.removeObject(forKey: Prefs.oldShowAtStartup)   // the launcher always opens now
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         allCars = defaults.bool(forKey: Prefs.allCars)
         checkUpdates = defaults.bool(forKey: Prefs.checkUpdates)
@@ -218,6 +219,7 @@ final class LauncherModel: ObservableObject {
         discord = defaults.bool(forKey: Prefs.discord)
         garage = defaults.bool(forKey: Prefs.garage)
         hiddenRaces = defaults.bool(forKey: Prefs.hiddenRaces)
+        catchup = ["noboost", "off"].contains(defaults.string(forKey: Prefs.catchup) ?? "") ? defaults.string(forKey: Prefs.catchup)! : "original"
         uniques = defaults.bool(forKey: Prefs.uniques)
         photoMode = defaults.bool(forKey: Prefs.photoMode)
         driftMode = defaults.bool(forKey: Prefs.driftMode)
@@ -395,6 +397,7 @@ final class LauncherModel: ObservableObject {
         if discord && !discordImage.isEmpty && DiscordImage.valid(discordImage) { setenv("NFSU2_DISCORD_LARGE_IMAGE", discordImage, 0) }
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
         if hiddenRaces { setenv("NFSU2_SHOW_HIDDEN_RACES", "1", 0) }   // hiddenraces.c; one set by hand wins
+        if catchup != "original" { setenv("NFSU2_CATCHUP", catchup, 0) }   // catchup.c; one set by hand wins
         if uniques { setenv("NFSU2_UNIQUES", "1", 0) }          // uniques.c; one set by hand wins
         if photoMode { setenv("NFSU2_PHOTO", "1", 0) }          // photo.c, native_scene.m; one set by hand wins
         if driftMode { setenv("NFSU2_DRIFT", "1", 0) }          // drift.c; one set by hand wins
@@ -811,8 +814,9 @@ final class LauncherModel: ObservableObject {
                 self.defaults.removeObject(forKey: Prefs.updateDismissed)
                 self.checkedByHand = true
                 self.refreshUpdateNotice()
+                // a newer one gets its own row with What's new and Update below
                 self.updateStatus = UpdateCheck.isNewer(r.version, than: stamp)
-                    ? "NFSU2 Builder \(r.version) is available: Download is in the main window."
+                    ? nil
                     : "Up to date: this app was made by NFSU2 Builder \(stamp), the newest one."
             }
         }

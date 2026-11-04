@@ -35,7 +35,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
                         "NFSU2_ALL_CARS", "BOOTMOVIES", "NFSU2_HEADLIGHTS", "NFSU2_GARAGE", "NFSU2_CUTSCENES_60", "NFSU2_CUTSCENE_BORDERS",
                         "NFSU2_LAN_TIMING", "NFSU2_SEED_REGISTRY", "NFSU2_LANGUAGE", "NFSU2_NET", "NFSU2_ONLINE", "NFSU2_SERVER_URL",
                         "NFSU2_ROAM", "NFSU2_HORN", "NFSU2_TEXPACKS", "NFSU2_REFLECTIONS", "TINT", "NFSU2_DATA", "NFSU2_ENGINE", "MTL_HUD_ENABLED",
-                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS", "NFSU2_NEW_PROFILE_NAME", "NFSU2_SHOW_HIDDEN_RACES", "NFSU2_EXPOSURE", "NFSU2_WHITE_LEVEL"]
+                        "NFSU2_LANGPACKS", "NFSU2_NET_STATS", "NFSU2_NEW_PROFILE_NAME", "NFSU2_SHOW_HIDDEN_RACES", "NFSU2_CATCHUP", "NFSU2_EXPOSURE", "NFSU2_WHITE_LEVEL"]
         for k in launched { unsetenv(k) }
 
         // defaults
@@ -47,6 +47,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
               "defaults: no Discord, no picture, offline, default server, no free roam, no horn")
         check(!m.netStats, "defaults: no Online statistics panel")
         check(!m.hiddenRaces, "defaults: hidden races hidden, as in the original game")
+        check(m.catchup == "original", "defaults: rubberbanding as in the original game")
         check(!m.uniques, "defaults: unique parts only for the car that won them, as in the original game")
         check(m.exposure == "0" && m.whiteLevel == "100", "defaults: exposure 0 and white level 100 %, the game's picture")
         check(m.controller && abs(m.stickDeadzone - 0.10) < 1e-9 && m.music == "game" && m.lanTiming == "pc" && !m.seedRegistry && m.reflections == .original,
@@ -57,8 +58,9 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.frameRate = "60"; m.fpsCounter = 2; m.discord = true; m.discordImage = "https://example.com/car.png"
         m.headlights = "all"; m.intro = "off"; m.horn = .klaxon; m.freeRoam = .ghost; m.lanTiming = "exact"; m.stickDeadzone = 0.2
         m.picture = [1, 1, 1, 2]; m.reflections = .sharp; m.wideHUD = true; m.garage = false; m.netStats = true
-        m.hiddenRaces = true; m.exposure = "-0.3"; m.whiteLevel = "70"
+        m.hiddenRaces = true; m.catchup = "noboost"; m.exposure = "-0.3"; m.whiteLevel = "70"
         m = LauncherModel()
+        check(m.catchup == "noboost", "persistence: Rubberbanding")
         check(m.exposure == "-0.3" && m.whiteLevel == "70", "persistence: exposure and white level")
         check(m.hiddenRaces, "persistence: Show hidden races")
         check(m.netStats, "persistence: Online statistics")
@@ -97,6 +99,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
               "play: cutscene bars, intro, original cars and garage")
         check(env("MTL_HUD_ENABLED") == "1", "play: the Metal performance overlay")
         check(env("NFSU2_SHOW_HIDDEN_RACES") == nil, "play: hidden races off, no NFSU2_SHOW_HIDDEN_RACES")
+        check(env("NFSU2_CATCHUP") == nil, "play: original rubberbanding, no NFSU2_CATCHUP")
         check(env("NFSU2_EXPOSURE") == nil && env("NFSU2_WHITE_LEVEL") == nil, "play: the game's picture, no exposure or white level")
         check(["1", "hotplug"].contains(env("NFSU2_PAD") ?? "") && env("NFSU2_PAD_DEADZONE") == "0.15" && env("NFSU2_HEADLIGHTS") == "off", "play: controller, dead zone, headlights")
         check(env("NFSU2_NET") == nil && env("NFSU2_SERVER_URL") == nil && env("NFSU2_ROAM") == nil, "play: offline sets no network variable")
@@ -120,6 +123,10 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.discord = false; m.discordImage = "my_car"; m.metalHUD = false; m.hiddenRaces = true; m.play()
         check(env("NFSU2_SHOW_HIDDEN_RACES") == "1", "play: Show hidden races (NFSU2_SHOW_HIDDEN_RACES=1)")
         m.hiddenRaces = false
+        for k in launched { unsetenv(k) }
+        m.catchup = "off"; m.play()
+        check(env("NFSU2_CATCHUP") == "off", "play: Rubberbanding off (NFSU2_CATCHUP=off)")
+        m.catchup = "original"
         for k in launched { unsetenv(k) }
         m.play()
         check(env("NFSU2_UNIQUES") == nil, "play: unique parts off, no variable")
@@ -177,7 +184,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.headlights = "all"; m.reflections = .sharpest; m.reflectSky = true; m.reflectLights = true; m.reflectDetail = true
         m.picture = PictureOptions.all.map { $0.choices.count - 1 }; m.online = true; m.freeRoam = .ghost; m.hearCars = true
         m.horn = .train; m.allCars = true; m.garage = true; m.intro = "skippable"; m.discord = true; m.discordImage = "x"
-        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true; m.hiddenRaces = true; m.uniques = true
+        m.uhud = true; m.music = "folder"; m.seedRegistry = true; m.lanTiming = "exact"; m.netStats = true; m.hiddenRaces = true; m.uniques = true; m.catchup = "off"
         m.exposure = "-1.0"; m.whiteLevel = "40"
         let changed = Prefs.originalGame.filter { !$0.isSet(m) }.count
         check(!m.isOriginalGame && changed >= 20, "original game: \(changed) of \(Prefs.originalGame.count) options changed")
@@ -185,6 +192,7 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         check(m.isOriginalGame && Prefs.originalGame.allSatisfy { $0.isSet(m) }, "original game: Restore sets all \(Prefs.originalGame.count) options")
         check(!m.netStats && !LauncherModel().netStats, "original game: Online statistics off, and kept off")
         check(!m.hiddenRaces, "original game: hidden races hidden")
+        check(m.catchup == "original", "original game: rubberbanding as in the original game")
         check(!m.uniques, "original game: unique parts for the car that won them")
         check(m.exposure == "0" && m.whiteLevel == "100", "original game: exposure 0, white level 100 %")
         check(LauncherModel().isOriginalGame, "original game: still so at the next start")
@@ -292,8 +300,8 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.fetchRelease = { url, done in requests.append(url); done(answer) }
         m.dismissUpdate()
         m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
-        check(requests.count == 6 && m.updateNotice?.version == "1.2.0" && m.updateStatus?.contains("1.2.0 is available") == true,
-              "updates: Check Now brings back a notice hidden with Not now")
+        check(requests.count == 6 && m.updateNotice?.version == "1.2.0" && m.updateStatus == nil,
+              "updates: Check Now brings back a notice hidden with Not now (its own row, no status line)")
         m.builderStamp = "1.2.0"
         m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
         check(requests.count == 7 && m.updateNotice == nil && m.updateStatus?.hasPrefix("Up to date") == true,

@@ -109,7 +109,7 @@ enum Prefs {
     static let updateDismissed = "LauncherUpdateDismissed"   // Not now: hidden until a newer version than this
     static let updateRun = "LauncherUpdateRun"               // an Update in progress: its download folder and the Builder (Updater.swift)
     static let engine = "LauncherEngine"           // "original" | "hd"
-    static let showAtStartup = "LauncherShowAtStartup"
+    static let oldShowAtStartup = "LauncherShowAtStartup"   // gone: the launcher always opens
     static let wideHUD = "LauncherWideHUD"         // HUDPOS=1 for the engine
     static let allCars = "LauncherAllCars"         // both releases' cars (off: NFSU2_ALL_CARS=0)
     static let intro = "LauncherIntro"             // BOOTMOVIES: "skippable" | "off" | "original"
@@ -118,6 +118,7 @@ enum Prefs {
     static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
     static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
     static let hiddenRaces = "LauncherHiddenRaces" // NFSU2_SHOW_HIDDEN_RACES=1: the career's hidden races on the map
+    static let catchup = "LauncherCatchUp"         // NFSU2_CATCHUP: "original" | "noboost" | "off" (catchup.c)
     static let uniques = "LauncherUniques"         // NFSU2_UNIQUES=1: unique visual parts for every career car after Caleb
     static let uhud = "LauncherUHUD"               // Bool: the UHUD pack's menus and HUD
     static let dataMods = "LauncherDataMods"       // ids of the turned-on data mods (DataMods.swift)
@@ -168,7 +169,7 @@ enum Prefs {
 
     /// Each game option with its value in the original, unmodified game: Settings ›
     /// Restore Original Game sets them all.  A new option adds its line here.  (The
-    /// game folder, full screen and showAtStartup are not game options.)
+    /// game folder and full screen are not game options.)
     static let originalGame: [OriginalValue] = [
         OriginalValue(\.engine, .original),
         OriginalValue(\.wideHUD, false),
@@ -196,6 +197,7 @@ enum Prefs {
         OriginalValue(\.allCars, false),
         OriginalValue(\.garage, false),
         OriginalValue(\.hiddenRaces, false),
+        OriginalValue(\.catchup, "original"),
         OriginalValue(\.uniques, false),
         OriginalValue(\.intro, "original"),
         OriginalValue(\.discord, false),

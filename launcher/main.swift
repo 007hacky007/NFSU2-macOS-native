@@ -6,12 +6,11 @@
 //
 // It finds and checks the game, offers the few choices a player needs, then
 // starts the engine as a child process, steps out of the Dock and quits when the
-// engine ends (with its exit status).  If the window is turned
-// off and the game is ready it starts the engine right away (hold Option to see
-// the window anyway).
+// engine ends (with its exit status).  The window always opens: players start
+// the game with Play.
 //
 // Environment (scripts and tests):
-//   NFSU2_SKIP_LAUNCHER=1        start the engine without showing the window
+//   NFSU2_SKIP_LAUNCHER=1        start the engine without showing the window (tools/session.sh only)
 //   NFSU2_ENGINE=original|hd     engine choice for this start
 //   NFSU2_LAUNCHER_SNAPSHOT=x.png  draw the window into a PNG and quit (never shown)
 //   NFSU2_LAUNCHER_SNAPSHOT_SETTINGS=graphics|more|...  with the above: the Settings window on that tab
@@ -174,9 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let snapshot = env["NFSU2_LAUNCHER_SNAPSHOT"]
-        let option = NSEvent.modifierFlags.contains(.option)
-        if snapshot == nil, model.isReady, !option, !model.updater.pending,
-           env["NFSU2_SKIP_LAUNCHER"] == "1" || !model.showAtStartup {
+        if snapshot == nil, model.isReady, !model.updater.pending, env["NFSU2_SKIP_LAUNCHER"] == "1" {
             model.play()
             if model.isPlaying { return }      // the engine runs; nothing to show
         }
@@ -200,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let s = env["NFSU2_LAUNCHER_STATE"], s.hasPrefix("saves") { fakeSaves(w, cloud: s) }
         w.center()
         w.delegate = self
+        w.identifier = LauncherView.windowID   // Settings' Update brings it to the front
         window = w
 
         if env["NFSU2_LAUNCHER_TEST"] == "play" {

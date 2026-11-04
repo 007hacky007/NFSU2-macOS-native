@@ -157,6 +157,12 @@ void lifecycle_set_active(int on, const char *why){
     set_active(on, why);
 }
 
+/* (test aid) the app loses the focus for ms, as BLURFAKE does, at a moment the
+ * runtime picks rather than a frame (mprace.c NFSU2_MPRACE_TEST_BLUR): any
+ * thread asks, the host loop does it */
+static _Atomic long g_test_blur_ms;
+void lifecycle_test_blur(long ms){ if (ms > 0) atomic_store(&g_test_blur_ms, ms); }
+
 /* Host event loop, once per iteration: the quit grace period, BLURFAKE and
  * QUITFAKE. */
 void lifecycle_tick(void){
@@ -169,6 +175,8 @@ void lifecycle_tick(void){
         bf = 0;
         if (e && *e && sscanf(e, "%ld:%lf", &bf_frame, &bf_ms) == 2 && bf_frame > 0 && bf_ms > 0) bf = 1;
     }
+    { long tb = atomic_exchange(&g_test_blur_ms, 0);
+      if (tb > 0 && bf != 2){ bf_frame = metal_frames(); bf_ms = (double)tb; bf = 1; } }
     if (bf == 1 && metal_frames() >= bf_frame){
         bf = 2;
         if (background_runs()) fprintf(stderr, "app: BLURFAKE: the game keeps running in the background, nothing sent\n");
@@ -212,6 +220,9 @@ int lifecycle_may_park(void){
 /* Parked in the background right now (inactive and outside a LAN session),
  * for code that pauses its own work while the game is parked. */
 int lifecycle_game_parked(void){ return !g_told_active && !winsock_session_active(); }
+/* The game was last told it is active (WM_ACTIVATEAPP(TRUE)), for mprace.c, which keeps its input on in the
+ * background while its trip drives the menus.  Guest thread */
+int lifecycle_told_active(void){ return g_told_active; }
 
 /* Guest thread, from PeekMessageA / GetMessageA once the game window
  * exists: turns pending host events into window messages. */

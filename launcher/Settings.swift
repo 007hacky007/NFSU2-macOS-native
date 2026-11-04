@@ -218,6 +218,15 @@ struct GameSettings: View {
                 SettingRow(title: "Show hidden races",
                            description: "The career's 33 hidden races on the map and the radar like the others, and up to 8 races of each kind on the map at once, as MaxHwoy's Show Hidden Races Mod. Off: as in the original game, a hidden race shows only when you drive near it.",
                            isOn: $model.hiddenRaces)
+                SettingRow(title: "Rubberbanding",
+                           description: "Career opponents ahead of you wait, ones behind get more power and grip. No boost: they still wait, but never beat their own pace. Off: neither. Original: as in the original game.") {
+                    Picker("", selection: $model.catchup) {
+                        Text("Original").tag("original")
+                        Text("No boost").tag("noboost")
+                        Text("Off").tag("off")
+                    }
+                    .pickerStyle(SegmentedPickerStyle()).labelsHidden().fixedSize()
+                }
                 SettingRow(title: "Unique parts for every car",
                            description: "Once Caleb is beaten, the career shops sell the unique visual parts (the wide body kits too) for every car, as the game already does in Customize mode. Off: as in the original game, each unique part only for the car that won its star.",
                            isOn: $model.uniques)
@@ -274,6 +283,15 @@ struct MoreSettings: View {
                     }
                 }
                 .disabled(model.builderStamp == nil)
+                if let update = model.updateNotice, let stamp = model.builderStamp {
+                    SettingRow(title: "NFSU2 Builder \(update.version) is available",
+                               description: "This app was made by NFSU2 Builder \(stamp). "
+                                   + (model.canUpdateInPlace
+                                      ? "Update makes the new app in its place; your saves and settings stay as they are."
+                                      : "Download gets the new Builder, which updates this app.")) {
+                        UpdateButtons(model: model)
+                    }
+                }
                 SettingRow(title: "Portable copy",
                            description: model.location?.embedded == true
                                ? "This app already has the game inside and can be moved anywhere. Make Copy makes another one, with your language packs, for another Mac or a USB drive. Movies and language packs can be left out to make it smaller."
@@ -287,6 +305,28 @@ struct MoreSettings: View {
                     Button("Reset…") { model.resetGraphics() }.buttonStyle(SecondaryButtonStyle())
                 }
             }
+        }
+    }
+}
+
+/// A newer Builder is out: what the main window's notice offers, here too.  The update's
+/// progress shows over the main window, so Update brings that one to the front.
+struct UpdateButtons: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        HStack(spacing: 10) { buttons }.fixedSize()
+    }
+    @ViewBuilder private var buttons: some View {
+        Button("What's new") { model.openUpdatePage() }.buttonStyle(SecondaryButtonStyle())
+        if model.canUpdateInPlace {
+            Button("Update") {
+                model.startUpdate()
+                NSApp.windows.first { $0.identifier == LauncherView.windowID }?.makeKeyAndOrderFront(nil)
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .disabled(model.isPlaying || model.job != nil || model.updateRun != nil)
+        } else {
+            Button("Download") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
         }
     }
 }

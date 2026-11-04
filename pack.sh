@@ -369,8 +369,6 @@ THE WINDOW
                   It contains the game: keep it for yourself.
   Saves / Logs    open those folders.  Logs help when reporting a problem.
   Reset Graphics Settings   the game picks settings for this Mac again.
-  If you untick "Show this window when the app opens", the game starts right
-  away; hold the Option key while opening the app to see the window again.
 
 PLAYING
   Enter        skip the title screen

@@ -226,6 +226,32 @@ int main(int argc, char **argv){ @autoreleasepool {
         [panel.contentView cacheDisplayInRect:panel.contentView.bounds toBitmapImageRep:bitmap];
         assert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[NSString stringWithUTF8String:argv[2]] atomically:YES]);
         puts("native AppKit panel snapshot passed");
+        /* a race's trip: the overlay covers the game's menus it drives (opaque in the middle), with the race, its
+         * players or results and the step; <snapshot>-trip.png and -trip-results.png */
+        NSView *ov = nil; for (NSView *sv in game.contentView.subviews) if ([NSStringFromClass(sv.class) isEqual:@"GameToolsOverlay"]) ov = sv;
+        assert(ov);
+        NSString *base = [[NSString stringWithUTF8String:argv[2]] stringByDeletingPathExtension];
+        const char *trips[2] = {
+            "{\"v\":\"trip\",\"step\":\"Looking for the host's race\",\"kind\":\"sprint\",\"track\":\"Palomino & 16th Reverse\",\"stage\":3,"
+            "\"names\":[\"ulimh\",\"Anonymonus_\",\"Dimas1601\"],\"me\":1,\"max\":6}",
+            "{\"v\":\"trip\",\"step\":\"Back to free roam\",\"kind\":\"sprint\",\"track\":\"Palomino & 16th Reverse\",\"stage\":3,"
+            "\"names\":[\"ulimh\",\"Anonymonus_\",\"Dimas1601\"],\"me\":1,\"max\":6,"
+            "\"res\":[{\"n\":\"Anonymonus_\",\"f\":1,\"t\":83.41,\"me\":1},{\"n\":\"ulimh\",\"f\":1,\"t\":85.02},{\"n\":\"Dimas1601\",\"f\":0}],\"prize\":400}" };
+        for (int i = 0; i < 2; i++){
+            assert(roam_plat_lobby(trips[i]) == 1);
+            ov.needsDisplay = YES; [ov displayIfNeeded];
+            NSBitmapImageRep *shot = [ov bitmapImageRepForCachingDisplayInRect:ov.bounds];
+            [ov cacheDisplayInRect:ov.bounds toBitmapImageRep:shot];
+            assert([shot colorAtX:shot.pixelsWide / 8 y:shot.pixelsHigh / 2].alphaComponent > 0.99);   /* covered */
+            NSString *p = [base stringByAppendingString:i ? @"-trip-results.png" : @"-trip.png"];
+            assert([[shot representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:p atomically:YES]);
+        }
+        assert(roam_plat_lobby("{}") == 1);
+        ov.needsDisplay = YES; [ov displayIfNeeded];
+        NSBitmapImageRep *clear = [ov bitmapImageRepForCachingDisplayInRect:ov.bounds];
+        [ov cacheDisplayInRect:ov.bounds toBitmapImageRep:clear];
+        assert([clear colorAtX:clear.pixelsWide / 8 y:clear.pixelsHigh / 2].alphaComponent < 0.01);   /* the race: nothing over it */
+        puts("native trip cover snapshot passed");
     }
     puts("native controls state, validation, bounded queue and guest handoff passed");
 } }

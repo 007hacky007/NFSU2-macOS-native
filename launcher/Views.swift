@@ -618,6 +618,7 @@ struct JobOverlay: View {
 /// (Settings.swift).  Only what a player needs before Play stays here.
 struct LauncherView: View {
     static let size = CGSize(width: 560, height: 430)
+    static let windowID = NSUserInterfaceItemIdentifier("NFSU2Launcher")   // the main window (main.swift)
     @ObservedObject var model: LauncherModel
     let openSettings: () -> Void
 
@@ -665,13 +666,6 @@ struct LauncherView: View {
                 Spacer(minLength: 0)
                 if let update = model.updateNotice { UpdateNotice(model: model, release: update) }
                 HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Toggle("Show this window when the app opens", isOn: $model.showAtStartup)
-                            .toggleStyle(CheckboxToggleStyle())
-                            .font(.system(size: 12)).foregroundColor(Theme.text)
-                        Text("When off, hold ⌥ Option while opening the app to see it again.")
-                            .font(.system(size: 10.5)).foregroundColor(Theme.dim)
-                    }
                     Spacer()
                     Button("Play") { model.play() }
                         .buttonStyle(PrimaryButtonStyle())

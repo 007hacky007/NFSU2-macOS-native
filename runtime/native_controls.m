@@ -837,8 +837,70 @@ int native_controls_set_room(const char *name, char *error, size_t capacity){ @a
     CGFloat k = MIN(b.size.width / d.width, b.size.height / d.height), w = d.width * k, h = d.height * k;
     return NSMakeRect(b.origin.x + (b.size.width - w) / 2, b.origin.y + (b.size.height - h) / 2, w, h);
 }
+/* A race's trip from free roam (roam_game.c mp_panel's "trip", while mprace_covered): the game's own menus it drives
+ * (the pause menu, the LAN screens' "Looking for LAN servers" and their empty server list, the lobby, the way back)
+ * are covered, as the web page covers them: the race, its players (or its results on the way back) and the trip's
+ * step.  Under them they looked like a LAN search of the player's own that found nothing (a 2026-11-04 report) */
+static NSString *cover_str(id v){ return [v isKindOfClass:NSString.class] ? v : @""; }
+- (void)drawCover:(NSDictionary *)s in:(NSRect)pic scale:(CGFloat)k now:(double)now {
+    [[NSColor colorWithSRGBRed:0.035 green:0.04 blue:0.05 alpha:1] setFill]; NSRectFill(pic);
+    NSColor *dim = [NSColor colorWithWhite:0.62 alpha:1], *mine = [NSColor colorWithSRGBRed:0.89 green:0.94 blue:0.82 alpha:1];
+    NSDictionary *big = @{NSFontAttributeName: [NSFont systemFontOfSize:24 * k weight:NSFontWeightBold], NSForegroundColorAttributeName: NSColor.whiteColor};
+    NSDictionary *row = @{NSFontAttributeName: [NSFont systemFontOfSize:16 * k weight:NSFontWeightMedium], NSForegroundColorAttributeName: NSColor.whiteColor};
+    NSDictionary *note = @{NSFontAttributeName: [NSFont systemFontOfSize:14 * k], NSForegroundColorAttributeName: dim};
+    NSMutableArray *lines = [NSMutableArray array];          /* {text, attributes} */
+    NSString *kind = cover_str(s[@"kind"]), *track = cover_str(s[@"track"]);
+    if (kind.length) kind = [[kind substringToIndex:1].uppercaseString stringByAppendingString:[kind substringFromIndex:1]];
+    NSString *title = kind.length && track.length ? [NSString stringWithFormat:@"%@ - %@", kind, track] : kind.length ? kind : @"Multiplayer race";
+    [lines addObject:@[title, big]];
+    NSMutableArray *sub = [NSMutableArray array];
+    if ([s[@"laps"] isKindOfClass:NSNumber.class] && [s[@"laps"] intValue] > 1) [sub addObject:[NSString stringWithFormat:@"%@ laps", s[@"laps"]]];
+    NSArray *names = [s[@"names"] isKindOfClass:NSArray.class] ? s[@"names"] : @[];
+    if (names.count) [sub addObject:[NSString stringWithFormat:@"%lu players", (unsigned long)names.count]];
+    if (sub.count) [lines addObject:@[[sub componentsJoinedByString:@", "], note]];
+    [lines addObject:@[@"", note]];
+    NSArray *res = [s[@"res"] isKindOfClass:NSArray.class] ? s[@"res"] : nil;
+    if (res.count){
+        for (NSUInteger i = 0; i < res.count && i < 6; i++){
+            NSDictionary *r = [res[i] isKindOfClass:NSDictionary.class] ? res[i] : @{};
+            NSString *how = ![r[@"f"] boolValue] ? @"did not finish" : [r[@"p"] isKindOfClass:NSNumber.class] ? [NSString stringWithFormat:@"%@ points", r[@"p"]]
+                          : [r[@"t"] isKindOfClass:NSNumber.class] ? [NSString stringWithFormat:@"%d:%05.2f", (int)([r[@"t"] doubleValue] / 60), fmod([r[@"t"] doubleValue], 60)] : @"";
+            NSString *t = [NSString stringWithFormat:@"%lu. %@%@%@", (unsigned long)i + 1, cover_str(r[@"n"]), how.length ? @"   " : @"", how];
+            [lines addObject:@[t, [r[@"me"] boolValue] ? @{NSFontAttributeName: row[NSFontAttributeName], NSForegroundColorAttributeName: mine} : row]];
+        }
+        if ([s[@"prize"] isKindOfClass:NSNumber.class]) [lines addObject:@[[NSString stringWithFormat:@"Your prize: $%@", s[@"prize"]], row]];
+    } else {
+        NSInteger me = [s[@"me"] isKindOfClass:NSNumber.class] ? [s[@"me"] integerValue] : -1;
+        for (NSUInteger i = 0; i < names.count && i < 6; i++)
+            [lines addObject:@[[NSString stringWithFormat:@"%@%@", cover_str(names[i]), i == 0 ? @" (host)" : @""],
+                               (NSInteger)i == me ? @{NSFontAttributeName: row[NSFontAttributeName], NSForegroundColorAttributeName: mine} : row]];
+    }
+    [lines addObject:@[@"", note]];
+    NSString *step = cover_str(s[@"step"]);
+    [lines addObject:@[[NSString stringWithFormat:@"%@...", step.length ? step : @"Loading"], row]];
+    CGFloat h = 0, w = 0;
+    for (NSArray *l in lines){ NSSize z = [l[0] length] ? [l[0] sizeWithAttributes:l[1]] : NSMakeSize(0, 10 * k); h += z.height + 4 * k; w = MAX(w, z.width); }
+    CGFloat x = pic.origin.x + (pic.size.width - w) / 2, y = pic.origin.y + (pic.size.height - h) / 2;
+    for (NSArray *l in lines){
+        NSSize z = [l[0] length] ? [l[0] sizeWithAttributes:l[1]] : NSMakeSize(0, 10 * k);
+        if ([l[0] length]) [l[0] drawAtPoint:NSMakePoint(x, y) withAttributes:l[1]];
+        y += z.height + 4 * k;
+    }
+    /* a turning arc left of the step: the trip is on its way */
+    NSSize z = [lines.lastObject[0] sizeWithAttributes:row];
+    CGFloat r = 7 * k, cx = x - 16 * k, cy = y - 4 * k - z.height / 2, a0 = fmod(now * 360.0, 360.0);
+    NSBezierPath *arc = [NSBezierPath bezierPath];
+    [arc appendBezierPathWithArcWithCenter:NSMakePoint(cx, cy) radius:r startAngle:a0 endAngle:a0 + 270 clockwise:NO];
+    arc.lineWidth = 2 * k; arc.lineCapStyle = NSLineCapStyleRound; [dim setStroke]; [arc stroke];
+}
 - (void)drawRect:(NSRect)dirty {
     (void)dirty; double now = now_s();
+    pthread_mutex_lock(&mu); NSDictionary *trip = [lobby[@"v"] isEqual:@"trip"] ? lobby : nil; pthread_mutex_unlock(&mu);
+    if (trip){
+        NSRect pic = self.picture;
+        [self drawCover:trip in:pic scale:MAX(0.75, MIN(1.6, MIN(pic.size.width / 1280, pic.size.height / 720))) now:now];
+        return;
+    }
     pthread_mutex_lock(&mu);
     int group = qGroup, pad = qPad, layout[16]; memcpy(layout, qLayout, sizeof layout);
     char gname[100]; snprintf(gname, sizeof gname, "%s", group >= 0 ? qGroupNames[group] : "");
