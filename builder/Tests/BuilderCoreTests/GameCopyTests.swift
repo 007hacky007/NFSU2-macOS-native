@@ -345,6 +345,16 @@ final class GameCopyTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: keep.path), "nothing refused is kept")
     }
 
+    /// A SPEED2.EXE saved from an earlier session (often in Documents, behind a macOS prompt)
+    /// is only read when the game data has no usable one of its own, as an update's app does.
+    func testSavedProgramIsOnlyCheckedWhenTheDataLacksOne() {
+        XCTAssertTrue(checksProgramChoice(chosenThisSession: true, dataChecking: true, dataProvidesProgram: true))
+        XCTAssertFalse(checksProgramChoice(chosenThisSession: false, dataChecking: true, dataProvidesProgram: false),
+                       "not while the game data is still checked")
+        XCTAssertFalse(checksProgramChoice(chosenThisSession: false, dataChecking: false, dataProvidesProgram: true))
+        XCTAssertTrue(checksProgramChoice(chosenThisSession: false, dataChecking: false, dataProvidesProgram: false))
+    }
+
     func testProgramFromZipArchiveInSubfolder() throws {
         let checker = ProgramChecker(programs: programs, temporaryParent: tmp)
         let keep = tmp.appendingPathComponent("keep/SPEED2.EXE")

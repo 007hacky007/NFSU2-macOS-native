@@ -64,6 +64,8 @@ final class BuilderModel: ObservableObject {
     private var checkedData: [URL]?
     private var dataToken = UUID()
     private var programVerdict: ProgramVerdict?
+    /// The program was picked in this session (or given with -gameProgram), not just saved.
+    private var playerChoseProgram = false
     private var checkedProgram: URL?
     private var programToken = UUID()
 
@@ -82,8 +84,10 @@ final class BuilderModel: ObservableObject {
         dataChoice = (saved.stringArray(forKey: "gameData") ?? []).map { URL(fileURLWithPath: $0) }
         programChoice = saved.string(forKey: "gameProgram").map { URL(fileURLWithPath: $0) }
         destination = saved.string(forKey: "destination").map { URL(fileURLWithPath: $0) } ?? defaultDestination
-        // Game data given on the command line (-gameData, unattended test runs) counts as chosen.
-        playerChoseData = saved.volatileDomain(forName: UserDefaults.argumentDomain)["gameData"] != nil
+        // Choices given on the command line (-gameData, -gameProgram: unattended test runs) count as chosen.
+        let arguments = saved.volatileDomain(forName: UserDefaults.argumentDomain)
+        playerChoseData = arguments["gameData"] != nil
+        playerChoseProgram = arguments["gameProgram"] != nil
         offerInstalledApp()
     }
 
@@ -349,6 +353,7 @@ final class BuilderModel: ObservableObject {
     func setProgram(_ url: URL) {
         guard phase == .checklist else { return }
         programChoice = url
+        playerChoseProgram = true
         defaults.set(url.path, forKey: "gameProgram")
         checkedProgram = nil
         refreshProgram()
@@ -359,13 +364,13 @@ final class BuilderModel: ObservableObject {
             (dataReport, dataDetails) = (nil, nil)
             if let reason = rejectedReason {
                 states[.gameData] = .blocked(reason)
-                return updateProgramRow()
+                return refreshProgram()
             }
             let note = rejectedApp == nil ? ""
                 : rejectedApp?.pathExtension == "app" ? "The game inside your current NFSU2.app is incomplete or changed, so it cannot be used. "
                 : "The game folder your current NFSU2.app plays from is incomplete or changed, so it cannot be used. "
             states[.gameData] = .blocked(note + "Choose your game folder, the two disc images (.iso, .cue or disc folders), or an NFSU2.app with the game inside")
-            return updateProgramRow()
+            return refreshProgram()
         }
         guard checkedData != dataChoice else { return }
         guard let manifestURL = sources?.appendingPathComponent("tools/known_releases.tsv"),
@@ -400,7 +405,7 @@ final class BuilderModel: ObservableObject {
                 dataReport = report
                 states[.gameData] = report.state
                 dataDetails = report.blocking == nil && report.notes.isEmpty ? nil : report.detailsText
-                updateProgramRow()
+                refreshProgram()
                 refreshPlaces()
             }
         }
@@ -408,7 +413,11 @@ final class BuilderModel: ObservableObject {
 
     private func refreshProgram() {
         guard let choice = programChoice else { return updateProgramRow() }
-        guard checkedProgram != choice else { return updateProgramRow() }
+        guard checkedProgram != choice,
+              checksProgramChoice(chosenThisSession: playerChoseProgram,
+                                  dataChecking: !dataChoice.isEmpty && dataReport == nil,
+                                  dataProvidesProgram: dataReport?.providesProgram == true)
+        else { return updateProgramRow() }
         checkedProgram = choice
         programVerdict = nil
         let token = UUID()
@@ -430,7 +439,7 @@ final class BuilderModel: ObservableObject {
             states[.gameProgram] = .ready("Found in your game data: \(name)")
             return
         }
-        if programChoice != nil, programVerdict == nil {
+        if programChoice != nil, checkedProgram == programChoice, programVerdict == nil {
             states[.gameProgram] = .checking("Checking \(programChoice?.lastPathComponent ?? "")...")
             return
         }

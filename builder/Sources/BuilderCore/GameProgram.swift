@@ -8,6 +8,14 @@ public enum ProgramChoiceMessages {
     }
 }
 
+/// Whether the Builder reads the game program choice. One picked in this session is checked at
+/// once. One saved from an earlier session (often in Documents, where reading it asks macOS for
+/// access) waits for the game data check and is only read when the data has no usable
+/// SPEED2.EXE of its own, which an update's NFSU2.app has.
+public func checksProgramChoice(chosenThisSession: Bool, dataChecking: Bool, dataProvidesProgram: Bool) -> Bool {
+    chosenThisSession || !dataChecking && !dataProvidesProgram
+}
+
 /// Checks the game program the player chose: SPEED2.EXE itself, or an archive (zip, rar, 7z)
 /// that holds it anywhere inside. An archive is unpacked into a private temporary folder and
 /// only its .exe files are looked at; nothing from it is run. A supported file is copied to
