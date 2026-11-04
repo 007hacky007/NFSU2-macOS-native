@@ -197,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let s = env["NFSU2_LAUNCHER_STATE"], s.hasPrefix("saves") { fakeSaves(w, cloud: s) }
         w.center()
         w.delegate = self
+        w.identifier = LauncherView.windowID   // Settings' Update brings it to the front
         window = w
 
         if env["NFSU2_LAUNCHER_TEST"] == "play" {

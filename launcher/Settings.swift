@@ -283,6 +283,15 @@ struct MoreSettings: View {
                     }
                 }
                 .disabled(model.builderStamp == nil)
+                if let update = model.updateNotice, let stamp = model.builderStamp {
+                    SettingRow(title: "NFSU2 Builder \(update.version) is available",
+                               description: "This app was made by NFSU2 Builder \(stamp). "
+                                   + (model.canUpdateInPlace
+                                      ? "Update makes the new app in its place; your saves and settings stay as they are."
+                                      : "Download gets the new Builder, which updates this app.")) {
+                        UpdateButtons(model: model)
+                    }
+                }
                 SettingRow(title: "Portable copy",
                            description: model.location?.embedded == true
                                ? "This app already has the game inside and can be moved anywhere. Make Copy makes another one, with your language packs, for another Mac or a USB drive. Movies and language packs can be left out to make it smaller."
@@ -296,6 +305,28 @@ struct MoreSettings: View {
                     Button("Reset…") { model.resetGraphics() }.buttonStyle(SecondaryButtonStyle())
                 }
             }
+        }
+    }
+}
+
+/// A newer Builder is out: what the main window's notice offers, here too.  The update's
+/// progress shows over the main window, so Update brings that one to the front.
+struct UpdateButtons: View {
+    @ObservedObject var model: LauncherModel
+    var body: some View {
+        HStack(spacing: 10) { buttons }.fixedSize()
+    }
+    @ViewBuilder private var buttons: some View {
+        Button("What's new") { model.openUpdatePage() }.buttonStyle(SecondaryButtonStyle())
+        if model.canUpdateInPlace {
+            Button("Update") {
+                model.startUpdate()
+                NSApp.windows.first { $0.identifier == LauncherView.windowID }?.makeKeyAndOrderFront(nil)
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .disabled(model.isPlaying || model.job != nil || model.updateRun != nil)
+        } else {
+            Button("Download") { model.downloadUpdate() }.buttonStyle(SecondaryButtonStyle())
         }
     }
 }

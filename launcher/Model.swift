@@ -814,8 +814,9 @@ final class LauncherModel: ObservableObject {
                 self.defaults.removeObject(forKey: Prefs.updateDismissed)
                 self.checkedByHand = true
                 self.refreshUpdateNotice()
+                // a newer one gets its own row with What's new and Update below
                 self.updateStatus = UpdateCheck.isNewer(r.version, than: stamp)
-                    ? "NFSU2 Builder \(r.version) is available: Download is in the main window."
+                    ? nil
                     : "Up to date: this app was made by NFSU2 Builder \(stamp), the newest one."
             }
         }

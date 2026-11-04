@@ -618,6 +618,7 @@ struct JobOverlay: View {
 /// (Settings.swift).  Only what a player needs before Play stays here.
 struct LauncherView: View {
     static let size = CGSize(width: 560, height: 430)
+    static let windowID = NSUserInterfaceItemIdentifier("NFSU2Launcher")   // the main window (main.swift)
     @ObservedObject var model: LauncherModel
     let openSettings: () -> Void
 

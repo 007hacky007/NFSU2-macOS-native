@@ -300,8 +300,8 @@ func env(_ k: String) -> String? { getenv(k).map { String(cString: $0) } }
         m.fetchRelease = { url, done in requests.append(url); done(answer) }
         m.dismissUpdate()
         m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
-        check(requests.count == 6 && m.updateNotice?.version == "1.2.0" && m.updateStatus?.contains("1.2.0 is available") == true,
-              "updates: Check Now brings back a notice hidden with Not now")
+        check(requests.count == 6 && m.updateNotice?.version == "1.2.0" && m.updateStatus == nil,
+              "updates: Check Now brings back a notice hidden with Not now (its own row, no status line)")
         m.builderStamp = "1.2.0"
         m.checkForUpdatesNow(now: t0.addingTimeInterval(80 * 3600)); settle()
         check(requests.count == 7 && m.updateNotice == nil && m.updateStatus?.hasPrefix("Up to date") == true,
