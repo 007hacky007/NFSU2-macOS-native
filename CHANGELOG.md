@@ -2,6 +2,13 @@
 
 What each version of NFSU2 Builder brings. The newest version is first.
 
+## 1.0.9 - 2026-11-20
+
+### Added
+- Reverse lights in Settings, Graphics, Lights: while a car goes backwards in reverse gear, its two rear lights glow white instead of red. The game has no reverse lights, so its brake lights stand in for them: braking and rolling back without reverse gear still show red, and so do the lamps' glass and the centre brake light. Off by default, as in the original game.
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/28120eb0fa4d2264c9cd779790ce5b9539b456eb/release-1.0.9/reverse-lights.png" width="800" alt="A reversing car: red rear lights in the original game, white with Reverse lights on">
+  <img src="https://raw.githubusercontent.com/007hacky007/NFSU2-macOS-native/28120eb0fa4d2264c9cd779790ce5b9539b456eb/release-1.0.9/launcher-reverse-lights.png" width="560" alt="Settings, Graphics, Lights: Reverse lights">
+
 ## 1.0.8 - 2026-11-04
 
 ### Added
