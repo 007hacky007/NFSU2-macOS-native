@@ -702,6 +702,10 @@
 #define sub_004901d0_orig sub_004901d0_orig
 #define sub_004901d0_m sub_004901d0_m
 #define sub_004901d0_orig_m sub_004901d0_orig_m
+#define sub_00490920 sub_00490920
+#define sub_00490920_orig sub_00490920_orig
+#define sub_00490920_m sub_00490920_m
+#define sub_00490920_orig_m sub_00490920_orig_m
 #define sub_00494270 sub_00494270
 #define sub_00494270_orig sub_00494270_orig
 #define sub_00494270_m sub_00494270_m
@@ -1042,6 +1046,10 @@
 #define sub_006154a0_orig sub_00615490_orig
 #define sub_006154a0_m sub_00615490_m
 #define sub_006154a0_orig_m sub_00615490_orig_m
+#define sub_00615640 sub_00615630
+#define sub_00615640_orig sub_00615630_orig
+#define sub_00615640_m sub_00615630_m
+#define sub_00615640_orig_m sub_00615630_orig_m
 #define sub_0061ad90 sub_0061ad80
 #define sub_0061ad90_orig sub_0061ad80_orig
 #define sub_0061ad90_m sub_0061ad80_m

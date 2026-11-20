@@ -1,0 +1,29 @@
+# Reverse lights (runtime/reverselights.c): a quick race, brake, then reverse.
+# Run once with NFSU2_REVERSE_LIGHTS=1 and once without; compare the dumps.
+# The trace shows the player car's gear (0 reverse), speed and brake-light byte.
+0     tapuntil RETURN MC_Background.fng 120 4000
++200  tap RETURN
++0    tapuntil RETURN UI_QRModeSelect.fng 150 3000
++200  tapuntil RETURN UI_QRTrackSelect.fng 150 1500
++200  tapuntil RETURN UI_QRModeOptions.fng 150 1500
++200  tapuntil RETURN UI_QRCarSelect.fng 150 1500
++200  tapuntil RETURN PC_Loading.fng 150 1500
++0    waitmem 0x8654a4 6 3000
++0    wzero
++0    trace 10 gear=i:[[0x8900ac]+4]+0x434 spd=[[0x8900ac]+4]+0x42c bl=b:[[0x8900ac]+4]+0x944 hl=b:[[0x8900ac]+4]+0x93d brk=[[[0x8900ac]+4]+0x30]+0x214 thr=[[[0x8900ac]+4]+0x30]+0x20c
+6000wms log go
++0    down UP
++120  up UP
++0    log brake
++0    down DOWN
++60   dump braking
++300  dump reversing1
++120  dump reversing2
++0    up DOWN
++0    log released
++60   dump rolling
++120  dump stopped
++0    down DOWN
++90   dump reversing_again
++0    up DOWN
++30   quit

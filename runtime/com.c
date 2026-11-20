@@ -4644,6 +4644,7 @@ void com_report(void){
     fprintf(stderr,"\n=== COM / D3D9 KATMANI ===\n");
     { void ws_report(void); ws_report(); }   /* wsfov.c */
     { void refl_report(void); refl_report(); }   /* reflect.c */
+    { void rl_report(void); rl_report(); }       /* reverselights.c */
     { void visual_report(void); visual_report(); }   /* visual.c */
     { void pic_report(void); pic_report(); }         /* picture.m */
     { void gamepad_report(void); gamepad_report(); }   /* gamepad.m */

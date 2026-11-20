@@ -115,6 +115,7 @@ enum Prefs {
     static let intro = "LauncherIntro"             // BOOTMOVIES: "skippable" | "off" | "original"
     static let language = "LauncherLanguage"      // passed to the engine as NFSU2_LANGUAGE
     static let headlights = "LauncherHeadlights"   // NFSU2_HEADLIGHTS: "players" | "all" | "off"
+    static let reverseLights = "LauncherReverseLights" // NFSU2_REVERSE_LIGHTS=1: brake-light glows white in reverse
     static let discord = "LauncherDiscord"         // Discord status on (NFSU2_DISCORD=1)
     static let garage = "LauncherGarage"           // 10 slots and Trade Car (off: NFSU2_GARAGE=off)
     static let hiddenRaces = "LauncherHiddenRaces" // NFSU2_SHOW_HIDDEN_RACES=1: the career's hidden races on the map
@@ -179,6 +180,7 @@ enum Prefs {
         OriginalValue(\.cutscenes60, false),
         OriginalValue(\.cutsceneBars, true),
         OriginalValue(\.headlights, "off"),
+        OriginalValue(\.reverseLights, false),
         OriginalValue(\.reflections, .original),
         OriginalValue(\.reflectSky, false),
         OriginalValue(\.reflectLights, false),

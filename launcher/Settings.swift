@@ -125,6 +125,9 @@ struct GraphicsSettings: View {
                     }
                     .labelsHidden().fixedSize()
                 }
+                SettingRow(title: "Reverse lights",
+                           description: "A car's rear lights glow white while it reverses. Off: as in the original game.",
+                           isOn: $model.reverseLights)
             }
             ReflectionsCard(model: model)
             FirstLaunchCard(model: model)
