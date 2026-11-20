@@ -18,7 +18,8 @@
 #                             it needs no game folder and can be moved anywhere.  It
 #                             contains the game, so keep it for yourself; no distribution
 #                             folder / zip is made.  GAME_DIR= names the game folder
-#                             (default: the Clean Edition folder in the repository);
+#                             (default: the game in /Applications/NFSU2.app, else the
+#                             Clean Edition folder in the repository);
 #                             NFSU2 Builder always builds this way.
 #   ./pack.sh --hd            "NFSU2 HD.app" with the HD engine only (the older
 #                             two-app layout; separate bundle id, sits next to NFSU2.app)
@@ -72,6 +73,15 @@ esac
 if [ "$EMBED" = 1 ] && { [ "$WITH_DATA" = 1 ] || [ "$MAKE_ZIP" = 1 ]; }; then
   echo "--embed puts the game inside the app; it can't be combined with --with-data / --zip"; exit 1
 fi
+# The game folder (the icon, --embed, --with-data): GAME_DIR=, else the game in
+# the installed /Applications/NFSU2.app, else the Clean Edition folder here.
+game_exe(){ for e in SPEED2.EXE speed2.exe Speed2.exe; do [ -f "$1/$e" ] && { echo "$1/$e"; return 0; }; done; return 1; }
+if [ -z "$GAME_DIR" ]; then
+  for d in "/Applications/NFSU2.app/Contents/Resources/Game" "$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2"; do
+    if game_exe "$d" >/dev/null; then GAME_DIR="$d"; break; fi
+  done
+  GAME_DIR="${GAME_DIR:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2}"
+fi
 OUTDIR="$ROOT/out"; [ "$EMBED" = 1 ] && OUTDIR="$ROOT/out/personal"
 mkdir -p "$OUTDIR"
 APP="$OUTDIR/$NAME.app"
@@ -118,8 +128,9 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # --- icon ---
 # The game's own icon, traced to vectors, when SPEED2.EXE is here (tools/exeicon.py;
-# ICON_EXE= picks another one); otherwise the drawn speedometer (tools/mkicon.py).
-ICON_EXE="${ICON_EXE:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2/SPEED2.EXE}"
+# ICON_EXE= picks another one, else the game folder's); otherwise the drawn
+# speedometer (tools/mkicon.py).
+ICON_EXE="${ICON_EXE:-$(game_exe "$GAME_DIR" || true)}"
 if [ ! -x "$ROOT/.venv/bin/python" ]; then
   echo "warning: no .venv, icon not generated"
 elif [ -f "$ICON_EXE" ] && "$ROOT/.venv/bin/python" "$ROOT/tools/exeicon.py" "$ICON_EXE" "$APP/Contents/Resources/AppIcon.icns" >/dev/null; then
@@ -135,9 +146,8 @@ fi
 # (SCRIPTS, dinput8.dll, SafeMode.bat: a few KB, and a complete copy checks as
 # complete); only Finder's .DS_Store files and macOS code (below) stay out.
 if [ "$EMBED" = 1 ]; then
-  SRC="${GAME_DIR:-$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2}"
-  [ -f "$SRC/SPEED2.EXE" ] || [ -f "$SRC/speed2.exe" ] || [ -f "$SRC/Speed2.exe" ] \
-    || { echo "game data not found: $SRC"; exit 1; }
+  SRC="$GAME_DIR"
+  game_exe "$SRC" >/dev/null || { echo "game data not found: $SRC"; exit 1; }
   echo "embedding the game data in the bundle..."
   GAME="$APP/Contents/Resources/Game"
   mkdir -p "$GAME"
@@ -401,8 +411,8 @@ ditto "$APP" "$DIST/$NAME.app"
 cp "$ROOT/out/README.txt" "$DIST/"
 
 if [ "$WITH_DATA" = 1 ]; then
-  SRC="$ROOT/Need for Speed Underground 2 - Clean Edition/Need for Speed Underground 2"
-  [ -f "$SRC/SPEED2.EXE" ] || { echo "game data not found: $SRC"; exit 1; }
+  SRC="$GAME_DIR"
+  game_exe "$SRC" >/dev/null || { echo "game data not found: $SRC"; exit 1; }
   echo "copying the game data (large, a few minutes)..."
   # MOVIES: no VP6 decoder, the game skips them anyway (~249 MB)
   rsync -a --exclude='MOVIES/' "$SRC/" "$DIST/Need for Speed Underground 2/"
