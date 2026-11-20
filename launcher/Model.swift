@@ -48,6 +48,7 @@ final class LauncherModel: ObservableObject {
     @Published var fpsCounter: Int { didSet { defaults.set(fpsCounter, forKey: Prefs.fpsCounter) } }
     @Published var metalHUD: Bool { didSet { defaults.set(metalHUD, forKey: Prefs.metalHUD) } }
     @Published var headlights: String { didSet { defaults.set(headlights, forKey: Prefs.headlights) } }
+    @Published var reverseLights: Bool { didSet { defaults.set(reverseLights, forKey: Prefs.reverseLights) } }
     @Published var wideHUD: Bool { didSet { defaults.set(wideHUD, forKey: Prefs.wideHUD) } }
     private var setHUDPOS = false        // HUDPOS was set by us (not by the caller)
     private var setLangPacks = false     // NFSU2_LANGPACKS was set by us
@@ -211,6 +212,7 @@ final class LauncherModel: ObservableObject {
         fpsCounter = min(max(defaults.integer(forKey: Prefs.fpsCounter), 0), 2)
         metalHUD = defaults.bool(forKey: Prefs.metalHUD)
         headlights = defaults.string(forKey: Prefs.headlights) ?? "players"
+        reverseLights = defaults.bool(forKey: Prefs.reverseLights)
         defaults.removeObject(forKey: Prefs.oldShowAtStartup)   // the launcher always opens now
         wideHUD = defaults.bool(forKey: Prefs.wideHUD)
         allCars = defaults.bool(forKey: Prefs.allCars)
@@ -393,6 +395,7 @@ final class LauncherModel: ObservableObject {
         if !allCars { setenv("NFSU2_ALL_CARS", "0", 0) }          // one set by hand wins
         if intro != "skippable" { setenv("BOOTMOVIES", intro, 0) }       // one set by hand wins
         if headlights != "players" { setenv("NFSU2_HEADLIGHTS", headlights, 0) }   // one set by hand wins
+        if reverseLights { setenv("NFSU2_REVERSE_LIGHTS", "1", 0) }   // reverselights.c; one set by hand wins
         if discord { setenv("NFSU2_DISCORD", "1", 0) }          // one set by hand wins
         if discord && !discordImage.isEmpty && DiscordImage.valid(discordImage) { setenv("NFSU2_DISCORD_LARGE_IMAGE", discordImage, 0) }
         if !garage { setenv("NFSU2_GARAGE", "off", 0) }           // one set by hand wins
